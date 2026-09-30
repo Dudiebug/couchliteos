@@ -697,6 +697,9 @@ rg -q '^python3-evdev$' config/live-build/package-lists/moonlightos.list.chroot
 polkit_rule=overlay/etc/polkit-1/rules.d/50-moonlightos-network.rules
 rg -q 'subject\.user == "moonlightos"' "$polkit_rule"
 rg -q 'moonlightos-launcher\.service' "$polkit_rule"
+# Settings > NETWORK > ADVANCED (nmtui, a configured app) keeps working; nothing else in that unit does.
+rg -q '^command = /usr/bin/nmtui$' config/apps.d/90-network-setup.ini
+rg -Fq 'cgroup.indexOf("/moonlightos-configured-app.service") >= 0 && moonlightosProcFile(subject, "comm") == "nmtui\n"' "$polkit_rule"
 # Only the three actions the Wi-Fi join uses, never a prefix match over every NetworkManager action.
 [[ $(rg -o 'org\.freedesktop\.NetworkManager\.[A-Za-z.-]+' "$polkit_rule" | sort | tr '\n' ' ') == \
   'org.freedesktop.NetworkManager.network-control org.freedesktop.NetworkManager.settings.modify.system org.freedesktop.NetworkManager.wifi.scan ' ]]

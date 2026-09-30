@@ -292,7 +292,7 @@ class GamepadNavMappingTest(unittest.TestCase):
     def test_the_shortcut_buttons_are_the_launchers_shortcut_keys(self):
         launcher = load_launcher()
         self.assertEqual(
-            sorted(launcher.SHORTCUT_TAGS.values()), sorted(["LB", "RB", "VIEW", "MENU"])
+            sorted(tag.split(" / ")[0] for tag in launcher.SHORTCUT_TAGS.values()), sorted(["LB", "RB", "VIEW", "MENU"])
         )
         self.assertEqual(
             sorted(launcher.SHORTCUT_KEYS), sorted([curses.KEY_F5, curses.KEY_F6, curses.KEY_F7, curses.KEY_F8])
