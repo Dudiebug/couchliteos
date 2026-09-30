@@ -1069,6 +1069,20 @@ class SetupWizard:
             note = ["NOT CHANGED: THE PICTURE WAS NOT CONFIRMED."]
 
     def choose_sound(self, sinks: Sequence[Any]) -> str:
+        """Play a tone per output. Only a tone the user heard may keep its output as the default."""
+        original = next((sink.id for sink in sinks if sink.default), None)
+        outcome = FAILED  # an error counts as "not heard" too
+        try:
+            outcome = self.try_outputs(sinks)
+            return outcome
+        finally:
+            if outcome != DONE and original is not None:
+                try:
+                    self.system.set_default_sink(original)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    pass
+
+    def try_outputs(self, sinks: Sequence[Any]) -> str:
         candidates = sound_candidates(sinks)
         position = 0
         while True:

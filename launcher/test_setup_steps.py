@@ -79,5 +79,75 @@ class ScanCleanupTest(base.WizardTestCase):
         self.assertScanStopped(bluetooth)
 
 
+class SoundRestoreTest(base.WizardTestCase):
+    """The tone test moves the default output around; only a heard tone may keep the move."""
+
+    @staticmethod
+    def sinks(default):
+        names = {1: "Analog", 2: "HDMI 1", 3: "USB Headset"}
+        return [audio.Sink(number, name, number == default) for number, name in names.items()]
+
+    def run_sound(self, ui, default=3, system=None, **extra):
+        sinks = self.sinks(default)
+        system = system or base.FakeSystem(sink_list=sinks)
+        return self.wizard(ui, system, **extra).choose_sound(sinks)
+
+    # Candidates are tried HDMI first (2), then the rest in list order (1, 3).
+
+    def test_skipping_the_sound_test_puts_the_original_output_back(self):
+        for answer in ("SKIP SOUND", None):
+            with self.subTest(answer=answer):
+                outcome = self.run_sound(base.FakeUI("NO, TRY", answer))
+                self.assertEqual(outcome, "skipped")
+                self.assertEqual(self.system.default_sinks, [2, 1, 3])
+
+    def test_skipping_on_the_first_output_puts_the_original_output_back(self):
+        self.assertEqual(self.run_sound(base.FakeUI("SKIP SOUND")), "skipped")
+        self.assertEqual(self.system.default_sinks, [2, 3])
+
+    def test_hearing_nothing_anywhere_puts_the_original_output_back(self):
+        ui = base.FakeUI("NO, TRY", "NO, TRY", "NO, I HEARD NOTHING", "CONTINUE")
+        self.assertEqual(self.run_sound(ui, default=1), "failed")
+        self.assertEqual(self.system.default_sinks, [2, 1, 3, 1])
+
+    def test_a_heard_tone_keeps_that_output(self):
+        self.assertEqual(self.run_sound(base.FakeUI("NO, TRY", "YES")), "done")
+        self.assertEqual(self.system.default_sinks, [2, 1])
+
+    def test_playing_again_never_goes_back_to_the_original_output(self):
+        self.assertEqual(self.run_sound(base.FakeUI("PLAY AGAIN", "YES")), "done")
+        self.assertEqual(set(self.system.default_sinks), {2})
+
+    def test_an_error_while_playing_the_tone_still_puts_the_original_output_back(self):
+        def tone():
+            raise RuntimeError("no player")
+
+        with self.assertRaises(RuntimeError):
+            self.run_sound(base.FakeUI(), tone=tone)
+        self.assertEqual(self.system.default_sinks, [2, 3])
+
+    def test_no_known_default_means_nothing_is_restored(self):
+        self.assertEqual(self.run_sound(base.FakeUI("SKIP SOUND"), default=None), "skipped")
+        self.assertEqual(self.system.default_sinks, [2])
+
+    def test_a_restore_that_fails_does_not_crash_the_wizard(self):
+        class Stubborn(base.FakeSystem):
+            def set_default_sink(self, sink_id):
+                super().set_default_sink(sink_id)
+                if len(self.default_sinks) > 1:
+                    raise RuntimeError("wpctl failed")
+
+        system = Stubborn(sink_list=self.sinks(3))
+        self.assertEqual(self.run_sound(base.FakeUI("SKIP SOUND"), system=system), "skipped")
+        self.assertEqual(system.default_sinks, [2, 3])
+
+    def test_the_display_and_sound_step_restores_too(self):
+        modes = base.DisplayAndSoundFlowTest.MODES
+        system = base.FakeSystem(modes=modes, sink_list=self.sinks(3))
+        ui = base.FakeUI("KEEP CURRENT", "SKIP SOUND")
+        self.assertEqual(self.wizard(ui, system).step_display(), "done")
+        self.assertEqual(system.default_sinks[-1], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
