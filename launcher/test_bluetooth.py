@@ -260,6 +260,32 @@ class BluetoothMenuTest(unittest.TestCase):
         bluetooth.BluetoothMenu(screen, FakeClient([disconnected]))._device_screen(DEVICE["path"])
         self.assertTrue(any("CONNECT" in value for value in screen.drawn))
 
+    def test_no_adapter_screen_says_what_to_do(self):
+        screen = FakeScreen([27])
+        bluetooth.BluetoothMenu(screen, FakeClient([dict(ADAPTER_ON, adapter=None)])).run()
+        self.assertIn("NO BLUETOOTH ADAPTER FOUND", screen.drawn)
+        self.assertTrue(any("PLUG IN" in value and "ADAPTER" in value for value in screen.drawn))
+
+    def test_request_errors_say_to_try_again(self):
+        class Refusing(FakeClient):
+            def request(self, command, **fields):
+                raise bluetooth.BluetoothError("ANOTHER BLUETOOTH ACTION IS ALREADY RUNNING FOR THIS DEVICE")
+
+        menu = bluetooth.BluetoothMenu(FakeScreen(), Refusing())
+        with mock.patch.object(menu, "message") as message:
+            self.assertIsNone(menu._request("pair", device="x"))
+        title, text = message.call_args.args
+        self.assertEqual(title, "BLUETOOTH ERROR")
+        self.assertIn("ALREADY RUNNING", text)
+        self.assertIn("TRY AGAIN", text)
+
+    def test_service_unavailable_message_says_to_wait_or_reboot(self):
+        menu = bluetooth.BluetoothMenu(FakeScreen(), FakeClient([bluetooth.BluetoothError("BLUETOOTH SERVICE UNAVAILABLE")]))
+        with mock.patch.object(menu, "message") as message:
+            menu._device_screen(DEVICE["path"])
+        self.assertEqual(message.call_args.args[0], "BLUETOOTH SERVICE UNAVAILABLE")
+        self.assertIn("REBOOT", message.call_args.args[1])
+
 
 if __name__ == "__main__":
     unittest.main()

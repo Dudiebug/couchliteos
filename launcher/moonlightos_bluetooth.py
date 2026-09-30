@@ -21,6 +21,9 @@ MAX_RESPONSE = 65536
 ADDRESS_RE = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$")
 
 
+SERVICE_HINT = "WAIT A FEW SECONDS AND OPEN BLUETOOTH AGAIN; IF IT STAYS DOWN, REBOOT."
+
+
 class BluetoothError(RuntimeError):
     """A bounded local Bluetooth request failed."""
 
@@ -207,7 +210,7 @@ class BluetoothMenu:
         try:
             return self.client.request(command, **fields)
         except BluetoothError as error:
-            self.message("BLUETOOTH ERROR", str(error))
+            self.message("BLUETOOTH ERROR", f"{error}. TRY AGAIN IN A MOMENT; IF IT KEEPS FAILING, REBOOT.")
             return None
 
     def _stop_scan_quietly(self) -> None:
@@ -239,7 +242,7 @@ class BluetoothMenu:
                 "BLUETOOTH",
                 ["REFRESH", "BACK"],
                 selected,
-                details=["NO BLUETOOTH ADAPTER FOUND"],
+                details=["NO BLUETOOTH ADAPTER FOUND", "PLUG IN A USB BLUETOOTH ADAPTER, THEN CHOOSE REFRESH"],
             )
             key = self._getch()
             selected = move_selection(selected, key, 2)
@@ -349,7 +352,7 @@ class BluetoothMenu:
                 try:
                     snapshot = self.client.snapshot()
                 except BluetoothError as error:
-                    self.message("BLUETOOTH SERVICE UNAVAILABLE", str(error))
+                    self.message("BLUETOOTH SERVICE UNAVAILABLE", f"{error}. {SERVICE_HINT}")
                     return False, None
                 operations = snapshot.get("operations") or []
                 operation = next(
@@ -438,7 +441,7 @@ class BluetoothMenu:
             try:
                 snapshot = self.client.snapshot()
             except BluetoothError as error:
-                self.message("BLUETOOTH SERVICE UNAVAILABLE", str(error))
+                self.message("BLUETOOTH SERVICE UNAVAILABLE", f"{error}. {SERVICE_HINT}")
                 return
             if snapshot.get("adapter") is None:
                 self.message("BLUETOOTH ADAPTER REMOVED", "RETURNING TO BLUETOOTH SETTINGS")

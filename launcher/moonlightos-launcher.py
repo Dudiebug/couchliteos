@@ -14,7 +14,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import moonlightos_display as display
@@ -27,6 +27,9 @@ import moonlightos_rdp as rdp
 import moonlightos_setup as setup
 import moonlightos_stream as stream
 import moonlightos_cec as cec
+import moonlightos_controllers as controllers
+import moonlightos_update as update
+import moonlightos_errors as errors
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -50,6 +53,7 @@ SETTINGS_MENU = (
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
     "TV CONTROL",
+    "CHECK FOR UPDATES",
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
@@ -335,14 +339,14 @@ def tailscale_summary() -> str:
     return "TAILSCALE CONNECTED" if result.returncode == 0 else "TAILSCALE DISCONNECTED"
 
 
-def add_centered(screen: curses.window, row: int, text: str) -> None:
+def add_centered(screen: curses.window, row: int, text: str, attr: int = 0) -> None:
     height, width = screen.getmaxyx()
     if not 0 <= row < height or width < 2:
         return
     clipped = text[: max(0, width - 4)]
     column = max(1, (width - len(clipped)) // 2)
     try:
-        screen.addstr(row, column, clipped)
+        screen.addstr(row, column, clipped, attr)
     except curses.error:
         pass
 
@@ -371,6 +375,16 @@ class Launcher:
         self.menu: list[tuple[str, str]] = []
         # Checked on every start (the USB stick moves between PCs) and again after a resume.
         self.can_sleep = power.can_suspend()
+        self.controllers = controllers.Monitor()
+        self.updates = update.Checker()
+        # Buttons on error screens (moonlightos_errors). A handler is called with the
+        # application that failed (or None); it returns True to ask for another try.
+        # A "wake-pc" entry belongs here, next to errors.register_action(...).
+        self.failure_actions: dict[str, Callable[[apps.Application | None], bool]] = {
+            errors.NETWORK.id: self.open_network_settings,
+            errors.SUPPORT.id: self.save_support_file,
+            errors.BLUETOOTH.id: self.open_bluetooth_settings,
+        }
         self.reload_applications()
         global IDLE_GUARD
         IDLE_GUARD = self.idle = power.IdleGuard(
@@ -495,11 +509,24 @@ class Launcher:
             except curses.error:
                 pass
 
-        status_row = max(row + 2, height - 4)
-        add_centered(self.screen, status_row, self.status)
-        if self.live_warning:
-            add_centered(self.screen, status_row + 1, self.live_warning)
+        footer = self.footer_lines()
+        add_centered(self.screen, max(row + 2, height - 4 - len(footer)), self.status)
+        for offset, (text, attr) in enumerate(reversed(footer)):
+            add_centered(self.screen, height - 3 - offset, text, attr)
         self.screen.refresh()
+
+    def footer_lines(self) -> list[tuple[str, int]]:
+        """Extra home-screen lines below the status line: (text, curses attribute)."""
+        lines: list[tuple[str, int]] = []
+        if self.live_warning:
+            lines.append((self.live_warning, curses.A_NORMAL))
+        available = self.updates.notice()
+        if available:
+            lines.append((available, curses.A_BOLD))
+        battery = self.controllers.line()
+        if battery:
+            lines.append((battery, curses.A_REVERSE if self.controllers.low() else curses.A_NORMAL))
+        return lines
 
     def draw_launching(self, label: str, frame: str) -> None:
         self.screen.erase()
@@ -512,39 +539,42 @@ class Launcher:
         add_centered(self.screen, height - 3, "EXIT THE APP TO RETURN")
         self.screen.refresh()
 
-    def show_launch_failure(self, label: str, message: str, *, wake: bool = False) -> None:
-        set_launcher_focus(True)
-        self.screen.timeout(1000)
-        selected = 0
+    def open_network_settings(self, _app: apps.Application | None = None) -> bool:
+        self.launch_by_id("network-setup")  # the same screen the setup wizard uses
+        return False  # back on the error screen, where TRY AGAIN is one press away
+
+    def save_support_file(self, _app: apps.Application | None = None) -> bool:
+        Settings(self.screen, self).generate_support_file()
+        return False
+
+    def open_bluetooth_settings(self, _app: apps.Application | None = None) -> bool:
+        bluetooth.run_bluetooth(self.screen)
+        return False
+
+    def show_failure(self, failure: errors.Failure, app: apps.Application | None = None) -> str:
+        """Show an error screen with its buttons; returns "retry" or "dismiss".
+
+        The other buttons run their handler (see `failure_actions`) and bring the
+        screen back, unless the handler asks for another try by returning True.
+        """
+        set_launcher_focus(True)  # the dialog is on top of a failed app: keep the controller on it
         while True:
-            self.screen.erase()
-            height, width = self.screen.getmaxyx()
-            draw_border(self.screen)
-            add_centered(self.screen, max(2, height // 8), f"{label} FAILED TO START")
-            rows = textwrap.wrap(message, width=max(8, width - 8)) or ["UNKNOWN ERROR"]
-            first = max(6, height // 2 - len(rows) // 2)
-            shown = rows[: max(1, height - first - 5)]
-            for offset, row in enumerate(shown):
-                add_centered(self.screen, first + offset, row)
-            if wake:
-                for index, choice in enumerate(("WAKE PC", "BACK TO LAUNCHER")):
-                    add_centered(
-                        self.screen, first + len(shown) + 1 + index, f"{'>' if index == selected else ' '}  {choice}"
-                    )
-            add_centered(
-                self.screen, height - 3,
-                "UP/DOWN MOVES  ·  ENTER CHOOSES  ·  ESC RETURNS" if wake else "ENTER OR ESC RETURNS TO LAUNCHER",
-            )
-            self.screen.refresh()
-            key = read_key(self.screen)
-            if wake:
-                selected = move_selection(selected, key, 2)
-            if key in (curses.KEY_ENTER, 10, 13):
-                if wake and selected == 0:
-                    self.wake_pc()
-                return
-            if key == 27:
-                return
+            choice = errors.show(self.screen, failure, read_key=read_key)
+            if choice in ("retry", errors.DISMISS.id):
+                return choice
+            handler = self.failure_actions.get(choice)
+            if handler is not None and handler(app):
+                return "retry"
+
+    def show_launch_failure(
+        self, label: str, message: str, app: apps.Application | None = None, *, retry: bool = True
+    ) -> str:
+        online = network_summary().endswith("  ONLINE")
+        failure = errors.describe_failure(
+            label, message, app_id=app.id if app else "", app_kind=app.kind if app else "",
+            online=online, retry=retry,
+        )
+        return self.show_failure(failure, app)
 
     def draw_wait(self, title: str, detail: str, hint: str) -> None:
         self.screen.erase()
@@ -681,7 +711,7 @@ class Launcher:
             if self.focus_app(app):
                 self.status = f"RESUMED {label}"
                 return True
-            self.status = f"{label} IS RUNNING BUT HAS NO MANAGED WINDOW"
+            self.status = f"{label} IS RUNNING BUT HAS NO WINDOW: CLOSE IT UNDER SETTINGS > ACTIVE APPLICATIONS"
             return False
         if app.kind == "command":
             # moonlightos-configured-app.service runs one app at a time; a request
@@ -734,9 +764,8 @@ class Launcher:
                     # App units retry after two seconds. A persistent failure for
                     # longer than that means retries have not recovered startup.
                     if now - failure_since >= 2.75:
-                        self.show_launch_failure(
-                            label, app_state.removeprefix("failed:").strip(), wake=self.offer_wake(app)
-                        )
+                        if self.show_launch_failure(label, app_state.removeprefix("failed:").strip(), app=app) == "retry":
+                            return self.launch_app(app)
                         self.status = f"{label} FAILED TO START"
                         return False
                 else:
@@ -761,7 +790,8 @@ class Launcher:
             if last_state.startswith("failed:")
             else "THE APPLICATION DID NOT BECOME READY BEFORE THE STARTUP TIMEOUT"
         )
-        self.show_launch_failure(label, message, wake=self.offer_wake(app))
+        if self.show_launch_failure(label, message, app=app) == "retry":
+            return self.launch_app(app)
         self.status = f"{label} START TIMED OUT"
         return False
 
@@ -774,7 +804,7 @@ class Launcher:
     def launch_by_id(self, app_id: str) -> bool:
         app = self.app_by_id(app_id)
         if app is None:
-            self.status = f"{app_id.upper()} IS UNAVAILABLE"
+            self.status = f"{app_id.upper()} IS NOT AVAILABLE: CHECK SETTINGS > APPLICATIONS"
             return False
         return self.launch_app(app)
 
@@ -857,7 +887,7 @@ class Launcher:
                 if self.focus_app(app):
                     self.status = f"RESUMED {app.name}"
                     return
-                status = f"COULD NOT FOCUS {app.name}"
+                status = f"COULD NOT FOCUS {app.name}: PRESS X TO CLOSE IT, THEN START IT AGAIN"
             elif key in (curses.KEY_DC, ord("x")):
                 (RUN / f"close-{app.status_id}").touch()
                 status = f"CLOSING {app.name}"
@@ -912,6 +942,8 @@ class Launcher:
         except curses.error:
             pass
 
+        self.controllers.start()
+        self.updates.start()
         self.draw()
         (RUN / "launcher-ready").touch()
         if display.restore_saved_mode() is None:
@@ -963,10 +995,10 @@ class Settings:
         try:
             current = display.active_output(display.query_outputs())
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            self.status = f"DISPLAY QUERY FAILED: {error}"
+            self.status = f"DISPLAY QUERY FAILED: {error}. CHECK THE CABLE AND OPEN DISPLAY SETTINGS AGAIN"
             return False
         if current is None or current.current_mode is None:
-            self.status = "NO ACTIVE COMPOSITOR OUTPUT"
+            self.status = "NO ACTIVE DISPLAY: CHECK THE HDMI OR DISPLAYPORT CABLE AND THE TV INPUT"
             return False
         self.output = current
         self.original_mode = current.current_mode
@@ -1006,7 +1038,7 @@ class Settings:
                 pass
         add_centered(self.screen, max(2, height // 8), title)
         if rows is None:
-            rows = list(SETTINGS_MENU)
+            rows = [self.menu_label(item) for item in SETTINGS_MENU]
             selected = self.selected
         row = max(5, height // 3)
         left = max(2, (width - max((len(item) for item in rows), default=1) - 3) // 2)
@@ -1020,6 +1052,21 @@ class Settings:
                 pass
         add_centered(self.screen, height - 3, self.status)
         self.screen.refresh()
+
+    def menu_label(self, item: str) -> str:
+        if item == "CHECK FOR UPDATES":
+            return f"{item}  {'ON' if self.launcher.updates.enabled else 'OFF'}"
+        return item
+
+    def toggle_updates(self) -> None:
+        enabled = not self.launcher.updates.enabled
+        self.launcher.updates.set_enabled(enabled)
+        if not enabled:
+            self.status = "UPDATE CHECK OFF: NOTHING IS SENT"
+        elif not self.launcher.updates.online():
+            self.status = "UPDATE CHECK ON: WAITS UNTIL THIS PC IS ONLINE"
+        else:
+            self.status = "UPDATE CHECK ON: LOOKS FOR A NEWER RELEASE ONCE A DAY"
 
     def choose(self, title: str, choices: list[tuple[str, object]], current: object) -> object | None:
         if not choices:
@@ -1043,6 +1090,13 @@ class Settings:
             self.draw(title, rows, None)
             if read_key(self.screen) in (curses.KEY_ENTER, 10, 13, 27):
                 return
+
+    def show_error(
+        self, title: str, message: str, *, retry: bool = True, hint: str = "", actions: tuple[errors.Action, ...] = ()
+    ) -> bool:
+        """An error with buttons (TRY AGAIN when `retry`, then BACK); True when TRY AGAIN was chosen."""
+        failure = errors.simple_failure(title, message, *actions, hint=hint, retry=retry)
+        return self.launcher.show_failure(failure) == "retry"
 
     def draw_support_progress(
         self,
@@ -1104,11 +1158,11 @@ class Settings:
             self.status = "DISPLAY MODE ROLLED BACK"
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             display.log(f"Display rollback failed: {error}")
-            self.status = f"ROLLBACK FAILED: {error}"
+            self.status = f"ROLLBACK FAILED: {error}. IF THE PICTURE IS WRONG, REBOOT"
 
     def apply_preview(self) -> None:
         if self.output is None or self.original_mode is None:
-            self.status = "NO ACTIVE DISPLAY MODE"
+            self.status = "NO ACTIVE DISPLAY MODE: GO BACK AND OPEN DISPLAY SETTINGS AGAIN"
             return
         requested = display.Mode(
             *map(int, self.resolution.split("x")), self.refresh_mhz
@@ -1126,7 +1180,7 @@ class Settings:
             display.log(f"Previewing {requested.argument} on {old_output.name}")
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             display.log(f"Display preview rejected: {error}")
-            self.status = f"MODE NOT APPLIED: {error}"
+            self.status = f"MODE NOT APPLIED: {error}. PICK ANOTHER RESOLUTION OR REFRESH RATE"
             return
 
         deadline = time.monotonic() + 15
@@ -1190,13 +1244,15 @@ class Settings:
             destinations = support.discover_destinations()
         except (OSError, subprocess.SubprocessError) as error:
             failure = f"USB DESTINATION CHECK FAILED: {error}"
-            self.show_message("SUPPORT EXPORT FAILED", failure)
             self.status = failure
+            if self.show_error("SUPPORT EXPORT FAILED", failure, hint="RECONNECT THE USB DRIVE, THEN TRY AGAIN."):
+                return self.generate_support_file()
             return
         if not destinations:
             failure = "CONNECT A WRITABLE REMOVABLE USB DRIVE AND TRY AGAIN"
-            self.show_message("USB DRIVE NOT FOUND", failure)
-            self.status = "SUPPORT EXPORT FAILED: NO WRITABLE USB DRIVE"
+            self.status = "SUPPORT FILE NOT SAVED: PLUG IN A USB DRIVE AND TRY AGAIN"
+            if self.show_error("USB DRIVE NOT FOUND", failure):
+                return self.generate_support_file()
             return
         destination = destinations[0]
         if len(destinations) > 1:
@@ -1213,8 +1269,9 @@ class Settings:
             request_id = support.submit_request(destination)
         except OSError as error:
             failure = f"COULD NOT START THE SUPPORT EXPORT: {error}"
-            self.show_message("SUPPORT EXPORT FAILED", failure)
             self.status = f"EXPORT FAILED: {error}"
+            if self.show_error("SUPPORT EXPORT FAILED", failure):
+                return self.generate_support_file()
             return
 
         started_at = time.monotonic()
@@ -1242,8 +1299,9 @@ class Settings:
                     if export_state == "failed":
                         failure = state.get("message", "") or "THE EXPORTER REPORTED AN UNKNOWN FAILURE"
                         self.screen.timeout(1000)
-                        self.show_message("SUPPORT EXPORT FAILED", failure)
                         self.status = f"EXPORT FAILED: {failure}"
+                        if self.show_error("SUPPORT EXPORT FAILED", failure):
+                            return self.generate_support_file()
                         return
                     if export_state == "working":
                         message = state.get("message", "") or "COLLECTING SUPPORT INFORMATION"
@@ -1253,8 +1311,8 @@ class Settings:
                         "REBOOT MOONLIGHTOS AND TRY AGAIN; IF IT FAILS AGAIN, RUN SYSTEM DIAGNOSTICS."
                     )
                     self.screen.timeout(1000)
-                    self.show_message("SUPPORT EXPORT FAILED", failure)
-                    self.status = "EXPORT FAILED: SERVICE DID NOT START"
+                    self.status = "EXPORT FAILED: SERVICE DID NOT START - REBOOT, THEN TRY AGAIN"
+                    self.show_error("SUPPORT EXPORT FAILED", failure, retry=False)  # the message says reboot first
                     return
 
                 if now >= deadline:
@@ -1264,8 +1322,8 @@ class Settings:
                         "REBOOT MOONLIGHTOS BEFORE TRYING AGAIN."
                     )
                     self.screen.timeout(1000)
-                    self.show_message("SUPPORT EXPORT TIMED OUT", failure)
-                    self.status = "SUPPORT EXPORT TIMED OUT"
+                    self.status = "SUPPORT EXPORT TIMED OUT - REBOOT BEFORE TRYING AGAIN"
+                    self.show_error("SUPPORT EXPORT TIMED OUT", failure, retry=False)
                     return
 
                 self.draw_support_progress(destination, frame, message, now - started_at)
@@ -1292,6 +1350,7 @@ class Settings:
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
             "TAILSCALE": lambda: self.launch("tailscale"),
             "TV CONTROL": self.run_tv_control,
+            "CHECK FOR UPDATES": self.toggle_updates,
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launch("system-diagnostics"),
@@ -1343,7 +1402,9 @@ class Settings:
     def run_audio(self) -> None:
         selected = 0
         result = ""  # outcome of the last change, shown on the redraw
+        explained = False  # the "nothing to play on" screen is shown once, not on every redraw
         while True:
+            failure: errors.Failure | None = None
             try:
                 sinks = audio.query_sinks()
                 rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks]
@@ -1359,10 +1420,25 @@ class Settings:
                 self.status = result or (
                     "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
                 )
+                if not sinks:
+                    failure = errors.simple_failure(
+                        "NO SOUND OUTPUT FOUND",
+                        "NO SOUND DEVICE IS AVAILABLE. CHECK THAT THE TV OR SPEAKERS ARE ON AND CONNECTED, "
+                        "OR PAIR A BLUETOOTH SPEAKER OR HEADSET.",
+                        errors.BLUETOOTH, retry=True,
+                    )
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 sinks = []
                 rows = ["BACK"]
                 self.status = f"AUDIO QUERY FAILED: {error}"
+                failure = errors.problem("AUDIO QUERY FAILED", str(error))
+            if failure is None:
+                explained = False
+            elif not explained:
+                explained = True
+                if self.launcher.show_failure(failure) == "retry":
+                    explained = False
+                    continue
             selected = min(selected, len(rows) - 1)
             self.draw("AUDIO OUTPUT", rows, selected)
             key = read_key(self.screen)
@@ -1378,7 +1454,7 @@ class Settings:
                     audio.set_default(sinks[selected].id)
                     result = f"DEFAULT OUTPUT: {sinks[selected].name}"
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                    result = f"OUTPUT NOT CHANGED: {error}"
+                    result = f"OUTPUT NOT CHANGED: {error}. TRY ANOTHER OUTPUT"
                     continue
                 try:
                     note = audio.ensure_audible(sinks[selected].id)
@@ -2070,23 +2146,29 @@ class RemoteDesktopSettings(ApplicationsSettings):
         label = app.name
         connection = rdp.get_connection(app.connection)
         if connection is None:
-            self.launcher.show_launch_failure(label, "THE SAVED CONNECTION NO LONGER EXISTS. CHECK SETTINGS > REMOTE DESKTOP.")
+            self.launcher.show_launch_failure(
+                label, "THE SAVED CONNECTION NO LONGER EXISTS. CHECK SETTINGS > REMOTE DESKTOP.", app=app, retry=False
+            )
             return False
         session = active_rdp_session()
         if session and session != connection.id:
             # Also covers a session that is starting or reconnecting after a crash.
-            self.launcher.show_launch_failure(
+            if self.launcher.show_launch_failure(
                 label,
                 "ANOTHER REMOTE DESKTOP SESSION IS OPEN OR RECONNECTING. PRESS HOME/GUIDE AND CLOSE "
                 f"IT WITH {CLOSE_BUTTON}, OR WAIT FOR IT TO END.",
-            )
+                app=app,
+            ) == "retry":
+                return self.prepare_launch(app)
             return False
         self.status = "PLEASE WAIT"
         self.draw(label, [f"CHECKING {connection.host}:{connection.port}"], None)
         try:
             fingerprint = rdp.probe_certificate(connection.host, connection.port)
         except (OSError, ssl.SSLError, ValueError) as error:
-            self.launcher.show_launch_failure(label, f"COULD NOT REACH {connection.host}:{connection.port}: {error}")
+            unreachable = f"COULD NOT REACH {connection.host}:{connection.port}: {error}"
+            if self.launcher.show_launch_failure(label, unreachable, app=app) == "retry":
+                return self.prepare_launch(app)
             return False
         finally:
             self.status = ""
@@ -2123,7 +2205,9 @@ class RemoteDesktopSettings(ApplicationsSettings):
             handoff.unlink(missing_ok=True)
             ok, detail = self.password_request("stage", connection.id)
             if not ok:
-                self.launcher.show_launch_failure(label, f"THE SAVED PASSWORD COULD NOT BE USED: {detail}".upper())
+                self.launcher.show_launch_failure(
+                    label, f"THE SAVED PASSWORD COULD NOT BE USED: {detail}".upper(), app=app, retry=False
+                )
                 return False
             return True
         password = self.text_input(

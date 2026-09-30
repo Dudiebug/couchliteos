@@ -398,7 +398,8 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
-  launcher/moonlightos_rdp.py launcher/moonlightos_stream.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_rdp.py launcher/moonlightos_stream.py launcher/moonlightos_controllers.py \
+  launcher/moonlightos_update.py launcher/moonlightos_errors.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 python3 -m py_compile launcher/moonlightos_cec.py scripts/moonlightos-cec
@@ -616,5 +617,57 @@ rg -q '^v4l-utils$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^inputattach$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '"TV CONTROL"' launcher/moonlightos-launcher.py
 rg -q 'import moonlightos_cec as cec' launcher/gamepad-nav.py
+
+# Easier everyday use: controller batteries
+rg -q 'moonlightos_controllers.py' build/configure.sh
+rg -q '^import moonlightos_controllers as controllers' launcher/moonlightos-launcher.py
+rg -q '/sys/class/power_supply' launcher/moonlightos_controllers.py
+# Hardware gating: no bluetoothctl polling without an adapter; nothing shown without a reading.
+rg -q '/sys/class/bluetooth' launcher/moonlightos_controllers.py
+rg -q 'if not bluetooth_present' launcher/moonlightos_controllers.py
+
+# Easier everyday use: sound follows the TV (declarative WirePlumber 0.5 rule)
+rg -q 'cp -a "\$ROOT/overlay/\."' build/configure.sh
+rg -q -- '--profile main-systemwide' scripts/moonlightos-audio
+python3 - <<'PY'
+import pathlib, re
+conf = pathlib.Path('overlay/etc/wireplumber/wireplumber.conf.d/50-moonlightos-hdmi-default.conf').read_text()
+body = '\n'.join(line for line in conf.splitlines() if not line.lstrip().startswith('#'))
+assert body.count('[') == body.count(']') and body.count('{') == body.count('}'), 'unbalanced brackets'
+assert body.lstrip().startswith('monitor.alsa.rules = ['), 'must extend monitor.alsa.rules'
+for needle in ('"~.*hdmi.*"', '"~.*HDMI.*"', '"~.*DisplayPort.*"', 'media.class = "Audio/Sink"', 'update-props'):
+    assert needle in body, needle
+priority = int(re.search(r'priority\.session\s*=\s*(\d+)', body).group(1))
+# WirePlumber 0.5 scores ALSA analog sinks 1009 and Bluetooth sinks 1010.
+assert priority > 1010, priority
+# Hardware gating: the rule only re-ranks sinks that already exist, and sets nothing
+# that could activate a profile or route. WirePlumber itself skips profiles and
+# routes whose availability is "no", so an unplugged HDMI/DP port stays unused.
+props = re.findall(r'^\s*([A-Za-z][\w.-]*)\s*=', body, re.M)
+assert [p for p in props if p.startswith(('priority', 'device', 'api.', 'session', 'node.pause', 'node.always'))] == ['priority.session'], props
+assert body.count('media.class = "Audio/Sink"') == body.count('node.name =') + body.count('node.description ='), 'every match must be limited to sinks'
+PY
+
+# Easier everyday use: update-available notice
+rg -q 'moonlightos_update.py' build/configure.sh
+rg -q '^import moonlightos_update as update' launcher/moonlightos-launcher.py
+rg -q '"CHECK FOR UPDATES"' launcher/moonlightos-launcher.py
+rg -q 'https://api.github.com/repos/Dudiebug/moonlightos/releases/latest' launcher/moonlightos_update.py
+rg -q '/etc/moonlightos-version' launcher/moonlightos_update.py
+refute rg -n 'Authorization|Cookie|machine-id' launcher/moonlightos_update.py
+# Hardware gating: the check is skipped without a default route, before anything is recorded.
+rg -q '/proc/net/route' launcher/moonlightos_update.py
+rg -q 'if not self.online\(\)' launcher/moonlightos_update.py
+
+# Easier everyday use: actionable errors
+rg -q 'moonlightos_errors.py' build/configure.sh
+rg -q '^import moonlightos_errors as errors' launcher/moonlightos-launcher.py
+rg -q 'test_errors.py' launcher/Makefile
+# NETWORK SETTINGS opens the existing network setup app; its id must stay in step with the launcher.
+rg -q '^id = network-setup$' config/apps.d/90-network-setup.ini
+rg -q 'launch_by_id\("network-setup"\)' launcher/moonlightos-launcher.py
+# Every launcher failure screen goes through the shared helper (no hand-drawn dead ends).
+refute rg -n 'ENTER OR ESC RETURNS TO LAUNCHER' launcher/moonlightos-launcher.py
+refute rg -n 'show_message\("SUPPORT EXPORT' launcher/moonlightos-launcher.py
 
 printf 'Static tests passed.\n'
