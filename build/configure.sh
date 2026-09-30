@@ -85,6 +85,7 @@ install -D -m 0644 "$ROOT/launcher/moonlightos_bluetooth.py" "$CHROOT/usr/libexe
 install -D -m 0644 "$ROOT/launcher/moonlightos_stream.py" "$CHROOT/usr/libexec/moonlightos_stream.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_cec.py" "$CHROOT/usr/libexec/moonlightos_cec.py"
 install -D -m 0755 "$ROOT/scripts/moonlightos-cec" "$CHROOT/usr/libexec/moonlightos-cec"
+install -D -m 0644 "$ROOT/launcher/moonlightos_confirm.py" "$CHROOT/usr/libexec/moonlightos_confirm.py"
 install -D -m 0755 "$ROOT/scripts/moonlightos-bluetoothd" "$CHROOT/usr/libexec/moonlightos-bluetoothd"
 install -D -m 0755 "$ROOT/scripts/moonlightos-osk-session" "$CHROOT/usr/libexec/moonlightos-osk-session"
 install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale-ui" "$CHROOT/usr/bin/moonlightos-tailscale-ui"

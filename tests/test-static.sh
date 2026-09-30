@@ -399,7 +399,8 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
   launcher/moonlightos_rdp.py launcher/moonlightos_stream.py launcher/moonlightos_controllers.py \
-  launcher/moonlightos_update.py launcher/moonlightos_errors.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_update.py launcher/moonlightos_errors.py launcher/moonlightos_confirm.py \
+  scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 python3 -m py_compile launcher/moonlightos_cec.py scripts/moonlightos-cec
@@ -721,5 +722,8 @@ refute rg -q '^\[Install\]' services/moonlightos-display-failed.service
 rg -q 'is-failed --quiet moonlightos-launcher.service' scripts/moonlightos-display-failed
 rg -q 'MOONLIGHTOS_TTY:-/dev/tty1' scripts/moonlightos-display-failed
 rg -q '^install -D -m 0755 "\$ROOT/scripts/moonlightos-display-failed" "\$CHROOT/usr/libexec/moonlightos-display-failed"$' build/configure.sh
+
+rg -q 'moonlightos_confirm.py' build/configure.sh
+rg -q 'import moonlightos_confirm' launcher/moonlightos_bluetooth.py launcher/moonlightos-launcher.py
 
 printf 'Static tests passed.\n'

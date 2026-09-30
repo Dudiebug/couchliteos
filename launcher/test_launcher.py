@@ -650,6 +650,142 @@ class LauncherTest(unittest.TestCase):
             self.assertTrue((pathlib.Path(directory) / "suspend").exists())
         self.assertIn("SLEEP", launcher.status)
 
+    def test_controller_delete_key_corrects_text_already_in_a_field(self):
+        # Y/Square arrives as KEY_DC; a prefilled port or host could not be edited before.
+        class Keys(Screen):
+            def get_wch(self):
+                return self.keys.pop(0)
+
+        delete = self.module.curses.KEY_DC
+        settings = self.module.ApplicationsSettings(Keys([delete, delete, "\n"]), self.launcher())
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.assertEqual(settings.text_input("PORT", "PORT", 5, initial="3389"), "33")
+        settings = self.module.ApplicationsSettings(Keys([delete, delete, "9", "\n"]), self.launcher())
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.assertEqual(settings.text_input("PORT", "PORT", 5, initial="3389"), "339")
+
+    def form_screen(self, keys):
+        """A screen whose getch and get_wch read one queue and that remembers every frame."""
+        class FormScreen(Screen):
+            def __init__(self, keys):
+                super().__init__(keys)
+                self.text, self.frames = [], []
+
+            def erase(self):
+                self.text = []
+
+            def addstr(self, _row, _column, text, *_args):
+                self.text.append(text)
+
+            addnstr = addstr
+
+            def get_wch(self):
+                self.frames.append(" ".join(self.text))
+                return self.keys.pop(0)
+
+            getch = get_wch
+
+        return FormScreen(keys)
+
+    def test_b_on_a_changed_connection_form_asks_before_discarding_it(self):
+        up, down, enter, back = self.module.curses.KEY_UP, self.module.curses.KEY_DOWN, 10, "\x1b"
+        # Unchanged: B closes at once (a further key would raise "stop").
+        screen = self.form_screen([27])
+        self.module.RemoteDesktopSettings(screen, self.launcher()).edit_connection(None)
+        self.assertNotIn("DISCARD", " ".join(screen.frames))
+        # Changed: a stray A answers NO and the typed name is still there; YES discards.
+        screen = self.form_screen([enter, "w", "\n", 27, enter, 27, down, enter])
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.module.RemoteDesktopSettings(screen, self.launcher()).edit_connection(None)
+        asked = [index for index, frame in enumerate(screen.frames) if "DISCARD CHANGES?" in frame]
+        self.assertTrue(asked)
+        self.assertIn("DISPLAY NAME   w", screen.frames[asked[0] + 1])
+        # The CANCEL button at the end of the form asks too (Up from the top wraps onto it).
+        screen = self.form_screen([enter, "w", "\n", up, enter, enter, 27, down, enter])
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.module.RemoteDesktopSettings(screen, self.launcher()).edit_connection(None)
+        self.assertIn("DISCARD CHANGES?", " ".join(screen.frames))
+
+    def test_b_in_the_add_flows_asks_once_something_was_typed(self):
+        down, enter = self.module.curses.KEY_DOWN, 10
+        for flow in ("add_web", "add_command"):
+            # The first field has nothing to lose.
+            screen = self.form_screen(["\x1b"])
+            getattr(self.module.ApplicationsSettings(screen, self.launcher()), flow)()
+            self.assertNotIn("DISCARD", " ".join(screen.frames))
+            # A later field asks; NO keeps the half-typed text, YES abandons the whole flow.
+            screen = self.form_screen(["a", "\n", "/", "\x1b", enter, "x", "\x1b", down, enter])
+            settings = self.module.ApplicationsSettings(screen, self.launcher())
+            settings._write_user = mock.Mock()
+            with mock.patch.object(self.module.curses, "curs_set"):
+                getattr(settings, flow)()
+            settings._write_user.assert_not_called()
+            asked = [frame for frame in screen.frames if "DISCARD CHANGES?" in frame]
+            self.assertTrue(asked, flow)
+            self.assertFalse(screen.keys, flow)
+
+    def power_request(self, action, keys, running=()):
+        """Press A on REBOOT/SHUTDOWN, then `keys` on the question; return (files created, text drawn)."""
+        class Recording(Screen):
+            def __init__(self, keys):
+                super().__init__(keys)
+                self.text = []
+
+            def addnstr(self, _row, _column, text, *_args):
+                self.text.append(text)
+
+        launcher = self.launcher()
+        launcher.screen = Recording(keys)
+        launcher.running_applications = mock.Mock(return_value=list(running))
+        launcher.selected = [item[1] for item in launcher.menu].index(action)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            launcher.activate()
+            return sorted(path.name for path in pathlib.Path(directory).iterdir()), " ".join(launcher.screen.text)
+
+    def test_reboot_and_shutdown_ask_first_and_default_to_no(self):
+        down = self.module.curses.KEY_DOWN
+        for action in ("reboot", "poweroff"):
+            self.assertEqual(self.power_request(action, [10])[0], [], action)  # a stray A answers NO
+            self.assertEqual(self.power_request(action, [27])[0], [], action)
+            self.assertEqual(self.power_request(action, [down, 10])[0], [action])
+
+    def test_the_power_question_names_what_is_still_running(self):
+        _files, text = self.power_request("poweroff", [10], running=[self.terminal_app()])
+        self.assertIn("TERMINAL", text)
+        _files, text = self.power_request("poweroff", [10])
+        self.assertNotIn("TERMINAL", text)
+
+    def test_up_from_the_first_button_does_not_wrap_onto_shutdown(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([self.module.curses.KEY_UP, -1])
+        launcher.prepare_session = mock.Mock()
+        launcher.setup_wizard = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module.display, "restore_saved_mode"), mock.patch.object(
+            self.module.curses, "curs_set"
+        ), mock.patch.object(self.module.curses, "use_default_colors"):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                launcher.run()
+        self.assertEqual(launcher.selected, 0)
+
+    def test_f12_while_the_keyboard_is_open_does_not_queue_a_second_one(self):
+        # The keyboard's session removes start-osk as it opens; a second press in that window
+        # used to re-create it and stack another keyboard once the first closed.
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            run = pathlib.Path(directory)
+            (run / "osk-active").touch()
+            self.module.request_osk(masked=True)
+            self.assertFalse((run / "start-osk").exists())
+            self.assertFalse((run / "osk-masked").exists(), "a stale mask flag would hide the next keyboard")
+            (run / "osk-active").unlink()
+            self.module.request_osk(masked=True)
+            self.assertTrue((run / "start-osk").exists())
+            self.assertTrue((run / "osk-masked").exists())
     def test_on_resume_drops_stale_requests_refocuses_the_launcher_and_reports(self):
         launcher = self.launcher()
         home = pathlib.Path(tempfile.mkdtemp()) / "home.request"

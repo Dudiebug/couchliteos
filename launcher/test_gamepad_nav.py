@@ -26,6 +26,8 @@ class Codes:
     BTN_DPAD_DOWN = 545
     BTN_DPAD_LEFT = 546
     BTN_DPAD_RIGHT = 547
+    ABS_X = 0
+    ABS_Y = 1
     ABS_HAT0X = 16
     ABS_HAT0Y = 17
     KEY_UP = 103
@@ -80,6 +82,23 @@ class FakePad:
 
     def close(self):
         self.closed = True
+
+
+class ScriptedPad(FakePad):
+    """A pad whose read() hands out one scripted batch of events per call and reports its axis range."""
+
+    def __init__(self, low=-32768, high=32767):
+        super().__init__()
+        self.batches = []
+        self.range = SimpleNamespace(min=low, max=high)
+
+    def absinfo(self, _code):
+        return self.range
+
+    def read(self):
+        if self.dead:
+            raise OSError(19, "No such device")
+        return self.batches.pop(0) if self.batches else []
 
 
 class GamepadMappingTest(unittest.TestCase):
@@ -429,6 +448,177 @@ class GamepadMappingTest(unittest.TestCase):
             pads.pump(mock.Mock())
             pads.pump(mock.Mock())
         sleep.assert_not_called()
+
+    def feed(self, script, low=-32768, high=32767, app_active=False):
+        """Pump a pad through scripted rounds with a fake clock.
+
+        script: [(seconds, [(type, code, value), ...] or [], optional hook), ...].
+        Returns ([(seconds, key pressed)], [select timeouts], the Pads object).
+        """
+        module = self.module
+        pad = ScriptedPad(low, high)
+        pads = module.Pads()
+        pads.devices = {"/dev/input/event3": pad}
+        clock = {"now": 0.0}
+        pads.clock = lambda: clock["now"]
+        pressed, timeouts = [], []
+        nav = mock.Mock()
+        nav.write.side_effect = lambda _type, code, value: pressed.append((clock["now"], code)) if value == 1 else None
+
+        def fake_select(devices, _writers, _errors, timeout):
+            timeouts.append(timeout)
+            return (devices if pad.batches or pad.dead else []), [], []
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            if app_active:
+                (root / "app-active").write_text("chrome\n")
+            with mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
+                module, "OSK_ACTIVE", root / "osk-active"
+            ), mock.patch.object(module, "APP_ACTIVE", root / "app-active"), mock.patch.object(
+                module, "LAUNCHER_FOCUS", root / "launcher-focus"
+            ), mock.patch.object(module, "_last_state_check", -1e9), mock.patch.object(module, "_last_state", False):
+                for step in script:
+                    when, events = step[0], step[1]
+                    clock["now"] = when
+                    if len(step) > 2:
+                        step[2](pad, root)
+                    if events:
+                        pad.batches.append([SimpleNamespace(type=t, code=c, value=v) for t, c, v in events])
+                    pads.pump(nav)
+        return pressed, timeouts, pads
+
+    def test_left_stick_moves_like_the_dpad(self):
+        x, y = Codes.ABS_X, Codes.ABS_Y
+        script = [
+            (0.00, [(Codes.EV_ABS, x, -30000)]),  # pushed left
+            (0.05, [(Codes.EV_ABS, x, -31000)]),  # a jittery hold is still one press
+            (0.10, [(Codes.EV_ABS, x, 0)]),
+            (0.20, [(Codes.EV_ABS, y, 30000)]),  # Y grows downward
+            (0.30, [(Codes.EV_ABS, y, 0)]),
+            (0.40, [(Codes.EV_ABS, x, 30000)]),
+            (0.50, [(Codes.EV_ABS, x, 0)]),
+            (0.60, [(Codes.EV_ABS, y, -30000)]),
+            (0.70, [(Codes.EV_ABS, y, 0)]),
+        ]
+        pressed, _timeouts, _pads = self.feed(script)
+        self.assertEqual(
+            [key for _when, key in pressed], [Codes.KEY_LEFT, Codes.KEY_DOWN, Codes.KEY_RIGHT, Codes.KEY_UP]
+        )
+
+    def test_a_resting_or_drifting_stick_does_not_move_the_menu(self):
+        x = Codes.ABS_X
+        script = [(0.1 * i, [(Codes.EV_ABS, x, value)]) for i, value in enumerate((0, 3000, -8000, 15000, -15000, 500))]
+        pressed, _timeouts, _pads = self.feed(script)
+        self.assertEqual(pressed, [])
+
+    def test_the_stick_needs_a_firm_push_and_does_not_flutter_at_the_edge(self):
+        x = Codes.ABS_X
+        script = [
+            (0.00, [(Codes.EV_ABS, x, 22000)]),  # 67 percent: pressed
+            (0.05, [(Codes.EV_ABS, x, 19000)]),  # 58 percent: still held, not a new press
+            (0.10, [(Codes.EV_ABS, x, 22000)]),
+            (0.15, [(Codes.EV_ABS, x, 10000)]),  # 31 percent: let go
+            (0.20, [(Codes.EV_ABS, x, 15000)]),  # 46 percent: not firm enough to press again
+        ]
+        pressed, _timeouts, _pads = self.feed(script)
+        self.assertEqual([key for _when, key in pressed], [Codes.KEY_RIGHT])
+
+    def test_the_stick_works_on_pads_that_report_zero_to_255(self):
+        x = Codes.ABS_X
+        script = [
+            (0.0, [(Codes.EV_ABS, x, 128)]),  # resting at the middle
+            (0.1, [(Codes.EV_ABS, x, 100)]),  # a light touch
+            (0.2, [(Codes.EV_ABS, x, 20)]),
+            (0.3, [(Codes.EV_ABS, x, 128)]),
+            (0.4, [(Codes.EV_ABS, x, 250)]),
+        ]
+        pressed, _timeouts, _pads = self.feed(script, low=0, high=255)
+        self.assertEqual([key for _when, key in pressed], [Codes.KEY_LEFT, Codes.KEY_RIGHT])
+
+    def test_a_diagonal_push_moves_one_way_not_two(self):
+        x, y = Codes.ABS_X, Codes.ABS_Y
+        pressed, _timeouts, _pads = self.feed([(0.0, [(Codes.EV_ABS, x, 20000), (Codes.EV_ABS, y, 30000)])])
+        self.assertEqual([key for _when, key in pressed], [Codes.KEY_DOWN])
+
+    def test_holding_the_dpad_repeats_after_a_short_delay_until_released(self):
+        module = self.module
+        down = Codes.BTN_DPAD_DOWN
+        delay, interval = module.REPEAT_DELAY, module.REPEAT_INTERVAL
+        first, second = delay + 0.01, delay + interval + 0.02
+        script = [
+            (0.0, [(Codes.EV_KEY, down, 1)]),
+            (delay / 2, []),  # too soon to repeat
+            (first, []),
+            (second, []),
+            (second + 0.01, [(Codes.EV_KEY, down, 0)]),
+            (second + 2, []),
+            (second + 4, []),
+        ]
+        pressed, timeouts, _pads = self.feed(script)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DOWN), (first, Codes.KEY_DOWN), (second, Codes.KEY_DOWN)])
+        self.assertEqual(timeouts[0], 1)  # nothing held: the usual idle wait
+        self.assertAlmostEqual(timeouts[1], delay / 2)  # wakes exactly when the repeat is due
+        self.assertEqual(timeouts[-1], 1, "nothing is held once the button is released")
+
+    def test_holding_the_hat_or_the_left_stick_repeats_too(self):
+        delay = self.module.REPEAT_DELAY
+        for kind, press, release, key in (
+            ("hat", (Codes.EV_ABS, Codes.ABS_HAT0Y, 1), (Codes.EV_ABS, Codes.ABS_HAT0Y, 0), Codes.KEY_DOWN),
+            ("stick", (Codes.EV_ABS, Codes.ABS_X, -30000), (Codes.EV_ABS, Codes.ABS_X, 0), Codes.KEY_LEFT),
+        ):
+            script = [(0.0, [press]), (delay + 0.01, []), (delay + 0.02, [release]), (delay + 3, [])]
+            pressed, _timeouts, _pads = self.feed(script)
+            self.assertEqual(pressed, [(0.0, key), (delay + 0.01, key)], kind)
+
+    def test_the_newest_held_direction_repeats_and_the_older_resumes_when_it_is_let_go(self):
+        delay = self.module.REPEAT_DELAY
+        up, right = Codes.BTN_DPAD_UP, Codes.BTN_DPAD_RIGHT
+        script = [
+            (0.0, [(Codes.EV_KEY, up, 1)]),
+            (0.1, [(Codes.EV_KEY, right, 1)]),
+            (0.1 + delay + 0.01, []),
+            (0.6 + delay, [(Codes.EV_KEY, right, 0)]),
+            (0.6 + 2 * delay + 0.02, []),
+        ]
+        pressed, _timeouts, _pads = self.feed(script)
+        self.assertEqual(
+            pressed,
+            [(0.0, Codes.KEY_UP), (0.1, Codes.KEY_RIGHT), (0.1 + delay + 0.01, Codes.KEY_RIGHT),
+             (0.6 + 2 * delay + 0.02, Codes.KEY_UP)],
+        )
+
+    def test_buttons_that_are_not_directions_do_not_repeat(self):
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1)]), (1.0, []), (2.0, [])]
+        pressed, _timeouts, _pads = self.feed(script)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_ENTER)])
+
+    def test_repeating_stops_when_an_app_takes_the_controller(self):
+        delay = self.module.REPEAT_DELAY
+
+        def app_starts(_pad, root):
+            (root / "app-active").write_text("chrome\n")
+            self.module._last_state_check = -1e9  # do not wait out the half-second cache
+
+        script = [
+            (0.0, [(Codes.EV_KEY, Codes.BTN_DPAD_DOWN, 1)]),
+            (delay + 0.01, [], app_starts),
+            (delay + 1, []),
+        ]
+        pressed, _timeouts, _pads = self.feed(script)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DOWN)], "an app's game must not receive menu arrows")
+
+    def test_an_unplugged_pad_stops_repeating(self):
+        delay = self.module.REPEAT_DELAY
+
+        def unplugged(pad, _root):
+            pad.dead = True
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_DPAD_DOWN, 1)]), (delay + 0.01, [], unplugged), (delay + 1, [])]
+        pressed, timeouts, pads = self.feed(script)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DOWN)])
+        self.assertEqual(pads.devices, {})
+        self.assertEqual(timeouts[-1], 1)
 
 
 if __name__ == "__main__":

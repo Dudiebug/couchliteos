@@ -23,6 +23,8 @@ class Codes:
     BTN_DPAD_DOWN = 545
     BTN_DPAD_LEFT = 546
     BTN_DPAD_RIGHT = 547
+    ABS_X = 0
+    ABS_Y = 1
     ABS_HAT0X = 16
     ABS_HAT0Y = 17
     KEY_UP = 103

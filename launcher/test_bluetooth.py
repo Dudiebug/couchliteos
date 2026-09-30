@@ -254,6 +254,58 @@ class BluetoothMenuTest(unittest.TestCase):
         self.assertIn("BLUETOOTH SERVICE UNAVAILABLE", screen.drawn)
         self.assertTrue(any("BACK" in value for value in screen.drawn))
 
+    def requests_after(self, keys, snapshots=(ADAPTER_ON,), device_screen=False):
+        """Commands sent when the given keys are pressed, plus everything drawn."""
+        class BoundedScreen(FakeScreen):
+            def getch(self):
+                if len(self.frames) > 40:
+                    raise AssertionError("menu never returned")
+                return super().getch()
+
+        screen = BoundedScreen(keys)
+        client = FakeClient(list(snapshots))
+        menu = bluetooth.BluetoothMenu(screen, client)
+        menu._device_screen(DEVICE["path"]) if device_screen else menu.run()
+        return [command for command, _fields in client.requests], screen.drawn
+
+    def test_turning_bluetooth_off_asks_first_and_defaults_to_no(self):
+        # A Bluetooth controller user reaches this row with one Up Up; it disconnects their pad
+        # and the off state survives a reboot.
+        up, down, enter = bluetooth.curses.KEY_UP, bluetooth.curses.KEY_DOWN, 10
+        commands, drawn = self.requests_after([up, up, enter, enter])
+        self.assertNotIn("set_power", commands)
+        self.assertIn("BLUETOOTH CONTROLLERS WILL DISCONNECT", " ".join(drawn))
+        commands, _drawn = self.requests_after([up, up, enter, down, enter])
+        self.assertIn("set_power", commands)
+        commands, _drawn = self.requests_after([up, up, enter, 27])
+        self.assertNotIn("set_power", commands)
+
+    def test_forgetting_a_device_asks_first_and_defaults_to_no(self):
+        down, enter = bluetooth.curses.KEY_DOWN, 10
+        paired = dict(ADAPTER_ON, devices=[DEVICE])
+        done = dict(ADAPTER_ON, operations=[{"id": "op-1", "state": "completed"}])
+        commands, drawn = self.requests_after([down, enter, enter], [paired] * 3, device_screen=True)
+        self.assertNotIn("forget", commands)
+        self.assertIn("PAIR IT AGAIN", " ".join(drawn))
+        commands, _drawn = self.requests_after([down, enter, down, enter], [paired, paired, done], device_screen=True)
+        self.assertIn("forget", commands)
+
+    def test_f12_while_the_keyboard_is_open_does_not_queue_a_second_one(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            with mock.patch.object(bluetooth, "START_OSK", run / "start-osk"), mock.patch.object(
+                bluetooth, "OSK_ACTIVE", run / "osk-active", create=True
+            ):
+                menu = bluetooth.BluetoothMenu(FakeScreen([bluetooth.curses.KEY_F12] * 2), FakeClient([ADAPTER_ON]))
+                (run / "osk-active").touch()
+                self.assertEqual(menu._getch(), -1)
+                self.assertFalse((run / "start-osk").exists())
+                (run / "osk-active").unlink()
+                self.assertEqual(menu._getch(), -1)
+                self.assertTrue((run / "start-osk").exists())
+
     def test_device_screen_changes_action_for_connection_state(self):
         disconnected = dict(ADAPTER_ON, devices=[DEVICE])
         screen = FakeScreen([27])

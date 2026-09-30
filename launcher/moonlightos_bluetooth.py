@@ -12,9 +12,12 @@ import socket
 import time
 from typing import Any
 
+import moonlightos_confirm
+
 
 SOCKET_PATH = pathlib.Path("/run/moonlightos-bluetooth/control.sock")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
+OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 SPINNER = "|/-\\"
 MAX_RESPONSE = 65536
@@ -138,7 +141,8 @@ class BluetoothMenu:
     def _getch(self) -> int:
         key = self.screen.getch()
         if key == curses.KEY_F12:
-            START_OSK.touch()
+            if not OSK_ACTIVE.exists():  # one keyboard at a time
+                START_OSK.touch()
             return -1
         return key
 
@@ -472,7 +476,12 @@ class BluetoothMenu:
             if action == "back":
                 return
             if action == "forget":
-                if self._run_device_action(action, path, "FORGETTING DEVICE"):
+                # A controller that is forgotten stays dead until it is paired again.
+                if moonlightos_confirm.confirm(
+                    self.screen,
+                    f"FORGET {device_labels([device])[0]}? IF IT IS A CONTROLLER IT WILL STOP "
+                    "WORKING UNTIL YOU PAIR IT AGAIN.",
+                ) and self._run_device_action(action, path, "FORGETTING DEVICE"):
                     return
             else:
                 self._run_device_action(action, path, action.replace("_", " ").upper())
@@ -550,9 +559,13 @@ class BluetoothMenu:
                 if action == "power_on":
                     self._request("set_power", powered=True)
                 elif action == "power_off":
-                    self._stop_scan_quietly()
-                    discovery_requested = False
-                    self._request("set_power", powered=False)
+                    # The off state is saved, so a Bluetooth controller would stay dead after a reboot.
+                    if moonlightos_confirm.confirm(
+                        self.screen, "TURN OFF BLUETOOTH? BLUETOOTH CONTROLLERS WILL DISCONNECT."
+                    ):
+                        self._stop_scan_quietly()
+                        discovery_requested = False
+                        self._request("set_power", powered=False)
                 elif action == "rescan":
                     self._stop_scan_quietly()
                     discovery_requested = self._request("start_scan") is not None
