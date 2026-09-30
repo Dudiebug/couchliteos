@@ -55,6 +55,8 @@ TEXT_HINT = "KEYBOARD: X (XBOX) / TRIANGLE (PS) / F12  ·  A/ENTER ACCEPTS  ·  
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
+# A result or error stays on the main screen this long unless a button is pressed first.
+STATUS_HOLD_SECONDS = 15.0
 
 
 def application_result() -> apps.LoadResult:
@@ -268,11 +270,36 @@ class Launcher:
     def __init__(self, screen: curses.window) -> None:
         self.screen = screen
         self.selected = 0
-        self.status = network_summary()
+        self.summary = network_summary()
+        self._status = self.summary
+        self.message_since: float | None = None
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
         self.reload_applications()
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @status.setter
+    def status(self, value: str) -> None:
+        # Whatever sets the status is reporting a result or an error. run() keeps it
+        # on screen until a button press or STATUS_HOLD_SECONDS (refresh_status).
+        self._status = value
+        self.message_since = time.monotonic()
+
+    def release_status(self) -> None:
+        if self.message_since is not None:
+            self._status, self.message_since = self.summary, None
+
+    def refresh_status(self) -> None:
+        now = time.monotonic()
+        if self.message_since is not None and now - self.message_since >= STATUS_HOLD_SECONDS:
+            self.release_status()
+        if self.message_since is None and now - self.last_status_update >= 5:
+            self.summary = self._status = network_summary()
+            self.last_status_update = now
 
     def reload_applications(self) -> None:
         result = application_result()
@@ -612,6 +639,8 @@ class Launcher:
         self.setup_wizard()
         while True:
             key = read_key(self.screen)
+            if key not in (-1, curses.KEY_RESIZE):
+                self.release_status()  # a press dismisses the message that was being held
             if HOME_REQUEST.exists() or key == curses.KEY_HOME:
                 HOME_REQUEST.unlink(missing_ok=True)
                 set_launcher_focus(True)  # gamepad-nav forwards keys while an app runs
@@ -630,10 +659,7 @@ class Launcher:
             elif key == curses.KEY_RESIZE:
                 pass
 
-            now = time.monotonic()
-            if now - self.last_status_update >= 5:
-                self.status = network_summary()
-                self.last_status_update = now
+            self.refresh_status()
             self.draw()
 
 
