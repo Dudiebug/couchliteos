@@ -380,6 +380,18 @@ class Launcher:
                 return True
             self.status = f"{label} IS RUNNING BUT HAS NO MANAGED WINDOW"
             return False
+        if app.kind == "command":
+            # moonlightos-configured-app.service runs one app at a time; a request
+            # queued behind it would start unasked when the running app closes.
+            other = next((item for item in self.running_applications()
+                          if item.kind == "command" and item.id != app.id), None)
+            if other is not None:
+                self.show_launch_failure(
+                    label, f"{other.name} IS STILL RUNNING. CLOSE IT FIRST: PRESS HOME, THEN CLOSE IT "
+                           "IN ACTIVE APPLICATIONS."
+                )
+                self.status = f"{label} NOT STARTED: {other.name} IS RUNNING"
+                return False
         state = RUN / f"{app_id}-status"
         if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
             return False
@@ -432,6 +444,11 @@ class Launcher:
             # typed password) waiting in /run for a later start.
             (RUN / rdp.REQUEST.name).unlink(missing_ok=True)
             (RUN / rdp.HANDOFF.name).unlink(missing_ok=True)
+        elif app.kind == "request":
+            (RUN / app.request).unlink(missing_ok=True)
+        elif app.kind == "command":
+            # Never leave a request behind to start the app unasked later.
+            (RUN / "launch-app.request").unlink(missing_ok=True)
         message = (
             last_state.removeprefix("failed:").strip()
             if last_state.startswith("failed:")

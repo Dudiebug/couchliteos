@@ -407,6 +407,46 @@ class LauncherTest(unittest.TestCase):
         launcher.show_launch_failure.assert_not_called()
         self.assertIn("EXITED", launcher.status)
 
+    def command_app(self, app_id, name):
+        return self.module.apps.Application(
+            id=app_id, name=name, kind="command", command="/bin/true", status_id=app_id,
+        )
+
+    def test_second_configured_app_is_refused_while_another_one_runs(self):
+        # One moonlightos-configured-app.service runs one app at a time; a queued
+        # request would pop up unasked when the running app closes.
+        chrome, terminal = self.command_app("google-chrome", "GOOGLE CHROME"), self.command_app("terminal", "TERMINAL")
+        launcher = self.launcher()
+        launcher.screen = Screen()
+        launcher.show_launch_failure = mock.Mock()
+        result = self.module.apps.LoadResult((chrome, terminal), ())
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "google-chrome-ready").touch()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "application_result", return_value=result
+            ):
+                self.assertFalse(launcher.launch_app(terminal))
+            self.assertFalse((run / "launch-app.request").exists())
+        self.assertIn("GOOGLE CHROME", launcher.show_launch_failure.call_args.args[1])
+
+    def test_timed_out_launch_removes_the_unused_request_of_every_app_kind(self):
+        launcher = self.launcher()
+        launcher.show_launch_failure = mock.Mock()
+        moonlight = self.module.apps.Application(
+            id="moonlight", name="MOONLIGHT", kind="request", request="start-moonlight", status_id="moonlight",
+        )
+        for app, request in ((self.terminal_app(), "launch-app.request"), (moonlight, "start-moonlight")):
+            launcher.screen = Screen([-1] * 5)
+            with tempfile.TemporaryDirectory() as directory:
+                run = pathlib.Path(directory)
+                clock = iter([0.0, 0.0] + [100.0] * 10)
+                with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                    self.module.time, "monotonic", side_effect=lambda: next(clock)
+                ):
+                    self.assertFalse(launcher.launch_app(app))
+                self.assertFalse((run / request).exists(), request)
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:
