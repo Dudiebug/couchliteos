@@ -316,5 +316,92 @@ class PolkitRuleTest(unittest.TestCase):
         self.assertIn("polkit.Result.YES", code)
 
 
+# --- finding 5: a router that does not answer ping ------------------------------
+
+class SilentRouterTest(NetworkStepTestCase):
+    def check(self, *, gateway="192.168.1.1", ping=False, dns=True, http="ok"):
+        calls = []
+        result = setup.check_connectivity(
+            gateway=lambda: gateway,
+            ping=lambda host: calls.append("ping") or ping,
+            resolves=lambda: calls.append("dns") or dns,
+            fetch=lambda: calls.append("fetch") or http,
+        )
+        return result, calls
+
+    def test_the_lookup_and_the_download_run_even_when_the_router_does_not_answer(self):
+        _result, calls = self.check()
+        self.assertEqual(calls, ["ping", "dns", "fetch"])
+
+    def test_the_lookup_and_the_download_run_even_without_an_ipv4_route(self):
+        _result, calls = self.check(gateway="")
+        self.assertEqual(calls, ["dns", "fetch"])
+
+    def test_a_silent_router_with_working_internet_is_online(self):
+        result, _calls = self.check()
+        self.assertFalse(result.lan)
+        self.assertTrue(result.internet)
+        self.assertTrue(result.usable)
+        self.assertEqual(result.headline, "ONLINE")
+
+    def test_working_internet_without_an_ipv4_route_is_online(self):
+        result, _calls = self.check(gateway="")
+        self.assertTrue(result.usable)
+        self.assertEqual(result.headline, "ONLINE")
+
+    def test_a_login_page_behind_a_silent_router_is_still_reported_as_one(self):
+        result, _calls = self.check(http="portal")
+        self.assertTrue(result.usable)
+        self.assertEqual(result.headline, "LOGIN PAGE BLOCKS THE INTERNET")
+
+    def test_a_silent_router_and_nothing_else_working_is_a_failure(self):
+        result, _calls = self.check(dns=False, http="")
+        self.assertFalse(result.usable)
+        self.assertEqual(result.headline, "ROUTER DOES NOT ANSWER")
+
+    def test_no_route_and_nothing_working_is_no_local_network(self):
+        result, _calls = self.check(gateway="", dns=False, http="")
+        self.assertFalse(result.usable)
+        self.assertEqual(result.headline, "NO LOCAL NETWORK")
+
+    def test_a_missed_ping_is_a_note_not_a_failed_check(self):
+        lines = self.check()[0].lines()
+        self.assertEqual(len(lines), 3)
+        self.assertNotIn("FAILED", lines[0])
+        self.assertIn("NO PING ANSWER", lines[0])
+        self.assertIn("192.168.1.1", lines[0])
+        self.assertTrue(lines[1].endswith("OK") and lines[2].endswith("OK"))
+        self.assertLessEqual(max(len(line) for line in lines), 72)
+
+    def test_the_screen_lets_the_user_continue_when_only_the_ping_failed(self):
+        system = FakeSystem(
+            devices=[setup.NetworkDevice("enp2s0", "ethernet", "connected")],
+            results=[setup.Connectivity("192.168.1.1", False, True, True, False)],
+        )
+        ui = FakeUI("CONTINUE")
+        self.assertEqual(self.run_network(ui, system), "done")
+        self.assertEqual(ui.screens[-1]["choices"], ["CONTINUE"])
+        self.assertIn("ONLINE", ui.text())
+        self.assertNotIn("TRY AGAIN", ui.text())
+
+    def test_the_real_backend_does_not_skip_the_lookup_when_ping_fails(self):
+        system = setup.System()
+        seen = []
+
+        def run(args, **_kwargs):
+            seen.append(args[0])
+            if args[0] == "ip":
+                return mock.Mock(stdout="default via 192.168.1.1 dev wlan0\n", returncode=0)
+            return mock.Mock(stdout="", returncode=1 if args[0] == "ping" else 0)
+
+        body = mock.MagicMock()
+        body.__enter__.return_value.read.return_value = b"NetworkManager is online\n"
+        with mock.patch.object(setup.subprocess, "run", side_effect=run), \
+                mock.patch.object(setup.urllib.request, "urlopen", return_value=body):
+            result = system.connectivity()
+        self.assertEqual(seen, ["ip", "ping", "getent"])
+        self.assertTrue(result.usable and result.internet and not result.lan)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -381,27 +381,27 @@ class Connectivity:
 
     @property
     def headline(self) -> str:
-        if not self.gateway:
-            return "NO LOCAL NETWORK"
-        if not self.lan:
-            return "ROUTER DOES NOT ANSWER"
         if self.internet:
             return "ONLINE"
         if self.portal:
             return "LOGIN PAGE BLOCKS THE INTERNET"
-        return "LOCAL NETWORK ONLY"
+        if self.lan:
+            return "LOCAL NETWORK ONLY"
+        return "ROUTER DOES NOT ANSWER" if self.gateway else "NO LOCAL NETWORK"
 
     @property
     def usable(self) -> bool:
-        return self.lan
+        # Many routers ignore ping, so a missed ping alone never makes the network unusable.
+        return self.lan or self.internet or self.portal
 
     def lines(self) -> list[str]:
         def word(flag: bool) -> str:
             return "OK" if flag else "FAILED"
 
         where = f" ({self.gateway})" if self.gateway else ""
+        router = "OK" if self.lan else "NO PING ANSWER (THAT IS OK)" if self.usable else "FAILED"
         return [
-            f"LOCAL NETWORK{where}: {word(self.lan)}",
+            f"LOCAL NETWORK{where}: {router}",
             f"NAME LOOKUP: {word(self.dns)}",
             f"INTERNET: {word(self.internet)}",
         ]
@@ -412,11 +412,10 @@ def check_connectivity(
     resolves: Callable[[], bool], fetch: Callable[[], str],
 ) -> Connectivity:
     address = gateway()
-    if not address or not ping(address):
-        return Connectivity(address, False, False, False, False)
+    lan = bool(address) and ping(address)
     dns = resolves()
     page = fetch()
-    return Connectivity(address, True, dns, page == "ok", page == "portal")
+    return Connectivity(address, lan, dns, page == "ok", page == "portal")
 
 
 # --- display, sound, streaming -------------------------------------------

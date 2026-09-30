@@ -312,13 +312,13 @@ class ConnectivityTest(unittest.TestCase):
         self.assertTrue(result.usable)
 
     def test_no_gateway_means_no_local_network(self):
-        result = self.check(gateway="")
+        result = self.check(gateway="", dns=False, http="")
         self.assertFalse(result.lan)
         self.assertEqual(result.headline, "NO LOCAL NETWORK")
         self.assertFalse(result.usable)
 
     def test_unreachable_gateway(self):
-        result = self.check(ping=False)
+        result = self.check(ping=False, dns=False, http="")
         self.assertFalse(result.lan)
         self.assertFalse(result.usable)
 
