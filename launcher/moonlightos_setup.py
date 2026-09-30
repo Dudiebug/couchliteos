@@ -952,6 +952,12 @@ class SetupWizard:
         if not (snapshot or {}).get("adapter", {}).get("powered"):
             self.bluetooth_request("set_power", powered=True)
         self.bluetooth_request("start_scan")
+        try:
+            return self.search_and_pair(kind)
+        finally:
+            self.bluetooth_request("stop_scan")
+
+    def search_and_pair(self, kind: ControllerType) -> str | None:
         lines = ["PUT THE CONTROLLER IN PAIRING MODE:", *kind.instructions, "", "SEARCHING...  (B CANCELS)"]
         found = self.ui.wait("CONTROLLER", lines, lambda: bool(self.candidates(kind, strict=True)), 60)
         device = None
@@ -966,13 +972,12 @@ class SetupWizard:
                 labels + ["SEARCH AGAIN", "BACK"],
             )
             if index is not None and index == len(labels):
-                self.bluetooth_request("stop_scan")
                 return "again"
             if index is not None and index < len(labels):
                 device = others[index]
         if device is None:
-            self.bluetooth_request("stop_scan")
             return None
+        self.bluetooth_request("stop_scan")  # scanning shares the radio; pairing does not need it
         if not self.pair(device):
             choice = self.pick("PAIRING FAILED", ["THE CONTROLLER DID NOT PAIR.", "PUT IT BACK IN PAIRING MODE AND TRY AGAIN."], ["TRY AGAIN", "CONTINUE ANYWAY"])
             return "again" if choice == "TRY AGAIN" else FAILED
