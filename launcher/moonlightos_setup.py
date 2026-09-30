@@ -477,6 +477,24 @@ def paired_hosts(text: str) -> list[str]:
     return [names[index] for index in sorted(paired) if names.get(index)]
 
 
+def new_hosts(before: Sequence[str], after: Sequence[str]) -> list[str]:
+    return [host for host in after if host not in before]
+
+
+def pairing_help(host: str = "") -> list[str]:
+    """What to check when a pairing attempt saved nothing (an asleep or unreachable PC looks like this)."""
+    lines = [
+        "NO NEW GAMING PC WAS PAIRED. CHECK THESE, THEN TRY AGAIN:",
+        "1. THE GAMING PC IS ON AND AWAKE (WAKE IT IF IT WAS ASLEEP)",
+        "2. SUNSHINE IS RUNNING ON THE GAMING PC",
+        "3. THE GAMING PC AND THIS BOX ARE ON THE SAME NETWORK",
+        "4. YOU TYPED THE PIN INTO SUNSHINE'S PIN TAB IN TIME",
+    ]
+    if host:
+        lines.append(f"5. THE ADDRESS IS RIGHT: {host if len(host) <= 40 else host[:37] + '...'}")
+    return lines + ["", "PRESS A ON TRY AGAIN, OR B TO CONTINUE WITHOUT PAIRING."]
+
+
 # --- hardware gates: each one answers "can this PC do it, and if not why" --
 
 NO_BLUETOOTH_HINT = "PLUG IN A CONTROLLER BY USB"
@@ -748,6 +766,7 @@ class SetupWizard:
         self.state_path = state_path
         self.state: dict[str, str] = {}
         self.save_failed = False
+        self.pairing_host = ""
 
     # small helpers
     def pick(self, title: str, lines: list[str], choices: list[str], *, big: str | None = None) -> str | None:
@@ -802,18 +821,20 @@ class SetupWizard:
         if answer == "restart":
             self.state, index = {}, 0
             self.save_progress()
+        pending = order[index:]
         while True:
-            while index < len(order):
-                step = order[index]
+            for step in pending:
+                if self.state.get(step) == DONE:  # a finished step is never reopened or downgraded
+                    continue
                 self.state[step] = getattr(self, "step_" + step.replace("-", "_"))()
                 self.save_progress()
-                index += 1
+            pending = []
             choice = self.done_screen(order)
             if choice == "FINISH":
                 self.mark_complete()
                 return True
             if choice is not None:
-                index = next(i for i, step in enumerate(order) if self.state.get(step) != DONE)
+                pending = [step for step in order if self.state.get(step) != DONE]
 
     def welcome(self, *, resuming: bool, title: str) -> str:
         lines = [
@@ -1052,6 +1073,12 @@ class SetupWizard:
         if not (snapshot or {}).get("adapter", {}).get("powered"):
             self.bluetooth_request("set_power", powered=True)
         self.bluetooth_request("start_scan")
+        try:
+            return self.search_and_pair(kind)
+        finally:
+            self.bluetooth_request("stop_scan")
+
+    def search_and_pair(self, kind: ControllerType) -> str | None:
         lines = ["PUT THE CONTROLLER IN PAIRING MODE:", *kind.instructions, "", "SEARCHING...  (B CANCELS)"]
         found = self.ui.wait("CONTROLLER", lines, lambda: bool(self.candidates(kind, strict=True)), 60)
         device = None
@@ -1066,13 +1093,12 @@ class SetupWizard:
                 labels + ["SEARCH AGAIN", "BACK"],
             )
             if index is not None and index == len(labels):
-                self.bluetooth_request("stop_scan")
                 return "again"
             if index is not None and index < len(labels):
                 device = others[index]
         if device is None:
-            self.bluetooth_request("stop_scan")
             return None
+        self.bluetooth_request("stop_scan")  # scanning shares the radio; pairing does not need it
         if not self.pair(device):
             choice = self.pick("PAIRING FAILED", ["THE CONTROLLER DID NOT PAIR.", "PUT IT BACK IN PAIRING MODE AND TRY AGAIN."], ["TRY AGAIN", "CONTINUE ANYWAY"])
             return "again" if choice == "TRY AGAIN" else FAILED
@@ -1164,6 +1190,20 @@ class SetupWizard:
             note = ["NOT CHANGED: THE PICTURE WAS NOT CONFIRMED."]
 
     def choose_sound(self, sinks: Sequence[Any]) -> str:
+        """Play a tone per output. Only a tone the user heard may keep its output as the default."""
+        original = next((sink.id for sink in sinks if sink.default), None)
+        outcome = FAILED  # an error counts as "not heard" too
+        try:
+            outcome = self.try_outputs(sinks)
+            return outcome
+        finally:
+            if outcome != DONE and original is not None:
+                try:
+                    self.system.set_default_sink(original)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    pass
+
+    def try_outputs(self, sinks: Sequence[Any]) -> str:
         candidates = sound_candidates(sinks)
         position = 0
         while True:
@@ -1200,19 +1240,24 @@ class SetupWizard:
             "MOONLIGHT TALKS TO SUNSHINE ON YOUR GAMING PC. BOTH MUST BE ON THE SAME NETWORK.",
             "PAIRING NEEDS A 4 DIGIT PIN TYPED INTO SUNSHINE'S WEB PAGE ON THE PC.",
         ]
+        already = self.system.paired_hosts()
+        keep = "KEEP THE PC ALREADY PAIRED"
+        if already:
+            lines.append(bluetooth.safe_text("ALREADY PAIRED: " + ", ".join(already), 70))
+        choices = ["FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"] + ([keep] if already else []) + [SKIP]
         while True:
-            choice = self.pick(
-                "STREAMING PC", lines,
-                ["FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE", SKIP],
-            )
+            choice = self.pick("STREAMING PC", lines, choices)
+            if choice == keep:
+                return DONE
             if choice not in ("FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"):
                 return SKIPPED
+            self.pairing_host = ""
             paired = self.pair_in_moonlight() if choice.startswith("FIND") else self.pair_with_pin()
             if paired is None:
                 continue
             if paired:
                 return DONE
-            again = self.pick("NOT PAIRED YET", ["NO PAIRED GAMING PC WAS FOUND."], ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
+            again = self.pick("NOT PAIRED YET", pairing_help(self.pairing_host), ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
             if again != "TRY AGAIN":
                 return FAILED
 
@@ -1229,8 +1274,9 @@ class SetupWizard:
         )
         if choice != "OPEN MOONLIGHT":
             return None
+        before = list(self.system.paired_hosts())
         self.actions["launch"]("moonlight")
-        return bool(self.system.paired_hosts())
+        return bool(new_hosts(before, self.system.paired_hosts()))
 
     def pair_with_pin(self) -> bool | None:
         while True:
@@ -1241,6 +1287,7 @@ class SetupWizard:
             if host:
                 break
             self.notice("GAMING PC", ["THAT IS NOT A VALID ADDRESS OR NAME.", "USE LETTERS, NUMBERS, DOTS AND DASHES ONLY."])
+        self.pairing_host = host
         pin = new_pairing_pin()
         choice = self.pick(
             f"PAIR WITH {host}",
@@ -1254,9 +1301,11 @@ class SetupWizard:
         if choice != "START PAIRING":
             return None
         # The launcher reports a failed start when moonlight exits before it counts as ready,
-        # which is also what a quickly typed PIN looks like. Only the saved pairing is trusted.
+        # which is also what a quickly typed PIN looks like. Only a pairing saved by this
+        # attempt is trusted: an older one says nothing about the PC tried now.
+        before = list(self.system.paired_hosts())
         self.actions["pair_moonlight"](host, pin)
-        return bool(self.system.paired_hosts())
+        return bool(new_hosts(before, self.system.paired_hosts()))
 
     # 5. optional steps
     def open_step(self, step: str, intro: str, label: str, action: Callable[[], Any]) -> str:

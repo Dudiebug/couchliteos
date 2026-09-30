@@ -1001,10 +1001,24 @@ class GatePureFunctionsTest(unittest.TestCase):
 
 
 class StreamingFlowTest(WizardTestCase):
+    def pairing(self, system, *hosts):
+        """Actions that save `hosts` as paired while they run, the way Moonlight does."""
+        def launch(app_id):
+            self.calls.append(("launch", app_id))
+            system.hosts += hosts
+            return True
+
+        def pair(host, pin):
+            self.calls.append(("pair", host, pin))
+            system.hosts += hosts
+            return True
+
+        return {"launch": launch, "pair_moonlight": pair}
+
     def test_moonlight_is_opened_to_find_the_pc_and_the_pairing_is_checked(self):
-        system = FakeSystem(hosts=["DESKTOP-ABC"])
+        system = FakeSystem()
         ui = FakeUI("FIND MY GAMING PC", "OPEN MOONLIGHT")
-        self.assertEqual(self.wizard(ui, system).step_streaming(), "done")
+        self.assertEqual(self.wizard(ui, system, **self.pairing(system, "DESKTOP-ABC")).step_streaming(), "done")
         self.assertIn(("launch", "moonlight"), self.calls)
         text = ui.text().upper()
         self.assertIn("SUNSHINE", text)
@@ -1017,9 +1031,9 @@ class StreamingFlowTest(WizardTestCase):
     def test_the_pin_is_made_here_shown_large_and_passed_to_moonlight(self):
         self.texts = ["192.168.1.20"]
         ui = FakeUI("PAIR WITH A PIN", "START PAIRING")
-        system = FakeSystem(hosts=["DESKTOP-ABC"])
+        system = FakeSystem()
         with mock.patch.object(setup, "new_pairing_pin", return_value="0427"):
-            self.assertEqual(self.wizard(ui, system).step_streaming(), "done")
+            self.assertEqual(self.wizard(ui, system, **self.pairing(system, "DESKTOP-ABC")).step_streaming(), "done")
         self.assertIn(("pair", "192.168.1.20", "0427"), self.calls)
         shown = [screen for screen in ui.screens if screen["big"] == "0427"]
         self.assertEqual(len(shown), 1)
@@ -1031,15 +1045,15 @@ class StreamingFlowTest(WizardTestCase):
         # reports a failed start even though the host is paired.
         self.texts = ["192.168.1.20"]
         ui = FakeUI("PAIR WITH A PIN", "START PAIRING")
-        system = FakeSystem(hosts=["DESKTOP-ABC"])
-        wizard = self.wizard(ui, system, pair_moonlight=lambda host, pin: False)
+        system = FakeSystem()
+        wizard = self.wizard(ui, system, pair_moonlight=lambda host, pin: system.hosts.append("DESKTOP-ABC") or False)
         self.assertEqual(wizard.step_streaming(), "done")
 
     def test_an_unsafe_host_name_is_refused_and_asked_again(self):
         self.texts = ["bad host;rm", "gaming-pc"]
         ui = FakeUI("PAIR WITH A PIN", "OK", "START PAIRING")
-        system = FakeSystem(hosts=["PC"])
-        self.assertEqual(self.wizard(ui, system).step_streaming(), "done")
+        system = FakeSystem()
+        self.assertEqual(self.wizard(ui, system, **self.pairing(system, "PC")).step_streaming(), "done")
         self.assertEqual([call[1] for call in self.calls if call[0] == "pair"], ["gaming-pc"])
 
     def test_skipping_is_always_possible(self):
