@@ -347,5 +347,73 @@ class RdpMenuCursorTest(unittest.TestCase):
         self.assertEqual((len(pinned), len(unpinned)), (1, 1))
 
 
+class RdpConnectFeedbackTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_launcher()
+
+    def setup_settings(self, events):
+        module = self.module
+
+        class Keys(Screen):
+            def get_wch(self):
+                events.append("read")
+                raise RuntimeError("stop")
+
+        screen = Keys()
+        launcher = mock.Mock()
+        launcher.show_launch_failure.side_effect = lambda *_args: events.append("failure screen")
+        settings = module.RemoteDesktopSettings(screen, launcher)
+        connection = module.rdp.Connection(
+            id="rdp-pc", name="PC", host="10.0.0.2", username="me", certificate="ab" * 32,
+        )
+        app = module.apps.Application(
+            id="rdp-pc", name="PC", kind="rdp", connection="rdp-pc", status_id="rdp-pc",
+        )
+        return screen, settings, connection, app
+
+    def test_the_wait_says_it_is_connecting_and_presses_made_meanwhile_are_dropped(self):
+        module, events = self.module, []
+        screen, settings, connection, app = self.setup_settings(events)
+
+        def probe(_host, _port):
+            events.append("probe")
+            events.append("screen: " + " | ".join(screen.text()))
+            return connection.certificate
+
+        with mock.patch.object(module.rdp, "get_connection", return_value=connection), mock.patch.object(
+            module.rdp, "probe_certificate", side_effect=probe
+        ), mock.patch.object(module, "active_rdp_session", return_value=None), mock.patch.object(
+            module.curses, "flushinp", side_effect=lambda: events.append("flush"), create=True
+        ), mock.patch.object(module.curses, "curs_set"):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                settings.prepare_launch(app)  # stops at the password prompt
+        self.assertIn("CONNECTING", events[1])
+        # A press queued during the blocking call must not answer the password prompt.
+        self.assertEqual([e for e in events if e in ("probe", "flush", "read")], ["probe", "flush", "read"])
+
+    def test_presses_queued_while_the_pc_was_unreachable_do_not_dismiss_the_error(self):
+        module, events = self.module, []
+        _screen, settings, connection, app = self.setup_settings(events)
+        with mock.patch.object(module.rdp, "get_connection", return_value=connection), mock.patch.object(
+            module.rdp, "probe_certificate", side_effect=OSError("timed out")
+        ), mock.patch.object(module, "active_rdp_session", return_value=None), mock.patch.object(
+            module.curses, "flushinp", side_effect=lambda: events.append("flush"), create=True
+        ):
+            self.assertFalse(settings.prepare_launch(app))
+        self.assertEqual(events, ["flush", "failure screen"])
+
+    def test_presses_queued_during_the_saved_password_wait_are_dropped(self):
+        module, events = self.module, []
+        _screen, settings, _connection, _app = self.setup_settings(events)
+        with mock.patch.object(module.rdp, "submit_secret_request", return_value="id-1"), mock.patch.object(
+            module.rdp, "wait_secret_status", side_effect=lambda *a, **k: (events.append("wait"), (True, ""))[1]
+        ), mock.patch.object(
+            module.curses, "flushinp", side_effect=lambda: events.append("flush"), create=True
+        ), mock.patch.object(module, "RUN", pathlib.Path("/nonexistent")):
+            self.assertEqual(settings.password_request("stage", "rdp-pc"), (True, ""))
+        self.assertEqual(events, ["wait", "flush"])
+
+
 if __name__ == "__main__":
     unittest.main()

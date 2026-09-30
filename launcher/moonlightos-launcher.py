@@ -108,6 +108,14 @@ def read_key(screen: curses.window) -> int:
     return key
 
 
+def flush_input() -> None:
+    """Drop presses queued while the screen was frozen by a slow call."""
+    try:
+        curses.flushinp()
+    except curses.error:  # no terminal (unit tests)
+        pass
+
+
 def move_selection(selected: int, key: int, count: int) -> int:
     if key in (curses.KEY_UP, ord("k")):
         return (selected - 1) % count
@@ -1543,6 +1551,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
         request = RUN / rdp.SECRET_REQUEST.name
         request_id = rdp.submit_secret_request(operation, connection_id, password, request)
         ok, detail = rdp.wait_secret_status(request_id, path=RUN / rdp.SECRET_STATUS.name)
+        flush_input()  # up to 10 s of frozen screen: drop the presses made meanwhile
         if not ok:
             request.unlink(missing_ok=True)  # never leave a password waiting in /run
         return ok, detail
@@ -1632,15 +1641,18 @@ class RemoteDesktopSettings(ApplicationsSettings):
                 f"IT WITH {CLOSE_BUTTON}, OR WAIT FOR IT TO END.",
             )
             return False
-        self.status = "PLEASE WAIT"
-        self.draw(label, [f"CHECKING {connection.host}:{connection.port}"], None)
+        self.status = "CONNECTING...  CAN TAKE 15 SECONDS IF THE PC IS ASLEEP"
+        self.draw(label, [f"CONNECTING TO {connection.host}:{connection.port}"], None)
         try:
-            fingerprint = rdp.probe_certificate(connection.host, connection.port)
+            try:
+                fingerprint = rdp.probe_certificate(connection.host, connection.port)
+            finally:
+                self.status = ""
+                # The screen was frozen meanwhile: presses made then are not answers to what comes next.
+                flush_input()
         except (OSError, ssl.SSLError, ValueError) as error:
             self.launcher.show_launch_failure(label, f"COULD NOT REACH {connection.host}:{connection.port}: {error}")
             return False
-        finally:
-            self.status = ""
         if not connection.certificate:
             if not self.confirm_certificate(connection, fingerprint):
                 self.launcher.status = "CONNECTION CANCELLED"
