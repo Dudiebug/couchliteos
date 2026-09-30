@@ -726,4 +726,13 @@ rg -q '^install -D -m 0755 "\$ROOT/scripts/moonlightos-display-failed" "\$CHROOT
 rg -q 'moonlightos_confirm.py' build/configure.sh
 rg -q 'import moonlightos_confirm' launcher/moonlightos_bluetooth.py launcher/moonlightos-launcher.py
 
+# SETTINGS > NETWORK is the controller Wi-Fi menu; nmtui stays behind ADVANCED. The module never
+# starts a process or logs, so a Wi-Fi password cannot reach argv or a log through it.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/moonlightos_netmenu.py" "\$CHROOT/usr/libexec/moonlightos_netmenu.py"$' build/configure.sh
+rg -q '^import moonlightos_netmenu as netmenu$' launcher/moonlightos-launcher.py
+rg -q '"NETWORK": self.run_network,' launcher/moonlightos-launcher.py
+rg -Fq 'self.launch("network-setup")' launcher/moonlightos-launcher.py
+rg -q 'test_netmenu.py' launcher/Makefile
+refute rg -q 'subprocess|nmcli|os\.environ|logging' launcher/moonlightos_netmenu.py
+
 printf 'Static tests passed.\n'

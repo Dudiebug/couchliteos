@@ -198,15 +198,6 @@ class NetworkStatusTest(LauncherFixesTest):
         with mock.patch.object(self.module.subprocess, "run", side_effect=OSError("no ip")):
             self.assertEqual(self.module.network_summary(), "OFFLINE - SETTINGS > NETWORK")
 
-    def test_settings_network_opens_the_network_setup_app(self):
-        self.assertIn("NETWORK", self.module.SETTINGS_MENU)
-        launcher = self.launcher()
-        settings = self.module.Settings(Screen(), launcher)
-        settings.selected = self.module.SETTINGS_MENU.index("NETWORK")
-        with mock.patch.object(launcher, "launch_by_id", return_value=True) as launch:
-            self.assertTrue(settings.activate())
-        launch.assert_called_once_with("network-setup")
-
 
 class DisplayConfirmSaveTest(LauncherFixesTest):
     BEFORE = 'DP-1 "Dell Inc. DELL U2723QE ABC123"\n  Enabled: yes\n  Modes:\n    3840x2160 px, 60.000000 Hz (preferred, current)\n    1920x1080 px, 120.000000 Hz\n'
@@ -356,7 +347,6 @@ class SettingsLaunchStatusTest(LauncherFixesTest):
         for label, app_id in (
             ("TAILSCALE", "tailscale"),
             ("SYSTEM DIAGNOSTICS", "system-diagnostics"),
-            ("NETWORK", "network-setup"),
         ):
             with self.subTest(label=label):
                 launcher = self.launcher()
