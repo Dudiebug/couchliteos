@@ -25,6 +25,7 @@ import moonlightos_apps as apps
 import moonlightos_power as power
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
+import moonlightos_stream as stream
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -44,6 +45,7 @@ SETTINGS_MENU = (
     "SLEEP & SCREEN",
     "APPLICATIONS",
     "REMOTE DESKTOP",
+    "STREAMING",
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
     "SETUP WIZARD",
@@ -508,9 +510,10 @@ class Launcher:
         add_centered(self.screen, height - 3, "EXIT THE APP TO RETURN")
         self.screen.refresh()
 
-    def show_launch_failure(self, label: str, message: str) -> None:
+    def show_launch_failure(self, label: str, message: str, *, wake: bool = False) -> None:
         set_launcher_focus(True)
         self.screen.timeout(1000)
+        selected = 0
         while True:
             self.screen.erase()
             height, width = self.screen.getmaxyx()
@@ -518,12 +521,145 @@ class Launcher:
             add_centered(self.screen, max(2, height // 8), f"{label} FAILED TO START")
             rows = textwrap.wrap(message, width=max(8, width - 8)) or ["UNKNOWN ERROR"]
             first = max(6, height // 2 - len(rows) // 2)
-            for offset, row in enumerate(rows[: max(1, height - first - 5)]):
+            shown = rows[: max(1, height - first - 5)]
+            for offset, row in enumerate(shown):
                 add_centered(self.screen, first + offset, row)
-            add_centered(self.screen, height - 3, "ENTER OR ESC RETURNS TO LAUNCHER")
+            if wake:
+                for index, choice in enumerate(("WAKE PC", "BACK TO LAUNCHER")):
+                    add_centered(
+                        self.screen, first + len(shown) + 1 + index, f"{'>' if index == selected else ' '}  {choice}"
+                    )
+            add_centered(
+                self.screen, height - 3,
+                "UP/DOWN MOVES  ·  ENTER CHOOSES  ·  ESC RETURNS" if wake else "ENTER OR ESC RETURNS TO LAUNCHER",
+            )
             self.screen.refresh()
-            if read_key(self.screen) in (curses.KEY_ENTER, 10, 13, 27):
+            key = read_key(self.screen)
+            if wake:
+                selected = move_selection(selected, key, 2)
+            if key in (curses.KEY_ENTER, 10, 13):
+                if wake and selected == 0:
+                    self.wake_pc()
                 return
+            if key == 27:
+                return
+
+    def draw_wait(self, title: str, detail: str, hint: str) -> None:
+        self.screen.erase()
+        height, _width = self.screen.getmaxyx()
+        draw_border(self.screen)
+        add_centered(self.screen, max(2, height // 8), "MOONLIGHTOS")
+        center = max(6, height // 2 - 1)
+        add_centered(self.screen, center, title)
+        add_centered(self.screen, center + 2, detail)
+        add_centered(self.screen, height - 3, hint)
+        self.screen.refresh()
+
+    @staticmethod
+    def pressed(key: int) -> bool:
+        return key not in (-1, curses.KEY_RESIZE)
+
+    def wake_host(self, host: stream.Host, *, force: bool = False) -> str:
+        """Wake a sleeping gaming PC and wait up to 30 s; any key or button stops the wait.
+
+        Returns stream.wake_and_wait's result, or "nonetwork" without waiting when no link is up."""
+        if not stream.link_up():
+            return "nonetwork"
+
+        def tick(elapsed: float) -> bool:
+            self.draw_wait(
+                f"WAKING {host.label}...  {SPINNER[int(elapsed * 4) % len(SPINNER)]}",
+                f"{int(elapsed)} OF {int(stream.WAKE_TIMEOUT)} SECONDS",
+                "PRESS ANY BUTTON TO START WITHOUT WAITING",
+            )
+            return self.pressed(self.screen.getch())
+
+        self.screen.timeout(100)
+        try:
+            return stream.wake_and_wait(host, force=force, tick=tick)
+        finally:
+            self.screen.timeout(1000)
+
+    def wake_before_moonlight(self) -> None:
+        """Wake the gaming PC if it is asleep. Never blocks or fails the Moonlight launch."""
+        try:
+            host = stream.default_host(stream.load_hosts(), stream.load_settings())
+            if host is None or not host.mac:
+                return
+            if self.wake_host(host) == "nonetwork":
+                self.draw_wait(stream.NO_NETWORK, "STARTING MOONLIGHT WITHOUT WAKING THE PC", "")
+                self.screen.timeout(2000)
+                self.screen.getch()
+                self.screen.timeout(1000)
+        except (OSError, ValueError, curses.error, subprocess.SubprocessError):
+            pass
+
+    def offer_wake(self, app: apps.Application) -> bool:
+        """Moonlight problems offer WAKE PC, but only when a paired PC's MAC is known."""
+        return app.id == "moonlight" and any(host.mac for host in stream.load_hosts())
+
+    def wake_pc(self) -> None:
+        StreamingSettings(self.screen, self).wake_pc()
+
+    def wait_screen(self, title: str, seconds: float, until=None) -> str:
+        """A countdown any key or button cancels: "done" (`until()` turned true), "cancelled", or "timeout"."""
+        end = time.monotonic() + seconds
+        self.screen.timeout(100)
+        try:
+            try:
+                curses.flushinp()  # keys typed before the countdown must not cancel it
+            except curses.error:
+                pass
+            while True:
+                if until is not None and until():
+                    return "done"
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    return "timeout"
+                self.draw_wait(title, f"{int(remaining) + 1} SECONDS", "PRESS ANY BUTTON TO CANCEL")
+                if self.pressed(self.screen.getch()) or HOME_REQUEST.exists():
+                    HOME_REQUEST.unlink(missing_ok=True)
+                    return "cancelled"
+        finally:
+            self.screen.timeout(1000)
+
+    def autostream(self) -> bool:
+        """Start the chosen PC's stream (Settings > STREAMING) after a cancellable 5 s countdown.
+
+        Runs once setup is complete and nothing else is running; also meant to be called
+        after the system resumes from sleep. Returns True when the stream was started."""
+        try:
+            config = stream.load_settings()
+            if not config.autostart or not setup.MARKER.exists() or (RUN / "app-active").exists():
+                return False
+            host = stream.autostream_host(stream.load_hosts(), config)
+        except (OSError, ValueError):
+            return False
+        if host is None:
+            self.status = "STREAMING: THE SAVED PC IS NOT PAIRED ON THIS SYSTEM"
+            return False
+        if not stream.link_up():
+            result = self.wait_screen("WAITING FOR THE NETWORK...", 10, until=stream.link_up)
+            if result != "done":
+                self.status = "AUTO-STREAM CANCELLED" if result == "cancelled" else f"{stream.NO_NETWORK}; AUTO-STREAM SKIPPED"
+                return False
+        if self.wait_screen(f"STARTING STREAM TO {host.label}...", 5) != "timeout":
+            self.status = "AUTO-STREAM CANCELLED"
+            return False
+        app = self.app_by_id("moonlight")
+        if app is None:
+            self.status = "MOONLIGHT IS UNAVAILABLE"
+            return False
+        request = RUN / stream.STREAM_REQUEST.name
+        try:
+            stream.write_stream_request(host.target, config.app, request)
+        except (OSError, ValueError) as error:
+            self.status = f"AUTO-STREAM NOT STARTED: {error}".upper()
+            return False
+        try:
+            return self.launch_app(app)
+        finally:
+            request.unlink(missing_ok=True)
 
     @staticmethod
     def read_app_status(app_id: str) -> str:
@@ -560,6 +696,8 @@ class Launcher:
         state = RUN / f"{app_id}-status"
         if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
             return False
+        if app.id == "moonlight":
+            self.wake_before_moonlight()
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
         set_launcher_focus(False)  # the starting app takes the controller
@@ -594,7 +732,9 @@ class Launcher:
                     # App units retry after two seconds. A persistent failure for
                     # longer than that means retries have not recovered startup.
                     if now - failure_since >= 2.75:
-                        self.show_launch_failure(label, app_state.removeprefix("failed:").strip())
+                        self.show_launch_failure(
+                            label, app_state.removeprefix("failed:").strip(), wake=self.offer_wake(app)
+                        )
                         self.status = f"{label} FAILED TO START"
                         return False
                 else:
@@ -619,7 +759,7 @@ class Launcher:
             if last_state.startswith("failed:")
             else "THE APPLICATION DID NOT BECOME READY BEFORE THE STARTUP TIMEOUT"
         )
-        self.show_launch_failure(label, message)
+        self.show_launch_failure(label, message, wake=self.offer_wake(app))
         self.status = f"{label} START TIMED OUT"
         return False
 
@@ -777,6 +917,8 @@ class Launcher:
             self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
         self.setup_wizard()
+        self.autostream()
+        self.draw()
         while True:
             key = read_key(self.screen)
             if HOME_REQUEST.exists() or key == curses.KEY_HOME:
@@ -1144,6 +1286,7 @@ class Settings:
             "SLEEP & SCREEN": self.run_sleep_settings,
             "APPLICATIONS": self.run_applications,
             "REMOTE DESKTOP": self.run_remote_desktop,
+            "STREAMING": self.run_streaming,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
             "TAILSCALE": lambda: self.launch("tailscale"),
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
@@ -1307,6 +1450,9 @@ class Settings:
     def run_remote_desktop(self) -> None:
         RemoteDesktopSettings(self.screen, self.launcher).run()
         self.launcher.reload_applications()
+
+    def run_streaming(self) -> None:
+        StreamingSettings(self.screen, self.launcher).run()
 
     def run(self) -> None:
         self.refresh_outputs()
@@ -1964,6 +2110,160 @@ class RemoteDesktopSettings(ApplicationsSettings):
         choice = self.menu("VERIFY SERVER CERTIFICATE", rows, len(rows) - 1, len(rows) - 2)
         self.status = ""
         return choice == len(rows) - 2
+
+
+class StreamingSettings(RemoteDesktopSettings):
+    """Couch to game: start a stream at boot, wake the gaming PC, and tune the stream."""
+
+    TITLE = "STREAMING"
+    WAKE_RESULTS = {
+        "up": "{} IS ALREADY AWAKE AND ANSWERING.",
+        "woke": "{} IS AWAKE.",
+        "timeout": "{} DID NOT ANSWER WITHIN 30 SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
+        "cancelled": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
+        "sent": "WAKE REQUEST SENT TO {}. IT CAN TAKE A MINUTE TO START.",
+        "noaddr": "WAKE REQUEST NOT SENT: NO ADDRESS IS KNOWN FOR {}.",
+        "nonetwork": "NO NETWORK. CONNECT ETHERNET OR WI-FI, THEN TRY AGAIN.",
+        "nomac": stream.NO_MAC,
+    }
+
+    @staticmethod
+    def ident(host: stream.Host) -> str:
+        return host.uuid or host.name
+
+    def rows(self, hosts: list[stream.Host], config: stream.StreamSettings) -> list[str]:
+        host = stream.autostream_host(hosts, config)
+        pc = host.label if host else ("NOT PAIRED ON THIS SYSTEM" if config.host else "NOT CHOSEN")
+        if any(item.mac for item in hosts):
+            wake = "WAKE PC"
+        else:
+            wake = "WAKE PC  UNAVAILABLE: " + ("NO PC ADDRESS LEARNED YET" if hosts else "NO PC PAIRED")
+        return [
+            f"AUTO-STREAM AT STARTUP  {stream.autostart_label(hosts, config)}",
+            f"PC  {pc}",
+            f"APPLICATION  {config.app}",
+            wake,
+            "OPTIMIZE STREAM SETTINGS",
+            "BACK",
+        ]
+
+    def run(self) -> None:
+        selected = 0
+        self.status = "ENTER CHANGES A SETTING  ·  ESC RETURNS"
+        while True:
+            hosts, config = stream.load_hosts(), stream.load_settings()
+            rows = self.rows(hosts, config)
+            choice = self.menu(self.TITLE, rows, selected)
+            if choice is None or choice == len(rows) - 1:
+                return
+            selected = choice
+            if choice == 0:
+                self.toggle_autostart(config, hosts)
+            elif choice == 1:
+                self.choose_host(config, hosts)
+            elif choice == 2:
+                self.choose_app(config, stream.autostream_host(hosts, config))
+            elif choice == 3:
+                self.wake_pc()
+            else:
+                self.optimize()
+
+    def save(self, config: stream.StreamSettings) -> bool:
+        try:
+            stream.save_settings(config)
+        except (OSError, ValueError) as error:
+            self.message(self.TITLE, f"NOT SAVED: {error}".upper())
+            return False
+        return True
+
+    def pick_host(self, hosts: list[stream.Host], title: str = "CHOOSE A PC") -> stream.Host | None:
+        choice = self.menu(title, [host.label for host in hosts] + ["BACK"])
+        return hosts[choice] if choice is not None and choice < len(hosts) else None
+
+    def toggle_autostart(self, config: stream.StreamSettings, hosts: list[stream.Host]) -> None:
+        if config.autostart:
+            self.save(dataclasses.replace(config, autostart=False))  # the chosen PC stays saved
+            return
+        if not hosts:
+            self.message("AUTO-STREAM AT STARTUP", stream.PAIR_FIRST)
+            return
+        host = stream.autostream_host(hosts, config) or self.pick_host(hosts)
+        if host is not None:
+            self.save(dataclasses.replace(config, autostart=True, host=self.ident(host)))
+
+    def choose_host(self, config: stream.StreamSettings, hosts: list[stream.Host]) -> None:
+        if not hosts:
+            self.message(self.TITLE, stream.PAIR_FIRST)
+            return
+        host = self.pick_host(hosts)
+        if host is not None:
+            self.save(dataclasses.replace(config, host=self.ident(host)))
+
+    def choose_app(self, config: stream.StreamSettings, host: stream.Host | None) -> None:
+        names = list(host.apps) if host else []
+        choice = self.menu("APPLICATION TO STREAM", names + ["TYPE A NAME", "BACK"])
+        if choice is None or choice == len(names) + 1:
+            return
+        if choice < len(names):
+            name = names[choice]
+        else:
+            typed = self.text_input(self.TITLE, "APPLICATION NAME, AS MOONLIGHT SHOWS IT", stream.APP_MAX, initial=config.app)
+            if typed is None:
+                return
+            name = typed.strip()
+        if stream.valid_app(name):
+            self.save(dataclasses.replace(config, app=name))
+        else:
+            self.message(self.TITLE, "NOT SAVED: THE NAME IS EMPTY, TOO LONG, OR STARTS WITH A DASH.")
+
+    def wake_pc(self) -> None:
+        hosts, config = stream.load_hosts(), stream.load_settings()
+        if not hosts:
+            self.message("WAKE PC", stream.PAIR_FIRST)
+            return
+        host = stream.default_host(hosts, config) or self.pick_host(hosts, "WAKE WHICH PC?")
+        if host is None:
+            return
+        blocked = stream.wake_block(host)
+        if blocked:
+            self.message("WAKE PC", blocked)
+            return
+        try:
+            result = self.launcher.wake_host(host, force=True)
+        except OSError as error:
+            self.message("WAKE PC", f"WAKE FAILED: {error}".upper())
+            return
+        self.message("WAKE PC", self.WAKE_RESULTS.get(result, "{}").format(host.label))
+
+    def optimize(self) -> None:
+        title = "OPTIMIZE STREAM SETTINGS"
+        if stream.moonlight_running(RUN):
+            self.message(title, "CLOSE MOONLIGHT FIRST. IT WOULD OVERWRITE THE NEW SETTINGS WHEN IT EXITS.")
+            return
+        try:
+            output = display.active_output(display.query_outputs())
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            output = None
+        mode = output.current_mode if output else None
+        if mode is None:
+            self.message(title, "NO DISPLAY MODE WAS DETECTED. NOTHING WAS CHANGED.")
+            return
+        if not stream.link_up():
+            self.message(
+                title, "NO NETWORK LINK. CONNECT ETHERNET OR WI-FI SO IT CAN BE MEASURED. NOTHING WAS CHANGED."
+            )
+            return
+        host = stream.default_host(stream.load_hosts(), stream.load_settings())
+        addresses = host.lan_addresses() if host else []
+        self.draw(title, ["MEASURING THE NETWORK...", "THIS TAKES ABOUT TEN SECONDS"], None)
+        network = stream.measure_network(addresses[0][0] if addresses else None)
+        plan = stream.plan_settings(mode.width, mode.height, mode.refresh_mhz, network)
+        try:
+            stream.apply_plan(plan, run_dir=RUN)
+        except (OSError, stream.StreamError) as error:
+            self.message(title, f"NOT CHANGED: {error}".upper())
+            return
+        self.message("STREAM SETTINGS APPLIED", "\n".join(stream.summary_lines(mode.argument, plan, network)))
 
 
 def main(screen: curses.window) -> None:
