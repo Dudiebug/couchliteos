@@ -165,6 +165,39 @@ def network_summary() -> str:
     return f"{address}  {state}"
 
 
+LIVE_DIR = pathlib.Path("/run/live")
+LIVE_WARNING = "LIVE MODE: SETTINGS WILL NOT BE SAVED"
+
+
+def state_is_persistent(findmnt_output: str) -> bool:
+    """Judge `findmnt -n -o SOURCE,FSTYPE,OPTIONS --target /var/lib/moonlightos`.
+
+    Saved settings survive only when that directory is a bind mount from a
+    real partition (live-boot persistence) or sits on an overlay whose upper
+    layer lives under /run/live/persistence. The plain live overlay, tmpfs and
+    the squashfs loop device do not count.
+    """
+    if "/run/live/persistence/" in findmnt_output:
+        return True
+    source = findmnt_output.split()[0] if findmnt_output.split() else ""
+    return source.startswith("/dev/") and not source.startswith(("/dev/loop", "/dev/ram", "/dev/zram"))
+
+
+def live_mode_warning(live_dir: pathlib.Path = LIVE_DIR) -> str:
+    """Return the banner text when booted live without working persistence."""
+    if not live_dir.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["findmnt", "-n", "-o", "SOURCE,FSTYPE,OPTIONS", "--target", "/var/lib/moonlightos"],
+            text=True, capture_output=True, check=False, timeout=3,
+        )
+        output = result.stdout
+    except (OSError, subprocess.SubprocessError):
+        output = ""
+    return "" if state_is_persistent(output) else LIVE_WARNING
+
+
 def bluetooth_summary() -> str:
     try:
         adapter = bluetooth.BluetoothClient().snapshot().get("adapter")
@@ -255,6 +288,7 @@ class Launcher:
         self.screen = screen
         self.selected = 0
         self.status = network_summary()
+        self.live_warning = live_mode_warning()
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
@@ -316,7 +350,10 @@ class Launcher:
             except curses.error:
                 pass
 
-        add_centered(self.screen, max(row + 2, height - 4), self.status)
+        status_row = max(row + 2, height - 4)
+        add_centered(self.screen, status_row, self.status)
+        if self.live_warning:
+            add_centered(self.screen, status_row + 1, self.live_warning)
         self.screen.refresh()
 
     def draw_launching(self, label: str, frame: str) -> None:
