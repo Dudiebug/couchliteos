@@ -32,6 +32,7 @@ class Codes:
     KEY_ENTER = 28
     KEY_ESC = 1
     KEY_HOME = 102
+    KEY_HOMEPAGE = 172
     KEY_DELETE = 111
     KEY_F5 = 63
     KEY_F6 = 64
