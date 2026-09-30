@@ -643,12 +643,26 @@ class LauncherTest(unittest.TestCase):
     def test_choosing_sleep_asks_systemd_to_suspend_through_the_request_file(self):
         launcher = self.launcher()
         launcher.selected = [action for _label, action in launcher.menu].index("suspend")
+        launcher.screen = Screen([self.module.curses.KEY_DOWN, 10])  # SLEEP asks first; answer YES
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             self.module, "RUN", pathlib.Path(directory)
         ):
             launcher.activate()
             self.assertTrue((pathlib.Path(directory) / "suspend").exists())
         self.assertIn("SLEEP", launcher.status)
+
+    def test_sleep_asks_first_and_defaults_to_no(self):
+        down = self.module.curses.KEY_DOWN
+        self.assertEqual(self.power_request("suspend", [10])[0], [])  # a stray A answers NO
+        self.assertEqual(self.power_request("suspend", [27])[0], [])
+        self.assertEqual(self.power_request("suspend", [down, 10])[0], ["suspend"])
+
+    def test_sleep_on_a_pc_that_cannot_sleep_explains_instead_of_asking(self):
+        self.can_suspend.return_value = False
+        with mock.patch.object(self.module.confirmation, "confirm") as ask:
+            files, _text = self.power_request("suspend", [])
+        ask.assert_not_called()
+        self.assertEqual(files, [])
 
     def test_controller_delete_key_corrects_text_already_in_a_field(self):
         # Y/Square arrives as KEY_DC; a prefilled port or host could not be edited before.

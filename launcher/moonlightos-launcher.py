@@ -914,7 +914,9 @@ class Launcher:
                 self.status = "REBOOTING..." if action == "reboot" else "SHUTTING DOWN..."
                 self.request(action)
         elif action == "suspend":
-            self.request_sleep()
+            # A PC that cannot sleep gets the explanation from request_sleep, not a question.
+            if not self.can_sleep or confirmation.confirm(self.screen, "SLEEP NOW?"):
+                self.request_sleep()
 
     def setup_wizard(self, *, force: bool = False) -> None:
         actions = {
