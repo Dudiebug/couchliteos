@@ -20,6 +20,7 @@ import moonlightos_rdp as rdp
 RUN = pathlib.Path("/run/moonlightos")
 REQUEST = RUN / "launch-app.request"
 READY_SECONDS = 5.0
+FOOT = "/usr/libexec/moonlightos-foot"  # picks the font size for the screen, then runs foot
 # sdl-freerdp3 exit statuses (FreeRDP 3.15 client/SDL/SDL3/sdl_freerdp.cpp).
 RDP_NORMAL_EXITS = {0, 1, 2, 3, 4, 5, 11}
 RDP_FINAL_EXITS = {
@@ -106,7 +107,7 @@ def command_vector(app: apps.Application) -> list[str]:
         raise ValueError(f"invalid command arguments: {error}") from error
     command = [app.command, *arguments]
     if app.terminal:
-        return ["/usr/bin/foot", "--fullscreen", "--title", app.name, "--", *command]
+        return [FOOT, "--fullscreen", "--title", app.name, "--", *command]
     return command
 
 

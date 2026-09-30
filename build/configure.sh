@@ -79,6 +79,7 @@ install -D -m 0644 "$ROOT/launcher/moonlightos_audio.py" "$CHROOT/usr/libexec/mo
 install -D -m 0644 "$ROOT/launcher/moonlightos_support.py" "$CHROOT/usr/libexec/moonlightos_support.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_bluetooth.py" "$CHROOT/usr/libexec/moonlightos_bluetooth.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_listview.py" "$CHROOT/usr/libexec/moonlightos_listview.py"
+install -D -m 0755 "$ROOT/launcher/moonlightos_foot.py" "$CHROOT/usr/libexec/moonlightos-foot"
 install -D -m 0755 "$ROOT/scripts/moonlightos-bluetoothd" "$CHROOT/usr/libexec/moonlightos-bluetoothd"
 install -D -m 0755 "$ROOT/scripts/moonlightos-osk-session" "$CHROOT/usr/libexec/moonlightos-osk-session"
 install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale-ui" "$CHROOT/usr/bin/moonlightos-tailscale-ui"

@@ -24,7 +24,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(runner.command_vector(self.app(arguments="1 'two words'")), ["/bin/sleep", "1", "two words"])
         self.assertEqual(
             runner.command_vector(self.app(terminal=True))[:6],
-            ["/usr/bin/foot", "--fullscreen", "--title", "DEMO", "--", "/bin/sleep"],
+            ["/usr/libexec/moonlightos-foot", "--fullscreen", "--title", "DEMO", "--", "/bin/sleep"],
         )
 
     def test_environment_is_applied_without_losing_base_environment(self):
