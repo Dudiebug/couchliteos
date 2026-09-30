@@ -725,6 +725,8 @@ rg -q '^install -D -m 0755 "\$ROOT/scripts/moonlightos-display-failed" "\$CHROOT
 
 rg -q 'moonlightos_confirm.py' build/configure.sh
 rg -q 'import moonlightos_confirm' launcher/moonlightos_bluetooth.py launcher/moonlightos-launcher.py
+rg -q 'moonlightos_controls.py' build/configure.sh
+rg -q 'import moonlightos_controls' launcher/moonlightos-launcher.py
 
 # Scrolling menus (720p terminals show ~18 rows) need their helper in the image.
 rg -q 'moonlightos_listview.py' build/configure.sh

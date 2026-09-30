@@ -33,6 +33,7 @@ import moonlightos_update as update
 import moonlightos_errors as errors
 import moonlightos_confirm as confirmation
 import moonlightos_whatsnew as whatsnew
+import moonlightos_controls as controls
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -58,6 +59,7 @@ SETTINGS_MENU = (
     "TAILSCALE",
     "TV CONTROL",
     "CHECK FOR UPDATES",
+    "CONTROLLER BUTTONS",
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
@@ -1068,6 +1070,7 @@ class Launcher:
         self.draw()
         whatsnew.show_once(self.screen, read_key)  # before the wizard: only upgraders see it
         self.setup_wizard()
+        controls.show_once(self.screen)
         self.autostream()
         self.draw()
         while True:
@@ -1460,6 +1463,7 @@ class Settings:
             "TAILSCALE": lambda: self.launch("tailscale"),
             "TV CONTROL": self.run_tv_control,
             "CHECK FOR UPDATES": self.toggle_updates,
+            "CONTROLLER BUTTONS": lambda: controls.show(self.screen),
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launch("system-diagnostics"),
