@@ -953,11 +953,14 @@ class Settings:
 
     def run_audio(self) -> None:
         selected = 0
+        result = ""  # outcome of the last change, shown on the redraw
         while True:
             try:
                 sinks = audio.query_sinks()
                 rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks] + ["BACK"]
-                self.status = "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
+                self.status = result or (
+                    "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
+                )
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 sinks = []
                 rows = ["BACK"]
@@ -972,9 +975,9 @@ class Settings:
                 continue
             try:
                 audio.set_default(sinks[selected].id)
-                self.status = f"DEFAULT OUTPUT: {sinks[selected].name}"
+                result = f"DEFAULT OUTPUT: {sinks[selected].name}"
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                self.status = f"OUTPUT NOT CHANGED: {error}"
+                result = f"OUTPUT NOT CHANGED: {error}"
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()

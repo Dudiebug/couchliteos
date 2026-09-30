@@ -324,6 +324,31 @@ class LauncherTest(unittest.TestCase):
             self.assertFalse((run / "rdp.request").exists())
             self.assertFalse((run / "rdp-session.secret").exists())
 
+    def audio_statuses(self, set_default):
+        """Status line shown at every draw of the audio output screen."""
+        settings = self.module.Settings(Screen([10, 27]), self.launcher())
+        statuses = []
+        settings.draw = lambda *_args, **_kwargs: statuses.append(settings.status)
+        sinks = [self.module.audio.Sink(7, "HDMI OUTPUT", False)]
+        with mock.patch.object(self.module.audio, "query_sinks", return_value=sinks), mock.patch.object(
+            self.module.audio, "set_default", side_effect=set_default
+        ) as chosen:
+            settings.run_audio()
+        chosen.assert_called_once_with(7)
+        return statuses
+
+    def test_audio_output_failure_is_shown(self):
+        def refuse(_sink_id):
+            raise RuntimeError("wpctl could not switch")
+
+        statuses = self.audio_statuses(refuse)
+        self.assertEqual(len(statuses), 2)
+        self.assertIn("OUTPUT NOT CHANGED: wpctl could not switch", statuses[-1])
+
+    def test_audio_output_success_is_shown(self):
+        statuses = self.audio_statuses(lambda _sink_id: None)
+        self.assertIn("DEFAULT OUTPUT: HDMI OUTPUT", statuses[-1])
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")
