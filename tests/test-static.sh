@@ -780,7 +780,7 @@ rg -Uq 'whatsnew\.show_once\(self\.screen, read_key\)[^\n]*\n\s+self\.setup_wiza
 rg -q 'update\.VERSION_FILES' launcher/couchliteos_whatsnew.py
 rg -q 'setup\.MARKER\.parent / "whatsnew-seen"' launcher/couchliteos_whatsnew.py
 # The notice names the old product once, on a line the rename script leaves alone.
-test "$(rg -c 'MOONLIGHTOS IS NOW CALLED COUCHLITEOS\. SAME SYSTEM.*# rename:keep$' launcher/moonlightos_whatsnew.py)" = 1  # rename:keep
+test "$(rg -c 'MOONLIGHTOS IS NOW CALLED COUCHLITEOS\. SAME SYSTEM.*# rename:keep$' launcher/couchliteos_whatsnew.py)" = 1  # rename:keep
 # Easier everyday use: gaming PC status line under the title (the probe runs in a thread)
 rg -q 'couchliteos_pcstatus.py' build/configure.sh
 rg -q '^import couchliteos_pcstatus as pcstatus' launcher/couchliteos-launcher.py
