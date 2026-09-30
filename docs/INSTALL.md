@@ -90,18 +90,27 @@ Installation is preferred. For testing, create an ext4 partition labeled
 /var/log/moonlightos source=moonlightos-logs
 /var/lib/tailscale source=tailscale-state
 /var/lib/bluetooth source=bluetooth-state
+/etc/NetworkManager/system-connections source=nm-connections
 ```
 
-Do not pre-create those four source directories empty. On the first persistent
+Do not pre-create those five source directories empty. On the first persistent
 boot, `live-boot` creates each directory and bootstraps it from the matching
 image directory with matching ownership and permissions. After boot, verify:
 
 ```bash
 findmnt /var/lib/moonlightos /var/log/moonlightos \
-  /var/lib/tailscale /var/lib/bluetooth
+  /var/lib/tailscale /var/lib/bluetooth /etc/NetworkManager/system-connections
 stat -c '%U:%G %a %n' /var/lib/moonlightos /var/log/moonlightos \
-  /var/lib/tailscale /var/lib/bluetooth
+  /var/lib/tailscale /var/lib/bluetooth /etc/NetworkManager/system-connections
 ```
+
+The NetworkManager line makes saved Wi-Fi networks survive a reboot. Its
+directory must show `root:root 700` so the unprivileged launcher user cannot
+read the saved passwords. A persistence partition made before this line
+existed keeps working, but forgets Wi-Fi at every reboot until you add the
+line to its `persistence.conf` (mount the partition, append the line, and let
+the next boot create the source directory). Installed systems need no change:
+their `/etc` already persists.
 
 The ISO's default entry already passes `persistence`; the explicit
 `No Persistence` entry ignores the backend. Do not use an

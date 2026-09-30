@@ -35,6 +35,7 @@ cat > "$work/root/persistence.conf" <<'EOF'
 /var/log/moonlightos source=moonlightos-logs
 /var/lib/tailscale source=tailscale-state
 /var/lib/bluetooth source=bluetooth-state
+/etc/NetworkManager/system-connections source=nm-connections
 EOF
 if command -v mke2fs >/dev/null; then
   truncate -s 768M "$work/persistence.img"

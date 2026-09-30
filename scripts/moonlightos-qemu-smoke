@@ -103,6 +103,7 @@ case $mode in
     install -D -m 0640 /dev/null /var/lib/moonlightos/home/.config/chiaki-qemu/state
     install -D -m 0600 /dev/null /var/lib/tailscale/qemu-state
     install -D -m 0600 /dev/null /var/lib/bluetooth/qemu-state
+    install -D -m 0600 /dev/null /etc/NetworkManager/system-connections/qemu-state
     install -D -m 0640 /dev/null /var/log/moonlightos/qemu-state
     sync
     echo MOONLIGHTOS_SMOKE_LIVE_PERSISTENCE_WRITTEN
@@ -114,6 +115,8 @@ case $mode in
     test -f /var/lib/moonlightos/home/.config/chiaki-qemu/state
     test -f /var/lib/tailscale/qemu-state
     test -f /var/lib/bluetooth/qemu-state
+    test -f /etc/NetworkManager/system-connections/qemu-state
+    [[ $(stat -c '%U:%G:%a' /etc/NetworkManager/system-connections) == root:root:700 ]]
     test -f /var/log/moonlightos/qemu-state
     verify_rdp_state
     echo MOONLIGHTOS_SMOKE_LIVE_PERSISTENCE_READY
@@ -128,6 +131,7 @@ case $mode in
     test ! -e /var/lib/moonlightos/home/.config/chiaki-qemu/state
     test ! -e /var/lib/tailscale/qemu-state
     test ! -e /var/lib/bluetooth/qemu-state
+    test ! -e /etc/NetworkManager/system-connections/qemu-state
     test ! -e /var/log/moonlightos/qemu-state
     rdp_state_absent
     echo MOONLIGHTOS_SMOKE_LIVE_PERSISTENCE_IGNORED

@@ -59,6 +59,9 @@ chmod 0640 /var/lib/moonlightos/config.ini
 install -d -o root -g root -m 0700 /var/lib/moonlightos/rdp-secrets
 
 install -d -o root -g root -m 0700 /var/lib/tailscale
+# Saved Wi-Fi keyfiles: root-only, so the copy live-boot persists (it keeps the
+# image directory's mode) is never readable by the moonlightos user.
+install -d -o root -g root -m 0700 /etc/NetworkManager/system-connections
 cat > /etc/apt/sources.list.d/tailscale.list <<'EOF'
 deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian trixie main
 EOF
