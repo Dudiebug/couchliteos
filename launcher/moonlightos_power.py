@@ -5,15 +5,27 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 CONFIG = pathlib.Path("/var/lib/moonlightos/config.ini")
 # Present only when QEMU passes the smoke-test flag (scripts/moonlightos-qemu-smoke).
 SMOKE_FLAG = pathlib.Path("/sys/firmware/qemu_fw_cfg/by_name/opt/moonlightos.smoke/raw")
 NET = pathlib.Path("/sys/class/net")
+STATE = pathlib.Path("/sys/power/state")
+USB = pathlib.Path("/sys/bus/usb/devices")
+# Written as root (by udev, see 75-moonlightos-wakeup.rules): reading a NIC's Wake-on-LAN
+# support needs CAP_NET_ADMIN, which the launcher does not have.
+WOL_DIR = pathlib.Path("/run/moonlightos-hardware/wake-on-lan")
+ETHTOOL = "/usr/sbin/ethtool"
+LOGIND_CAN_SUSPEND = (
+    "busctl", "--system", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
+    "org.freedesktop.login1.Manager", "CanSuspend",
+)
 
 BLANK_CHOICES = (0, 2, 5, 10, 15, 30)  # minutes; 0 is off
 SLEEP_CHOICES = (0, 15, 30, 60, 120)
@@ -114,12 +126,54 @@ def smoke_test_active(flag: pathlib.Path = SMOKE_FLAG) -> bool:
     return flag.exists()
 
 
-def wired_mac(root: pathlib.Path = NET) -> str | None:
-    """MAC of the first physical Ethernet adapter, for waking the box with Wake-on-LAN."""
+def suspend_supported(logind: str | None, state: str | None) -> bool:
+    """Can this machine suspend? Decided from logind's CanSuspend answer and /sys/power/state.
+
+    "yes" and "challenge" both mean the hardware can ("challenge" only says the asking
+    user would have to authenticate; the real suspend runs as root). "na" means it cannot.
+    Anything else ("no", or no answer) describes the caller's rights or a missing bus, not
+    the machine, so the kernel's own list of sleep states decides. The live image has no
+    polkit, so the launcher's non-root CanSuspend call normally ends up here.
+    """
+    if logind in ("yes", "challenge"):
+        return True
+    if logind == "na":
+        return False
+    return bool({"mem", "freeze"} & set((state or "").split()))
+
+
+def logind_can_suspend(run=subprocess.run) -> str | None:
+    try:
+        result = run(LOGIND_CAN_SUSPEND, capture_output=True, text=True, timeout=3, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.fullmatch(r's "(yes|no|na|challenge)"\s*', result.stdout or "")
+    return match.group(1) if match else None
+
+
+def can_suspend(run=subprocess.run, state_path: pathlib.Path = STATE) -> bool:
+    try:
+        state = state_path.read_text()
+    except OSError:
+        state = None
+    return suspend_supported(logind_can_suspend(run), state)
+
+
+def effective_settings(settings: Settings, suspend_ok: bool) -> Settings:
+    """What to act on. A sleep timeout saved on a PC that can suspend is ignored here,
+    not erased, so it applies again when the stick goes back to that PC."""
+    return settings if suspend_ok else replace(settings, sleep=0)
+
+
+def wired_adapters(root: pathlib.Path = NET) -> list[tuple[str, str]]:
+    """(interface, MAC) of each physical Ethernet adapter."""
     try:
         names = sorted(path.name for path in root.iterdir())
     except OSError:
-        return None
+        return []
+    found = []
     for name in names:
         nic = root / name
         try:
@@ -131,8 +185,84 @@ def wired_mac(root: pathlib.Path = NET) -> str | None:
         except OSError:
             continue
         if re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", address) and address != "00:00:00:00:00:00":
-            return address.upper()
-    return None
+            found.append((name, address.upper()))
+    return found
+
+
+def wired_mac(root: pathlib.Path = NET) -> str | None:
+    adapters = wired_adapters(root)
+    return adapters[0][1] if adapters else None
+
+
+def wol_magic_supported(ethtool_output: str) -> bool:
+    """True when ethtool lists magic packet ('g') under "Supports Wake-on"."""
+    match = re.search(r"^\s*Supports Wake-on:[ \t]*(\S+)", ethtool_output, re.MULTILINE)
+    return bool(match) and "g" in match.group(1)
+
+
+def _wol_file(state: pathlib.Path, mac: str) -> pathlib.Path:
+    return state / mac.lower().replace(":", "-")
+
+
+def probe_wake_on_lan(root: pathlib.Path = NET, state: pathlib.Path = WOL_DIR, run=subprocess.run) -> None:
+    """Run as root: record, per adapter MAC, whether it can wake on a magic packet."""
+    for name, mac in wired_adapters(root):
+        try:
+            result = run([ETHTOOL, name], capture_output=True, text=True, timeout=5, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        state.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".wol.", dir=state)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write("magic\n" if wol_magic_supported(result.stdout) else "none\n")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, _wol_file(state, mac))
+
+
+def wake_on_lan(root: pathlib.Path = NET, state: pathlib.Path = WOL_DIR) -> tuple[str, str | None]:
+    """("supported", MAC) for the first wired adapter that can wake on a magic packet;
+    otherwise "unsupported", "unknown" (not probed) or "none" (no wired adapter), with no MAC."""
+    adapters = wired_adapters(root)
+    if not adapters:
+        return "none", None
+    answers = []
+    for _name, mac in adapters:
+        try:
+            answers.append((mac, _wol_file(state, mac).read_text().strip()))
+        except OSError:
+            pass
+    for mac, answer in answers:
+        if answer == "magic":
+            return "supported", mac
+    return ("unsupported", None) if answers else ("unknown", None)
+
+
+def wake_sources(root: pathlib.Path = USB) -> list[str]:
+    """USB Bluetooth adapters and keyboards whose wakeup is switched on (by the udev rule)."""
+    try:
+        names = sorted(path.name for path in root.iterdir())
+    except OSError:
+        return []
+    found = set()
+
+    def read(path: pathlib.Path) -> str:
+        try:
+            return path.read_text().strip().lower()
+        except OSError:
+            return ""
+
+    for name in names:
+        entry = root / name
+        if ":" in name:
+            klass, protocol = read(entry / "bInterfaceClass"), read(entry / "bInterfaceProtocol")
+        else:
+            klass, protocol = read(entry / "bDeviceClass"), ""
+        kind = "BLUETOOTH ADAPTER" if klass == "e0" else "USB KEYBOARD" if (klass, protocol) == ("03", "01") else None
+        if kind and read(root / name.split(":")[0] / "power" / "wakeup") == "enabled":
+            found.add(kind)
+    return [kind for kind in ("BLUETOOTH ADAPTER", "USB KEYBOARD") if kind in found]
 
 
 class IdleTimer:
@@ -247,3 +377,16 @@ class IdleGuard:
                 return self._wake(now)
             self._poll(screen)
         return -1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args == ["wake-on-lan"]:
+        probe_wake_on_lan()
+        return 0
+    print("usage: moonlightos_power.py wake-on-lan", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

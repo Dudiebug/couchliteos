@@ -12,6 +12,8 @@ import time
 
 from evdev import InputDevice, UInput, ecodes
 
+import moonlightos_power as power
+
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
         ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8]
@@ -91,14 +93,20 @@ def is_home_event(event) -> bool:
 
 
 class HomeHold:
-    """Watches Home/Guide for a long press (a short press is handled on press as before)."""
+    """Watches Home/Guide for a long press (a short press is handled on press as before).
+
+    Self-contained: call feed() for every key event, due() each time round the event loop
+    (act when it returns True), timeout() for the select() wait, and reset() when a pad goes away.
+    """
+
+    CODES = frozenset({ecodes.KEY_HOME, ecodes.BTN_MODE, ecodes.KEY_HOMEPAGE})
 
     def __init__(self, threshold: float = SLEEP_HOLD_SECONDS) -> None:
         self.threshold = threshold
         self.pressed: dict[int, float] = {}
 
     def feed(self, event, now: float) -> None:
-        if event.type != ecodes.EV_KEY or event.code not in {ecodes.KEY_HOME, ecodes.BTN_MODE}:
+        if event.type != ecodes.EV_KEY or event.code not in self.CODES:
             return
         if event.value == 1:
             self.pressed[event.code] = now
@@ -124,7 +132,9 @@ class HomeHold:
 
 
 def request_sleep() -> None:
-    SLEEP_REQUEST.touch()
+    # Checked when it happens: the stick may have moved to a PC that cannot suspend.
+    if power.can_suspend():
+        SLEEP_REQUEST.touch()
 
 
 def request_home() -> None:

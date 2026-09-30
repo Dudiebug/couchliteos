@@ -32,6 +32,7 @@ class Codes:
     KEY_ENTER = 28
     KEY_ESC = 1
     KEY_HOME = 102
+    KEY_HOMEPAGE = 172
     KEY_DELETE = 111
     KEY_F5 = 63
     KEY_F6 = 64
@@ -109,6 +110,15 @@ class GamepadMappingTest(unittest.TestCase):
         hold.feed(self.event(Codes.BTN_MODE, 0), 104.0)
         self.assertFalse(hold.due(110.0))
 
+    def test_the_homepage_key_counts_as_home_for_the_hold_too(self):
+        hold = self.hold()
+        hold.feed(self.event(Codes.KEY_HOMEPAGE, 1), 40.0)
+        self.assertFalse(hold.due(42.9))
+        self.assertTrue(hold.due(43.0))
+        hold.feed(self.event(Codes.KEY_HOMEPAGE, 1), 50.0)
+        hold.feed(self.event(Codes.KEY_HOMEPAGE, 0), 51.0)
+        self.assertFalse(hold.due(60.0))
+
     def test_a_short_press_never_requests_sleep(self):
         hold = self.hold()
         hold.feed(self.event(Codes.KEY_HOME, 1), 10.0)
@@ -144,16 +154,25 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertEqual(hold.timeout(9.0), 1.0)
         self.assertFalse(hold.due(99.0))
 
-    def test_request_sleep_touches_the_suspend_request(self):
+    def request_sleep_with(self, can_suspend):
         import tempfile
+        from unittest import mock
         with tempfile.TemporaryDirectory() as directory:
             request = pathlib.Path(directory) / 'suspend'
             old, self.module.SLEEP_REQUEST = self.module.SLEEP_REQUEST, request
             try:
-                self.module.request_sleep()
+                with mock.patch.object(self.module.power, "can_suspend", return_value=can_suspend) as check:
+                    self.module.request_sleep()
             finally:
                 self.module.SLEEP_REQUEST = old
-            self.assertTrue(request.exists())
+            check.assert_called_once_with()
+            return request.exists()
+
+    def test_request_sleep_touches_the_suspend_request(self):
+        self.assertTrue(self.request_sleep_with(True))
+
+    def test_long_press_does_not_request_sleep_on_hardware_that_cannot_suspend(self):
+        self.assertFalse(self.request_sleep_with(False))
 
 
 if __name__ == "__main__":

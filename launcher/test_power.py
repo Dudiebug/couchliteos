@@ -1,4 +1,7 @@
+import contextlib
+import io
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -326,6 +329,221 @@ class SmokeAndMacTest(unittest.TestCase):
             nic("enp2s0", "D8:BB:C1:01:02:03")
             self.assertEqual(power.wired_mac(root), "D8:BB:C1:01:02:03")
             self.assertIsNone(power.wired_mac(root / "nothing-here"))
+
+
+def completed(stdout="", returncode=0, stderr=""):
+    return subprocess.CompletedProcess(["x"], returncode, stdout, stderr)
+
+
+class SuspendSupportTest(unittest.TestCase):
+    def test_logind_yes_or_challenge_means_the_machine_can_suspend(self):
+        # "challenge" only says the asking user would have to authenticate; the real
+        # suspend runs as root, and logind answers "na" first when the hardware cannot.
+        for answer in ("yes", "challenge"):
+            self.assertTrue(power.suspend_supported(answer, None), answer)
+            self.assertTrue(power.suspend_supported(answer, "disk"), answer)
+
+    def test_logind_na_means_it_cannot_even_when_the_kernel_lists_mem(self):
+        self.assertFalse(power.suspend_supported("na", "freeze mem disk"))
+
+    def test_without_a_hardware_verdict_the_kernel_state_list_decides(self):
+        # No polkit on the live image: a non-root CanSuspend call fails or says "no",
+        # which describes the caller's rights, not the machine.
+        for answer in (None, "no"):
+            self.assertTrue(power.suspend_supported(answer, "freeze mem disk\n"), answer)
+            self.assertTrue(power.suspend_supported(answer, "mem"), answer)
+            self.assertTrue(power.suspend_supported(answer, "freeze"), answer)
+            self.assertFalse(power.suspend_supported(answer, "disk"), answer)
+            self.assertFalse(power.suspend_supported(answer, "standby disk"), answer)
+            self.assertFalse(power.suspend_supported(answer, ""), answer)
+            self.assertFalse(power.suspend_supported(answer, None), answer)
+
+    def test_logind_answer_is_read_from_busctl_over_the_system_bus(self):
+        run = mock.Mock(return_value=completed('s "yes"\n'))
+        self.assertEqual(power.logind_can_suspend(run), "yes")
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "busctl")
+        self.assertIn("--system", command)
+        self.assertEqual(command[-1], "CanSuspend")
+        self.assertIn("org.freedesktop.login1.Manager", command)
+        self.assertEqual(power.logind_can_suspend(mock.Mock(return_value=completed('s "na"\n'))), "na")
+
+    def test_unreachable_or_unreadable_logind_gives_no_answer(self):
+        denied = completed("", 1, "Call failed: Access denied\n")
+        for run in (
+            mock.Mock(return_value=denied),
+            mock.Mock(return_value=completed("garbage\n")),
+            mock.Mock(return_value=completed('s "maybe"\n')),
+            mock.Mock(side_effect=FileNotFoundError("busctl")),
+            mock.Mock(side_effect=subprocess.TimeoutExpired("busctl", 3)),
+        ):
+            self.assertIsNone(power.logind_can_suspend(run))
+
+    def test_can_suspend_asks_logind_then_the_kernel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = pathlib.Path(directory) / "state"
+            denied = mock.Mock(return_value=completed("", 1, "Call failed: Access denied\n"))
+            self.assertFalse(power.can_suspend(denied, state))  # no state file at all
+            state.write_text("freeze mem disk\n")
+            self.assertTrue(power.can_suspend(denied, state))
+            state.write_text("disk\n")
+            self.assertFalse(power.can_suspend(denied, state))
+            state.write_text("freeze mem disk\n")
+            self.assertFalse(power.can_suspend(mock.Mock(return_value=completed('s "na"\n')), state))
+
+    def test_unsupported_hardware_ignores_the_saved_sleep_timeout_but_not_blanking(self):
+        saved = power.Settings(blank=10, sleep=60)
+        self.assertEqual(power.effective_settings(saved, True), saved)
+        effective = power.effective_settings(saved, False)
+        self.assertEqual(effective, power.Settings(blank=10, sleep=0))
+        self.assertEqual(saved, power.Settings(blank=10, sleep=60))  # the stored value is untouched
+        timer = power.IdleTimer(effective, 0.0)
+        self.assertIsNone(timer.poll(9 * MINUTE, lambda: False))
+        self.assertEqual(timer.poll(10 * MINUTE, lambda: False), power.BLANK)
+        self.assertIsNone(timer.poll(500 * MINUTE, lambda: False))  # never asks for sleep
+
+
+ETHTOOL_MAGIC = """Settings for enp2s0:
+\tSupported ports: [ TP ]
+\tSupports Wake-on: pumbg
+\tWake-on: d
+\tLink detected: yes
+"""
+ETHTOOL_NO_MAGIC = "Settings for enp3s0:\n\tSupports Wake-on: pumb\n\tWake-on: d\n"
+ETHTOOL_NO_WOL = "Settings for ens3:\n\tSupported ports: [ ]\n\tLink detected: yes\n"
+
+
+class WakeOnLanTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.net = pathlib.Path(self.directory.name) / "net"
+        self.state = pathlib.Path(self.directory.name) / "wol"
+        self.net.mkdir()
+
+    def nic(self, name, address, kind="1", device=True, wireless=False):
+        path = self.net / name
+        path.mkdir()
+        (path / "address").write_text(address + "\n")
+        (path / "type").write_text(kind + "\n")
+        if device:
+            (path / "device").mkdir()
+        if wireless:
+            (path / "wireless").mkdir()
+
+    def test_magic_packet_support_is_read_from_the_supports_line_only(self):
+        self.assertTrue(power.wol_magic_supported(ETHTOOL_MAGIC))
+        self.assertTrue(power.wol_magic_supported("\tSupports Wake-on: umbg\n\tWake-on: d\n"))
+        self.assertFalse(power.wol_magic_supported(ETHTOOL_NO_MAGIC))
+        self.assertFalse(power.wol_magic_supported(ETHTOOL_NO_WOL))
+        self.assertFalse(power.wol_magic_supported("\tSupports Wake-on: d\n"))
+        self.assertFalse(power.wol_magic_supported("\tWake-on: g\n"))  # the current mode is not support
+        self.assertFalse(power.wol_magic_supported(""))
+
+    def test_probe_records_each_wired_adapter_by_mac(self):
+        self.nic("lo", "00:00:00:00:00:00", device=False)
+        self.nic("wlan0", "aa:aa:aa:aa:aa:aa", wireless=True)
+        self.nic("enp2s0", "D8:BB:C1:01:02:03")
+        self.nic("enp3s0", "d8:bb:c1:0a:0b:0c")
+        self.nic("ens3", "52:54:00:12:34:56")
+        outputs = {"enp2s0": ETHTOOL_MAGIC, "enp3s0": ETHTOOL_NO_MAGIC, "ens3": ETHTOOL_NO_WOL}
+        run = mock.Mock(side_effect=lambda command, **_kw: completed(outputs[command[-1]]))
+        power.probe_wake_on_lan(self.net, self.state, run)
+        self.assertEqual(
+            {path.name: path.read_text().strip() for path in self.state.iterdir()},
+            {"d8-bb-c1-01-02-03": "magic", "d8-bb-c1-0a-0b-0c": "none", "52-54-00-12-34-56": "none"},
+        )
+        asked = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(all(command[0].endswith("ethtool") for command in asked))
+        self.assertEqual(sorted(command[-1] for command in asked), ["enp2s0", "enp3s0", "ens3"])
+
+    def test_probe_writes_nothing_when_ethtool_cannot_answer(self):
+        self.nic("enp2s0", "d8:bb:c1:01:02:03")
+        for run in (
+            mock.Mock(side_effect=FileNotFoundError("ethtool")),
+            mock.Mock(return_value=completed("", 75, "Cannot get device settings")),
+        ):
+            power.probe_wake_on_lan(self.net, self.state, run)
+        self.assertFalse(self.state.exists() and any(self.state.iterdir()))
+
+    def test_probe_replaces_an_older_answer_for_the_same_adapter(self):
+        self.nic("enp2s0", "d8:bb:c1:01:02:03")
+        power.probe_wake_on_lan(self.net, self.state, mock.Mock(return_value=completed(ETHTOOL_NO_MAGIC)))
+        power.probe_wake_on_lan(self.net, self.state, mock.Mock(return_value=completed(ETHTOOL_MAGIC)))
+        self.assertEqual((self.state / "d8-bb-c1-01-02-03").read_text().strip(), "magic")
+
+    def test_status_shows_the_mac_only_when_a_wired_adapter_can_wake_on_magic_packet(self):
+        self.assertEqual(power.wake_on_lan(self.net, self.state), ("none", None))
+        self.nic("enp2s0", "d8:bb:c1:01:02:03")
+        self.assertEqual(power.wake_on_lan(self.net, self.state), ("unknown", None))
+        self.state.mkdir()
+        (self.state / "d8-bb-c1-01-02-03").write_text("none\n")
+        self.assertEqual(power.wake_on_lan(self.net, self.state), ("unsupported", None))
+        (self.state / "d8-bb-c1-01-02-03").write_text("magic\n")
+        self.assertEqual(power.wake_on_lan(self.net, self.state), ("supported", "D8:BB:C1:01:02:03"))
+
+    def test_a_second_adapter_that_supports_it_is_found(self):
+        self.nic("enp2s0", "d8:bb:c1:01:02:03")
+        self.nic("enp3s0", "d8:bb:c1:0a:0b:0c")
+        self.state.mkdir()
+        (self.state / "d8-bb-c1-01-02-03").write_text("none\n")
+        (self.state / "d8-bb-c1-0a-0b-0c").write_text("magic\n")
+        self.assertEqual(power.wake_on_lan(self.net, self.state), ("supported", "D8:BB:C1:0A:0B:0C"))
+
+    def test_an_answer_for_an_adapter_that_is_gone_is_ignored(self):
+        self.nic("enp2s0", "d8:bb:c1:01:02:03")
+        self.state.mkdir()
+        (self.state / "aa-bb-cc-dd-ee-ff").write_text("magic\n")  # left behind by an unplugged USB adapter
+        self.assertEqual(power.wake_on_lan(self.net, self.state), ("unknown", None))
+
+    def test_the_probe_is_runnable_from_udev_as_a_script(self):
+        with mock.patch.object(power, "probe_wake_on_lan") as probe:
+            self.assertEqual(power.main(["wake-on-lan"]), 0)
+        probe.assert_called_once_with()
+        with contextlib.redirect_stderr(io.StringIO()) as usage:
+            self.assertEqual(power.main(["unknown"]), 2)
+            self.assertEqual(power.main([]), 2)
+        self.assertIn("usage", usage.getvalue())
+
+
+class WakeSourcesTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.usb = pathlib.Path(self.directory.name)
+
+    def device(self, name, device_class="00", wakeup="enabled"):
+        path = self.usb / name
+        (path / "power").mkdir(parents=True)
+        (path / "bDeviceClass").write_text(device_class + "\n")
+        if wakeup is not None:
+            (path / "power" / "wakeup").write_text(wakeup + "\n")
+
+    def interface(self, name, interface_class, protocol="00"):
+        path = self.usb / name
+        path.mkdir()
+        (path / "bInterfaceClass").write_text(interface_class + "\n")
+        (path / "bInterfaceProtocol").write_text(protocol + "\n")
+
+    def test_nothing_plugged_in_means_nothing_can_wake_the_pc(self):
+        self.assertEqual(power.wake_sources(self.usb), [])
+        self.assertEqual(power.wake_sources(self.usb / "missing"), [])
+
+    def test_bluetooth_adapters_and_usb_keyboards_with_wakeup_enabled_are_listed(self):
+        self.device("1-1", "e0")
+        self.interface("1-1:1.0", "e0", "01")
+        self.device("1-2")
+        self.interface("1-2:1.0", "03", "01")
+        self.device("usb1", "09")  # a hub
+        self.assertEqual(power.wake_sources(self.usb), ["BLUETOOTH ADAPTER", "USB KEYBOARD"])
+
+    def test_devices_that_cannot_wake_or_have_wakeup_off_are_not_listed(self):
+        self.device("1-1", "e0", wakeup=None)
+        self.device("1-2", wakeup="disabled")
+        self.interface("1-2:1.0", "03", "01")
+        self.device("1-3")
+        self.interface("1-3:1.0", "03", "02")  # a mouse, not a keyboard
+        self.assertEqual(power.wake_sources(self.usb), [])
 
 
 if __name__ == "__main__":

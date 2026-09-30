@@ -522,5 +522,17 @@ rg -q '^options nvidia NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFil
 rg -q '^options nvidia-current NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFilePath=/var/tmp$' config/profiles/nvidia/overlay/etc/modprobe.d/moonlightos-nvidia.conf
 rg -q 'nvidia-suspend.service nvidia-resume.service' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
 refute rg -qi 'nvidia-suspend|PreserveVideoMemory' config/profiles/general config/live-build overlay
+# Hardware gating: SLEEP is offered only where the PC can suspend, and it is re-checked at each step.
+rg -q '^SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"$' launcher/moonlightos-launcher.py
+rg -q 'power.effective_settings\(power.load_settings\(\), self.can_sleep\)' launcher/moonlightos-launcher.py
+rg -q '^    if power.can_suspend\(\):$' launcher/gamepad-nav.py
+rg -q '^import moonlightos_power as power$' launcher/gamepad-nav.py
+# The root side refuses too: systemctl suspend fails when logind says the PC cannot, after the request is gone.
+rg -q 'Sleep verb .suspend. is not configured' services/moonlightos-suspend.service
+refute rg -q '^Condition|^ExecCondition' services/moonlightos-suspend.service
+# Wake-on-LAN support is read by udev as root (ethtool needs CAP_NET_ADMIN) and shown only when it has magic packet.
+rg -q '^ethtool$' config/live-build/package-lists/moonlightos.list.chroot
+rg -q '^ACTION=="add\|move", SUBSYSTEM=="net", SUBSYSTEMS=="pci\|usb", RUN\+="/usr/bin/python3 /usr/libexec/moonlightos_power.py wake-on-lan"$' overlay/etc/udev/rules.d/75-moonlightos-wakeup.rules
+rg -q '^install -D -m 0644 "\$ROOT/launcher/moonlightos_power.py" "\$CHROOT/usr/libexec/moonlightos_power.py"$' build/configure.sh
 
 printf 'Static tests passed.\n'

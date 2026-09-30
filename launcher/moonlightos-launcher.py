@@ -32,6 +32,7 @@ SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
 FIXED_CONTROLS = (
     ("SETTINGS", "settings"), ("SLEEP", "suspend"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"),
 )
+SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
 SETTINGS_MENU = (
     "DISPLAY",
     "AUDIO",
@@ -278,10 +279,12 @@ class Launcher:
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
+        # Checked on every start (the USB stick moves between PCs) and again after a resume.
+        self.can_sleep = power.can_suspend()
         self.reload_applications()
         global IDLE_GUARD
         IDLE_GUARD = self.idle = power.IdleGuard(
-            power.load_settings(),
+            power.effective_settings(power.load_settings(), self.can_sleep),
             apps_running=self.apps_running,
             request_sleep=self.request_sleep,
             resumed=self.check_resume,
@@ -301,10 +304,24 @@ class Launcher:
         self.menu = [
             (f"{app.name}  [{SHORTCUT_TAGS[app.shortcut]}]" if app.shortcut else app.name, app.id)
             for app in self.applications
-        ] + list(FIXED_CONTROLS)
+        ] + self.fixed_controls()
         self.selected = min(self.selected, max(0, len(self.menu) - 1))
         if result.errors:
             self.status = f"{len(result.errors)} INVALID APPLICATION(S) SKIPPED"
+
+    def fixed_controls(self) -> list[tuple[str, str]]:
+        """SETTINGS, SLEEP, REBOOT, SHUTDOWN; SLEEP names its reason when this PC cannot suspend."""
+        return [
+            (SLEEP_UNSUPPORTED, action) if action == "suspend" and not self.can_sleep else (label, action)
+            for label, action in FIXED_CONTROLS
+        ]
+
+    def refresh_sleep_support(self) -> None:
+        """Ask again whether this PC can suspend; the SLEEP control and the auto-sleep timer follow."""
+        self.can_sleep = power.can_suspend()
+        del self.menu[len(self.applications):]
+        self.menu += self.fixed_controls()
+        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep))
 
     def prepare_session(self) -> None:
         RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -327,6 +344,9 @@ class Launcher:
             return True
 
     def request_sleep(self) -> None:
+        if not self.can_sleep:
+            self.status = "SLEEP IS NOT SUPPORTED ON THIS PC"
+            return
         # moonlightos-suspend.path removes the file before suspending.
         try:
             self.request("suspend")
@@ -348,6 +368,7 @@ class Launcher:
         """Called once when the launcher sees the system resume from sleep."""
         (RUN / "suspend").unlink(missing_ok=True)  # a stale request must not suspend again
         HOME_REQUEST.unlink(missing_ok=True)  # the long press that slept us also asked for Home
+        self.refresh_sleep_support()
         self.status = "RESUMED FROM SLEEP"
         self.last_status_update = time.monotonic()
         focus_launcher()
@@ -374,9 +395,11 @@ class Launcher:
             if menu_row >= height - 3:
                 break
             marker = ">" if index == self.selected else " "
+            disabled = label == SLEEP_UNSUPPORTED
             try:
                 self.screen.addnstr(
-                    menu_row, menu_left, f"{marker}  {label}", max(1, width - menu_left - 1)
+                    menu_row, menu_left, f"{marker}  {label}", max(1, width - menu_left - 1),
+                    curses.A_DIM if disabled else curses.A_NORMAL,
                 )
             except curses.error:
                 pass
@@ -1045,23 +1068,38 @@ class Settings:
                 self.status = f"OUTPUT NOT CHANGED: {error}"
 
     def run_sleep_settings(self) -> None:
-        settings = power.load_settings()
-        mac = power.wired_mac()
-        wake = f"WAKE-ON-LAN MAC  {mac}" if mac else "NO WIRED ADAPTER FOR WAKE-ON-LAN"
-        self.status = wake
+        settings = power.load_settings()  # as saved: its sleep value may belong to another PC
+        can_sleep = self.launcher.can_sleep
+        wol, mac = power.wake_on_lan()
+        wake_on_lan = {
+            "supported": f"MAC {mac}",
+            "unsupported": "NOT SUPPORTED BY THIS NETWORK ADAPTER",
+            "none": "NO WIRED NETWORK ADAPTER",
+            "unknown": "ADAPTER NOT CHECKED",
+        }[wol]
+        wake_from = ", ".join(power.wake_sources()) or "NO USB BLUETOOTH ADAPTER OR KEYBOARD FOUND"
+        self.status = ""
         selected = 0
         while True:
             rows = [
                 f"BLANK SCREEN AFTER  {power.minutes_label(settings.blank)}",
-                f"SLEEP AFTER  {power.minutes_label(settings.sleep)}",
+                f"SLEEP AFTER  {power.minutes_label(settings.sleep) if can_sleep else 'NOT SUPPORTED ON THIS PC'}",
+                f"WAKE-ON-LAN  {wake_on_lan}",
+                f"WAKE FROM  {wake_from}",
                 "BACK",
             ]
             self.draw("SLEEP & SCREEN", rows, selected)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
-            if key == 27 or (key in ENTER_KEYS and selected == 2):
+            if key == 27 or (key in ENTER_KEYS and selected == 4):
                 return
             if key not in ENTER_KEYS:
+                continue
+            if selected == 1 and not can_sleep:
+                self.status = "SLEEP IS NOT SUPPORTED ON THIS PC"
+                continue
+            if selected in (2, 3):
+                self.status = "INFORMATION ONLY"
                 continue
             field, choices = ("blank", power.BLANK_CHOICES) if selected == 0 else ("sleep", power.SLEEP_CHOICES)
             chosen = self.choose(
@@ -1074,10 +1112,10 @@ class Settings:
             settings = dataclasses.replace(settings, **{field: chosen})
             try:
                 power.save_settings(settings)
-                self.status = wake
+                self.status = ""
             except OSError as error:
                 self.status = f"COULD NOT SAVE: {error}"
-            self.launcher.idle.apply(settings)
+            self.launcher.idle.apply(power.effective_settings(settings, can_sleep))
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()
