@@ -92,7 +92,7 @@ def is_home_event(event) -> bool:
     return (
         event.type == ecodes.EV_KEY
         and event.value == 1
-        and event.code in {ecodes.KEY_HOME, ecodes.BTN_MODE}
+        and event.code in {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE}
     )
 
 
@@ -117,7 +117,7 @@ def watch_home() -> None:
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if ecodes.KEY_HOME in keys or ecodes.BTN_MODE in keys:
+                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE} & keys:
                     devices[path] = device
                 else:
                     device.close()

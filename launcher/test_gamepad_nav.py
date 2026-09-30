@@ -34,6 +34,7 @@ class Codes:
     KEY_ENTER = 28
     KEY_ESC = 1
     KEY_HOME = 102
+    KEY_HOMEPAGE = 172
     KEY_DELETE = 111
     KEY_F5 = 63
     KEY_F6 = 64
@@ -95,6 +96,35 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertTrue(self.module.is_home_event(mode))
         self.assertTrue(self.module.is_home_event(home))
         self.assertFalse(self.module.is_home_event(release))
+
+    def test_bluetooth_xbox_guide_button_is_a_home_event_and_its_device_is_watched(self):
+        # Xbox pads over Bluetooth report Guide as KEY_HOMEPAGE (172), not BTN_MODE.
+        guide = SimpleNamespace(type=Codes.EV_KEY, value=1, code=Codes.KEY_HOMEPAGE)
+        self.assertTrue(self.module.is_home_event(guide))
+
+        class Stop(Exception):
+            pass
+
+        class Device:
+            def capabilities(self):
+                return {Codes.EV_KEY: [Codes.KEY_HOMEPAGE]}
+
+            def close(self):
+                pass
+
+        device = Device()
+        watched = []
+
+        def select(devices, *_args):
+            watched.extend(devices)
+            raise Stop
+
+        with mock.patch.object(self.module.glob, "glob", return_value=["/dev/input/event9"]), mock.patch.object(
+            self.module, "InputDevice", return_value=device
+        ), mock.patch.object(self.module.select, "select", side_effect=select):
+            with self.assertRaises(Stop):
+                self.module.watch_home()
+        self.assertEqual(watched, [device])
 
     def test_launcher_focus_marker_lets_the_controller_navigate_while_an_app_runs(self):
         with tempfile.TemporaryDirectory() as directory:
