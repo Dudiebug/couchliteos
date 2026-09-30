@@ -26,7 +26,10 @@ cp -a "$ROOT/config/live-build/." "$WORK/config/"
 cp -a "$ROOT/overlay/." "$CHROOT/"
 # The build profile adds hardware-specific packages, hooks, and files. A
 # profile with PROFILE_BASE gets its base profile's files first.
-PROFILE_BASE=$(source "$PROFILE_DIR/profile.conf"; printf '%s' "${PROFILE_BASE:-}")
+# A command substitution inherits this script's variables, so unset the one
+# being read or a profile without it would report the caller's value.
+profile_conf_value() { (unset "$2"; source "$1"; printf '%s' "${!2:-}"); }
+PROFILE_BASE=$(profile_conf_value "$PROFILE_DIR/profile.conf" PROFILE_BASE)
 profile_dirs=()
 if [[ -n $PROFILE_BASE ]]; then
   base_dir="$ROOT/config/profiles/$PROFILE_BASE"
@@ -34,7 +37,7 @@ if [[ -n $PROFILE_BASE ]]; then
     printf 'Profile %s: unknown PROFILE_BASE %s\n' "$PROFILE" "$PROFILE_BASE" >&2
     exit 64
   }
-  [[ -z $(source "$base_dir/profile.conf"; printf '%s' "${PROFILE_BASE:-}") ]] || {
+  [[ -z $(profile_conf_value "$base_dir/profile.conf" PROFILE_BASE) ]] || {
     printf 'Profile %s: base profile %s must not have a base itself\n' "$PROFILE" "$PROFILE_BASE" >&2
     exit 64
   }

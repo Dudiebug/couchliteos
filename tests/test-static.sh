@@ -155,6 +155,11 @@ rg -q 'release_profiles' tools/release-assets.sh
 rg -Fq 'RELEASE:-0' tools/release-assets.sh
 rg -q 'PROFILE_BASE' build/configure.sh
 rg -q 'must not have a base itself' build/configure.sh
+# configure.sh reads profile.conf values in a subshell, which must not inherit
+# the caller's value: PROFILE_BASE=general once made general look based itself.
+eval "$(sed -n '/^profile_conf_value() /p' build/configure.sh)"
+(PROFILE_BASE=general; [[ -z $(profile_conf_value config/profiles/general/profile.conf PROFILE_BASE) ]])
+[[ $(profile_conf_value config/profiles/nvidia/profile.conf PROFILE_BASE) == general ]]
 # general: open drivers for Intel/AMD/NVIDIA, Broadcom wl per machine, curated firmware.
 for package in firmware-intel-graphics firmware-amd-graphics firmware-nvidia-graphics firmware-sof-signed \
   firmware-iwlwifi firmware-brcm80211 intel-microcode amd64-microcode intel-media-va-driver i965-va-driver \
