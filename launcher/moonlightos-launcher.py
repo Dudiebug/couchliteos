@@ -478,6 +478,7 @@ class Launcher:
         self.status = "RESUMED FROM SLEEP"
         self.last_status_update = time.monotonic()
         focus_launcher()
+        self.autostream()  # the chosen PC streams again after a wake-up; no-op unless Settings > STREAMING asks
 
     def draw(self) -> None:
         self.screen.erase()

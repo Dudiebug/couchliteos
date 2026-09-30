@@ -1103,6 +1103,48 @@ class AutostreamTest(LauncherTestCase):
                 launcher.run()
         self.assertEqual(calls, ["setup", "autostream"])
 
+    def resume(self, launcher, run):
+        with self.world(run), mock.patch.object(self.module, "focus_launcher"), mock.patch.object(
+            launcher, "refresh_sleep_support"
+        ):
+            launcher.on_resume()
+
+    def test_resume_from_sleep_starts_the_chosen_stream_after_the_launcher_is_ready(self):
+        launcher = self.launcher()
+        calls = []
+        launcher.refresh_sleep_support = mock.Mock(side_effect=lambda: calls.append("sleep-support"))
+        launcher.autostream = mock.Mock(side_effect=lambda: calls.append("autostream"))
+        with tempfile.TemporaryDirectory() as directory, self.world(pathlib.Path(directory)), mock.patch.object(
+            self.module, "focus_launcher", side_effect=lambda: calls.append("focus")
+        ):
+            launcher.on_resume()
+        self.assertEqual(calls, ["sleep-support", "focus", "autostream"])
+
+    def test_resume_with_autostart_off_just_reports_the_resume(self):
+        launcher = self.launcher()
+        launcher.launch_app = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            self.resume(launcher, pathlib.Path(directory))
+        launcher.launch_app.assert_not_called()
+        self.assertIn("RESUMED", launcher.status)
+
+    def test_resume_with_autostart_on_counts_down_and_streams(self):
+        launcher = self.launcher()
+        launcher.launch_app = mock.Mock(return_value=True)
+        launcher.app_by_id = mock.Mock(return_value=self.app())
+        clock = (i * 0.25 for i in itertools.count())
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            marker = run / "setup-complete"
+            marker.touch()
+            with self.world(run, settings=self.ON), mock.patch.object(self.module.setup, "MARKER", marker), \
+                    mock.patch.object(self.module.time, "monotonic", side_effect=lambda: next(clock)), \
+                    mock.patch.object(self.module.curses, "flushinp"), \
+                    mock.patch.object(self.module, "focus_launcher"), \
+                    mock.patch.object(launcher, "refresh_sleep_support"):
+                launcher.on_resume()
+        launcher.launch_app.assert_called_once()
+
 
 class StreamingSettingsTest(LauncherTestCase):
     def streaming(self):
