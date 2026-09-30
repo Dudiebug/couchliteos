@@ -507,5 +507,7 @@ refute rg -q 'network-online|wait-online|network-ready|tailscale|usbip|firewall'
 rg -Fq 'systemd-analyze --no-pager critical-chain moonlightos-launcher.service' scripts/moonlightos-diagnostics
 rg -Fq 'systemd-analyze --no-pager blame 2>&1 | head -n 30' scripts/moonlightos-diagnostics
 rg -Fq '"systemd-analyze", "--no-pager", "critical-chain", "moonlightos-launcher.service"' scripts/moonlightos-support-export
+rg -q '^source "\$ROOT/build/lb-cache\.sh"$' build/build.sh
+rg -q 'MOONLIGHTOS_LB_CACHE' build/build.sh
 
 printf 'Static tests passed.\n'
