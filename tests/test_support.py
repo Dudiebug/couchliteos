@@ -805,5 +805,75 @@ class LargeLogTest(unittest.TestCase):
         self.assertNotIn("ROOT-ONLY", self.bundle_file(link))
 
 
+
+class NtfsMountTest(unittest.TestCase):
+    """NTFS sticks used to fail as "mounted read-only"; ask the kernel driver for NTFS."""
+
+    NTFS_MESSAGE = "THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE"
+
+    def destination(self, fstype):
+        return support.Destination(
+            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", fstype, False, "8:17", "uuid-one", "WINDOWS"
+        )
+
+    def mount(self, fstype, *, mount_code=0, writable=True):
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, mount_code if argv[0] == "mount" else 0, "", "bad")
+
+        error = None
+        result = None
+        with mock.patch.object(exporter.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            exporter, "path_is_writable", return_value=writable
+        ):
+            try:
+                result = exporter.mount_labeled_destination(self.destination(fstype))
+            except RuntimeError as caught:
+                error = caught
+        mounts = [argv for argv in calls if argv[0] == "mount"]
+        self.assertEqual(len(mounts), 1)
+        self.addCleanup(lambda: os.path.isdir(mounts[0][-1]) and os.rmdir(mounts[0][-1]))
+        return mounts[0], calls, result, error
+
+    def test_ntfs_is_mounted_with_the_ntfs3_driver_and_the_safe_options(self):
+        argv, _calls, result, error = self.mount("ntfs")
+        self.assertIsNone(error)
+        self.assertIsNotNone(result)
+        self.assertEqual(argv[:5], ["mount", "-t", "ntfs3", "-o", "nosuid,nodev,noexec"])
+        self.assertEqual(argv[5:7], ["--", "/dev/sdb1"])
+
+    def test_other_filesystems_are_still_mounted_without_forcing_a_type(self):
+        for fstype in ("vfat", "exfat", "ext4"):
+            with self.subTest(fstype):
+                argv, _calls, result, error = self.mount(fstype)
+                self.assertIsNone(error)
+                self.assertNotIn("-t", argv)
+                self.assertEqual(argv[:3], ["mount", "-o", "nosuid,nodev,noexec"])
+
+    def test_ntfs_mount_failure_names_ntfs_and_the_fix(self):
+        _argv, _calls, result, error = self.mount("ntfs", mount_code=32)
+        self.assertIsNone(result)
+        self.assertEqual(str(error), self.NTFS_MESSAGE)
+
+    def test_ntfs_that_only_mounts_read_only_gets_the_same_message(self):
+        _argv, calls, result, error = self.mount("ntfs", writable=False)
+        self.assertIsNone(result)
+        self.assertEqual(str(error), self.NTFS_MESSAGE)
+        self.assertIn("umount", [argv[0] for argv in calls])
+
+    def test_ntfs_failure_message_is_shown_as_written(self):
+        self.assertEqual(support.safe_terminal_text(self.NTFS_MESSAGE, 240), self.NTFS_MESSAGE)
+
+    def test_failed_ntfs_mount_removes_the_private_mountpoint(self):
+        argv, _calls, _result, _error = self.mount("ntfs", mount_code=32)
+        self.assertFalse(os.path.exists(argv[-1]))
+
+    def test_ntfs_type_is_case_insensitive(self):
+        argv, _calls, _result, _error = self.mount("NTFS")
+        self.assertEqual(argv[1:3], ["-t", "ntfs3"])
+
+
 if __name__ == "__main__":
     unittest.main()

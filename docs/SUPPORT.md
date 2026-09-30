@@ -27,6 +27,11 @@ squashfs, UDF, read-only media, and internal SATA/NVMe filesystems. It does not
 format, repartition, run fsck, or repair media. The selected device and mount
 are checked again immediately before the archive is copied.
 
+NTFS drives are mounted with the kernel `ntfs3` driver. If that fails, or the
+drive still comes up read-only (Windows often leaves NTFS marked unclean after
+a fast shutdown), the screen says `THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT
+DRIVE`. FAT32 and exFAT are the recommended formats.
+
 If the export cannot finish, the screen gives a short reason such as
 `USB DRIVE IS FULL`, `USB DRIVE IS READ-ONLY`, or
 `USB DRIVE ERROR: TRY ANOTHER DRIVE`.

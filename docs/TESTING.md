@@ -331,6 +331,7 @@ Support export:
 - [ ] With only the boot USB attached, Generate Support File says to insert a second USB drive (the boot drive and its persistence partition are never offered)
 - [ ] Export to an unlabeled, unmounted USB stick (the launcher assigns the internal `MOONLIGHTOS_SUPPORT` mount name; no drive label is required)
 - [ ] A full, a write-protected, and an unplugged-mid-write USB drive each show a short plain message (`USB DRIVE IS FULL`, `USB DRIVE IS READ-ONLY`, `USB DRIVE ERROR: TRY ANOTHER DRIVE`)
+- [ ] Export to an NTFS USB stick: it either works (mounted with ntfs3) or shows `THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE`, never "mounted read-only"
 - [ ] Confirm the ISO9660 boot filesystem is not offered
 - [ ] Attach two writable removable targets and use the controller selector
 - [ ] Confirm the internal NVMe is never offered, without writing test data to it

@@ -517,6 +517,7 @@ DRIVE_FULL = "USB DRIVE IS FULL"
 DRIVE_READ_ONLY = "USB DRIVE IS READ-ONLY"
 DRIVE_FAILED = "USB DRIVE ERROR: TRY ANOTHER DRIVE"
 DRIVE_REMOVED = "THE USB DRIVE WAS REMOVED OR CHANGED: TRY AGAIN"
+DRIVE_NTFS = "THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE"
 # Short plain messages for the errors a failing or full USB drive produces; the
 # launcher shows them as they are, so they must not need a shell to understand.
 DRIVE_ERRORS = {
@@ -579,15 +580,21 @@ def mount_labeled_destination(destination: Destination) -> tuple[Destination, bo
     # to /usr/libexec). A fresh root-only directory in the service's private
     # /tmp cannot be pre-planted.
     mountpoint = tempfile.mkdtemp(prefix="support-media-")
+    # Without a driver named, an NTFS stick can come up read-only or not at all;
+    # ask for the kernel's ntfs3 driver, and say so plainly if that fails too.
+    ntfs = destination.fstype.lower() == "ntfs"
+    driver = ["-t", "ntfs3"] if ntfs else []
     try:
         result = subprocess.run(
-            ["mount", "-o", "nosuid,nodev,noexec", "--", destination.device, mountpoint],
+            ["mount", *driver, "-o", "nosuid,nodev,noexec", "--", destination.device, mountpoint],
             text=True,
             capture_output=True,
             check=False,
             timeout=15,
         )
         if result.returncode:
+            if ntfs:
+                raise RuntimeError(DRIVE_NTFS)
             raise RuntimeError((result.stderr or "could not mount support partition").strip())
     except Exception:
         release_mountpoint(mountpoint)
@@ -604,7 +611,7 @@ def mount_labeled_destination(destination: Destination) -> tuple[Destination, bo
     if not path_is_writable(mountpoint):
         subprocess.run(["umount", "--", mountpoint], check=False)
         release_mountpoint(mountpoint)
-        raise RuntimeError(DRIVE_READ_ONLY)
+        raise RuntimeError(DRIVE_NTFS if ntfs else DRIVE_READ_ONLY)
     return mounted, True
 
 
