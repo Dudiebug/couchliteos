@@ -52,6 +52,10 @@ class LauncherTest(unittest.TestCase):
         patcher = mock.patch.object(self.module.power, "can_suspend", return_value=True)
         self.can_suspend = patcher.start()
         self.addCleanup(patcher.stop)
+        # run() must not read or write the real what's-new marker (test_whatsnew covers it).
+        patcher = mock.patch.object(self.module.whatsnew, "show_once")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def launcher(self):
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
