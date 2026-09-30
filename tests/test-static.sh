@@ -700,4 +700,26 @@ refute rg -q 'polkit\.Result\.(AUTH_ADMIN|NOT_HANDLED)' "$polkit_rule"
 # The wizard never puts a Wi-Fi password on a command line.
 refute rg -q 'nmcli.*(password|psk)' launcher/moonlightos_setup.py
 
+# Secure Boot: hwdetect reads the efivar (behavior is covered by tests/test_hwdetect.py).
+rg -q 'SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c' scripts/moonlightos-hwdetect
+rg -q 'def secure_boot_enabled' scripts/moonlightos-hwdetect
+
+# The decode hint follows the PC: Moonlight's saved video settings are reconciled at every start.
+python3 -m py_compile scripts/moonlightos-moonlight-prefs
+rg -q '^install -D -m 0755 "\$ROOT/scripts/moonlightos-moonlight-prefs" "\$CHROOT/usr/libexec/moonlightos-moonlight-prefs"$' build/configure.sh
+rg -q '^  /usr/libexec/moonlightos-moonlight-prefs ' scripts/moonlightos-run-app
+refute rg -q 'declare -A codec_values' scripts/moonlightos-run-app
+[[ $(head -1 scripts/moonlightos-moonlight-prefs) == '#!/usr/bin/python3 -I' ]]
+
+# When the launcher gives up, a root-side unit tells the TV in plain words;
+# otherwise tty1 stays on frozen kernel text.
+rg -q '^OnFailure=moonlightos-display-failed.service$' services/moonlightos-launcher.service
+test -s services/moonlightos-display-failed.service
+rg -q '^Type=oneshot$' services/moonlightos-display-failed.service
+rg -q '^ExecStart=/usr/libexec/moonlightos-display-failed$' services/moonlightos-display-failed.service
+refute rg -q '^\[Install\]' services/moonlightos-display-failed.service
+rg -q 'is-failed --quiet moonlightos-launcher.service' scripts/moonlightos-display-failed
+rg -q 'MOONLIGHTOS_TTY:-/dev/tty1' scripts/moonlightos-display-failed
+rg -q '^install -D -m 0755 "\$ROOT/scripts/moonlightos-display-failed" "\$CHROOT/usr/libexec/moonlightos-display-failed"$' build/configure.sh
+
 printf 'Static tests passed.\n'

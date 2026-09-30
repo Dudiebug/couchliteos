@@ -5,8 +5,10 @@ early   Before udev and systemd-modules-load: write this machine's kernel
         module policy under /run only, so a USB stick moved to another machine
         starts clean on every boot.
 late    Before the launcher: load the nouveau fallback if the proprietary
-        NVIDIA driver cannot drive this GPU, then write GPU driver and video
-        decode hints for the launcher and applications.
+        NVIDIA driver cannot drive this GPU or did not load, then write GPU
+        driver and video decode hints for the launcher and applications.
+        With Secure Boot on, the unsigned NVIDIA and Broadcom wl DKMS modules
+        are never used: nouveau and the open Wi-Fi drivers take over.
 report  Print the last detection summary.
 """
 
@@ -43,6 +45,9 @@ NVIDIA_MODULES = [
 # The open drivers that broadcom-sta-dkms blacklists when wl owns the chip.
 BROADCOM_OPEN_MODULES = ["b43", "b43legacy", "b44", "bcma", "brcm80211", "brcmsmac", "ssb"]
 APPLE_VENDORS = {"Apple Inc.", "Apple Computer, Inc."}
+SECURE_BOOT_VARIABLE = "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+# Debian builds the DRM module as nvidia-current-drm; upstream names it nvidia-drm.
+NVIDIA_DRM_MODULES = ["nvidia_drm", "nvidia_current_drm"]
 
 
 def read(path):
@@ -117,6 +122,19 @@ def kernel_options():
     return options
 
 
+def secure_boot_enabled():
+    """True when firmware Secure Boot is on: the kernel then refuses unsigned modules.
+
+    The efivar holds 4 attribute bytes, then one data byte (1 = enabled). A
+    missing or short file (legacy BIOS, Apple EFI, no efivarfs) counts as off.
+    """
+    try:
+        data = (SYSFS / "firmware" / "efi" / "efivars" / SECURE_BOOT_VARIABLE).read_bytes()
+    except OSError:
+        return False
+    return len(data) >= 5 and data[4] == 1
+
+
 def dkms_module_present(name):
     return any((MODULE_DIR / "updates" / "dkms").glob(f"{name}.ko*"))
 
@@ -133,6 +151,8 @@ def detect(devices):
     """Decide the module policy for this machine from PCI and DMI identifiers."""
     options = kernel_options()
     basic = options.get("moonlightos.gpu") == "basic"
+    # DKMS modules (nvidia, wl) are unsigned: with Secure Boot on they never load.
+    secure = secure_boot_enabled()
     displays = [device for device in devices if is_display(device)]
     nvidia_gpus = [device for device in displays if device["vendor"] == NVIDIA]
     blacklist, load, notes = [], [], []
@@ -144,7 +164,7 @@ def detect(devices):
     if proprietary_installed:
         supported_ids = id_list(NVIDIA_IDS)
         supported = [gpu for gpu in nvidia_gpus if (gpu["vendor"], gpu["device"]) in supported_ids]
-        if supported and not basic:
+        if supported and not basic and not secure:
             nvidia_mode = "proprietary"
             load.append("nvidia-drm")
             blacklist.append("nouveau")
@@ -153,6 +173,8 @@ def detect(devices):
             blacklist.extend(NVIDIA_MODULES)
             if basic:
                 reason = "Basic Graphics (moonlightos.gpu=basic) requested"
+            elif supported and secure:
+                reason = "Secure Boot is on and the kernel refuses the unsigned NVIDIA driver"
             elif nvidia_gpus:
                 reason = "not supported by the installed NVIDIA driver: " + ", ".join(gpu["id"] for gpu in nvidia_gpus)
             else:
@@ -168,14 +190,19 @@ def detect(devices):
     if dkms_module_present("wl") and BROADCOM_IDS.is_file():
         sta_ids = id_list(BROADCOM_IDS)
         wl_devices = [device for device in broadcom_wifi if (device["vendor"], device["device"]) in sta_ids]
-        if wl_devices:
+        if wl_devices and not secure:
             broadcom = "wl"
             blacklist.extend(BROADCOM_OPEN_MODULES)
             notes.append("Broadcom Wi-Fi: wl for " + ", ".join(device["id"] for device in wl_devices))
         else:
             broadcom = "open"
             blacklist.append("wl")
-            if broadcom_wifi:
+            if wl_devices:
+                notes.append(
+                    "Broadcom Wi-Fi: Secure Boot is on and the kernel refuses the unsigned wl driver for "
+                    + ", ".join(device["id"] for device in wl_devices)
+                    + "; the open drivers are used and may not support this chip")
+            elif broadcom_wifi:
                 notes.append("Broadcom Wi-Fi: open driver for " + ", ".join(device["id"] for device in broadcom_wifi))
 
     apple = read(SYSFS / "class" / "dmi" / "id" / "sys_vendor") in APPLE_VENDORS
@@ -185,6 +212,7 @@ def detect(devices):
 
     return {
         "basic_graphics": basic,
+        "secure_boot": secure,
         "nvidia_driver_installed": proprietary_installed,
         "nvidia_mode": nvidia_mode,
         "nouveau_fallback": proprietary_installed and nvidia_mode == "nouveau",
@@ -246,9 +274,19 @@ def late():
     status = 0
     # Let udev finish binding the drivers it loads before reading the result.
     run([UDEVADM, "settle", "--timeout=10"])
-    if state.get("nouveau_fallback") and not (SYSFS / "module" / "nouveau").exists():
+    notes = list(state.get("notes", []))
+    reason = ""
+    if state.get("nouveau_fallback"):
+        reason = "the proprietary NVIDIA driver cannot drive this GPU"
+    elif state.get("nvidia_mode") == "proprietary" and not any(
+            (SYSFS / "module" / name).exists() for name in NVIDIA_DRM_MODULES):
+        # The kernel refused the module (or it failed to load): without it there is
+        # no KMS for Cage. nouveau is the same fallback Kepler and Basic Graphics use.
+        reason = "the proprietary NVIDIA driver did not load (nvidia_drm is missing)"
+        notes.append("NVIDIA: " + reason + "; nouveau loads as the fallback")
+    if reason and not (SYSFS / "module" / "nouveau").exists():
         # The NVIDIA ISO blacklists nouveau for udev; loading it by name still works.
-        print("Loading nouveau: the proprietary NVIDIA driver cannot drive this GPU")
+        print(f"Loading nouveau: {reason}")
         if run([MODPROBE, "nouveau"]) != 0:
             print("modprobe nouveau failed; the display falls back to the firmware framebuffer", file=sys.stderr)
             status = 1
@@ -278,7 +316,7 @@ def late():
     lines = [
         f"MoonlightOS hardware detection ({datetime.datetime.now().astimezone().isoformat(timespec='seconds')})",
         *devices_summary(devices),
-        *state.get("notes", []),
+        *notes,
         f"Display driver: {driver}",
         f"Moonlight video decode: {'software H.264' if decode == 'software' else 'automatic'}",
         f"Blacklisted for this boot: {' '.join(blacklist) if blacklist else 'none'}",

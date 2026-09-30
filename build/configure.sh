@@ -89,6 +89,8 @@ install -D -m 0755 "$ROOT/scripts/moonlightos-bluetoothd" "$CHROOT/usr/libexec/m
 install -D -m 0755 "$ROOT/scripts/moonlightos-osk-session" "$CHROOT/usr/libexec/moonlightos-osk-session"
 install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale-ui" "$CHROOT/usr/bin/moonlightos-tailscale-ui"
 install -D -m 0755 "$ROOT/scripts/moonlightos-run-app" "$CHROOT/usr/libexec/moonlightos-run-app"
+install -D -m 0755 "$ROOT/scripts/moonlightos-moonlight-prefs" "$CHROOT/usr/libexec/moonlightos-moonlight-prefs"
+install -D -m 0755 "$ROOT/scripts/moonlightos-display-failed" "$CHROOT/usr/libexec/moonlightos-display-failed"
 install -D -m 0755 "$ROOT/scripts/moonlightos-firefox-drm-check" "$CHROOT/usr/libexec/moonlightos-firefox-drm-check"
 install -D -m 0755 "$ROOT/scripts/moonlightos-qemu-smoke" "$CHROOT/usr/libexec/moonlightos-qemu-smoke"
 install -D -m 0755 "$ROOT/scripts/moonlightos-support-export" "$CHROOT/usr/libexec/moonlightos-support-export"
