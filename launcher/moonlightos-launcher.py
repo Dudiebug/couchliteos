@@ -27,6 +27,8 @@ import moonlightos_setup as setup
 
 RUN = pathlib.Path("/run/moonlightos")
 HOME_REQUEST = RUN / "home.request"
+# Tells gamepad-nav the launcher (not a running app) has focus, so it forwards keys.
+LAUNCHER_FOCUS = RUN / "launcher-focus"
 SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
 FIXED_CONTROLS = (("SETTINGS", "settings"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"))
 SETTINGS_MENU = (
@@ -47,6 +49,8 @@ ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
 SHORTCUT_TAGS = {"lb": "LB", "rb": "RB", "view": "VIEW", "menu": "MENU"}
+# gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
+CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "KEYBOARD: X (XBOX) / TRIANGLE (PS) / F12  ·  A/ENTER ACCEPTS  ·  B/ESC CANCELS"
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
@@ -56,6 +60,16 @@ SUPPORT_EXPORT_POLL_MS = 100
 def application_result() -> apps.LoadResult:
     system_dir = apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
     return apps.load_applications(system_dir=system_dir)
+
+
+def set_launcher_focus(held: bool) -> None:
+    try:
+        if held:
+            LAUNCHER_FOCUS.touch()
+        else:
+            LAUNCHER_FOCUS.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def request_osk(masked: bool = False) -> None:
@@ -283,6 +297,7 @@ class Launcher:
             f"DISPLAY={display_name}\nWAYLAND_DISPLAY={wayland}\n", encoding="utf-8"
         )
         os.chmod(RUN / "session.env", 0o640)
+        set_launcher_focus(False)
 
     def request(self, name: str) -> None:
         (RUN / name).touch()
@@ -331,6 +346,7 @@ class Launcher:
         self.screen.refresh()
 
     def show_launch_failure(self, label: str, message: str) -> None:
+        set_launcher_focus(True)
         self.screen.timeout(1000)
         while True:
             self.screen.erase()
@@ -366,11 +382,24 @@ class Launcher:
                 return True
             self.status = f"{label} IS RUNNING BUT HAS NO MANAGED WINDOW"
             return False
+        if app.kind == "command":
+            # moonlightos-configured-app.service runs one app at a time; a request
+            # queued behind it would start unasked when the running app closes.
+            other = next((item for item in self.running_applications()
+                          if item.kind == "command" and item.id != app.id), None)
+            if other is not None:
+                self.show_launch_failure(
+                    label, f"{other.name} IS STILL RUNNING. CLOSE IT FIRST: PRESS HOME, THEN CLOSE IT "
+                           "IN ACTIVE APPLICATIONS."
+                )
+                self.status = f"{label} NOT STARTED: {other.name} IS RUNNING"
+                return False
         state = RUN / f"{app_id}-status"
         if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
             return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
+        set_launcher_focus(False)  # the starting app takes the controller
         if app.kind == "request":
             self.request(app.request)
         elif app.kind == "rdp":
@@ -392,6 +421,10 @@ class Launcher:
 
                 app_state = self.read_app_status(app_id)
                 now = time.monotonic()
+                if app_state.startswith("exited:"):
+                    # It ran and quit on its own before the ready mark (e.g. nmtui).
+                    self.status = f"{label} EXITED"
+                    return True
                 if app_state.startswith("failed:"):
                     if failure_since is None:
                         failure_since = now
@@ -413,6 +446,11 @@ class Launcher:
             # typed password) waiting in /run for a later start.
             (RUN / rdp.REQUEST.name).unlink(missing_ok=True)
             (RUN / rdp.HANDOFF.name).unlink(missing_ok=True)
+        elif app.kind == "request":
+            (RUN / app.request).unlink(missing_ok=True)
+        elif app.kind == "command":
+            # Never leave a request behind to start the app unasked later.
+            (RUN / "launch-app.request").unlink(missing_ok=True)
         message = (
             last_state.removeprefix("failed:").strip()
             if last_state.startswith("failed:")
@@ -442,7 +480,15 @@ class Launcher:
             "google-chrome": ("app_id:google-chrome", "title:Google Chrome"),
             "moonlight": ("app_id:moonlight", "title:Moonlight"),
             "chiaki-ng": ("app_id:chiaki", "app_id:io.github.streetpea.Chiaki4deck", "title:Chiaki"),
-        }.get(app.id, (f"title:{app.name}",))
+        }.get(app.id)
+        if matches is None:
+            matches = (f"title:{app.name}",)
+            if app.kind == "command" and not app.terminal:
+                # Windows of user-added apps (Chrome kiosk pages, Steam, ...) are not
+                # titled with the stored name, but their app_id follows the binary.
+                binary = pathlib.PurePath(app.command).name
+                ids = dict.fromkeys((binary.removesuffix("-stable"), binary))
+                matches = tuple(f"app_id:{item}" for item in ids) + matches
         if app.kind == "rdp":
             matches = (f"app_id:{rdp.WAYLAND_APP_ID}", f"title:{app.name}")
         for match in matches:
@@ -454,6 +500,7 @@ class Launcher:
             except (OSError, subprocess.SubprocessError):
                 return False
             if result.returncode == 0:
+                set_launcher_focus(False)
                 return True
         return False
 
@@ -471,7 +518,8 @@ class Launcher:
 
     def active_applications(self) -> None:
         selected = 0
-        status = "ENTER RESUMES  ·  X CLOSES"
+        status = f"A/ENTER RESUMES  ·  {CLOSE_BUTTON} CLOSES"
+        HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
         while True:
             running = self.running_applications()
             rows = [f"{app.name:<32} RUNNING" for app in running] + ["RETURN TO MAIN LAUNCHER"]
@@ -491,6 +539,9 @@ class Launcher:
             add_centered(self.screen, height - 3, status if running else "NO MANAGED APPLICATIONS ARE RUNNING")
             self.screen.refresh()
             key = read_key(self.screen)
+            if HOME_REQUEST.exists():  # Guide again while the menu is open closes it
+                HOME_REQUEST.unlink(missing_ok=True)
+                return
             selected = move_selection(selected, key, len(rows))
             if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(running)):
                 return
@@ -563,6 +614,7 @@ class Launcher:
             key = read_key(self.screen)
             if HOME_REQUEST.exists() or key == curses.KEY_HOME:
                 HOME_REQUEST.unlink(missing_ok=True)
+                set_launcher_focus(True)  # gamepad-nav forwards keys while an app runs
                 self.active_applications()
                 self.draw()
                 continue
@@ -770,13 +822,19 @@ class Settings:
         old_timeout = 250
         self.screen.timeout(old_timeout)
         confirmed = False
+        # Presses queued while the mode switched (a double-tapped A) never saw this
+        # screen, and a saved mode is reapplied on every boot: drop them, and make
+        # the safe choice the default.
+        curses.flushinp()
+        selected = 0
         while time.monotonic() < deadline:
             seconds = max(1, int(deadline - time.monotonic() + 0.999))
-            self.status = f"ENTER CONFIRMS; ESC ROLLS BACK ({seconds}S)"
-            self.draw("CONFIRM DISPLAY MODE", [requested.argument], 0)
+            self.status = f"SELECT KEEP TO SAVE; OTHERWISE REVERTS IN {seconds}S"
+            self.draw(f"CONFIRM DISPLAY MODE {requested.argument}", ["REVERT", "KEEP THIS MODE"], selected)
             key = read_key(self.screen)
+            selected = move_selection(selected, key, 2)
             if key in (curses.KEY_ENTER, 10, 13):
-                confirmed = True
+                confirmed = selected == 1
                 break
             if key == 27:
                 break
@@ -1555,7 +1613,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
             self.launcher.show_launch_failure(
                 label,
                 "ANOTHER REMOTE DESKTOP SESSION IS OPEN OR RECONNECTING. PRESS HOME/GUIDE AND CLOSE "
-                "IT WITH X, OR WAIT FOR IT TO END.",
+                f"IT WITH {CLOSE_BUTTON}, OR WAIT FOR IT TO END.",
             )
             return False
         self.status = "PLEASE WAIT"
@@ -1627,6 +1685,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
 
 
 def main(screen: curses.window) -> None:
+    curses.set_escdelay(25)  # the controller's B sends a bare Esc; don't wait 1 s for a sequence
     Launcher(screen).run()
 
 

@@ -67,6 +67,60 @@ class RunnerTest(unittest.TestCase):
             self.assertFalse((root / "app-active").exists())
             self.assertFalse((root / "demo-ready").exists())
 
+    def active_marker_while_running(self, **changes):
+        """Whether app-active exists while the application process is alive."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "demo.ini"
+            manifest.write_text(apps.serialize(self.app(**changes)), encoding="utf-8")
+            app = apps.read_manifest(manifest)
+            request = root / "launch-app.request"
+            request.write_text("demo\n", encoding="ascii")
+            process = mock.Mock(pid=55)
+            process.poll.return_value = 0
+            process.wait.return_value = 0
+            seen = []
+
+            def spawn(*_args, **_kwargs):
+                seen.append((root / "app-active").exists())
+                return process
+
+            with mock.patch.object(runner, "RUN", root), mock.patch.object(
+                runner, "READY_SECONDS", 0.0
+            ), mock.patch.object(
+                runner.apps, "load_applications", return_value=apps.LoadResult((app,), ())
+            ), mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                runner.run(request)
+            return seen
+
+    def test_terminal_apps_keep_the_controller_but_other_apps_take_it(self):
+        # A terminal app (nmtui, "Press ENTER to return") is driven by the controller
+        # through gamepad-nav's keyboard events; app-active would silence them.
+        self.assertEqual(self.active_marker_while_running(terminal=True), [False])
+        self.assertEqual(self.active_marker_while_running(terminal=False), [True])
+
+    def test_quick_clean_exit_is_not_a_start_failure(self):
+        # nmtui (or any tool) may legitimately finish before the 5 s ready mark.
+        for code, expected in ((0, "exited: status 0\n"),
+                               (3, "failed: exited before the application became ready (status 3)\n")):
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                manifest = root / "demo.ini"
+                manifest.write_text(apps.serialize(self.app()), encoding="utf-8")
+                app = apps.read_manifest(manifest)
+                request = root / "launch-app.request"
+                request.write_text("demo\n", encoding="ascii")
+                process = mock.Mock(pid=55)
+                process.poll.return_value = code
+                process.wait.return_value = code
+                with mock.patch.object(runner, "RUN", root), mock.patch.object(
+                    runner, "READY_SECONDS", 0.0
+                ), mock.patch.object(
+                    runner.apps, "load_applications", return_value=apps.LoadResult((app,), ())
+                ), mock.patch.object(runner.subprocess, "Popen", return_value=process):
+                    self.assertEqual(runner.run(request), code)
+                self.assertEqual((root / "demo-status").read_text(), expected)
+
     def test_missing_command_writes_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -323,6 +377,19 @@ class RdpRunnerTest(unittest.TestCase):
         (self.run_dir / "rdp.request").write_text("rdp-newer\n")  # a newer launch
         self.assertEqual(runner.cleanup_rdp(self.run_dir), 0)
         self.assertEqual(sorted(path.name for path in self.run_dir.iterdir()), ["rdp.request"])
+
+    def test_on_failure_cleanup_keeps_the_password_for_the_pending_request(self):
+        # The same connection was launched again while the old session was giving
+        # up: its request and freshly handed-off password must survive so the
+        # re-armed path unit can start it.
+        (self.run_dir / "rdp-session").write_text("rdp-work-pc\n")
+        rdp.write_handoff("rdp-work-pc", PASSWORD, self.run_dir / "rdp-session.secret")
+        (self.run_dir / "rdp-work-pc-ready").touch()
+        (self.run_dir / "rdp.request").write_text("rdp-work-pc\n")
+        self.assertEqual(runner.cleanup_rdp(self.run_dir), 0)
+        self.assertEqual(
+            sorted(path.name for path in self.run_dir.iterdir()), ["rdp-session.secret", "rdp.request"]
+        )
 
 
 if __name__ == "__main__":

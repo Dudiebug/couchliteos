@@ -18,6 +18,10 @@ KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
 OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
 HOME_REQUEST = pathlib.Path("/run/moonlightos/home.request")
+APP_ACTIVE = pathlib.Path("/run/moonlightos/app-active")
+# Touched by the launcher while it holds focus (Home pressed) even though an app runs.
+LAUNCHER_FOCUS = pathlib.Path("/run/moonlightos/launcher-focus")
+CONTROLLER_ID = pathlib.Path("/var/lib/moonlightos/launcher-controller.id")
 _last_state_check = 0.0
 _last_state = False
 
@@ -28,23 +32,113 @@ def app_active() -> bool:
     if now - _last_state_check < 0.5:
         return _last_state
     _last_state_check = now
-    _last_state = pathlib.Path("/run/moonlightos/app-active").exists()
+    _last_state = APP_ACTIVE.exists()
     return _last_state
 
 
-def find_gamepad() -> InputDevice | None:
-    for path in glob.glob("/dev/input/event*"):
+def navigation_blocked(active_osk: bool) -> bool:
+    """An app owns the controller, unless the launcher was brought back with Home."""
+    return app_active() and not active_osk and not LAUNCHER_FOCUS.exists()
+
+
+def is_gamepad(dev: InputDevice) -> bool:
+    keys = set(dev.capabilities().get(ecodes.EV_KEY, []))
+    return ecodes.BTN_GAMEPAD in keys or ecodes.BTN_SOUTH in keys
+
+
+def save_identity(dev: InputDevice) -> None:
+    """Record the launcher controller so USB/IP never exports it (first pad found)."""
+    serial = (dev.uniq or "*").lower()
+    try:
+        CONTROLLER_ID.write_text(f"{dev.info.vendor:04x}:{dev.info.product:04x}:{serial}\n")
+    except OSError:
+        pass  # the pad still has to work
+
+
+class Pads:
+    """Every gamepad driving the launcher, keyed by /dev/input path."""
+
+    def __init__(self) -> None:
+        self.devices: dict[str, InputDevice] = {}
+        self.grabbed: set[str] = set()
+        self.ignored: set[str] = set()  # nodes already seen to be something else
+
+    def rescan(self) -> None:
+        """Follow hot-plug: add pads that appeared, forget those that went away."""
+        paths = set(glob.glob("/dev/input/event*"))
+        for path in set(self.devices) - paths:
+            self.drop(path)
+        self.ignored &= paths
+        for path in sorted(paths - set(self.devices) - self.ignored):
+            dev = None
+            try:
+                dev = InputDevice(path)
+                if not is_gamepad(dev):
+                    self.ignored.add(path)
+                    dev.close()
+                    continue
+                if not self.devices:
+                    save_identity(dev)
+                self.devices[path] = dev
+            except OSError:
+                if dev is not None:
+                    try:
+                        dev.close()
+                    except OSError:
+                        pass
+
+    def drop(self, path: str) -> None:
+        dev = self.devices.pop(path, None)
+        if dev is None:
+            return
         try:
-            dev = InputDevice(path)
-            keys = set(dev.capabilities().get(ecodes.EV_KEY, []))
-            if ecodes.BTN_GAMEPAD in keys or ecodes.BTN_SOUTH in keys:
-                serial = (dev.uniq or "*").lower()
-                identity = f"{dev.info.vendor:04x}:{dev.info.product:04x}:{serial}\n"
-                pathlib.Path("/var/lib/moonlightos/launcher-controller.id").write_text(identity)
-                return dev
+            if path in self.grabbed:
+                dev.ungrab()
+            dev.close()
         except OSError:
-            continue
-    return None
+            pass
+        self.grabbed.discard(path)
+
+    def drop_all(self) -> None:
+        for path in list(self.devices):
+            self.drop(path)
+
+    def sync_grab(self, active_osk: bool) -> None:
+        """The on-screen keyboard grabs every pad so games never see its input."""
+        for path, dev in self.devices.items():
+            if active_osk == (path in self.grabbed):
+                continue
+            try:
+                dev.grab() if active_osk else dev.ungrab()
+            except OSError:
+                self.grabbed.discard(path)
+                continue
+            self.grabbed.add(path) if active_osk else self.grabbed.discard(path)
+
+    def pump(self, ui: UInput) -> None:
+        """Wait up to a second for input from any pad and translate it."""
+        try:
+            readable, _writable, _errors = select.select(list(self.devices.values()), [], [], 1)
+        except (OSError, ValueError):  # a pad vanished under select
+            self.drop_all()
+            time.sleep(1)
+            return
+        active_osk = OSK_ACTIVE.exists()
+        self.sync_grab(active_osk)
+        for path, dev in list(self.devices.items()):
+            if dev not in readable:
+                continue
+            try:
+                for event in dev.read():
+                    if navigation_blocked(active_osk):
+                        continue
+                    key = key_for_event(event)
+                    if key:
+                        emit(ui, key)
+            except BlockingIOError:
+                pass
+            except OSError:
+                self.drop(path)
 
 
 def emit(ui: UInput, key: int) -> None:
@@ -84,7 +178,7 @@ def is_home_event(event) -> bool:
     return (
         event.type == ecodes.EV_KEY
         and event.value == 1
-        and event.code in {ecodes.KEY_HOME, ecodes.BTN_MODE}
+        and event.code in {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE}
     )
 
 
@@ -109,7 +203,7 @@ def watch_home() -> None:
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if ecodes.KEY_HOME in keys or ecodes.BTN_MODE in keys:
+                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE} & keys:
                     devices[path] = device
                 else:
                     device.close()
@@ -130,34 +224,13 @@ def watch_home() -> None:
 def run() -> None:
     threading.Thread(target=watch_home, daemon=True).start()
     ui = UInput({ecodes.EV_KEY: KEYS}, name="MoonlightOS Launcher Navigation")
+    pads = Pads()
     while True:
-        dev = find_gamepad()
-        if dev is None:
+        pads.rescan()
+        if not pads.devices:
             time.sleep(2)
             continue
-        grabbed = False
-        try:
-            for event in dev.read_loop():
-                active_osk = OSK_ACTIVE.exists()
-                if active_osk != grabbed:
-                    try:
-                        dev.grab() if active_osk else dev.ungrab()
-                        grabbed = active_osk
-                    except OSError:
-                        grabbed = False
-                if app_active() and not active_osk:
-                    continue
-                key = key_for_event(event)
-                if key:
-                    emit(ui, key)
-        except OSError:
-            time.sleep(1)
-        finally:
-            if grabbed:
-                try:
-                    dev.ungrab()
-                except OSError:
-                    pass
+        pads.pump(ui)
 
 
 if __name__ == "__main__":

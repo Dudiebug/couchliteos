@@ -482,8 +482,8 @@ def read_connection_id(path: pathlib.Path, owner_uid: int | None = None) -> str 
     return None if value is None else validate_id(value.strip())
 
 
-def clear_session_state(run: pathlib.Path = RUN) -> None:
-    for name in (HANDOFF.name, SESSION.name):
+def clear_session_state(run: pathlib.Path = RUN, keep_handoff: bool = False) -> None:
+    for name in (SESSION.name,) if keep_handoff else (HANDOFF.name, SESSION.name):
         (run / name).unlink(missing_ok=True)
 
 

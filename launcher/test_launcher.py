@@ -324,6 +324,283 @@ class LauncherTest(unittest.TestCase):
             self.assertFalse((run / "rdp.request").exists())
             self.assertFalse((run / "rdp-session.secret").exists())
 
+    def terminal_app(self):
+        return self.module.apps.Application(
+            id="terminal", name="TERMINAL", kind="command", command="/bin/bash",
+            status_id="terminal", terminal=True,
+        )
+
+    def test_home_marks_the_launcher_as_holding_focus_for_the_controller(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([-1])
+        launcher.prepare_session = mock.Mock()
+        launcher.setup_wizard = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "home.request").touch()
+            seen = []
+            launcher.active_applications = mock.Mock(
+                side_effect=lambda: seen.append((run / "launcher-focus").exists())
+            )
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", run / "launcher-focus", create=True
+            ), mock.patch.object(self.module.display, "restore_saved_mode"), mock.patch.object(
+                self.module.curses, "curs_set"
+            ), mock.patch.object(self.module.curses, "use_default_colors"):
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    launcher.run()
+        self.assertEqual(seen, [True])
+
+    def test_handing_focus_back_to_an_app_clears_the_launcher_focus_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            focus = pathlib.Path(directory) / "launcher-focus"
+            focus.touch()
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True), mock.patch.object(
+                self.module.subprocess, "run", return_value=mock.Mock(returncode=1)
+            ):
+                self.assertFalse(self.module.Launcher.focus_app(self.terminal_app()))
+                self.assertTrue(focus.exists())  # no window took focus
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True), mock.patch.object(
+                self.module.subprocess, "run", return_value=mock.Mock(returncode=0)
+            ):
+                self.assertTrue(self.module.Launcher.focus_app(self.terminal_app()))
+            self.assertFalse(focus.exists())
+
+    def test_starting_an_app_clears_the_marker_and_a_failed_start_restores_it(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([10])
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            focus = run / "launcher-focus"
+            focus.touch()
+
+            def write(_path, _content):
+                self.assertFalse(focus.exists())  # the new app gets the controller
+                (run / "terminal-ready").touch()
+
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", focus, create=True
+            ), mock.patch.object(self.module.apps, "atomic_write", side_effect=write):
+                self.assertTrue(launcher.launch_app(self.terminal_app()))
+            self.assertFalse(focus.exists())
+            # The failure screen is drawn in the launcher, so it must be navigable.
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True):
+                launcher.show_launch_failure("TERMINAL", "boom")
+            self.assertTrue(focus.exists())
+
+    def test_app_that_quits_cleanly_before_ready_returns_to_the_launcher_without_an_error(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([-1] * 5)
+        launcher.show_launch_failure = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+
+            def write(_path, _content):
+                (run / "terminal-status").write_text("exited: status 0\n")
+
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module.apps, "atomic_write", side_effect=write
+            ):
+                self.assertTrue(launcher.launch_app(self.terminal_app()))
+        launcher.show_launch_failure.assert_not_called()
+        self.assertIn("EXITED", launcher.status)
+
+    def command_app(self, app_id, name):
+        return self.module.apps.Application(
+            id=app_id, name=name, kind="command", command="/bin/true", status_id=app_id,
+        )
+
+    def test_second_configured_app_is_refused_while_another_one_runs(self):
+        # One moonlightos-configured-app.service runs one app at a time; a queued
+        # request would pop up unasked when the running app closes.
+        chrome, terminal = self.command_app("google-chrome", "GOOGLE CHROME"), self.command_app("terminal", "TERMINAL")
+        launcher = self.launcher()
+        launcher.screen = Screen()
+        launcher.show_launch_failure = mock.Mock()
+        result = self.module.apps.LoadResult((chrome, terminal), ())
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "google-chrome-ready").touch()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "application_result", return_value=result
+            ):
+                self.assertFalse(launcher.launch_app(terminal))
+            self.assertFalse((run / "launch-app.request").exists())
+        self.assertIn("GOOGLE CHROME", launcher.show_launch_failure.call_args.args[1])
+
+    def test_timed_out_launch_removes_the_unused_request_of_every_app_kind(self):
+        launcher = self.launcher()
+        launcher.show_launch_failure = mock.Mock()
+        moonlight = self.module.apps.Application(
+            id="moonlight", name="MOONLIGHT", kind="request", request="start-moonlight", status_id="moonlight",
+        )
+        for app, request in ((self.terminal_app(), "launch-app.request"), (moonlight, "start-moonlight")):
+            launcher.screen = Screen([-1] * 5)
+            with tempfile.TemporaryDirectory() as directory:
+                run = pathlib.Path(directory)
+                clock = iter([0.0, 0.0] + [100.0] * 10)
+                with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                    self.module.time, "monotonic", side_effect=lambda: next(clock)
+                ):
+                    self.assertFalse(launcher.launch_app(app))
+                self.assertFalse((run / request).exists(), request)
+
+    def test_user_added_apps_are_resumed_by_the_wayland_app_id_of_their_command(self):
+        # UI-created apps store an uppercased name and Chrome kiosk windows are titled
+        # by the page, so a title match can never find them.
+        web = self.module.apps.Application(
+            id="youtube", name="YOUTUBE", kind="command", command="/usr/bin/google-chrome-stable",
+            arguments="--ozone-platform=wayland --kiosk --no-first-run https://youtube.com",
+            status_id="youtube",
+        )
+        other = self.module.apps.Application(
+            id="steam", name="STEAM", kind="command", command="/usr/bin/steam", status_id="steam",
+        )
+        for app, expected in ((web, "app_id:google-chrome"), (other, "app_id:steam")):
+            with mock.patch.object(
+                self.module.subprocess, "run", return_value=mock.Mock(returncode=0)
+            ) as run:
+                self.assertTrue(self.module.Launcher.focus_app(app))
+            self.assertEqual(run.call_args_list[0].args[0], ["wlrctl", "toplevel", "focus", expected])
+        with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+            self.assertFalse(self.module.Launcher.focus_app(web))
+        self.assertEqual(
+            [call.args[0][-1] for call in run.call_args_list],
+            ["app_id:google-chrome", "app_id:google-chrome-stable", "title:YOUTUBE"],
+        )
+        # Terminal apps are foot windows titled with the app name.
+        with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+            self.module.Launcher.focus_app(self.terminal_app())
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["title:TERMINAL"])
+
+    def active_applications_screen(self, keys):
+        class Recording(Screen):
+            def __init__(self, keys):
+                super().__init__(keys)
+                self.text = []
+
+            def addstr(self, _row, _column, text, *_args):
+                self.text.append(text)
+
+            addnstr = addstr
+
+        launcher = self.launcher()
+        launcher.screen = Recording(keys)
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "terminal-ready").touch()
+            result = self.module.apps.LoadResult((self.terminal_app(),), ())
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "application_result", return_value=result
+            ), mock.patch.object(self.module, "active_rdp_session", return_value=None):
+                launcher.active_applications()
+            return launcher.screen.text, sorted(path.name for path in run.glob("close-*"))
+
+    def test_active_applications_name_the_controller_button_that_closes_not_x(self):
+        # gamepad-nav sends Delete for Y/Square and F12 (on-screen keyboard) for X/Triangle.
+        text, closed = self.active_applications_screen([self.module.curses.KEY_F12, 27])
+        self.assertEqual(closed, [])
+        hint = next(row for row in text if "CLOSES" in row)
+        self.assertIn("Y (XBOX) / SQUARE (PS) CLOSES", hint)
+        self.assertNotIn("X CLOSES", hint)
+        # The keyboard keys keep working.
+        for key in (ord("x"), self.module.curses.KEY_DC):
+            _text, closed = self.active_applications_screen([key, 27])
+            self.assertEqual(closed, ["close-terminal"])
+
+    def display_preview(self, keys):
+        """Run the display-mode confirmation with the given keys; return (events, save mock)."""
+        events = []
+
+        class Keys(Screen):
+            def getch(self):
+                events.append("getch")
+                return super().getch()
+
+        launcher = self.launcher()
+        settings = self.module.Settings(Keys(keys), launcher)
+        old = self.module.display.Mode(1280, 720, 60000, current=True)
+        new = self.module.display.Mode(1920, 1080, 60000)
+        output = mock.Mock(current_mode=new)
+        output.name, output.identity = "HDMI-A-1", "tv"
+        settings.output, settings.original_mode = output, old
+        settings.resolution, settings.refresh_mhz = "1920x1080", 60000
+        settings.refresh_outputs = mock.Mock()
+        display = self.module.display
+        with mock.patch.object(display, "valid_output_mode", return_value=(output, new)), mock.patch.object(
+            display, "apply_mode"
+        ), mock.patch.object(display, "save_display") as save, mock.patch.object(display, "log"), mock.patch.object(
+            self.module.curses, "flushinp", side_effect=lambda: events.append("flush"), create=True
+        ):
+            settings.apply_preview()
+        return events, save
+
+    def test_display_confirmation_ignores_queued_input_and_defaults_to_revert(self):
+        # A double-tapped A must not save a mode nobody has seen: it is reapplied every boot.
+        events, save = self.display_preview([10])
+        save.assert_not_called()
+        self.assertEqual(events[0], "flush")
+        # Choosing KEEP explicitly still saves it.
+        _events, save = self.display_preview([self.module.curses.KEY_DOWN, 10])
+        save.assert_called_once()
+
+    def test_escape_does_not_lag_a_second_behind_the_b_button(self):
+        # B is forwarded as a bare Esc; curses waits ESCDELAY (1000 ms) for a sequence.
+        screen = Screen()
+        with mock.patch.object(self.module.curses, "set_escdelay") as set_escdelay, mock.patch.object(
+            self.module, "Launcher"
+        ) as launcher:
+            self.module.main(screen)
+        set_escdelay.assert_called_once_with(25)
+        launcher.assert_called_once_with(screen)
+
+    def test_guide_pressed_inside_active_applications_closes_it_and_leaves_no_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            request = run / "home.request"
+            request.touch()
+
+            class GuideScreen(Screen):
+                def getch(self):
+                    if self.keys and self.keys[0] == "guide":
+                        self.keys.pop(0)
+                        request.touch()  # Guide again, while the menu is open
+                        return 27
+                    return super().getch()
+
+            launcher = self.launcher()
+            launcher.screen = GuideScreen([-1, "guide", -1])
+            launcher.prepare_session = mock.Mock()
+            launcher.setup_wizard = mock.Mock()
+            launcher.running_applications = mock.Mock(return_value=[])
+            entered = []
+            real = launcher.active_applications
+            launcher.active_applications = lambda: (entered.append(1), real())[1]
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", request
+            ), mock.patch.object(self.module, "LAUNCHER_FOCUS", run / "launcher-focus", create=True), mock.patch.object(
+                self.module.display, "restore_saved_mode"
+            ), mock.patch.object(self.module.curses, "curs_set"), mock.patch.object(
+                self.module.curses, "use_default_colors"
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    launcher.run()
+        self.assertEqual(len(entered), 1)
+
+    def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
+        launcher = self.launcher()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            focus = run / "launcher-focus"
+            focus.touch()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", focus, create=True
+            ), mock.patch.dict(self.module.os.environ, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"}):
+                launcher.prepare_session()
+            self.assertFalse(focus.exists())
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")

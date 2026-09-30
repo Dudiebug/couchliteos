@@ -4,6 +4,7 @@ After=moonlightos-launcher.service
 ConditionPathExists=/run/moonlightos/launch-app.request
 StartLimitIntervalSec=60
 StartLimitBurst=3
+OnFailure=moonlightos-path-rearm@configured-app.service
 
 [Service]
 Type=simple
