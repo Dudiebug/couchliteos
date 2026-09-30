@@ -7,6 +7,8 @@ dbus-user-session
 sudo
 network-manager
 wpasupplicant
+# NetworkManager asks polkit before the launcher user (the first-boot wizard) may add a Wi-Fi profile.
+polkitd
 iproute2
 iputils-ping
 ethtool

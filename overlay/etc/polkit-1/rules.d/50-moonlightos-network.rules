@@ -1,0 +1,8 @@
+// MoonlightOS: the launcher runs as the unprivileged "moonlightos" user. The first-boot
+// wizard joins Wi-Fi through NetworkManager's D-Bus API, which asks polkit first.
+// Only NetworkManager actions are granted, and only to that one user.
+polkit.addRule(function(action, subject) {
+    if (subject.user == "moonlightos" && action.id.indexOf("org.freedesktop.NetworkManager.") == 0) {
+        return polkit.Result.YES;
+    }
+});
