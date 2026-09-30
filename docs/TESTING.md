@@ -183,6 +183,43 @@ the `moonlightos` user with a generated test password. Results on 2026-09-30:
 - xrdp 0.10.1 then showed its own login dialog rather than starting the session
   (see [Remote Desktop](REMOTE_DESKTOP.md#known-behavior)).
 
+## v0.1.12 local results (2026-09-30)
+
+Both release ISOs were built from commit `dc1de54` in the lab's Debian 13 build
+VM (QEMU software emulation, 14 vCPUs, 6 GiB RAM); nothing ran on GitHub
+Actions. Later commits change only documentation, tests, and tools. Each build
+passed its profile's required/forbidden image-path checks; the iMac build
+reported `wl.ko.xz built for 6.12.111+deb13-amd64`.
+
+| ISO | Bytes | Build time | SHA-256 |
+|---|---|---|---|
+| `moonlightos-0.1.12-amd64.iso` | 1,890,271,232 | 63 min | `0dd5ae5c87fd88059481f61fc86c650bab5821bfc436d9ffa8f7f612c8c98a97` |
+| `moonlightos-0.1.12-imac2013-amd64.iso` | 1,629,716,480 | 59 min | `64d6617b9fe2802315620f07c0e193f7df5381990e181820f41bee94b3ee0def` |
+
+Both are under GitHub's 2 GiB (2,147,483,648-byte) asset limit.
+
+QEMU tests on those exact ISOs, run from Git Bash on the Windows host (QEMU
+11.1.0, software emulation, `MOONLIGHTOS_QEMU_TIMEOUT_SCALE=3`):
+
+| Test | intel | imac2013 |
+|---|---|---|
+| `qemu-smoke.sh` (live boot, apps, OSK, Bluetooth, USB/IP, Remote Desktop) | pass, 3 min | pass, 3 min |
+| `qemu-persistence-smoke.sh` (persistent reboot, `nopersistence`) | pass, 4 min | pass, 4 min |
+| `qemu-install-smoke.sh` (install, disk boot, cold-reboot persistence) | pass, 18 min | pass, 18 min |
+
+Notes:
+
+- An earlier imac2013 test ISO failed the install test once at the installer's
+  "Install the system" step while the host was heavily loaded. No log was
+  captured; the same ISO passed when rerun, and the final ISO passed.
+- Nested KVM inside the software-emulated build VM crashed the outer QEMU
+  (`bql_locked` assertion). The build VM now hides SVM (`-cpu max,svm=off`), and
+  the QEMU tests run on the Windows host instead.
+- Both ISOs boot through Debian's shim (`EFI/boot/bootx64.efi`, signed by the
+  Microsoft UEFI CA). No boot with Secure Boot enabled has been tested.
+- Not run: the Hyper-V and Proxmox VE scripts (syntax-checked only), a Windows
+  RDP host, the physical OptiPlex, and the physical iMac.
+
 ## VM testing: Hyper-V and Proxmox VE
 
 VMs cannot emulate the iMac's NVIDIA Kepler GPU, Broadcom Wi-Fi, or audio, so

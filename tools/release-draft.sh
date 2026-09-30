@@ -28,7 +28,8 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
 fi
 
 MOONLIGHTOS_RELEASE_DIR=$OUT "$ROOT/tools/release-assets.sh"
-mapfile -t assets < <(cut -d' ' -f3- "$OUT/SHA256SUMS")
+# Lines are "<sha256>  <name>" or, from binary-mode tools, "<sha256> *<name>".
+mapfile -t assets < <(sed -E 's/^[0-9a-f]{64} [ *]//' "$OUT/SHA256SUMS")
 gh release create "$TAG" \
   --repo "$REPO" \
   --draft \
