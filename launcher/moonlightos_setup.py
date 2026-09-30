@@ -756,18 +756,20 @@ class SetupWizard:
         if answer == "restart":
             self.state, index = {}, 0
             self.save_progress()
+        pending = order[index:]
         while True:
-            while index < len(order):
-                step = order[index]
+            for step in pending:
+                if self.state.get(step) == DONE:  # a finished step is never reopened or downgraded
+                    continue
                 self.state[step] = getattr(self, "step_" + step.replace("-", "_"))()
                 self.save_progress()
-                index += 1
+            pending = []
             choice = self.done_screen(order)
             if choice == "FINISH":
                 self.mark_complete()
                 return True
             if choice is not None:
-                index = next(i for i, step in enumerate(order) if self.state.get(step) != DONE)
+                pending = [step for step in order if self.state.get(step) != DONE]
 
     def welcome(self, *, resuming: bool, title: str) -> str:
         lines = [

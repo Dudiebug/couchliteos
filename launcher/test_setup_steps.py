@@ -149,5 +149,72 @@ class SoundRestoreTest(base.WizardTestCase):
         self.assertEqual(system.default_sinks[-1], 3)
 
 
+class RedoTest(base.WizardTestCase):
+    """REDO SKIPPED OR FAILED STEPS reopens only what is not done, and never undoes a done step."""
+
+    ORDER = ["network", "controller", "display", "streaming", "tailscale", "chiaki-ng", "applications"]
+
+    def stubbed(self, ui, state, outcomes=None, *, only=None):
+        """A wizard that starts from `state`; the steps in `only` (default all) are recorded, not run."""
+        setup.save_state(state, self.state_path)
+        self.ran = []
+        wizard = self.wizard(ui)
+        for step in only or self.ORDER:
+            outcome = (outcomes or {}).get(step, setup.SKIPPED)
+            setattr(
+                wizard, "step_" + step.replace("-", "_"),
+                lambda step=step, outcome=outcome: self.ran.append(step) or outcome,
+            )
+        return wizard
+
+    def all_done_except(self, **others):
+        return {step: others.get(step.replace("-", "_"), "done") for step in self.ORDER}
+
+    def test_only_steps_that_are_not_done_are_redone(self):
+        state = self.all_done_except(controller="failed", tailscale="skipped")
+        ui = base.FakeUI("START SETUP", "REDO", "FINISH")
+        wizard = self.stubbed(ui, state, {"controller": "done", "tailscale": "skipped"})
+        self.assertTrue(wizard.run())
+        self.assertEqual(self.ran, ["controller", "tailscale"])
+        self.assertEqual(self.state(), self.all_done_except(tailscale="skipped"))
+
+    def test_steps_after_a_redone_one_are_not_asked_again(self):
+        # Only the controller step is replaced: the real display, streaming and optional
+        # steps would ask the (empty) scripted UI and fail the test if they were opened.
+        state = self.all_done_except(controller="failed")
+        ui = base.FakeUI("START SETUP", "REDO", "FINISH")
+        wizard = self.stubbed(ui, state, only=["controller"])
+        wizard.run()
+        self.assertEqual(self.ran, ["controller"])
+        self.assertEqual(ui.titles().count("SETUP COMPLETE"), 2)
+        self.assertEqual(set(self.state().values()), {"done", "skipped"})
+        self.assertEqual(self.state()["display"], "done")
+
+    def test_skipping_a_redone_step_with_b_keeps_every_done_step_done(self):
+        state = self.all_done_except(network="failed")
+        wizard = self.stubbed(base.FakeUI("START SETUP", "REDO", "FINISH"), state, only=["network"])
+        wizard.run()
+        self.assertEqual(self.state(), self.all_done_except(network="skipped"))
+
+    def test_a_done_step_that_is_ahead_of_the_resume_point_is_not_run_again(self):
+        ui = base.FakeUI("CONTINUE SETUP", "FINISH")
+        wizard = self.stubbed(ui, {"tailscale": "done"})
+        wizard.run()
+        self.assertEqual(self.ran, ["network", "controller", "display", "streaming", "chiaki-ng", "applications"])
+        self.assertEqual(self.state()["tailscale"], "done")
+
+    def test_escape_on_the_done_screen_does_not_run_anything_again(self):
+        ui = base.FakeUI("START SETUP", None, "FINISH")
+        self.stubbed(ui, {}).run()
+        self.assertEqual(self.ran, self.ORDER)
+
+    def test_redo_twice_reopens_only_what_is_still_not_done(self):
+        state = self.all_done_except(controller="failed", tailscale="skipped")
+        ui = base.FakeUI("START SETUP", "REDO", "REDO", "FINISH")
+        wizard = self.stubbed(ui, state, {"controller": "done"})
+        wizard.run()
+        self.assertEqual(self.ran, ["controller", "tailscale", "tailscale"])
+
+
 if __name__ == "__main__":
     unittest.main()
