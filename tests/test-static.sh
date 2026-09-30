@@ -149,6 +149,7 @@ rg -q 'stdin=subprocess.PIPE' launcher/moonlightos_app_runner.py
 ! rg -q '^Exec[A-Za-z]*=[-@:!]*\+' services/moonlightos-rdp.service
 ! rg -q '^ExecStartPre=' services/moonlightos-rdp.service
 rg -q '^SuccessExitStatus=130 143$' services/moonlightos-rdp.service
+rg -q '^RestartMode=direct$' services/moonlightos-rdp.service
 rg -q '^ExecStartPost=\+/usr/bin/systemctl reset-failed moonlightos-rdp.service moonlightos-rdp.path$' services/moonlightos-rdp-cleanup.service
 rg -q '^ExecStartPost=\+/usr/bin/systemctl restart moonlightos-rdp.path$' services/moonlightos-rdp-cleanup.service
 ! rg -q '^EnvironmentFile=' services/moonlightos-rdp-cleanup.service services/moonlightos-rdp-secret.service

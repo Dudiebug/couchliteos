@@ -400,14 +400,17 @@ def run_rdp(run_dir: pathlib.Path | None = None, connections: pathlib.Path = rdp
 
 
 def cleanup_rdp(run_dir: pathlib.Path | None = None) -> int:
-    """OnFailure handler: forget a session whose restarts are exhausted."""
+    """OnFailure handler: forget a session whose restarts are exhausted.
+
+    A pending rdp.request is left alone: it is a newer launch, and the re-armed
+    path unit starts it.
+    """
     run_dir = run_dir or RUN
     try:
         connection_id = rdp.read_connection_id(run_dir / rdp.SESSION.name)
     except (OSError, UnicodeError, ValueError):
         connection_id = None
     rdp.clear_session_state(run_dir)
-    (run_dir / rdp.REQUEST.name).unlink(missing_ok=True)
     if connection_id:
         (run_dir / f"{connection_id}-ready").unlink(missing_ok=True)
         status = run_dir / f"{connection_id}-status"

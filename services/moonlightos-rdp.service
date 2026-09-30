@@ -26,6 +26,10 @@ EnvironmentFile=-/run/moonlightos/session.env
 ExecStart=/usr/libexec/moonlightos-run-configured-app --rdp
 Restart=on-failure
 RestartSec=2
+# Restart directly: with the default (normal) mode, systemd 254+ passes through
+# the failed state and fires OnFailure= on every retried crash, which would
+# clear the session the restart needs. OnFailure= now runs only on giving up.
+RestartMode=direct
 # 65: authentication, certificate, or configuration failure; never retry
 # (retrying a wrong password can lock the account).
 RestartPreventExitStatus=65 66

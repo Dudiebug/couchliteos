@@ -320,8 +320,9 @@ class RdpRunnerTest(unittest.TestCase):
         rdp.write_handoff("rdp-work-pc", PASSWORD, self.run_dir / "rdp-session.secret")
         (self.run_dir / "rdp-work-pc-ready").touch()
         (self.run_dir / "app-active").write_text("rdp-work-pc\n")
+        (self.run_dir / "rdp.request").write_text("rdp-newer\n")  # a newer launch
         self.assertEqual(runner.cleanup_rdp(self.run_dir), 0)
-        self.assertEqual(sorted(path.name for path in self.run_dir.iterdir()), [])
+        self.assertEqual(sorted(path.name for path in self.run_dir.iterdir()), ["rdp.request"])
 
 
 if __name__ == "__main__":
