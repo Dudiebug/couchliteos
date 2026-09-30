@@ -1,0 +1,12 @@
+[Unit]
+Description=Tell the MoonlightOS launcher that the system woke from sleep
+After=suspend.target
+
+[Service]
+Type=oneshot
+# Also clears any request left over from before the sleep.
+ExecStart=/usr/bin/rm -f /run/moonlightos/suspend
+ExecStart=/usr/bin/touch /run/moonlightos/resumed
+
+[Install]
+WantedBy=suspend.target

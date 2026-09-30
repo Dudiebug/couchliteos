@@ -60,7 +60,7 @@ class LauncherTest(unittest.TestCase):
         launcher = self.launcher()
         self.assertEqual(
             [label for label, _action in launcher.menu],
-            ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "SETTINGS", "REBOOT", "SHUTDOWN"],
+            ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "SETTINGS", "SLEEP", "REBOOT", "SHUTDOWN"],
         )
 
     def test_custom_order_and_disabled_visibility(self):
@@ -78,7 +78,7 @@ class LauncherTest(unittest.TestCase):
             launcher = self.module.Launcher(Screen())
         self.assertEqual(launcher.menu[0], ("CUSTOM", "custom"))
         self.assertNotIn("DISABLED", [label for label, _action in launcher.menu])
-        self.assertEqual(launcher.menu[-3:], list(self.module.FIXED_CONTROLS))
+        self.assertEqual(launcher.menu[-len(self.module.FIXED_CONTROLS):], list(self.module.FIXED_CONTROLS))
 
     def test_invalid_manifests_do_not_crash_startup(self):
         result = self.module.apps.LoadResult((), ("bad.ini: invalid",))
@@ -323,6 +323,110 @@ class LauncherTest(unittest.TestCase):
                 self.assertFalse(launcher.launch_app(self.rdp_button()))
             self.assertFalse((run / "rdp.request").exists())
             self.assertFalse((run / "rdp-session.secret").exists())
+
+    def test_sleep_control_sits_between_settings_and_the_other_power_controls(self):
+        self.assertEqual(
+            [action for _label, action in self.module.FIXED_CONTROLS],
+            ["settings", "suspend", "reboot", "poweroff"],
+        )
+
+    def test_choosing_sleep_asks_systemd_to_suspend_through_the_request_file(self):
+        launcher = self.launcher()
+        launcher.selected = [action for _label, action in launcher.menu].index("suspend")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            launcher.activate()
+            self.assertTrue((pathlib.Path(directory) / "suspend").exists())
+        self.assertIn("SLEEP", launcher.status)
+
+    def test_on_resume_drops_stale_requests_refocuses_the_launcher_and_reports(self):
+        launcher = self.launcher()
+        home = pathlib.Path(tempfile.mkdtemp()) / "home.request"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", home), mock.patch.object(
+            self.module, "focus_launcher"
+        ) as focus:
+            (pathlib.Path(directory) / "suspend").touch()
+            home.touch()  # the long press that put the box to sleep also asked for Home
+            launcher.on_resume()
+            self.assertFalse((pathlib.Path(directory) / "suspend").exists())
+            self.assertFalse(home.exists())
+        focus.assert_called_once_with()
+        self.assertIn("RESUMED", launcher.status)
+
+    def test_resume_marker_is_consumed_once_and_calls_on_resume(self):
+        launcher = self.launcher()
+        launcher.on_resume = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            self.assertFalse(launcher.check_resume())
+            (pathlib.Path(directory) / "resumed").touch()
+            self.assertTrue(launcher.check_resume())
+            self.assertFalse(launcher.check_resume())
+            self.assertFalse((pathlib.Path(directory) / "resumed").exists())
+        launcher.on_resume.assert_called_once_with()
+
+    def test_idle_protection_is_on_normally_and_off_during_the_qemu_smoke_test(self):
+        launcher = self.launcher()
+        self.assertTrue(launcher.idle.enabled())
+        with mock.patch.object(self.module.power, "smoke_test_active", return_value=True):
+            self.assertFalse(launcher.idle.enabled())
+
+    def test_idle_guard_asks_the_launcher_whether_an_application_is_running(self):
+        launcher = self.launcher()
+        launcher.running_applications = mock.Mock(return_value=[object()])
+        self.assertTrue(launcher.idle.apps_running())
+        launcher.running_applications.return_value = []
+        self.assertFalse(launcher.idle.apps_running())
+
+    def test_a_failing_application_check_counts_as_running_so_the_box_never_sleeps_on_it(self):
+        launcher = self.launcher()
+        launcher.running_applications = mock.Mock(side_effect=ValueError("broken manifest"))
+        self.assertTrue(launcher.apps_running())
+
+    def test_unwritable_request_directory_reports_instead_of_crashing(self):
+        launcher = self.launcher()
+        with mock.patch.object(self.module, "RUN", pathlib.Path("/nonexistent-moonlightos-run")):
+            launcher.request_sleep()
+        self.assertIn("COULD NOT REQUEST SLEEP", launcher.status)
+
+    def test_read_key_goes_through_the_idle_guard(self):
+        guard = mock.Mock()
+        guard.filter.return_value = -1
+        with mock.patch.object(self.module, "IDLE_GUARD", guard):
+            self.assertEqual(self.module.read_key(Screen([10])), -1)
+        guard.filter.assert_called_once()
+        self.assertEqual(guard.filter.call_args.args[1], 10)
+
+    def test_settings_contains_sleep_and_screen_and_dispatches_to_it(self):
+        self.assertIn("SLEEP & SCREEN", self.module.SETTINGS_MENU)
+        settings = self.module.Settings(Screen(), self.launcher())
+        settings.selected = self.module.SETTINGS_MENU.index("SLEEP & SCREEN")
+        with mock.patch.object(self.module.Settings, "run_sleep_settings") as sleep_settings:
+            self.assertTrue(settings.activate())
+        sleep_settings.assert_called_once_with()
+
+    def test_sleep_and_screen_settings_are_saved_and_applied_to_the_guard(self):
+        keys = self.module.curses
+        launcher = self.launcher()
+        launcher.idle = mock.Mock()
+        settings = self.module.Settings(Screen([10, keys.KEY_DOWN, 10, 27]), launcher)
+        settings.choose = mock.Mock(side_effect=[15, 60])
+        power = self.module.power
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(5, 30)), mock.patch.object(
+            power, "save_settings"
+        ) as save, mock.patch.object(power, "wired_mac", return_value="D8:BB:C1:01:02:03"):
+            settings.run_sleep_settings()
+        self.assertEqual(
+            [call.args[0] for call in save.call_args_list], [power.Settings(15, 30), power.Settings(15, 60)]
+        )
+        self.assertEqual(launcher.idle.apply.call_args_list[-1].args[0], power.Settings(15, 60))
+        self.assertEqual(settings.choose.call_args_list[0].args[1][0], ("OFF", 0))
+        self.assertEqual(settings.choose.call_args_list[1].args[1][-1], ("2 HOURS", 120))
+        self.assertIn("D8:BB:C1:01:02:03", settings.status)
 
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)

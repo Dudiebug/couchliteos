@@ -21,6 +21,7 @@ import moonlightos_audio as audio
 import moonlightos_support as support
 import moonlightos_bluetooth as bluetooth
 import moonlightos_apps as apps
+import moonlightos_power as power
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
 
@@ -28,11 +29,14 @@ import moonlightos_setup as setup
 RUN = pathlib.Path("/run/moonlightos")
 HOME_REQUEST = RUN / "home.request"
 SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
-FIXED_CONTROLS = (("SETTINGS", "settings"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"))
+FIXED_CONTROLS = (
+    ("SETTINGS", "settings"), ("SLEEP", "suspend"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"),
+)
 SETTINGS_MENU = (
     "DISPLAY",
     "AUDIO",
     "BLUETOOTH",
+    "SLEEP & SCREEN",
     "APPLICATIONS",
     "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
@@ -83,8 +87,24 @@ def rdp_log(message: str) -> None:
     display.log(message, pathlib.Path("/var/log/moonlightos/rdp.log"))
 
 
+# Set by Launcher: blanks the screen when idle and swallows the key that wakes it.
+IDLE_GUARD: power.IdleGuard | None = None
+
+
+def focus_launcher() -> None:
+    try:
+        subprocess.run(
+            ["wlrctl", "toplevel", "focus", "title:MoonlightOS Launcher"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def read_key(screen: curses.window) -> int:
     key = screen.getch()
+    if IDLE_GUARD is not None:
+        key = IDLE_GUARD.filter(screen, key)
     if key == curses.KEY_F12:
         request_osk()
         return -1
@@ -259,6 +279,19 @@ class Launcher:
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
         self.reload_applications()
+        global IDLE_GUARD
+        IDLE_GUARD = self.idle = power.IdleGuard(
+            power.load_settings(),
+            apps_running=self.apps_running,
+            request_sleep=self.request_sleep,
+            resumed=self.check_resume,
+            home_pending=lambda: HOME_REQUEST.exists(),
+            clear_home=lambda: HOME_REQUEST.unlink(missing_ok=True),
+            # The QEMU smoke tests must never be blanked or suspended (checked live: the
+            # fw_cfg flag may appear after the launcher starts).
+            enabled=lambda: not power.smoke_test_active(),
+            passive_keys=(-1, curses.KEY_RESIZE),
+        )
 
     def reload_applications(self) -> None:
         result = application_result()
@@ -286,6 +319,38 @@ class Launcher:
 
     def request(self, name: str) -> None:
         (RUN / name).touch()
+
+    def apps_running(self) -> bool:
+        try:
+            return bool(self.running_applications())
+        except Exception:  # noqa: BLE001 - a failed check must not sleep the box or crash the launcher
+            return True
+
+    def request_sleep(self) -> None:
+        # moonlightos-suspend.path removes the file before suspending.
+        try:
+            self.request("suspend")
+        except OSError as error:
+            self.status = f"COULD NOT REQUEST SLEEP: {error}"
+            return
+        self.status = "GOING TO SLEEP"
+
+    def check_resume(self) -> bool:
+        """True once after the system wakes (moonlightos-resume.service drops the marker)."""
+        marker = RUN / "resumed"
+        if not marker.exists():
+            return False
+        marker.unlink(missing_ok=True)
+        self.on_resume()
+        return True
+
+    def on_resume(self) -> None:
+        """Called once when the launcher sees the system resume from sleep."""
+        (RUN / "suspend").unlink(missing_ok=True)  # a stale request must not suspend again
+        HOME_REQUEST.unlink(missing_ok=True)  # the long press that slept us also asked for Home
+        self.status = "RESUMED FROM SLEEP"
+        self.last_status_update = time.monotonic()
+        focus_launcher()
 
     def draw(self) -> None:
         self.screen.erase()
@@ -516,6 +581,8 @@ class Launcher:
             self.reload_applications()
         elif action in {"reboot", "poweroff"}:
             self.request(action)
+        elif action == "suspend":
+            self.request_sleep()
 
     def setup_wizard(self, *, force: bool = False) -> None:
         settings = Settings(self.screen, self)
@@ -899,6 +966,7 @@ class Settings:
             "DISPLAY": self.run_display,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
+            "SLEEP & SCREEN": self.run_sleep_settings,
             "APPLICATIONS": self.run_applications,
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
@@ -975,6 +1043,41 @@ class Settings:
                 self.status = f"DEFAULT OUTPUT: {sinks[selected].name}"
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 self.status = f"OUTPUT NOT CHANGED: {error}"
+
+    def run_sleep_settings(self) -> None:
+        settings = power.load_settings()
+        mac = power.wired_mac()
+        wake = f"WAKE-ON-LAN MAC  {mac}" if mac else "NO WIRED ADAPTER FOR WAKE-ON-LAN"
+        self.status = wake
+        selected = 0
+        while True:
+            rows = [
+                f"BLANK SCREEN AFTER  {power.minutes_label(settings.blank)}",
+                f"SLEEP AFTER  {power.minutes_label(settings.sleep)}",
+                "BACK",
+            ]
+            self.draw("SLEEP & SCREEN", rows, selected)
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == 2):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            field, choices = ("blank", power.BLANK_CHOICES) if selected == 0 else ("sleep", power.SLEEP_CHOICES)
+            chosen = self.choose(
+                rows[selected].split("  ")[0],
+                [(power.minutes_label(value), value) for value in choices],
+                getattr(settings, field),
+            )
+            if chosen is None:
+                continue
+            settings = dataclasses.replace(settings, **{field: chosen})
+            try:
+                power.save_settings(settings)
+                self.status = wake
+            except OSError as error:
+                self.status = f"COULD NOT SAVE: {error}"
+            self.launcher.idle.apply(settings)
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()

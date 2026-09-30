@@ -1,0 +1,9 @@
+[Unit]
+Description=Sleep requested by MoonlightOS launcher
+
+[Service]
+Type=oneshot
+# /run survives a suspend: drop the request first, or this path unit would
+# suspend the machine again the moment it wakes up.
+ExecStartPre=/usr/bin/rm -f /run/moonlightos/suspend
+ExecStart=/usr/bin/systemctl suspend

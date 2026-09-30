@@ -18,6 +18,8 @@ KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
 OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
 HOME_REQUEST = pathlib.Path("/run/moonlightos/home.request")
+SLEEP_REQUEST = pathlib.Path("/run/moonlightos/suspend")
+SLEEP_HOLD_SECONDS = 3.0
 _last_state_check = 0.0
 _last_state = False
 
@@ -88,6 +90,43 @@ def is_home_event(event) -> bool:
     )
 
 
+class HomeHold:
+    """Watches Home/Guide for a long press (a short press is handled on press as before)."""
+
+    def __init__(self, threshold: float = SLEEP_HOLD_SECONDS) -> None:
+        self.threshold = threshold
+        self.pressed: dict[int, float] = {}
+
+    def feed(self, event, now: float) -> None:
+        if event.type != ecodes.EV_KEY or event.code not in {ecodes.KEY_HOME, ecodes.BTN_MODE}:
+            return
+        if event.value == 1:
+            self.pressed[event.code] = now
+        elif event.value == 0:
+            self.pressed.pop(event.code, None)
+
+    def due(self, now: float) -> bool:
+        """True once per press, when it has been held for the threshold."""
+        for code, started in list(self.pressed.items()):
+            if now - started >= self.threshold:
+                del self.pressed[code]
+                return True
+        return False
+
+    def timeout(self, now: float, default: float = 1.0) -> float:
+        if not self.pressed:
+            return default
+        remaining = self.threshold - (now - min(self.pressed.values()))
+        return max(0.0, min(default, remaining))
+
+    def reset(self) -> None:
+        self.pressed.clear()
+
+
+def request_sleep() -> None:
+    SLEEP_REQUEST.touch()
+
+
 def request_home() -> None:
     HOME_REQUEST.touch()
     try:
@@ -101,10 +140,12 @@ def request_home() -> None:
 
 def watch_home() -> None:
     devices: dict[str, InputDevice] = {}
+    hold = HomeHold()
     while True:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(devices) - paths:
             devices.pop(path).close()
+            hold.reset()  # the button may have been released while disconnected
         for path in paths - set(devices):
             try:
                 device = InputDevice(path)
@@ -116,12 +157,18 @@ def watch_home() -> None:
             except OSError:
                 pass
         try:
-            readable, _writable, _errors = select.select(list(devices.values()), [], [], 1)
+            readable, _writable, _errors = select.select(
+                list(devices.values()), [], [], hold.timeout(time.monotonic())
+            )
             for device in readable:
                 for event in device.read():
                     if is_home_event(event):
                         request_home()
+                    hold.feed(event, time.monotonic())
+            if hold.due(time.monotonic()):
+                request_sleep()
         except OSError:
+            hold.reset()
             for device in devices.values():
                 device.close()
             devices.clear()
