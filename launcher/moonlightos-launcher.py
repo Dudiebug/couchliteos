@@ -814,7 +814,7 @@ class Settings:
             self.status = failure
             return
         if not destinations:
-            failure = "CONNECT A WRITABLE REMOVABLE USB DRIVE AND TRY AGAIN"
+            failure = support.no_destination_message()
             self.show_message("USB DRIVE NOT FOUND", failure)
             self.status = "SUPPORT EXPORT FAILED: NO WRITABLE USB DRIVE"
             return

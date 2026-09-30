@@ -20,6 +20,12 @@ STATUS = RUN / "support-export.status"
 UNWRITABLE_FILESYSTEMS = {"", "iso9660", "squashfs", "udf"}
 SUPPORT_MOUNT_LABEL = "MOONLIGHTOS_SUPPORT"
 LIVE_MEDIUM = "/run/live/medium"
+REASON_NO_DRIVE = "no-drive"
+REASON_BOOT_MEDIUM_ONLY = "boot-medium-only"
+NO_DESTINATION_TEXT = {
+    REASON_NO_DRIVE: "CONNECT A WRITABLE REMOVABLE USB DRIVE AND TRY AGAIN",
+    REASON_BOOT_MEDIUM_ONLY: "INSERT A SECOND USB DRIVE (THE BOOT DRIVE CANNOT BE USED)",
+}
 
 
 @dataclass(frozen=True)
@@ -44,7 +50,7 @@ class Destination:
 
 
 def safe_terminal_text(value: str, limit: int = 96) -> str:
-    value = re.sub(r"[^A-Za-z0-9 /_.:+()-]", "?", value)
+    value = re.sub(r"[^A-Za-z0-9 /_.:+(),;-]", "?", value)
     return value[:limit]
 
 
@@ -161,6 +167,30 @@ def destinations_from_lsblk(
     )
 
 
+def no_destination_reason(data: dict[str, object]) -> str:
+    """Why `destinations_from_lsblk` found nothing: is the boot drive the only drive?
+
+    The live boot USB (and its persistence partition) is never offered, so a
+    user with a single USB stick needs to be told to insert a second one.
+    """
+    boot_drive = False
+    other_external = False
+    for node in data.get("blockdevices") or []:
+        if not isinstance(node, dict):
+            continue
+        if _subtree_contains_live_medium(node):
+            boot_drive = True
+            continue
+        transport = str(node.get("tran") or "").lower()
+        if str(node.get("type") or "") == "disk" and (
+            _bool(node.get("rm")) or transport == "usb"
+        ):
+            other_external = True
+    if boot_drive and not other_external:
+        return REASON_BOOT_MEDIUM_ONLY
+    return REASON_NO_DRIVE
+
+
 def path_is_writable(path: str) -> bool:
     try:
         stats = os.statvfs(path)
@@ -169,7 +199,7 @@ def path_is_writable(path: str) -> bool:
         return False
 
 
-def discover_destinations() -> list[Destination]:
+def _lsblk_data() -> dict[str, object] | None:
     result = subprocess.run(
         [
             "lsblk",
@@ -183,12 +213,24 @@ def discover_destinations() -> list[Destination]:
         timeout=8,
     )
     if result.returncode:
-        return []
+        return None
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return []
-    return destinations_from_lsblk(data, path_is_writable)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def discover_destinations() -> list[Destination]:
+    data = _lsblk_data()
+    return [] if data is None else destinations_from_lsblk(data, path_is_writable)
+
+
+def no_destination_message() -> str:
+    """Launcher text for the case where `discover_destinations` returned nothing."""
+    data = _lsblk_data()
+    reason = REASON_NO_DRIVE if data is None else no_destination_reason(data)
+    return NO_DESTINATION_TEXT[reason]
 
 
 def submit_request(destination: Destination) -> str:

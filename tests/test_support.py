@@ -1,3 +1,4 @@
+import errno
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -576,6 +577,176 @@ class RunDirectoryTrustTest(unittest.TestCase):
                 self.assertEqual(exporter.run(), 75)
             finally:
                 os.close(held)
+
+
+
+class StatusMessageTest(unittest.TestCase):
+    """What the launcher shows when the export cannot run or fails."""
+
+    def test_terminal_text_keeps_commas_and_semicolons_but_no_controls(self):
+        self.assertEqual(support.safe_terminal_text("FULL, TRY AGAIN; OK"), "FULL, TRY AGAIN; OK")
+        cleaned = support.safe_terminal_text("A,B;C\x1b[2J\n\x00\x7f")
+        self.assertTrue(cleaned.startswith("A,B;C"))
+        self.assertIsNone(re.search(r"[\x00-\x1f\x7f]", cleaned), repr(cleaned))
+
+    def test_status_round_trip_keeps_punctuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = pathlib.Path(directory)
+            with mock.patch.object(exporter, "RUN", run_dir), mock.patch.object(
+                exporter, "STATUS", run_dir / "status"
+            ), mock.patch.object(support, "STATUS", run_dir / "status"):
+                exporter.write_status("a" * 24, "failed", "USB DRIVE IS FULL, FREE SPACE; TRY AGAIN")
+                state = support.read_status("a" * 24)
+        self.assertEqual(state["message"], "USB DRIVE IS FULL, FREE SPACE; TRY AGAIN")
+
+    def test_os_errors_map_to_short_plain_messages(self):
+        expected = {
+            errno.ENOSPC: "USB DRIVE IS FULL",
+            errno.EDQUOT: "USB DRIVE IS FULL",
+            errno.EROFS: "USB DRIVE IS READ-ONLY",
+            errno.EIO: "USB DRIVE ERROR: TRY ANOTHER DRIVE",
+            errno.EACCES: "USB DRIVE DOES NOT ALLOW WRITING: TRY ANOTHER DRIVE",
+        }
+        for number, text in expected.items():
+            with self.subTest(errno.errorcode[number]):
+                error = OSError(number, os.strerror(number), "/tmp/support-media-x/file")
+                self.assertEqual(exporter.failure_message(error, drive=True), text)
+
+    def test_space_error_outside_the_drive_does_not_blame_the_drive(self):
+        message = exporter.failure_message(OSError(errno.ENOSPC, "No space left"), drive=False)
+        self.assertNotIn("USB", message)
+        self.assertIn("SPACE", message)
+
+    def test_other_errors_are_redacted_and_terminal_safe(self):
+        message = exporter.failure_message(RuntimeError("password=hunter2 \x1b[31mfailed"), drive=True)
+        self.assertNotIn("hunter2", message)
+        self.assertNotIn("\x1b", message)
+
+    def run_with_failing_export(self, error):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = pathlib.Path(directory) / "run"
+            run_dir.mkdir()
+            target = pathlib.Path(directory) / "usb"
+            target.mkdir()
+            destination = support.Destination("/dev/sdb1", str(target), "USB", "vfat", True)
+            statuses = []
+            with mock.patch.multiple(
+                exporter,
+                RUN=run_dir,
+                LOCK=run_dir / "lock",
+                REQUEST=run_dir / "request",
+                STATUS=run_dir / "status",
+                read_request=mock.Mock(return_value={"request_id": "b" * 24}),
+                settle_devices=mock.Mock(),
+                validate_destination=mock.Mock(return_value=destination),
+                free_bytes=mock.Mock(return_value=1 << 40),
+                collect=mock.Mock(),
+                verify_archive=mock.Mock(),
+                path_is_writable=mock.Mock(return_value=True),
+                atomic_export=mock.Mock(side_effect=error),
+                journal_message=mock.Mock(),
+                write_status=mock.Mock(side_effect=lambda *args: statuses.append(args)),
+            ), mock.patch.object(exporter.os.path, "ismount", return_value=True):
+                code = exporter.run()
+        self.assertEqual(code, 1)
+        return statuses[-1]
+
+    def test_full_drive_is_reported_plainly_by_the_exporter(self):
+        status = self.run_with_failing_export(OSError(errno.ENOSPC, "No space left on device"))
+        self.assertEqual(status[1], "failed")
+        self.assertEqual(status[2], "USB DRIVE IS FULL")
+
+    def test_read_only_drive_is_reported_plainly_by_the_exporter(self):
+        status = self.run_with_failing_export(OSError(errno.EROFS, "Read-only file system"))
+        self.assertEqual(status[2], "USB DRIVE IS READ-ONLY")
+
+    def test_read_only_mount_is_reported_plainly(self):
+        destination = support.Destination(
+            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
+        )
+        with mock.patch.object(
+            exporter.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ), mock.patch.object(exporter, "path_is_writable", return_value=False):
+            with self.assertRaises(RuntimeError) as caught:
+                exporter.mount_labeled_destination(destination)
+        self.assertEqual(str(caught.exception), "USB DRIVE IS READ-ONLY")
+
+
+class NoDestinationReasonTest(unittest.TestCase):
+    def boot_usb(self):
+        return {
+            "path": "/dev/sdd",
+            "type": "disk",
+            "tran": "usb",
+            "rm": True,
+            "children": [
+                {
+                    "path": "/dev/sdd1",
+                    "type": "part",
+                    "fstype": "iso9660",
+                    "mountpoints": ["/run/live/medium"],
+                },
+                {
+                    "path": "/dev/sdd2",
+                    "type": "part",
+                    "fstype": "ext4",
+                    "label": "persistence",
+                    "mountpoints": ["/run/live/persistence/sdd2"],
+                },
+            ],
+        }
+
+    def internal_disk(self):
+        return {
+            "path": "/dev/nvme0n1",
+            "type": "disk",
+            "tran": "nvme",
+            "rm": False,
+            "children": [{"path": "/dev/nvme0n1p1", "type": "part", "fstype": "ext4"}],
+        }
+
+    def test_only_the_boot_drive_gets_a_specific_message(self):
+        data = {"blockdevices": [self.internal_disk(), self.boot_usb()]}
+        self.assertEqual(support.destinations_from_lsblk(data, lambda _path: True), [])
+        self.assertEqual(support.no_destination_reason(data), support.REASON_BOOT_MEDIUM_ONLY)
+        self.assertEqual(
+            support.NO_DESTINATION_TEXT[support.REASON_BOOT_MEDIUM_ONLY],
+            "INSERT A SECOND USB DRIVE (THE BOOT DRIVE CANNOT BE USED)",
+        )
+
+    def test_a_second_drive_that_is_unusable_keeps_the_generic_message(self):
+        second = {
+            "path": "/dev/sde",
+            "type": "disk",
+            "tran": "usb",
+            "rm": True,
+            "children": [
+                {"path": "/dev/sde1", "type": "part", "ro": True, "fstype": "vfat"}
+            ],
+        }
+        data = {"blockdevices": [self.boot_usb(), second]}
+        self.assertEqual(support.no_destination_reason(data), support.REASON_NO_DRIVE)
+
+    def test_no_boot_drive_and_no_usb_keeps_the_generic_message(self):
+        data = {"blockdevices": [self.internal_disk()]}
+        self.assertEqual(support.no_destination_reason(data), support.REASON_NO_DRIVE)
+
+    def test_message_helper_uses_the_same_lsblk_data(self):
+        data = {"blockdevices": [self.boot_usb()]}
+        completed = subprocess.CompletedProcess([], 0, json.dumps(data), "")
+        with mock.patch.object(support.subprocess, "run", return_value=completed):
+            self.assertEqual(
+                support.no_destination_message(),
+                "INSERT A SECOND USB DRIVE (THE BOOT DRIVE CANNOT BE USED)",
+            )
+        failed = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch.object(support.subprocess, "run", return_value=failed):
+            self.assertEqual(
+                support.no_destination_message(),
+                "CONNECT A WRITABLE REMOVABLE USB DRIVE AND TRY AGAIN",
+            )
 
 
 if __name__ == "__main__":

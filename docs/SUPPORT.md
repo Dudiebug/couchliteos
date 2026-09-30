@@ -9,18 +9,27 @@ The launcher has no sudo permission.
 
 ## Destination rules
 
-The exporter accepts:
+The launcher offers a drive only when it is external (USB or removable), has a
+writable filesystem, and is not the boot drive. It offers:
 
-- an already mounted, writable partition on removable/USB storage;
-- an unmounted removable partition whose exact filesystem label is
-  `MOONLIGHTOS_SUPPORT` (mounted temporarily without SUID, device, or executable
-  permissions); or
-- a mounted writable `persistence` partition on the live boot USB.
+- an already mounted, writable partition on removable/USB storage. No special
+  label is needed; or
+- an unmounted removable partition or whole-disk filesystem. No special label
+  is needed on the drive: the launcher marks the request with the internal name
+  `MOONLIGHTOS_SUPPORT`, and the root exporter refuses to mount anything that
+  does not carry that name. It mounts the drive temporarily, without SUID,
+  device, or executable permissions, and unmounts it when it has finished.
 
-It rejects ISO9660, squashfs, UDF, read-only media, the live ISO mount, and
-internal SATA/NVMe filesystems. It does not format, repartition, run fsck, or
-repair media. The selected device and mount are checked again immediately
-before the archive is copied.
+The boot USB itself is never offered, including its `persistence` partition,
+because the whole boot disk is excluded. With only the boot USB attached, the
+launcher says to insert a second USB drive. The exporter also rejects ISO9660,
+squashfs, UDF, read-only media, and internal SATA/NVMe filesystems. It does not
+format, repartition, run fsck, or repair media. The selected device and mount
+are checked again immediately before the archive is copied.
+
+If the export cannot finish, the screen gives a short reason such as
+`USB DRIVE IS FULL`, `USB DRIVE IS READ-ONLY`, or
+`USB DRIVE ERROR: TRY ANOTHER DRIVE`.
 
 Keep at least 64 MiB free. A successful export creates exactly one file:
 
@@ -28,7 +37,7 @@ Keep at least 64 MiB free. A successful export creates exactly one file:
 moonlightos-support-YYYYMMDD-HHMMSSZ-<machine-id-prefix>.tar.gz
 ```
 
-The screen reports the final path. For a temporarily mounted labeled partition,
+The screen reports the final path. For a temporarily mounted drive,
 it reports the device and filename because the temporary mount is removed after
 the export.
 
