@@ -271,6 +271,63 @@ class ActivateKeepsTheWorkingProfileTest(unittest.TestCase):
         self.assertEqual(nm.added["802-11-wireless-security"]["psk"], "correct horse battery")
 
 
+# --- finding 9: a wrong password must read as one, and leave nothing saved --------
+
+def connect(nm, network=HOME_NET, password="wrong horse battery"):
+    """System.connect_wifi with the dbus module faked, as the wizard calls it."""
+    system = setup.System()
+    with mock.patch.dict("sys.modules", {"dbus": nm.module()}), mock.patch.object(setup.time, "sleep"), mock.patch.object(setup.System, "wifi_interface", return_value="wlan0"):
+        return system.connect_wifi(network, password)
+
+
+class WrongPasswordTest(unittest.TestCase):
+    def test_an_activation_networkmanager_already_removed_is_a_failed_password(self):
+        nm = FakeNetworkManager(states=(1, "gone"))
+        ok, message = connect(nm)
+        self.assertFalse(ok)
+        self.assertIn("CHECK THE PASSWORD", message)
+        self.assertNotIn("REFUSED", message)
+
+    def test_the_wrong_password_profile_is_not_left_saved_when_the_poll_loses_the_connection(self):
+        nm = FakeNetworkManager(saved=[("HomeNet", "802-11-wireless")], states=("gone",))
+        connect(nm)
+        self.assertNotIn("/profile/new", nm.profiles)
+        self.assertIn("/profile/0", nm.profiles)
+
+    def test_a_deactivating_connection_is_a_failed_password_too(self):
+        nm = FakeNetworkManager(states=(1, 3))
+        ok, message = connect(nm)
+        self.assertEqual((ok, "CHECK THE PASSWORD" in message), (False, True))
+        self.assertNotIn("/profile/new", nm.profiles)
+
+    def test_a_profile_networkmanager_already_removed_does_not_break_the_cleanup(self):
+        nm = FakeNetworkManager(states=(4,))
+        original_add = FakeProxy.AddAndActivateConnection
+
+        def add_then_lose_the_profile(proxy, settings, device, specific):
+            paths = original_add(proxy, settings, device, specific)
+            del nm.profiles["/profile/new"]
+            return paths
+
+        with mock.patch.object(FakeProxy, "AddAndActivateConnection", add_then_lose_the_profile):
+            ok, message = connect(nm)
+        self.assertEqual((ok, "CHECK THE PASSWORD" in message), (False, True))
+
+    def test_an_unexpected_error_during_the_join_still_removes_the_new_profile(self):
+        nm = FakeNetworkManager(saved=[("HomeNet", "802-11-wireless")], states=(1, 1))
+        with mock.patch.object(FakeProxy, "Get", side_effect=RuntimeError("boom wrong horse battery")):
+            ok, message = connect(nm)
+        self.assertFalse(ok)
+        self.assertNotIn("wrong horse battery", message)
+        self.assertNotIn("/profile/new", nm.profiles)
+        self.assertIn("/profile/0", nm.profiles)
+
+    def test_a_good_password_is_reported_as_connected_and_keeps_the_new_profile(self):
+        nm = FakeNetworkManager(saved=[("HomeNet", "802-11-wireless")], states=(1, 2))
+        self.assertEqual(connect(nm, password="right horse battery"), (True, ""))
+        self.assertEqual(sorted(nm.profiles), ["/profile/new"])
+
+
 # --- finding 10: the polkit rule ----------------------------------------------
 
 RULE = pathlib.Path(__file__).resolve().parent.parent / "overlay/etc/polkit-1/rules.d/50-moonlightos-network.rules"
