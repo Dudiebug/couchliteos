@@ -84,7 +84,7 @@ class SetupWizard:
         first = max(8, height // 2)
         for index, choice in enumerate(choices):
             center(first + index, f"{'>' if index == selected else ' '}  {choice}")
-        center(height - 3, "F12: KEYBOARD  ·  ESC: BACK")
+        center(height - 3, "A / CROSS SELECTS  ·  B / CIRCLE BACK  ·  X / TRIANGLE KEYBOARD")
         self.screen.refresh()
 
     def choose(self, title: str, details: list[str], choices: list[str]) -> int | None:

@@ -415,5 +415,130 @@ class RdpConnectFeedbackTest(unittest.TestCase):
         self.assertEqual(events, ["wait", "flush"])
 
 
+class Stop(Exception):
+    pass
+
+
+class FrameScreen(Screen):
+    """Wide fake screen that keeps the row-height-3 hint of every frame shown before a key read."""
+
+    def __init__(self, keys=(), size=(24, 200)):
+        super().__init__(keys, size)
+        self.hints = []
+
+    def hint(self):
+        return next((value for (row, _column), value in self.rows.items() if row == self.size[0] - 3), "")
+
+    def getch(self):
+        self.hints.append(self.hint())
+        if not self.keys:
+            raise Stop()
+        return self.keys.pop(0)
+
+    def get_wch(self):
+        self.hints.append(self.hint())
+        raise Stop()
+
+
+class HintTextTest(unittest.TestCase):
+    """Hints must name controller buttons, never bare keyboard keys, and fit 80 columns."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_launcher()
+
+    def launcher(self, screen):
+        with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
+            return self.module.Launcher(screen)
+
+    def hints(self, screen, action):
+        with mock.patch.object(self.module.curses, "curs_set"):
+            try:
+                action()
+            except Stop:
+                pass
+        return [hint.strip() for hint in screen.hints]
+
+    def check(self, name, hints):
+        import re
+
+        shown = [hint for hint in hints if hint]
+        self.assertTrue(shown, f"{name}: no hint line was drawn")
+        for hint in shown:
+            self.assertLessEqual(len(hint), 76, f"{name}: does not fit 80 columns: {hint!r}")
+            self.assertIsNone(re.search(r"\b(ENTER|ESC|F12|F5|F8)\b", hint), f"{name}: names a keyboard key: {hint!r}")
+
+    def test_launcher_screens(self):
+        module = self.module
+        terminal = module.apps.Application(id="t", name="TERMINAL", kind="command", command="/bin/true", status_id="t")
+        screen = FrameScreen([10])
+        self.check("launch failure", self.hints(screen, lambda: self.launcher(screen).show_launch_failure("X", "boom")))
+        screen = FrameScreen()
+        launcher = self.launcher(screen)
+        launcher.draw_launching("X", "|")
+        self.check("starting", [screen.hint().strip()])
+        self.assertIn("GUIDE", screen.hint())
+        screen = FrameScreen([10])
+        settings = module.Settings(screen, self.launcher(screen))
+        self.check("settings message", self.hints(screen, lambda: settings.show_message("T", "message")))
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory) / "home.request"
+            screen = FrameScreen()
+            launcher = self.launcher(screen)
+            launcher.running_applications = mock.Mock(return_value=[terminal])
+            with mock.patch.object(module, "HOME_REQUEST", home):
+                hints = self.hints(screen, launcher.active_applications)
+        self.check("active applications", hints)
+        self.assertIn("Y (XBOX) / SQUARE (PS) CLOSES", hints[0])
+
+    def test_editing_screens(self):
+        module = self.module
+        for cls in (module.ApplicationsSettings, module.RemoteDesktopSettings):
+            screen = FrameScreen()
+            settings = cls(screen, self.launcher(screen))
+            settings.draw("LIST", ["A", "B"], 0)
+            self.check(cls.__name__, [screen.hint().strip()])
+        screen = FrameScreen()
+        settings = module.RemoteDesktopSettings(screen, self.launcher(screen))
+        self.check("connection form", self.hints(screen, lambda: settings.edit_connection(None)))
+        self.check("shortcut picker", self.hints(screen, lambda: settings.choose_shortcut([("NONE", ""), ("LB", "lb")], "")))
+        self.check("text entry", self.hints(screen, lambda: settings.text_input("T", "P", 10)))
+        app = module.apps.Application(id="a", name="A", kind="rdp", connection="a", status_id="a")
+        with mock.patch.object(module, "application_result", return_value=module.apps.LoadResult((app,), ())):
+            screen = FrameScreen()
+            settings = module.RemoteDesktopSettings(screen, self.launcher(screen))
+            self.check("reposition", self.hints(screen, lambda: settings.reposition("a")))
+        self.assertIn("X", module.TEXT_HINT)
+
+    def test_bluetooth_screens(self):
+        import moonlightos_bluetooth as bluetooth
+
+        screen = FrameScreen([10])
+        self.check("message", self.hints(screen, lambda: bluetooth.BluetoothMenu(screen, mock.Mock()).message("T", "m")))
+        screen = FrameScreen()
+        menu = bluetooth.BluetoothMenu(screen, mock.Mock())
+        self.check("passkey entry", self.hints(screen, lambda: menu._numeric_input("T", "p", True)))
+        working = {
+            "adapter": {"powered": True}, "operations": [{"id": "op", "state": "working"}], "prompt": None,
+        }
+        client = mock.Mock()
+        client.snapshot.return_value = working
+        screen = FrameScreen()
+        menu = bluetooth.BluetoothMenu(screen, client)
+        self.check("pairing wait", self.hints(screen, lambda: menu._wait_operation("op", "PAIRING", cancellable_pairing=True)))
+
+    def test_setup_wizard_screen(self):
+        import moonlightos_setup as setup
+
+        screen = FrameScreen()
+        wizard = setup.SetupWizard(screen, {}, {})
+        self.check("wizard", self.hints(screen, lambda: wizard.choose("T", ["d"], ["ONE", "TWO"])))
+
+    def test_main_menu_and_settings_name_a_shortcut_the_same_way(self):
+        module = self.module
+        for value, label in module.apps.SHORTCUTS.items():
+            self.assertEqual(module.SHORTCUT_TAGS[value], label)
+
+
 if __name__ == "__main__":
     unittest.main()

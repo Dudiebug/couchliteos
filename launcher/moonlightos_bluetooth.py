@@ -192,7 +192,7 @@ class BluetoothMenu:
         rows = [safe_text(message[index:index + 64], 64) for index in range(0, len(message), 64)]
         rows = rows or [""]
         while True:
-            self.draw(title, rows, None, footer="ENTER OR ESC TO RETURN")
+            self.draw(title, rows, None, footer="A / CROSS OR B / CIRCLE TO RETURN")
             if self._getch() in (*ENTER_KEYS, 27):
                 return
 
@@ -263,7 +263,7 @@ class BluetoothMenu:
                 for index, item in enumerate(keys)
             ]
             grid = ["  ".join(cells[row:row + 3]) for row in range(0, 12, 3)]
-            self.draw(title, grid, None, details=[f"CODE: {value or '_'}"], footer="ARROWS SELECT  ENTER ACCEPTS  ESC CANCELS")
+            self.draw(title, grid, None, details=[f"CODE: {value or '_'}"], footer="D-PAD SELECTS  ·  A / CROSS ACCEPTS  ·  B / CIRCLE CANCELS")
             key = self._getch()
             if (
                 ord("0") <= key <= ord("9")
@@ -381,7 +381,7 @@ class BluetoothMenu:
                                     self._request("cancel_pairing", operation_id=operation_id)
                                 return False, operation
 
-                footer = "ESC CANCELS" if cancellable_pairing else "PLEASE WAIT"
+                footer = "B / CIRCLE CANCELS" if cancellable_pairing else "PLEASE WAIT"
                 if shown_code:
                     self.draw(
                         "BLUETOOTH PASSKEY",

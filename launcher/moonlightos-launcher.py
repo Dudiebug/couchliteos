@@ -49,10 +49,15 @@ SPINNER = "|/-\\"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
-SHORTCUT_TAGS = {"lb": "LB", "rb": "RB", "view": "VIEW", "menu": "MENU"}
+SHORTCUT_TAGS = apps.SHORTCUTS  # one set of names on the main menu and in Settings
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
-TEXT_HINT = "KEYBOARD: X (XBOX) / TRIANGLE (PS) / F12  ·  A/ENTER ACCEPTS  ·  B/ESC CANCELS"
+TEXT_HINT = "X / TRIANGLE: KEYBOARD  ·  A / CROSS ACCEPTS  ·  B / CIRCLE CANCELS"
+# Hints name controller buttons (A / CROSS is Enter, B / CIRCLE is Esc), never keyboard keys.
+LIST_HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
+BUTTONS_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE BACK"
+FORM_HINT = "A / CROSS EDITS  ·  LEFT/RIGHT TOGGLES  ·  B / CIRCLE BACK"
+DONE_HINT = "A / CROSS OR B / CIRCLE"
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
@@ -368,7 +373,7 @@ class Launcher:
         center = max(6, height // 2 - 1)
         add_centered(self.screen, center, f"STARTING {label}  {frame}")
         add_centered(self.screen, center + 2, "PLEASE WAIT")
-        add_centered(self.screen, height - 3, "EXIT THE APP TO RETURN")
+        add_centered(self.screen, height - 3, "PRESS GUIDE / PS TO COME BACK TO THE LAUNCHER")
         self.screen.refresh()
 
     def show_launch_failure(self, label: str, message: str) -> None:
@@ -383,7 +388,7 @@ class Launcher:
             first = max(6, height // 2 - len(rows) // 2)
             for offset, row in enumerate(rows[: max(1, height - first - 5)]):
                 add_centered(self.screen, first + offset, row)
-            add_centered(self.screen, height - 3, "ENTER OR ESC RETURNS TO LAUNCHER")
+            add_centered(self.screen, height - 3, f"{DONE_HINT} RETURNS TO THE LAUNCHER")
             self.screen.refresh()
             if read_key(self.screen) in (curses.KEY_ENTER, 10, 13, 27):
                 return
@@ -544,7 +549,7 @@ class Launcher:
 
     def active_applications(self) -> None:
         selected = 0
-        status = f"A/ENTER RESUMES  ·  {CLOSE_BUTTON} CLOSES"
+        status = f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK"
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
         while True:
             running = self.running_applications()
@@ -745,7 +750,7 @@ class Settings:
         while True:
             _height, width = self.screen.getmaxyx()
             rows = textwrap.wrap(message, width=max(8, width - 8)) or [""]
-            self.status = "ENTER OR ESC RETURNS TO SETTINGS"
+            self.status = f"{DONE_HINT} RETURNS TO SETTINGS"
             self.draw(title, rows, None)
             if read_key(self.screen) in (curses.KEY_ENTER, 10, 13, 27):
                 return
@@ -1084,14 +1089,16 @@ class ApplicationsSettings:
     def result(self) -> apps.LoadResult:
         return application_result()
 
-    def draw(self, title: str, rows: list[str], selected: int | None = None) -> None:
+    hint = BUTTONS_HINT  # the footer when no message is showing; subclasses and callers may replace it
+
+    def draw(self, title: str, rows: list[str], selected: int | None = None, hint: str = "") -> None:
         self.screen.erase()
         height, width = self.screen.getmaxyx()
         draw_border(self.screen)
         add_centered(self.screen, max(2, height // 8), title)
         left = max(2, (width - max((len(row) for row in rows), default=1) - 3) // 2)
         listview.draw_rows(self.screen, rows, selected, max(5, height // 4), height - 4, left)
-        add_centered(self.screen, height - 3, self.status or "LEFT/RIGHT MOVES  ·  ENTER EDITS  ·  F12 KEYBOARD")
+        add_centered(self.screen, height - 3, self.status or hint or self.hint)
         self.screen.refresh()
 
     def text_input(
@@ -1291,6 +1298,8 @@ class ApplicationsSettings:
 class RemoteDesktopSettings(ApplicationsSettings):
     """Saved RDP connections, their launcher buttons, and the connect flow."""
 
+    hint = LIST_HINT  # its lists have no LEFT/RIGHT action
+
     def menu(self, title: str, rows: list[str], selected: int = 0, first: int = 0) -> int | None:
         """Return the chosen row index; rows before `first` are information only."""
         selected = max(first, min(selected, len(rows) - 1))
@@ -1447,7 +1456,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
                 "SAVE CONNECTION",
                 "CANCEL",
             ]
-            self.draw(title, rows, selected)
+            self.draw(title, rows, selected, FORM_HINT)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
             if key == 27:
@@ -1587,13 +1596,13 @@ class RemoteDesktopSettings(ApplicationsSettings):
     def choose_shortcut(self, options: list[tuple[str, str]], current: str) -> str | None:
         rows = [label for label, _value in options]
         index = next((number for number, (_label, value) in enumerate(options) if value == current), 0)
-        self.status = "PRESS THE BUTTON ON THE MAIN LAUNCHER SCREEN (KEYBOARD: F5-F8)"
+        self.status = "A / CROSS PICKS  ·  THEN PRESS THAT BUTTON ON THE MAIN SCREEN"
         choice = self.menu("CONTROLLER SHORTCUT", rows, index)
         self.status = ""
         return None if choice is None else options[choice][1]
 
     def reposition(self, app_id: str) -> None:
-        self.status = "UP/DOWN MOVES THE BUTTON  ·  ENTER OR ESC FINISHES"
+        self.status = f"UP/DOWN MOVES THE BUTTON  ·  {DONE_HINT} WHEN DONE"
         while True:
             visible = [item for item in application_result().applications if item.visible]
             index = next((number for number, item in enumerate(visible) if item.id == app_id), None)
@@ -1609,7 +1618,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
             if direction and 0 <= target < len(visible):
                 self.selected = index
                 self.move(visible, direction)
-                self.status = "UP/DOWN MOVES THE BUTTON  ·  ENTER OR ESC FINISHES"
+                self.status = f"UP/DOWN MOVES THE BUTTON  ·  {DONE_HINT} WHEN DONE"
 
     def delete(self, connection: rdp.Connection, app: apps.Application | None) -> bool:
         if not self.yes_no("DELETE CONNECTION", f"DELETE {connection.name.upper()}?"):

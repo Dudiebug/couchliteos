@@ -178,7 +178,7 @@ class LauncherTest(unittest.TestCase):
             self.module, "network_summary", return_value="OFFLINE"
         ):
             launcher = self.module.Launcher(Screen([self.module.curses.KEY_F5]))
-        self.assertEqual(launcher.menu[0], ("OFFICE  [LB]", "rdp-work-pc"))
+        self.assertEqual(launcher.menu[0], ("OFFICE  [LB / L1]", "rdp-work-pc"))
         launcher.launch_app = mock.Mock(return_value=True)
         launcher.prepare_session = mock.Mock()
         launcher.setup_wizard = mock.Mock()
