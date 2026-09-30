@@ -259,5 +259,91 @@ class DisplayConfirmSaveTest(LauncherFixesTest):
         save.assert_not_called()
 
 
+class RdpDiskFullTest(LauncherFixesTest):
+    MESSAGE = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
+
+    def remote(self):
+        launcher = self.launcher()
+        launcher.show_launch_failure = mock.Mock()
+        return launcher, self.module.RemoteDesktopSettings(Screen(), launcher)
+
+    @staticmethod
+    def values(**changes):
+        base = {
+            "name": "Work", "host": "10.0.0.9", "port": "3389", "username": "alice", "domain": "",
+            "resolution": "native", "fullscreen": True, "audio": True, "clipboard": True,
+            "save_password": False,
+        }
+        return {**base, **changes}
+
+    def save(self, remote, original, values, password, upsert):
+        rdp = self.module.rdp
+        with mock.patch.object(rdp, "load_connections", return_value=([], [])), mock.patch.object(
+            self.module, "application_result", return_value=self.module.apps.LoadResult((), ())
+        ), mock.patch.object(rdp, "upsert_connection", side_effect=upsert) as saved:
+            return remote.save_connection(original, values, password), saved
+
+    @staticmethod
+    def full(*_args):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def saved_connection(self):
+        return self.module.rdp.Connection(
+            id="rdp-work", name="Work", host="10.0.0.9", username="alice", certificate="ab" * 32,
+            save_password=True,
+        )
+
+    def test_full_disk_on_first_save_is_reported_not_raised(self):
+        _launcher, remote = self.remote()
+        result, _saved = self.save(remote, None, self.values(), None, self.full)
+        self.assertFalse(result)
+        self.assertEqual(remote.status, self.MESSAGE)
+
+    def test_full_disk_when_clearing_a_password_after_a_server_change_is_reported(self):
+        _launcher, remote = self.remote()
+        changed = self.values(host="10.0.0.10", save_password=True)
+        result, saved = self.save(remote, self.saved_connection(), changed, None, [None, OSError(errno.EROFS, "ro")])
+        self.assertFalse(result)
+        self.assertEqual(saved.call_count, 2)
+        self.assertEqual(remote.status, self.MESSAGE)
+
+    def test_full_disk_after_the_password_could_not_be_stored_still_removes_it(self):
+        _launcher, remote = self.remote()
+        remote.password_request = mock.Mock(return_value=(False, "helper said no"))
+        result, _saved = self.save(
+            remote, None, self.values(save_password=True), "Fake-Typed-Password", [None, OSError(errno.ENOSPC, "full")]
+        )
+        self.assertFalse(result)
+        self.assertEqual(remote.status, self.MESSAGE)
+        self.assertEqual([call.args[0] for call in remote.password_request.call_args_list], ["set", "delete"])
+
+    def test_successful_save_is_unchanged(self):
+        _launcher, remote = self.remote()
+        result, _saved = self.save(remote, None, self.values(), None, [None])
+        self.assertTrue(result)
+        self.assertEqual(remote.status, "SAVED WORK")
+
+    def test_full_disk_while_pinning_the_certificate_stops_the_launch_with_the_reason(self):
+        connection = self.module.rdp.Connection(id="rdp-work-pc", name="Work", host="10.0.0.9", username="alice")
+        launcher, remote = self.remote()
+        remote.confirm_certificate = mock.Mock(return_value=True)
+        remote.text_input = mock.Mock()
+        app = self.module.apps.Application(
+            id="rdp-work-pc", name="OFFICE", kind="rdp", connection="rdp-work-pc", status_id="rdp-work-pc",
+        )
+        rdp = self.module.rdp
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(rdp, "get_connection", return_value=connection), mock.patch.object(
+            rdp, "probe_certificate", return_value="cd" * 32
+        ), mock.patch.object(rdp, "upsert_connection", side_effect=self.full), mock.patch.object(
+            self.module, "rdp_log"
+        ):
+            self.assertFalse(remote.prepare_launch(app))
+            self.assertFalse((pathlib.Path(directory) / "rdp-session.secret").exists())
+        launcher.show_launch_failure.assert_called_once_with("OFFICE", self.MESSAGE)
+        remote.text_input.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

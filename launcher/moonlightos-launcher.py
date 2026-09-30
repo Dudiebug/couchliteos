@@ -45,6 +45,7 @@ SETTINGS_MENU = (
     "BACK",
 )
 SPINNER = "|/-\\"
+SAVE_FAILED = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
@@ -1499,6 +1500,15 @@ class RemoteDesktopSettings(ApplicationsSettings):
             else:
                 return
 
+    def upsert(self, connection: rdp.Connection) -> bool:
+        """Save a connection; a full or read-only disk is reported, not raised."""
+        try:
+            rdp.upsert_connection(connection)
+        except OSError:
+            self.status = SAVE_FAILED
+            return False
+        return True
+
     def save_connection(
         self, original: rdp.Connection | None, values: dict[str, object], new_password: str | None
     ) -> bool:
@@ -1524,7 +1534,8 @@ class RemoteDesktopSettings(ApplicationsSettings):
             ))
             if updated.save_password and new_password is not None:
                 rdp.validate_password(new_password)
-            rdp.upsert_connection(updated)
+            if not self.upsert(updated):
+                return False
         except (OSError, rdp.RdpError, apps.ManifestError) as error:
             self.status = f"NOT SAVED: {error}".upper()
             return False
@@ -1535,13 +1546,16 @@ class RemoteDesktopSettings(ApplicationsSettings):
         ):
             # A saved password belongs to one server and account; never reuse it.
             updated = dataclasses.replace(updated, save_password=False)
-            rdp.upsert_connection(updated)
+            if not self.upsert(updated):
+                return False
             message = "SAVED; SERVER OR ACCOUNT CHANGED, SO SAVE THE PASSWORD AGAIN"
         if updated.save_password and new_password is not None:
             ok, detail = self.password_request("set", updated.id, new_password)
             if not ok:
-                rdp.upsert_connection(dataclasses.replace(updated, save_password=False))
+                cleared = self.upsert(dataclasses.replace(updated, save_password=False))
                 self.password_request("delete", updated.id)
+                if not cleared:
+                    return False
                 message = f"SAVED; PASSWORD NOT STORED: {detail}".upper()
         elif original and original.save_password and not updated.save_password:
             ok, detail = self.password_request("delete", updated.id)
@@ -1658,7 +1672,10 @@ class RemoteDesktopSettings(ApplicationsSettings):
                 self.launcher.status = "CONNECTION CANCELLED"
                 return False
             connection = dataclasses.replace(connection, certificate=fingerprint)
-            rdp.upsert_connection(connection)
+            if not self.upsert(connection):
+                # Without the pin the session would trust whatever answers next time.
+                self.launcher.show_launch_failure(label, SAVE_FAILED)
+                return False
             rdp_log(f"certificate trusted on first use for {connection.id} {connection.host}:{connection.port} sha256={fingerprint}")
         elif connection.certificate != fingerprint:
             rdp_log(
