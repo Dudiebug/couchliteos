@@ -1330,8 +1330,15 @@ class RemoteDesktopSettings(ApplicationsSettings):
             else:
                 self.edit_connection(None)
 
+    @staticmethod
+    def row_action(row: str) -> str:
+        """Name of a menu row, the same before and after it changes (PIN/UNPIN, labels)."""
+        action = row.split("  ", 1)[0]
+        return "PIN TO LAUNCHER" if action == "UNPIN FROM LAUNCHER" else action
+
     def connection_menu(self, connection_id: str) -> None:
         selected = 0
+        last = ""
         while True:
             connection = rdp.get_connection(connection_id)
             if connection is None:
@@ -1346,10 +1353,15 @@ class RemoteDesktopSettings(ApplicationsSettings):
             if connection.certificate:
                 rows.append("FORGET CERTIFICATE")
             rows += ["DELETE CONNECTION", "BACK"]
+            # The rows change after an action. Keep the cursor on the row it was on; if
+            # that row is gone (FORGET ...), step up rather than onto the row that slid in.
+            names = [self.row_action(row) for row in rows]
+            selected = names.index(last) if last in names else max(0, min(selected - bool(last), len(rows) - 1))
             choice = self.menu(connection.name.upper(), rows, selected)
             if choice is None or rows[choice] == "BACK":
                 return
             selected = choice
+            last = names[choice]
             action = rows[choice].split("  ", 1)[0]
             try:
                 if action == "CONNECT":

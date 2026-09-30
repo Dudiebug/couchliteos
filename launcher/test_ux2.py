@@ -225,5 +225,127 @@ class BluetoothScrollTest(unittest.TestCase):
                 self.assertTrue(all(row < size[0] - 1 for row, _column in screen.rows), (size, selected))
 
 
+class BluetoothCursorTest(unittest.TestCase):
+    XBOX = {
+        "path": "/org/bluez/hci0/dev_11", "address": "11:22:33:44:55:66", "alias": "Xbox Wireless Controller",
+        "paired": False, "trusted": False, "connected": False, "rssi": -40, "audio": False,
+    }
+    APPLE = dict(XBOX, path="/org/bluez/hci0/dev_AA", address="AA:BB:CC:DD:EE:FF", alias="Apple TV")
+
+    def snapshot(self, *devices, operations=()):
+        return {
+            "ok": True, "adapter": {"path": "/org/bluez/hci0", "powered": True, "discovering": True},
+            "devices": list(devices), "operations": list(operations), "prompt": None,
+        }
+
+    def run_menu(self, snapshots, keys):
+        import moonlightos_bluetooth as bluetooth
+
+        class Client:
+            def __init__(self):
+                self.requests, self.left = [], list(snapshots)
+
+            def snapshot(self):
+                return self.left.pop(0) if self.left else self_outer.snapshot()
+
+            def request(self, command, **fields):
+                self.requests.append((command, fields))
+                return {"ok": True, "operation_id": "op-1"}
+
+        self_outer = self
+        client = Client()
+
+        class Keys(Screen):
+            def getch(self):
+                return self.keys.pop(0) if self.keys else 27
+
+        bluetooth.BluetoothMenu(Keys(keys), client).run()
+        return client.requests
+
+    def test_a_device_that_appears_above_the_cursor_does_not_steal_the_selection(self):
+        import moonlightos_bluetooth as bluetooth
+
+        down, enter = bluetooth.curses.KEY_DOWN, 10
+        done = self.snapshot(operations=[{"id": "op-1", "state": "completed"}])
+        requests = self.run_menu(
+            [self.snapshot(self.XBOX), self.snapshot(self.APPLE, self.XBOX), done],
+            [down, enter, enter],  # select the Xbox, then PAIR on the confirm screen
+        )
+        self.assertIn(("pair", {"device": self.XBOX["path"]}), requests)
+        self.assertNotIn(("pair", {"device": self.APPLE["path"]}), requests)
+
+    def test_the_cursor_does_not_slide_onto_a_power_button_when_its_device_leaves(self):
+        import moonlightos_bluetooth as bluetooth
+
+        down, enter = bluetooth.curses.KEY_DOWN, 10
+        both = self.snapshot(self.APPLE, self.XBOX)
+        # The Xbox is under the cursor, then drops off the list: the cursor must not
+        # end up on TURN BLUETOOTH OFF, which one more press would obey.
+        requests = self.run_menu(
+            [both, both, self.snapshot(self.APPLE), self.snapshot(self.APPLE)],
+            [down, down, -1, enter],
+        )
+        self.assertNotIn("set_power", [command for command, _fields in requests])
+
+
+class RdpMenuCursorTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_launcher()
+
+    def test_forgetting_the_password_does_not_leave_the_cursor_on_a_neighbouring_action(self):
+        module = self.module
+        state = {"connection": module.rdp.Connection(
+            id="rdp-pc", name="PC", host="10.0.0.2", username="me", save_password=True, certificate="ab" * 32,
+        )}
+
+        def forget(_self, connection):
+            state["connection"] = module.dataclasses.replace(connection, save_password=False)
+
+        down, enter = module.curses.KEY_DOWN, 10
+        # FORGET SAVED PASSWORD is the fourth row; its row disappears once it is done,
+        # so a second press must not land on FORGET CERTIFICATE / DELETE CONNECTION.
+        screen = Screen([down, down, down, enter, enter, 27])
+        launcher = mock.Mock()
+        settings = module.RemoteDesktopSettings(screen, launcher)
+        settings.yes_no = mock.Mock(return_value=False)
+        with mock.patch.object(module.rdp, "get_connection", side_effect=lambda _id: state["connection"]), mock.patch.object(
+            module, "application_result", return_value=module.apps.LoadResult((), ())
+        ), mock.patch.object(module.RemoteDesktopSettings, "forget_password", forget), mock.patch.object(
+            module.RemoteDesktopSettings, "pin"
+        ) as pin:
+            settings.connection_menu("rdp-pc")
+        self.assertFalse(state["connection"].save_password)
+        settings.yes_no.assert_not_called()  # no certificate or delete question appeared
+        pin.assert_called_once()  # the cursor moved up to the row above, PIN TO LAUNCHER
+
+    def test_the_cursor_stays_on_its_row_when_rows_appear_below_it(self):
+        module = self.module
+        connection = module.rdp.Connection(id="rdp-pc", name="PC", host="10.0.0.2", username="me")
+        pinned = []
+        down, enter = module.curses.KEY_DOWN, 10
+        screen = Screen([down, down, enter, enter, 27])
+        settings = module.RemoteDesktopSettings(screen, mock.Mock())
+
+        def pin(_self, item):
+            pinned.append(item)
+
+        def result():
+            apps = (module.apps.Application(
+                id="rdp-pc", name="PC", kind="rdp", connection="rdp-pc", status_id="rdp-pc"),) if pinned else ()
+            return module.apps.LoadResult(apps, ())
+
+        unpinned = []
+        with mock.patch.object(module.rdp, "get_connection", return_value=connection), mock.patch.object(
+            module, "application_result", side_effect=result
+        ), mock.patch.object(module.RemoteDesktopSettings, "pin", pin), mock.patch.object(
+            module.apps, "delete_user_application", side_effect=lambda *a, **k: unpinned.append(1)
+        ), mock.patch.object(module.RemoteDesktopSettings, "_system_dir", return_value=pathlib.Path("/nonexistent")):
+            settings.connection_menu("rdp-pc")
+        # PIN TO LAUNCHER was chosen; the same row is now UNPIN FROM LAUNCHER, so the
+        # second press toggles it back: one pin, one unpin.
+        self.assertEqual((len(pinned), len(unpinned)), (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,7 @@ ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 SPINNER = "|/-\\"
 MAX_RESPONSE = 65536
 ADDRESS_RE = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$")
+FIXED_ACTIONS = ("rescan", "power_on", "power_off", "back")
 
 
 class BluetoothError(RuntimeError):
@@ -466,8 +467,22 @@ class BluetoothMenu:
             else:
                 self._run_device_action(action, path, action.replace("_", " ").upper())
 
+    @staticmethod
+    def _follow(actions: list[tuple[str, str]], action: str, selected: int) -> int:
+        """Row of `action` after the list was rebuilt; the list re-sorts while it scans.
+
+        A device that left the list moves the cursor to the row above it, never down
+        onto TURN BLUETOOTH OFF or BACK.
+        """
+        for index, item in enumerate(actions):
+            if item[1] == action:
+                return index
+        devices = sum(1 for item in actions if item[1] not in FIXED_ACTIONS)
+        return min(selected, devices)
+
     def run(self) -> None:
         selected = 0
+        cursor = "rescan"  # the action under the cursor: a device path or a fixed action
         discovery_requested = False
         last_scan_request = 0.0
         self.screen.timeout(100)
@@ -495,7 +510,7 @@ class BluetoothMenu:
                 if not adapter.get("powered"):
                     discovery_requested = False
                     actions = [("TURN BLUETOOTH ON", "power_on"), ("BACK", "back")]
-                    selected = min(selected, 1)
+                    selected = self._follow(actions, cursor, min(selected, 1))
                     self.draw("BLUETOOTH", [item[0] for item in actions], selected, details=["OFF"])
                 else:
                     if not discovery_requested or (
@@ -523,17 +538,18 @@ class BluetoothMenu:
                         for label, device in zip(labels, devices)
                     )
                     actions.extend((("TURN BLUETOOTH OFF", "power_off"), ("BACK", "back")))
-                    selected = min(selected, len(actions) - 1)
+                    selected = self._follow(actions, cursor, selected)
                     scanning = "SCANNING" if adapter.get("discovering") or discovery_requested else "SCAN STOPPED"
                     self.draw("BLUETOOTH", [item[0] for item in actions], selected, details=[f"ON  ·  {scanning}"])
 
                 key = self._getch()
                 selected = move_selection(selected, key, len(actions))
+                cursor = actions[selected][1]
                 if key == 27:
                     return
                 if key not in ENTER_KEYS:
                     continue
-                action = actions[selected][1]
+                action = cursor
                 if action == "back":
                     return
                 if action == "power_on":
