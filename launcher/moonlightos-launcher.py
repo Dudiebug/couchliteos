@@ -28,6 +28,7 @@ import moonlightos_setup as setup
 import moonlightos_stream as stream
 import moonlightos_cec as cec
 import moonlightos_controllers as controllers
+import moonlightos_pcstatus as pcstatus
 import moonlightos_update as update
 import moonlightos_errors as errors
 
@@ -377,6 +378,7 @@ class Launcher:
         # Checked on every start (the USB stick moves between PCs) and again after a resume.
         self.can_sleep = power.can_suspend()
         self.controllers = controllers.Monitor()
+        self.pcstatus = pcstatus.Monitor()
         self.updates = update.Checker()
         # Buttons on error screens (moonlightos_errors). A handler is called with the
         # application that failed (or None); it returns True to ask for another try.
@@ -486,6 +488,7 @@ class Launcher:
         draw_border(self.screen)
         title_row = max(2, height // 8)
         add_centered(self.screen, title_row, "MOONLIGHTOS")
+        add_centered(self.screen, title_row + 1, self.pcstatus.line())
 
         rows = []
         row = max(title_row + 3, height // 3)
@@ -945,6 +948,7 @@ class Launcher:
             pass
 
         self.controllers.start()
+        self.pcstatus.start()
         self.updates.start()
         self.draw()
         (RUN / "launcher-ready").touch()

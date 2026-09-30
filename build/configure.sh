@@ -71,6 +71,7 @@ install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/moonligh
 install -D -m 0644 "$ROOT/launcher/moonlightos_apps.py" "$CHROOT/usr/libexec/moonlightos_apps.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_rdp.py" "$CHROOT/usr/libexec/moonlightos_rdp.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_controllers.py" "$CHROOT/usr/libexec/moonlightos_controllers.py"
+install -D -m 0644 "$ROOT/launcher/moonlightos_pcstatus.py" "$CHROOT/usr/libexec/moonlightos_pcstatus.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_update.py" "$CHROOT/usr/libexec/moonlightos_update.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_errors.py" "$CHROOT/usr/libexec/moonlightos_errors.py"
 install -D -m 0755 "$ROOT/scripts/moonlightos-rdp-secret" "$CHROOT/usr/libexec/moonlightos-rdp-secret"
