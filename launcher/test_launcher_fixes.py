@@ -136,5 +136,70 @@ class DisplayRestoreStartupTest(LauncherFixesTest):
             confirm.assert_called_once_with()
 
 
+class NetworkStatusTest(LauncherFixesTest):
+    ONLY_TAILSCALE = (
+        "lo               UNKNOWN        127.0.0.1/8\n"
+        "tailscale0       UNKNOWN        100.101.102.103/32\n"
+    )
+    TWO_NICS = (
+        "lo               UNKNOWN        127.0.0.1/8\n"
+        "docker0          UP             172.17.0.1/16\n"
+        "enp2s0           UP             192.168.1.5/24\n"
+        "wlan0            UP             10.0.0.9/24\n"
+    )
+
+    def fake_ip(self, addresses, routes=""):
+        def run(command, **_kwargs):
+            text = routes if "route" in command else addresses
+            return mock.Mock(returncode=0, stdout=text)
+
+        return mock.patch.object(self.module.subprocess, "run", side_effect=run)
+
+    def test_tailscale_alone_is_not_a_lan_address(self):
+        self.assertEqual(self.module.get_ipv4(self.ONLY_TAILSCALE), "NO IPV4")
+
+    def test_virtual_and_link_local_addresses_are_skipped(self):
+        sample = (
+            "docker0 UP 172.17.0.1/16\nvirbr0 UP 192.168.122.1/24\n"
+            "br-1a2b3c UP 172.18.0.1/16\nveth12 UP 10.9.9.9/24\n"
+            "enp2s0 UP 169.254.3.4/16\nwlan0 UP 192.168.0.7/24\n"
+        )
+        self.assertEqual(self.module.get_ipv4(sample), "192.168.0.7")
+
+    def test_default_route_interface_is_preferred(self):
+        self.assertEqual(self.module.get_ipv4(self.TWO_NICS), "192.168.1.5")
+        self.assertEqual(self.module.get_ipv4(self.TWO_NICS, ["wlan0"]), "10.0.0.9")
+
+    def test_default_route_parser_reads_the_dev_field(self):
+        routes = (
+            "default via 192.168.1.1 dev enp2s0 proto dhcp src 192.168.1.5 metric 100\n"
+            "default via 10.0.0.1 dev wlan0 proto dhcp metric 600\n"
+        )
+        self.assertEqual(self.module.default_route_interfaces(routes), ["enp2s0", "wlan0"])
+        self.assertEqual(self.module.default_route_interfaces(""), [])
+
+    def test_only_tailscale_up_reads_offline_and_points_at_network_settings(self):
+        with self.fake_ip(self.ONLY_TAILSCALE):
+            self.assertEqual(self.module.network_summary(), "OFFLINE - SETTINGS > NETWORK")
+
+    def test_lan_with_default_route_reads_online(self):
+        routes = "default via 10.0.0.1 dev wlan0 proto dhcp metric 600\n"
+        with self.fake_ip(self.TWO_NICS, routes):
+            self.assertEqual(self.module.network_summary(), "10.0.0.9  ONLINE")
+
+    def test_missing_ip_command_reads_offline(self):
+        with mock.patch.object(self.module.subprocess, "run", side_effect=OSError("no ip")):
+            self.assertEqual(self.module.network_summary(), "OFFLINE - SETTINGS > NETWORK")
+
+    def test_settings_network_opens_the_network_setup_app(self):
+        self.assertIn("NETWORK", self.module.SETTINGS_MENU)
+        launcher = self.launcher()
+        settings = self.module.Settings(Screen(), launcher)
+        settings.selected = self.module.SETTINGS_MENU.index("NETWORK")
+        with mock.patch.object(launcher, "launch_by_id", return_value=True) as launch:
+            self.assertTrue(settings.activate())
+        launch.assert_called_once_with("network-setup")
+
+
 if __name__ == "__main__":
     unittest.main()

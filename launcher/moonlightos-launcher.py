@@ -14,6 +14,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import moonlightos_display as display
@@ -33,6 +34,7 @@ SETTINGS_MENU = (
     "DISPLAY",
     "AUDIO",
     "BLUETOOTH",
+    "NETWORK",
     "APPLICATIONS",
     "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
@@ -126,8 +128,28 @@ def format_elapsed(seconds: float) -> str:
     return f"{minutes:02d}:{remaining:02d}"
 
 
-def get_ipv4(output: str) -> str:
-    """Return the first non-loopback IPv4 from normal or `ip -brief` output."""
+# Interfaces that are not the LAN: VPN, container and VM bridges.
+VIRTUAL_INTERFACES = ("tailscale", "docker", "virbr", "veth", "br-")
+OFFLINE = "OFFLINE - SETTINGS > NETWORK"
+
+
+def default_route_interfaces(output: str) -> list[str]:
+    """Interface names from `ip -4 route show default`, in route order."""
+    devices = []
+    for line in output.splitlines():
+        fields = line.split()
+        if fields[:1] == ["default"] and "dev" in fields[:-1]:
+            devices.append(fields[fields.index("dev") + 1])
+    return devices
+
+
+def get_ipv4(output: str, preferred: Sequence[str] = ()) -> str:
+    """Return the LAN IPv4 from normal or `ip -brief` output.
+
+    Loopback, link-local and virtual interfaces (VPN, Docker, libvirt) are
+    skipped; an address on an interface in `preferred` wins over the first.
+    """
+    found: list[tuple[str, str]] = []
     for line in output.splitlines():
         fields = line.split()
         if not fields:
@@ -137,34 +159,42 @@ def get_ipv4(output: str) -> str:
             index = fields.index("inet") + 1
             if index < len(fields):
                 candidates.append(fields[index])
+            interface = fields[-1]
         else:
             # `ip -brief -4 address` prints: IFACE STATE ADDRESS/PREFIX ...
             candidates.extend(fields[2:])
+            interface = fields[0]
+        if interface.startswith(VIRTUAL_INTERFACES):
+            continue
         for candidate in candidates:
             value = candidate.split("/", 1)[0]
             try:
                 address = ipaddress.ip_address(value)
             except ValueError:
                 continue
-            if isinstance(address, ipaddress.IPv4Address) and not address.is_loopback:
-                return str(address)
-    return "NO IPV4"
+            if isinstance(address, ipaddress.IPv4Address) and not (
+                address.is_loopback or address.is_link_local
+            ):
+                found.append((interface, str(address)))
+    for interface, address in found:
+        if interface in preferred:
+            return address
+    return found[0][1] if found else "NO IPV4"
 
 
 def network_summary() -> str:
+    def ip(*arguments: str) -> str:
+        return subprocess.run(
+            ["ip", *arguments], text=True, capture_output=True, check=False, timeout=3
+        ).stdout
+
     try:
-        result = subprocess.run(
-            ["ip", "-brief", "-4", "address", "show", "up"],
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=3,
-        )
+        addresses = ip("-brief", "-4", "address", "show", "up")
+        routes = ip("-4", "route", "show", "default")
     except (OSError, subprocess.SubprocessError):
-        return "NO IPV4  OFFLINE"
-    address = get_ipv4(result.stdout)
-    state = "ONLINE" if address != "NO IPV4" else "OFFLINE"
-    return f"{address}  {state}"
+        return OFFLINE
+    address = get_ipv4(addresses, default_route_interfaces(routes))
+    return f"{address}  ONLINE" if address != "NO IPV4" else OFFLINE
 
 
 LIVE_DIR = pathlib.Path("/run/live")
@@ -940,6 +970,7 @@ class Settings:
             "DISPLAY": self.run_display,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
+            "NETWORK": lambda: self.launcher.launch_by_id("network-setup"),
             "APPLICATIONS": self.run_applications,
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
