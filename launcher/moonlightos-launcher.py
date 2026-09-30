@@ -1251,7 +1251,7 @@ class Settings:
                 return self.generate_support_file()
             return
         if not destinations:
-            failure = "CONNECT A WRITABLE REMOVABLE USB DRIVE AND TRY AGAIN"
+            failure = support.no_destination_message()  # says whether no drive or only the boot drive is plugged in
             self.status = "SUPPORT FILE NOT SAVED: PLUG IN A USB DRIVE AND TRY AGAIN"
             if self.show_error("USB DRIVE NOT FOUND", failure):
                 return self.generate_support_file()

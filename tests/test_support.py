@@ -1,3 +1,4 @@
+import errno
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -576,6 +577,302 @@ class RunDirectoryTrustTest(unittest.TestCase):
                 self.assertEqual(exporter.run(), 75)
             finally:
                 os.close(held)
+
+
+
+class StatusMessageTest(unittest.TestCase):
+    """What the launcher shows when the export cannot run or fails."""
+
+    def test_terminal_text_keeps_commas_and_semicolons_but_no_controls(self):
+        self.assertEqual(support.safe_terminal_text("FULL, TRY AGAIN; OK"), "FULL, TRY AGAIN; OK")
+        cleaned = support.safe_terminal_text("A,B;C\x1b[2J\n\x00\x7f")
+        self.assertTrue(cleaned.startswith("A,B;C"))
+        self.assertIsNone(re.search(r"[\x00-\x1f\x7f]", cleaned), repr(cleaned))
+
+    def test_status_round_trip_keeps_punctuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = pathlib.Path(directory)
+            with mock.patch.object(exporter, "RUN", run_dir), mock.patch.object(
+                exporter, "STATUS", run_dir / "status"
+            ), mock.patch.object(support, "STATUS", run_dir / "status"):
+                exporter.write_status("a" * 24, "failed", "USB DRIVE IS FULL, FREE SPACE; TRY AGAIN")
+                state = support.read_status("a" * 24)
+        self.assertEqual(state["message"], "USB DRIVE IS FULL, FREE SPACE; TRY AGAIN")
+
+    def test_os_errors_map_to_short_plain_messages(self):
+        expected = {
+            errno.ENOSPC: "USB DRIVE IS FULL",
+            errno.EDQUOT: "USB DRIVE IS FULL",
+            errno.EROFS: "USB DRIVE IS READ-ONLY",
+            errno.EIO: "USB DRIVE ERROR: TRY ANOTHER DRIVE",
+            errno.EACCES: "USB DRIVE DOES NOT ALLOW WRITING: TRY ANOTHER DRIVE",
+        }
+        for number, text in expected.items():
+            with self.subTest(errno.errorcode[number]):
+                error = OSError(number, os.strerror(number), "/tmp/support-media-x/file")
+                self.assertEqual(exporter.failure_message(error, drive=True), text)
+
+    def test_space_error_outside_the_drive_does_not_blame_the_drive(self):
+        message = exporter.failure_message(OSError(errno.ENOSPC, "No space left"), drive=False)
+        self.assertNotIn("USB", message)
+        self.assertIn("SPACE", message)
+
+    def test_other_errors_are_redacted_and_terminal_safe(self):
+        message = exporter.failure_message(RuntimeError("password=hunter2 \x1b[31mfailed"), drive=True)
+        self.assertNotIn("hunter2", message)
+        self.assertNotIn("\x1b", message)
+
+    def run_with_failing_export(self, error):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = pathlib.Path(directory) / "run"
+            run_dir.mkdir()
+            target = pathlib.Path(directory) / "usb"
+            target.mkdir()
+            destination = support.Destination("/dev/sdb1", str(target), "USB", "vfat", True)
+            statuses = []
+            with mock.patch.multiple(
+                exporter,
+                RUN=run_dir,
+                LOCK=run_dir / "lock",
+                REQUEST=run_dir / "request",
+                STATUS=run_dir / "status",
+                read_request=mock.Mock(return_value={"request_id": "b" * 24}),
+                settle_devices=mock.Mock(),
+                validate_destination=mock.Mock(return_value=destination),
+                free_bytes=mock.Mock(return_value=1 << 40),
+                collect=mock.Mock(),
+                verify_archive=mock.Mock(),
+                path_is_writable=mock.Mock(return_value=True),
+                atomic_export=mock.Mock(side_effect=error),
+                journal_message=mock.Mock(),
+                write_status=mock.Mock(side_effect=lambda *args: statuses.append(args)),
+            ), mock.patch.object(exporter.os.path, "ismount", return_value=True):
+                code = exporter.run()
+        self.assertEqual(code, 1)
+        return statuses[-1]
+
+    def test_full_drive_is_reported_plainly_by_the_exporter(self):
+        status = self.run_with_failing_export(OSError(errno.ENOSPC, "No space left on device"))
+        self.assertEqual(status[1], "failed")
+        self.assertEqual(status[2], "USB DRIVE IS FULL")
+
+    def test_read_only_drive_is_reported_plainly_by_the_exporter(self):
+        status = self.run_with_failing_export(OSError(errno.EROFS, "Read-only file system"))
+        self.assertEqual(status[2], "USB DRIVE IS READ-ONLY")
+
+    def test_read_only_mount_is_reported_plainly(self):
+        destination = support.Destination(
+            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
+        )
+        with mock.patch.object(
+            exporter.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ), mock.patch.object(exporter, "path_is_writable", return_value=False):
+            with self.assertRaises(RuntimeError) as caught:
+                exporter.mount_labeled_destination(destination)
+        self.assertEqual(str(caught.exception), "USB DRIVE IS READ-ONLY")
+
+
+class NoDestinationReasonTest(unittest.TestCase):
+    def boot_usb(self):
+        return {
+            "path": "/dev/sdd",
+            "type": "disk",
+            "tran": "usb",
+            "rm": True,
+            "children": [
+                {
+                    "path": "/dev/sdd1",
+                    "type": "part",
+                    "fstype": "iso9660",
+                    "mountpoints": ["/run/live/medium"],
+                },
+                {
+                    "path": "/dev/sdd2",
+                    "type": "part",
+                    "fstype": "ext4",
+                    "label": "persistence",
+                    "mountpoints": ["/run/live/persistence/sdd2"],
+                },
+            ],
+        }
+
+    def internal_disk(self):
+        return {
+            "path": "/dev/nvme0n1",
+            "type": "disk",
+            "tran": "nvme",
+            "rm": False,
+            "children": [{"path": "/dev/nvme0n1p1", "type": "part", "fstype": "ext4"}],
+        }
+
+    def test_only_the_boot_drive_gets_a_specific_message(self):
+        data = {"blockdevices": [self.internal_disk(), self.boot_usb()]}
+        self.assertEqual(support.destinations_from_lsblk(data, lambda _path: True), [])
+        self.assertEqual(support.no_destination_reason(data), support.REASON_BOOT_MEDIUM_ONLY)
+        self.assertEqual(
+            support.NO_DESTINATION_TEXT[support.REASON_BOOT_MEDIUM_ONLY],
+            "INSERT A SECOND USB DRIVE (THE BOOT DRIVE CANNOT BE USED)",
+        )
+
+    def test_a_second_drive_that_is_unusable_keeps_the_generic_message(self):
+        second = {
+            "path": "/dev/sde",
+            "type": "disk",
+            "tran": "usb",
+            "rm": True,
+            "children": [
+                {"path": "/dev/sde1", "type": "part", "ro": True, "fstype": "vfat"}
+            ],
+        }
+        data = {"blockdevices": [self.boot_usb(), second]}
+        self.assertEqual(support.no_destination_reason(data), support.REASON_NO_DRIVE)
+
+    def test_no_boot_drive_and_no_usb_keeps_the_generic_message(self):
+        data = {"blockdevices": [self.internal_disk()]}
+        self.assertEqual(support.no_destination_reason(data), support.REASON_NO_DRIVE)
+
+    def test_message_helper_uses_the_same_lsblk_data(self):
+        data = {"blockdevices": [self.boot_usb()]}
+        completed = subprocess.CompletedProcess([], 0, json.dumps(data), "")
+        with mock.patch.object(support.subprocess, "run", return_value=completed):
+            self.assertEqual(
+                support.no_destination_message(),
+                "INSERT A SECOND USB DRIVE (THE BOOT DRIVE CANNOT BE USED)",
+            )
+        failed = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch.object(support.subprocess, "run", return_value=failed):
+            self.assertEqual(
+                support.no_destination_message(),
+                "CONNECT A WRITABLE REMOVABLE USB DRIVE AND TRY AGAIN",
+            )
+
+
+
+class LargeLogTest(unittest.TestCase):
+    """An oversized log is the one most worth having; keep its end, not nothing."""
+
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.directory = pathlib.Path(self._directory.name)
+        patcher = mock.patch.object(exporter, "MAX_LOG_SIZE", 1024)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def bundle_file(self, source: pathlib.Path) -> str:
+        bundle = self.directory / "bundle"
+        exporter.add_file(bundle, "logs/x.txt", source)
+        return (bundle / "logs/x.txt").read_text(encoding="utf-8")
+
+    def test_oversized_log_includes_the_last_bytes_marked_truncated(self):
+        source = self.directory / "big.log"
+        source.write_text("".join(f"line {number:05d}\n" for number in range(500)), encoding="ascii")
+        text = self.bundle_file(source)
+        first, _, rest = text.partition("\n")
+        self.assertIn("truncated", first.lower())
+        self.assertIn("last", first.lower())
+        self.assertNotIn("File exceeded", text)
+        self.assertTrue(rest.endswith("line 00499\n"), rest[-40:])
+        self.assertNotIn("line 00000", text)
+        self.assertLessEqual(len(rest.encode("utf-8")), 1024)
+        # the partial line the cut landed in is dropped, so every line is whole
+        for line in rest.splitlines():
+            self.assertRegex(line, r"^line \d{5}$")
+
+    def test_log_within_the_limit_is_unchanged(self):
+        source = self.directory / "small.log"
+        source.write_text("one\ntwo\n", encoding="ascii")
+        self.assertEqual(self.bundle_file(source), "one\ntwo\n")
+
+    def test_oversized_binary_file_is_still_omitted(self):
+        source = self.directory / "big.bin"
+        source.write_bytes(b"\0" * 4096)
+        self.assertEqual(self.bundle_file(source), "Binary file omitted.\n")
+
+    def test_oversized_log_is_still_redacted(self):
+        source = self.directory / "secret.log"
+        source.write_text("x" * 900 + "\n" * 2 + "password=hunter2-SECRET\n" * 20, encoding="ascii")
+        text = self.bundle_file(source)
+        self.assertNotIn("hunter2-SECRET", text)
+
+    def test_symlinked_oversized_log_is_not_followed(self):
+        target = self.directory / "target"
+        target.write_text("ROOT-ONLY\n" * 500, encoding="ascii")
+        link = self.directory / "link.log"
+        link.symlink_to(target)
+        self.assertNotIn("ROOT-ONLY", self.bundle_file(link))
+
+
+
+class NtfsMountTest(unittest.TestCase):
+    """NTFS sticks used to fail as "mounted read-only"; ask the kernel driver for NTFS."""
+
+    NTFS_MESSAGE = "THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE"
+
+    def destination(self, fstype):
+        return support.Destination(
+            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", fstype, False, "8:17", "uuid-one", "WINDOWS"
+        )
+
+    def mount(self, fstype, *, mount_code=0, writable=True):
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, mount_code if argv[0] == "mount" else 0, "", "bad")
+
+        error = None
+        result = None
+        with mock.patch.object(exporter.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            exporter, "path_is_writable", return_value=writable
+        ):
+            try:
+                result = exporter.mount_labeled_destination(self.destination(fstype))
+            except RuntimeError as caught:
+                error = caught
+        mounts = [argv for argv in calls if argv[0] == "mount"]
+        self.assertEqual(len(mounts), 1)
+        self.addCleanup(lambda: os.path.isdir(mounts[0][-1]) and os.rmdir(mounts[0][-1]))
+        return mounts[0], calls, result, error
+
+    def test_ntfs_is_mounted_with_the_ntfs3_driver_and_the_safe_options(self):
+        argv, _calls, result, error = self.mount("ntfs")
+        self.assertIsNone(error)
+        self.assertIsNotNone(result)
+        self.assertEqual(argv[:5], ["mount", "-t", "ntfs3", "-o", "nosuid,nodev,noexec"])
+        self.assertEqual(argv[5:7], ["--", "/dev/sdb1"])
+
+    def test_other_filesystems_are_still_mounted_without_forcing_a_type(self):
+        for fstype in ("vfat", "exfat", "ext4"):
+            with self.subTest(fstype):
+                argv, _calls, result, error = self.mount(fstype)
+                self.assertIsNone(error)
+                self.assertNotIn("-t", argv)
+                self.assertEqual(argv[:3], ["mount", "-o", "nosuid,nodev,noexec"])
+
+    def test_ntfs_mount_failure_names_ntfs_and_the_fix(self):
+        _argv, _calls, result, error = self.mount("ntfs", mount_code=32)
+        self.assertIsNone(result)
+        self.assertEqual(str(error), self.NTFS_MESSAGE)
+
+    def test_ntfs_that_only_mounts_read_only_gets_the_same_message(self):
+        _argv, calls, result, error = self.mount("ntfs", writable=False)
+        self.assertIsNone(result)
+        self.assertEqual(str(error), self.NTFS_MESSAGE)
+        self.assertIn("umount", [argv[0] for argv in calls])
+
+    def test_ntfs_failure_message_is_shown_as_written(self):
+        self.assertEqual(support.safe_terminal_text(self.NTFS_MESSAGE, 240), self.NTFS_MESSAGE)
+
+    def test_failed_ntfs_mount_removes_the_private_mountpoint(self):
+        argv, _calls, _result, _error = self.mount("ntfs", mount_code=32)
+        self.assertFalse(os.path.exists(argv[-1]))
+
+    def test_ntfs_type_is_case_insensitive(self):
+        argv, _calls, _result, _error = self.mount("NTFS")
+        self.assertEqual(argv[1:3], ["-t", "ntfs3"])
 
 
 if __name__ == "__main__":

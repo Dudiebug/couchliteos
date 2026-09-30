@@ -175,19 +175,47 @@ def add_boot_timing(bundle: pathlib.Path) -> None:
     write_text(bundle / "system/boot-timing.txt", boot_timing_report())
 
 
+def read_regular_tail(path: pathlib.Path, limit: int) -> tuple[bytes, str]:
+    """Read a regular file, or only its last `limit` bytes if it is larger.
+
+    Returns the data and "" (whole file), "last" (the end of a larger file), or
+    "first" (a larger file that cannot be seeked, such as one under /proc).
+    Same safety rules as `read_regular_file`: no symlink, no FIFO blocking.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        if info.st_size > limit:
+            stream.seek(info.st_size - limit)
+            return stream.read(limit), "last"
+        data = stream.read(limit + 1)
+        if len(data) > limit:
+            return data[:limit], "first"
+        return data, ""
+
+
 def add_file(bundle: pathlib.Path, name: str, source: pathlib.Path, *, config: bool = False) -> None:
     try:
-        data = read_regular_file(source, MAX_LOG_SIZE + 1)
+        data, kept = read_regular_tail(source, MAX_LOG_SIZE)
     except OSError as error:
         write_text(bundle / name, f"Unavailable: {error}\n")
-        return
-    if len(data) > MAX_LOG_SIZE:
-        write_text(bundle / name, "File exceeded the support-archive size limit.\n")
         return
     if b"\0" in data:
         write_text(bundle / name, "Binary file omitted.\n")
         return
     decoded = data.decode("utf-8", errors="replace")
+    if kept:
+        if kept == "last" and "\n" in decoded:
+            # The cut usually lands inside a line; drop that partial line.
+            decoded = decoded.split("\n", 1)[1]
+        size = (
+            f"{MAX_LOG_SIZE // (1024 * 1024)} MiB"
+            if MAX_LOG_SIZE % (1024 * 1024) == 0
+            else f"{MAX_LOG_SIZE} bytes"
+        )
+        decoded = f"[Truncated: only the {kept} {size} of this file are included.]\n" + decoded
     write_text(bundle / name, sanitize_config(decoded) if config else decoded)
 
 
@@ -511,6 +539,37 @@ def verify_archive(archive: pathlib.Path) -> None:
             raise RuntimeError("support archive is missing required support files")
 
 
+DRIVE_FULL = "USB DRIVE IS FULL"
+DRIVE_READ_ONLY = "USB DRIVE IS READ-ONLY"
+DRIVE_FAILED = "USB DRIVE ERROR: TRY ANOTHER DRIVE"
+DRIVE_REMOVED = "THE USB DRIVE WAS REMOVED OR CHANGED: TRY AGAIN"
+DRIVE_NTFS = "THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE"
+# Short plain messages for the errors a failing or full USB drive produces; the
+# launcher shows them as they are, so they must not need a shell to understand.
+DRIVE_ERRORS = {
+    errno.ENOSPC: DRIVE_FULL,
+    errno.EDQUOT: DRIVE_FULL,
+    errno.EROFS: DRIVE_READ_ONLY,
+    errno.EIO: DRIVE_FAILED,
+    errno.ENODEV: DRIVE_FAILED,
+    errno.ENXIO: DRIVE_FAILED,
+    errno.ENOMEDIUM: DRIVE_FAILED,
+    errno.EUCLEAN: DRIVE_FAILED,
+    errno.EACCES: "USB DRIVE DOES NOT ALLOW WRITING: TRY ANOTHER DRIVE",
+    errno.EPERM: "USB DRIVE DOES NOT ALLOW WRITING: TRY ANOTHER DRIVE",
+}
+
+
+def failure_message(error: BaseException, *, drive: bool) -> str:
+    """The text the launcher shows for a failed export (`drive`: error touched the USB drive)."""
+    if isinstance(error, OSError) and error.errno is not None:
+        if drive and error.errno in DRIVE_ERRORS:
+            return DRIVE_ERRORS[error.errno]
+        if not drive and error.errno in (errno.ENOSPC, errno.EDQUOT):
+            return "NOT ENOUGH TEMPORARY SPACE TO BUILD THE SUPPORT FILE"
+    return safe_terminal_text(redact_text(str(error)), 240)
+
+
 def free_bytes(path: pathlib.Path) -> int:
     stats = os.statvfs(path)
     return stats.f_bavail * stats.f_frsize
@@ -534,7 +593,7 @@ def validate_destination(request: dict[str, object]) -> Destination:
         if requested.uuid and candidate.uuid != requested.uuid:
             continue
         return candidate
-    raise RuntimeError("selected removable destination is no longer valid")
+    raise RuntimeError(DRIVE_REMOVED)
 
 
 def mount_labeled_destination(destination: Destination) -> tuple[Destination, bool]:
@@ -547,15 +606,21 @@ def mount_labeled_destination(destination: Destination) -> tuple[Destination, bo
     # to /usr/libexec). A fresh root-only directory in the service's private
     # /tmp cannot be pre-planted.
     mountpoint = tempfile.mkdtemp(prefix="support-media-")
+    # Without a driver named, an NTFS stick can come up read-only or not at all;
+    # ask for the kernel's ntfs3 driver, and say so plainly if that fails too.
+    ntfs = destination.fstype.lower() == "ntfs"
+    driver = ["-t", "ntfs3"] if ntfs else []
     try:
         result = subprocess.run(
-            ["mount", "-o", "nosuid,nodev,noexec", "--", destination.device, mountpoint],
+            ["mount", *driver, "-o", "nosuid,nodev,noexec", "--", destination.device, mountpoint],
             text=True,
             capture_output=True,
             check=False,
             timeout=15,
         )
         if result.returncode:
+            if ntfs:
+                raise RuntimeError(DRIVE_NTFS)
             raise RuntimeError((result.stderr or "could not mount support partition").strip())
     except Exception:
         release_mountpoint(mountpoint)
@@ -572,7 +637,7 @@ def mount_labeled_destination(destination: Destination) -> tuple[Destination, bo
     if not path_is_writable(mountpoint):
         subprocess.run(["umount", "--", mountpoint], check=False)
         release_mountpoint(mountpoint)
-        raise RuntimeError("support partition mounted read-only")
+        raise RuntimeError(DRIVE_NTFS if ntfs else DRIVE_READ_ONLY)
     return mounted, True
 
 
@@ -749,6 +814,7 @@ def run() -> int:
     RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
     request_id = "unknown"
     mounted_here = False
+    on_drive = False  # True only while a step touches the selected USB drive
     destination: Destination | None = None
     try:
         lock_fd = open_lock(LOCK)
@@ -770,15 +836,17 @@ def run() -> int:
         destination = validate_destination(request)
         destination, mounted_here = mount_labeled_destination(destination)
         target = pathlib.Path(destination.mountpoint)
+        on_drive = True
         if free_bytes(target) < MIN_FREE:
-            raise RuntimeError("destination has less than 64 MiB free")
+            raise RuntimeError("USB DRIVE IS FULL (64 MB FREE NEEDED)")
 
+        on_drive = False  # only the local temporary area until the archive is built
         temporary_root = pathlib.Path(
             tempfile.mkdtemp(prefix="moonlightos-support-", dir=os.environ.get("TMPDIR"))
         )
         try:
             if free_bytes(temporary_root) < MIN_FREE:
-                raise RuntimeError("temporary filesystem has less than 64 MiB free")
+                raise RuntimeError("NOT ENOUGH TEMPORARY SPACE TO BUILD THE SUPPORT FILE")
             bundle = temporary_root / "moonlightos-support"
             bundle.mkdir()
             collect(bundle)
@@ -786,10 +854,11 @@ def run() -> int:
             with tarfile.open(local_archive, "w:gz", dereference=False) as container:
                 container.add(bundle, arcname="moonlightos-support", recursive=True)
             verify_archive(local_archive)
+            on_drive = True
 
             # Revalidate the selected device/mount immediately before writing.
             if not os.path.ismount(target) or not path_is_writable(str(target)):
-                raise RuntimeError("support destination disappeared before writing")
+                raise RuntimeError(DRIVE_REMOVED)
             settle_devices()
             current = validate_destination(
                 {
@@ -805,7 +874,7 @@ def run() -> int:
             if current.device != destination.device:
                 raise RuntimeError("support destination changed before writing")
             if free_bytes(target) < local_archive.stat().st_size + 8 * 1024 * 1024:
-                raise RuntimeError("destination does not have enough free space")
+                raise RuntimeError(DRIVE_FULL)
             final = atomic_export(local_archive, target, local_archive.name)
         finally:
             shutil.rmtree(temporary_root, ignore_errors=True)
@@ -814,7 +883,7 @@ def run() -> int:
         return 0
     except Exception as error:
         REQUEST.unlink(missing_ok=True)
-        message = safe_terminal_text(redact_text(str(error)), 240)
+        message = failure_message(error, drive=on_drive)
         write_status(request_id, "failed", message)
         journal_message(f"Support export failed: {message}", error=True)
         return 1
