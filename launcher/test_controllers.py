@@ -201,6 +201,8 @@ class LauncherFooterTest(unittest.TestCase):
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
             launcher = self.module.Launcher(screen)
         launcher.controllers = controllers.Monitor(reader=lambda: batteries)
+        # Hermetic: never read the host's saved update state.
+        launcher.updates = self.module.update.Checker(current="0.1.13", state_path=pathlib.Path("/nonexistent/update-check.ini"))
         launcher.controllers.refresh()
         return launcher
 

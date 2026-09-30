@@ -24,6 +24,7 @@ import moonlightos_apps as apps
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
 import moonlightos_controllers as controllers
+import moonlightos_update as update
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -38,6 +39,7 @@ SETTINGS_MENU = (
     "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
+    "CHECK FOR UPDATES",
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
@@ -260,6 +262,7 @@ class Launcher:
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
         self.controllers = controllers.Monitor()
+        self.updates = update.Checker()
         self.reload_applications()
 
     def reload_applications(self) -> None:
@@ -327,6 +330,9 @@ class Launcher:
     def footer_lines(self) -> list[tuple[str, int]]:
         """Extra home-screen lines below the status line: (text, curses attribute)."""
         lines: list[tuple[str, int]] = []
+        available = self.updates.notice()
+        if available:
+            lines.append((available, curses.A_BOLD))
         battery = self.controllers.line()
         if battery:
             lines.append((battery, curses.A_REVERSE if self.controllers.low() else curses.A_NORMAL))
@@ -568,6 +574,7 @@ class Launcher:
             pass
 
         self.controllers.start()
+        self.updates.start()
         self.draw()
         (RUN / "launcher-ready").touch()
         display.restore_saved_mode()
@@ -657,7 +664,7 @@ class Settings:
                 pass
         add_centered(self.screen, max(2, height // 8), title)
         if rows is None:
-            rows = list(SETTINGS_MENU)
+            rows = [self.menu_label(item) for item in SETTINGS_MENU]
             selected = self.selected
         row = max(5, height // 3)
         left = max(2, (width - max((len(item) for item in rows), default=1) - 3) // 2)
@@ -671,6 +678,16 @@ class Settings:
                 pass
         add_centered(self.screen, height - 3, self.status)
         self.screen.refresh()
+
+    def menu_label(self, item: str) -> str:
+        if item == "CHECK FOR UPDATES":
+            return f"{item}  {'ON' if self.launcher.updates.enabled else 'OFF'}"
+        return item
+
+    def toggle_updates(self) -> None:
+        enabled = not self.launcher.updates.enabled
+        self.launcher.updates.set_enabled(enabled)
+        self.status = "UPDATE CHECK ON: LOOKS FOR A NEWER RELEASE ONCE A DAY" if enabled else "UPDATE CHECK OFF: NOTHING IS SENT"
 
     def choose(self, title: str, choices: list[tuple[str, object]], current: object) -> object | None:
         if not choices:
@@ -917,6 +934,7 @@ class Settings:
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
             "TAILSCALE": lambda: self.launcher.launch_by_id("tailscale"),
+            "CHECK FOR UPDATES": self.toggle_updates,
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launcher.launch_by_id("system-diagnostics"),

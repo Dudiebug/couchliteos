@@ -398,7 +398,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
-  launcher/moonlightos_rdp.py launcher/moonlightos_controllers.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_rdp.py launcher/moonlightos_controllers.py launcher/moonlightos_update.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 
@@ -518,5 +518,13 @@ priority = int(re.search(r'priority\.session\s*=\s*(\d+)', body).group(1))
 # WirePlumber 0.5 scores ALSA analog sinks 1009 and Bluetooth sinks 1010.
 assert priority > 1010, priority
 PY
+
+# Easier everyday use: update-available notice
+rg -q 'moonlightos_update.py' build/configure.sh
+rg -q '^import moonlightos_update as update' launcher/moonlightos-launcher.py
+rg -q '"CHECK FOR UPDATES"' launcher/moonlightos-launcher.py
+rg -q 'https://api.github.com/repos/Dudiebug/moonlightos/releases/latest' launcher/moonlightos_update.py
+rg -q '/etc/moonlightos-version' launcher/moonlightos_update.py
+refute rg -n 'Authorization|Cookie|machine-id' launcher/moonlightos_update.py
 
 printf 'Static tests passed.\n'
