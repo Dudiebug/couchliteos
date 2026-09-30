@@ -407,6 +407,10 @@ class Launcher:
 
                 app_state = self.read_app_status(app_id)
                 now = time.monotonic()
+                if app_state.startswith("exited:"):
+                    # It ran and quit on its own before the ready mark (e.g. nmtui).
+                    self.status = f"{label} EXITED"
+                    return True
                 if app_state.startswith("failed:"):
                     if failure_since is None:
                         failure_since = now

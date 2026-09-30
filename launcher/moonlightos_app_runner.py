@@ -219,7 +219,7 @@ def run(request_path: pathlib.Path = REQUEST) -> int:
             rc = 0
         if received_signal:
             rc = 128 + received_signal
-        if ready.exists():
+        if ready.exists() or rc == 0:  # only a nonzero status is a failed start
             atomic_status(status, f"exited: status {rc}")
         else:
             atomic_status(status, f"failed: exited before the application became ready (status {rc})")

@@ -390,6 +390,23 @@ class LauncherTest(unittest.TestCase):
                 launcher.show_launch_failure("TERMINAL", "boom")
             self.assertTrue(focus.exists())
 
+    def test_app_that_quits_cleanly_before_ready_returns_to_the_launcher_without_an_error(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([-1] * 5)
+        launcher.show_launch_failure = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+
+            def write(_path, _content):
+                (run / "terminal-status").write_text("exited: status 0\n")
+
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module.apps, "atomic_write", side_effect=write
+            ):
+                self.assertTrue(launcher.launch_app(self.terminal_app()))
+        launcher.show_launch_failure.assert_not_called()
+        self.assertIn("EXITED", launcher.status)
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:

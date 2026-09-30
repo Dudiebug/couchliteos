@@ -99,6 +99,28 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.active_marker_while_running(terminal=True), [False])
         self.assertEqual(self.active_marker_while_running(terminal=False), [True])
 
+    def test_quick_clean_exit_is_not_a_start_failure(self):
+        # nmtui (or any tool) may legitimately finish before the 5 s ready mark.
+        for code, expected in ((0, "exited: status 0\n"),
+                               (3, "failed: exited before the application became ready (status 3)\n")):
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                manifest = root / "demo.ini"
+                manifest.write_text(apps.serialize(self.app()), encoding="utf-8")
+                app = apps.read_manifest(manifest)
+                request = root / "launch-app.request"
+                request.write_text("demo\n", encoding="ascii")
+                process = mock.Mock(pid=55)
+                process.poll.return_value = code
+                process.wait.return_value = code
+                with mock.patch.object(runner, "RUN", root), mock.patch.object(
+                    runner, "READY_SECONDS", 0.0
+                ), mock.patch.object(
+                    runner.apps, "load_applications", return_value=apps.LoadResult((app,), ())
+                ), mock.patch.object(runner.subprocess, "Popen", return_value=process):
+                    self.assertEqual(runner.run(request), code)
+                self.assertEqual((root / "demo-status").read_text(), expected)
+
     def test_missing_command_writes_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
