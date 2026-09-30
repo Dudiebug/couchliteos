@@ -33,12 +33,14 @@ ACTIONS = (
     "SPACE", "BACKSPACE", "CLEAR", "SHIFT", "SYMBOLS", "MASK/SHOW",
     "CANCEL", "TYPE", "TYPE + ENTER",
 )
+# Two rows of at most 45 columns; one row of nine labels needs 88 and is cut off below 1080p.
+ACTION_ROWS = (ACTIONS[:5], ACTIONS[5:])
 
 
 class Keyboard:
     def __init__(self) -> None:
         self.text = ""
-        self.shift = True
+        self.shift = False
         self.symbols = False
         self.masked = False
         self.row = 0
@@ -49,7 +51,7 @@ class Keyboard:
         rows = SYMBOLS if self.symbols else LETTERS
         if not self.symbols and not self.shift:
             rows = tuple(tuple(key.lower() if key.isalpha() else key for key in row) for row in rows)
-        return (*rows, ACTIONS)
+        return (*rows, *ACTION_ROWS)
 
     def move(self, key: int) -> None:
         rows = self.rows
@@ -71,6 +73,8 @@ class Keyboard:
         key = self.rows[self.row][self.column]
         if len(key) == 1:
             self.append(key)
+            if key.isalpha():
+                self.shift = False  # SHIFT capitalises one letter, like a phone keyboard
         elif key == "SPACE":
             self.append(" ")
         elif key == "BACKSPACE":
@@ -202,18 +206,25 @@ def draw(screen: curses.window, keyboard: Keyboard) -> None:
         screen.border()
     except curses.error:
         pass
-    title = "MOONLIGHTOS KEYBOARD"
-    screen.addnstr(2, max(1, (width - len(title)) // 2), title, max(1, width - 2))
+
+    def centered(row: int, text: str) -> None:
+        try:
+            screen.addnstr(row, max(1, (width - len(text)) // 2), text, max(1, width - 2))
+        except curses.error:
+            pass
+
+    centered(2, "MOONLIGHTOS KEYBOARD")
     shown = "*" * len(keyboard.text) if keyboard.masked else keyboard.text
-    preview = (shown[-max(1, width - 10):] or "_")
-    screen.addnstr(4, max(1, (width - len(preview)) // 2), preview, max(1, width - 2))
-    first = 7
+    centered(4, shown[-max(1, width - 10):] or "_")
+    # Key rows start at 6 and are spaced by 2 lines when the window is tall enough (1080p),
+    # by 1 otherwise (720p and 768p terminals are only 18-19 lines high); the footer stays below.
+    first, footer_row = 6, height - 3
+    gap = 2 if first + 2 * (len(keyboard.rows) - 1) < footer_row - 1 else 1
     for row_index, row in enumerate(keyboard.rows):
         cells = [f"[{key}]" if (row_index, column) != (keyboard.row, keyboard.column) else f">{key}<" for column, key in enumerate(row)]
-        line = " ".join(cells)
-        screen.addnstr(first + row_index * 2, max(1, (width - len(line)) // 2), line, max(1, width - 2))
+        centered(first + row_index * gap, " ".join(cells))
     footer = "ARROWS MOVE  ENTER/A SELECTS  ESC/B CANCELS"
-    screen.addnstr(height - 3, max(1, (width - len(footer)) // 2), footer, max(1, width - 2))
+    centered(footer_row, footer)
     screen.refresh()
 
 
@@ -241,7 +252,7 @@ def ui(screen: curses.window) -> None:
         code = ord(key) if isinstance(key, str) else key
         if code in (27,):
             return
-        if code in (curses.KEY_BACKSPACE, 8, 127):
+        if code in (curses.KEY_BACKSPACE, 8, 127, curses.KEY_DC):  # Y/Square arrives as KEY_DC
             keyboard.text = keyboard.text[:-1]
             continue
         keyboard.move(code)

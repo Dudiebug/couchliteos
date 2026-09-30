@@ -626,6 +626,20 @@ class LauncherTest(unittest.TestCase):
                 launcher.prepare_session()
             self.assertFalse(focus.exists())
 
+    def test_controller_delete_key_corrects_text_already_in_a_field(self):
+        # Y/Square arrives as KEY_DC; a prefilled port or host could not be edited before.
+        class Keys(Screen):
+            def get_wch(self):
+                return self.keys.pop(0)
+
+        delete = self.module.curses.KEY_DC
+        settings = self.module.ApplicationsSettings(Keys([delete, delete, "\n"]), self.launcher())
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.assertEqual(settings.text_input("PORT", "PORT", 5, initial="3389"), "33")
+        settings = self.module.ApplicationsSettings(Keys([delete, delete, "9", "\n"]), self.launcher())
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.assertEqual(settings.text_input("PORT", "PORT", 5, initial="3389"), "339")
+
     def power_request(self, action, keys, running=()):
         """Press A on REBOOT/SHUTDOWN, then `keys` on the question; return (files created, text drawn)."""
         class Recording(Screen):

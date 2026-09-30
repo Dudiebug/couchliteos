@@ -1119,7 +1119,7 @@ class ApplicationsSettings:
                         value += key
                 elif key == curses.KEY_F12:
                     request_osk(masked)
-                elif key in (curses.KEY_BACKSPACE,):
+                elif key in (curses.KEY_BACKSPACE, curses.KEY_DC):  # Y/Square arrives as KEY_DC
                     value = value[:-1]
         finally:
             self.status = previous_status
