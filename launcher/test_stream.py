@@ -864,11 +864,18 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
 
 
 class LaunchFailureTest(LauncherTestCase):
+    """Moonlight problems offer WAKE PC on the shared error screen (moonlightos_errors)."""
+
+    def setUp(self):
+        patcher = mock.patch.object(self.module.errors, "_EXTRA", [])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def failed_launch(self, app_id, hosts=(LauncherTestCase.HOST,)):
         with tempfile.TemporaryDirectory() as directory:
             run = pathlib.Path(directory)
             launcher = self.launcher()
-            launcher.show_launch_failure = mock.Mock()
+            launcher.show_launch_failure = mock.Mock(return_value="dismiss")
             launcher.wake_before_moonlight = mock.Mock()
             launcher.request = mock.Mock()
             clock = itertools.chain([0.0], itertools.repeat(100.0))
@@ -876,36 +883,71 @@ class LaunchFailureTest(LauncherTestCase):
                 self.assertFalse(launcher.launch_app(self.app(app_id, "start-x")))
         return launcher.show_launch_failure.call_args
 
-    def test_moonlight_startup_failure_offers_wake_pc(self):
-        self.assertTrue(self.failed_launch("moonlight").kwargs.get("wake"))
-
-    def test_other_apps_do_not_offer_wake_pc(self):
-        self.assertFalse(self.failed_launch("chiaki-ng").kwargs.get("wake", False))
-
-    def test_wake_pc_is_not_offered_until_a_mac_is_known(self):
-        no_mac = changed(self.HOST, mac=b"")
-        self.assertFalse(self.failed_launch("moonlight", (no_mac,)).kwargs.get("wake", False))
-        self.assertFalse(self.failed_launch("moonlight", ()).kwargs.get("wake", False))
-
-    def test_wake_pc_is_the_first_choice_of_the_dialog(self):
-        launcher = self.launcher([10])
+    def dialog(self, app_id, keys):
+        """The real failure screen for this app, driven by `keys`; wake_pc is replaced by a mock."""
+        launcher = self.launcher(keys)
         launcher.wake_pc = mock.Mock()
-        launcher.show_launch_failure("MOONLIGHT", "exited before ready", wake=True)
+        self.module.register_failure_actions(launcher)  # what main() does at start-up
+        result = launcher.show_launch_failure("APP", "exited before ready", app=self.app(app_id))
+        return launcher, result
+
+    def test_start_up_registers_the_wake_pc_button_and_its_handler(self):
+        screen = Screen()
+        with mock.patch.object(self.module.curses, "set_escdelay"), mock.patch.object(
+            self.module, "Launcher"
+        ) as launcher:
+            self.module.main(screen)
+        self.assertIn("wake-pc", [action.id for action in self.module.errors.actions_for("app", "moonlight")])
+        self.assertNotIn("wake-pc", [action.id for action in self.module.errors.actions_for("app", "chiaki-ng")])
+        launcher.return_value.failure_actions.__setitem__.assert_called_once_with(
+            "wake-pc", launcher.return_value.wake_from_failure
+        )
+        launcher.return_value.run.assert_called_once_with()
+
+    def test_a_failed_start_hands_the_app_to_the_failure_screen(self):
+        self.assertEqual(self.failed_launch("moonlight").kwargs["app"].id, "moonlight")
+        self.assertEqual(self.failed_launch("chiaki-ng").kwargs["app"].id, "chiaki-ng")
+
+    def test_moonlight_failure_offers_wake_pc_as_the_first_choice(self):
+        launcher, result = self.dialog("moonlight", [10, 27])
         launcher.wake_pc.assert_called_once_with()
         self.assertIn("WAKE PC", launcher.screen.text())
+        self.assertEqual(result, "dismiss")  # woken or not, the screen comes back; ESC leaves it
+
+    def test_other_apps_do_not_offer_wake_pc(self):
+        launcher, _result = self.dialog("chiaki-ng", [27])
+        self.assertNotIn("WAKE PC", launcher.screen.text())
 
     def test_back_and_escape_do_not_wake(self):
-        for keys in ([self.module.curses.KEY_DOWN, 10], [27]):
-            launcher = self.launcher(keys)
-            launcher.wake_pc = mock.Mock()
-            launcher.show_launch_failure("MOONLIGHT", "exited before ready", wake=True)
+        for keys in ([self.module.curses.KEY_UP, 10], [27]):  # UP wraps to the last button, BACK
+            launcher, result = self.dialog("moonlight", keys)
             launcher.wake_pc.assert_not_called()
+            self.assertEqual(result, "dismiss")
 
-    def test_plain_dialog_is_unchanged(self):
+    def test_the_wake_button_runs_couchs_wake_and_never_retries_by_itself(self):
+        launcher = self.launcher()
+        launcher.wake_pc = mock.Mock()
+        self.module.register_failure_actions(launcher)
+        self.assertFalse(launcher.failure_actions["wake-pc"](self.app()))
+        launcher.wake_pc.assert_called_once_with()
+
+    def test_without_a_known_mac_the_wake_flow_explains_itself(self):
+        # Replaces "WAKE PC is not offered until a MAC is known": feat/easy's error screen always
+        # offers the registered button on Moonlight failures, so the flow says why it cannot help.
         launcher = self.launcher([10])
-        launcher.show_launch_failure("CHIAKI-NG", "missing")
+        with tempfile.TemporaryDirectory() as directory, self.world(pathlib.Path(directory), ()):
+            launcher.failure_actions["wake-pc"] = launcher.wake_from_failure
+            launcher.failure_actions["wake-pc"](self.app())
+        self.assertIn(stream.PAIR_FIRST, launcher.screen.text())
+        launcher = self.launcher([10])
+        with tempfile.TemporaryDirectory() as directory, self.world(pathlib.Path(directory), (changed(self.HOST, mac=b""),)):
+            launcher.wake_from_failure(self.app())
+        self.assertIn(stream.NO_MAC, launcher.screen.text())
+
+    def test_plain_dialog_has_back_and_no_wake(self):
+        launcher, _result = self.dialog("chiaki-ng", [27])
         self.assertNotIn("WAKE PC", launcher.screen.text())
-        self.assertIn("ENTER OR ESC RETURNS TO LAUNCHER", launcher.screen.text())
+        self.assertIn("BACK", launcher.screen.text())
 
 
 class AutostreamTest(LauncherTestCase):

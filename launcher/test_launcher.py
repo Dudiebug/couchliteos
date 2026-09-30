@@ -557,7 +557,7 @@ class LauncherTest(unittest.TestCase):
         screen = Screen()
         with mock.patch.object(self.module.curses, "set_escdelay") as set_escdelay, mock.patch.object(
             self.module, "Launcher"
-        ) as launcher:
+        ) as launcher, mock.patch.object(self.module.errors, "_EXTRA", []):  # main() registers WAKE PC
             self.module.main(screen)
         set_escdelay.assert_called_once_with(25)
         launcher.assert_called_once_with(screen)

@@ -40,6 +40,7 @@ SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
 FIXED_CONTROLS = (
     ("SETTINGS", "settings"), ("SLEEP", "suspend"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"),
 )
+WAKE_PC = errors.Action("WAKE PC", "wake-pc")
 SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
 SETTINGS_MENU = (
     "DISPLAY",
@@ -379,7 +380,7 @@ class Launcher:
         self.updates = update.Checker()
         # Buttons on error screens (moonlightos_errors). A handler is called with the
         # application that failed (or None); it returns True to ask for another try.
-        # A "wake-pc" entry belongs here, next to errors.register_action(...).
+        # register_failure_actions() adds the WAKE PC entry at start-up.
         self.failure_actions: dict[str, Callable[[apps.Application | None], bool]] = {
             errors.NETWORK.id: self.open_network_settings,
             errors.SUPPORT.id: self.save_support_file,
@@ -539,6 +540,10 @@ class Launcher:
         add_centered(self.screen, height - 3, "EXIT THE APP TO RETURN")
         self.screen.refresh()
 
+    def wake_from_failure(self, _app: apps.Application | None = None) -> bool:
+        self.wake_pc()  # its own messages when no PC or address is known
+        return False  # back on the error screen, where TRY AGAIN is one press away
+
     def open_network_settings(self, _app: apps.Application | None = None) -> bool:
         self.launch_by_id("network-setup")  # the same screen the setup wizard uses
         return False  # back on the error screen, where TRY AGAIN is one press away
@@ -625,10 +630,6 @@ class Launcher:
                 self.screen.timeout(1000)
         except (OSError, ValueError, curses.error, subprocess.SubprocessError):
             pass
-
-    def offer_wake(self, app: apps.Application) -> bool:
-        """Moonlight problems offer WAKE PC, but only when a paired PC's MAC is known."""
-        return app.id == "moonlight" and any(host.mac for host in stream.load_hosts())
 
     def wake_pc(self) -> None:
         StreamingSettings(self.screen, self).wake_pc()
@@ -2390,9 +2391,17 @@ class StreamingSettings(RemoteDesktopSettings):
         self.message("STREAM SETTINGS APPLIED", "\n".join(stream.summary_lines(mode.argument, plan, network)))
 
 
+def register_failure_actions(launcher: Launcher) -> None:
+    """WAKE PC on Moonlight failure screens: the button and its handler, registered together."""
+    errors.register_action(WAKE_PC, app_ids=("moonlight",))
+    launcher.failure_actions[WAKE_PC.id] = launcher.wake_from_failure
+
+
 def main(screen: curses.window) -> None:
     curses.set_escdelay(25)  # the controller's B sends a bare Esc; don't wait 1 s for a sequence
-    Launcher(screen).run()
+    launcher = Launcher(screen)
+    register_failure_actions(launcher)
+    launcher.run()
 
 
 if __name__ == "__main__":
