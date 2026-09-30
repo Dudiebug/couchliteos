@@ -207,7 +207,9 @@ def load_applications(
     errors: list[str] = []
     for directory, system in ((system_dir, True), (user_dir, False)):
         try:
-            paths = sorted(directory.glob("*.ini"))
+            # Dotfiles are temporary files (for example a validation file left by
+            # a crash), never manifests.
+            paths = sorted(item for item in directory.glob("*.ini") if not item.name.startswith("."))
         except OSError as error:
             errors.append(f"{directory}: {error}")
             continue
@@ -318,7 +320,7 @@ def write_user_application(
     if app.id in system_ids:
         raise ManifestError("user application id collides with a system application")
     user_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".validate-app.", suffix=".ini", dir=user_dir)
+    descriptor, temporary = tempfile.mkstemp(prefix=".validate-app.", suffix=".tmp", dir=user_dir)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(validated_text)
