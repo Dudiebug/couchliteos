@@ -357,7 +357,9 @@ class Launcher:
             return ""
         return lines[0][:240] if lines else ""
 
-    def launch_app(self, app: apps.Application) -> bool:
+    def launch_app(self, app: apps.Application, *, quiet: bool = False) -> bool:
+        """Start an application. `quiet` skips the failure dialog for a hidden one-off
+        application whose caller explains a failed start in its own words."""
         label, app_id = app.name, app.status_id
         ready = RUN / f"{app_id}-ready"
         if ready.exists():
@@ -398,7 +400,8 @@ class Launcher:
                     # App units retry after two seconds. A persistent failure for
                     # longer than that means retries have not recovered startup.
                     if now - failure_since >= 2.75:
-                        self.show_launch_failure(label, app_state.removeprefix("failed:").strip())
+                        if not quiet:
+                            self.show_launch_failure(label, app_state.removeprefix("failed:").strip())
                         self.status = f"{label} FAILED TO START"
                         return False
                 else:
@@ -418,7 +421,8 @@ class Launcher:
             if last_state.startswith("failed:")
             else "THE APPLICATION DID NOT BECOME READY BEFORE THE STARTUP TIMEOUT"
         )
-        self.show_launch_failure(label, message)
+        if not quiet:
+            self.show_launch_failure(label, message)
         self.status = f"{label} START TIMED OUT"
         return False
 
@@ -557,7 +561,7 @@ class Launcher:
 
     def launch_and_wait(
         self, app_id: str, *, lines: list[str] | None = None, big: str | None = None,
-        patience: float | None = None,
+        patience: float | None = None, quiet: bool = False,
     ) -> bool:
         """Start an application and return when it exits (HOME shows the running applications).
 
@@ -565,7 +569,8 @@ class Launcher:
         for one-off commands that have no window of their own to close.
         """
         app = self.app_by_id(app_id)
-        if app is None or not self.launch_app(app):
+        options = {"quiet": True} if quiet else {}
+        if app is None or not self.launch_app(app, **options):
             return False
         ready = RUN / f"{app.status_id}-ready"
         ui = setup.CursesUI(self.screen)
@@ -603,7 +608,7 @@ class Launcher:
             return False
         try:
             return self.launch_and_wait(
-                app.id, big=pin, patience=180,
+                app.id, big=pin, patience=180, quiet=True,
                 lines=[
                     f"ON THE GAMING PC OPEN HTTPS://{host}:47990, CLICK THE PIN TAB AND TYPE:",
                     "THIS SCREEN CLOSES BY ITSELF WHEN PAIRING ENDS. B OR ESC CANCELS.",

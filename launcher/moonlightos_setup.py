@@ -463,6 +463,20 @@ def new_hosts(before: Sequence[str], after: Sequence[str]) -> list[str]:
     return [host for host in after if host not in before]
 
 
+def pairing_help(host: str = "") -> list[str]:
+    """What to check when a pairing attempt saved nothing (an asleep or unreachable PC looks like this)."""
+    lines = [
+        "NO NEW GAMING PC WAS PAIRED. CHECK THESE, THEN TRY AGAIN:",
+        "1. THE GAMING PC IS ON AND AWAKE (WAKE IT IF IT WAS ASLEEP)",
+        "2. SUNSHINE IS RUNNING ON THE GAMING PC",
+        "3. THE GAMING PC AND THIS BOX ARE ON THE SAME NETWORK",
+        "4. YOU TYPED THE PIN INTO SUNSHINE'S PIN TAB IN TIME",
+    ]
+    if host:
+        lines.append(f"5. THE ADDRESS IS RIGHT: {host if len(host) <= 40 else host[:37] + '...'}")
+    return lines + ["", "PRESS A ON TRY AGAIN, OR B TO CONTINUE WITHOUT PAIRING."]
+
+
 # --- hardware gates: each one answers "can this PC do it, and if not why" --
 
 NO_BLUETOOTH_HINT = "PLUG IN A CONTROLLER BY USB"
@@ -706,6 +720,7 @@ class SetupWizard:
         self.state_path = state_path
         self.state: dict[str, str] = {}
         self.save_failed = False
+        self.pairing_host = ""
 
     # small helpers
     def pick(self, title: str, lines: list[str], choices: list[str], *, big: str | None = None) -> str | None:
@@ -1136,12 +1151,13 @@ class SetupWizard:
                 return DONE
             if choice not in ("FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"):
                 return SKIPPED
+            self.pairing_host = ""
             paired = self.pair_in_moonlight() if choice.startswith("FIND") else self.pair_with_pin()
             if paired is None:
                 continue
             if paired:
                 return DONE
-            again = self.pick("NOT PAIRED YET", ["NO NEW GAMING PC WAS PAIRED."], ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
+            again = self.pick("NOT PAIRED YET", pairing_help(self.pairing_host), ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
             if again != "TRY AGAIN":
                 return FAILED
 
@@ -1171,6 +1187,7 @@ class SetupWizard:
             if host:
                 break
             self.notice("GAMING PC", ["THAT IS NOT A VALID ADDRESS OR NAME.", "USE LETTERS, NUMBERS, DOTS AND DASHES ONLY."])
+        self.pairing_host = host
         pin = new_pairing_pin()
         choice = self.pick(
             f"PAIR WITH {host}",

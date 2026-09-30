@@ -4,12 +4,17 @@ Shares the fakes in test_setup.py. Only `base.<name>` is used so that the test
 classes in that module are not collected a second time from here.
 """
 
+import importlib.util
+import itertools
+import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
 import moonlightos_audio as audio
 import moonlightos_setup as setup
 import test_setup as base
+from test_launcher import Screen
 
 MAX_COLUMNS = 76
 
@@ -276,13 +281,133 @@ class PairedPcTest(base.WizardTestCase):
         self.assertNotIn("KEEP THE PC", ui.text())
 
     def test_the_list_of_paired_pcs_fits_the_screen_and_is_clean_text(self):
-        system = base.FakeSystem(hosts=["PC-" + "X" * 100, "ODD[31mNAME"])
+        system = base.FakeSystem(hosts=["PC-" + "X" * 100, "ODD\x1b[31mNAME"])
         ui = base.FakeUI(None)
         self.wizard(ui, system).step_streaming()
         shown = [line for line in ui.screens[0]["lines"] if line.startswith("ALREADY PAIRED")]
         self.assertEqual(len(shown), 1)
         self.assertLessEqual(len(shown[0]), MAX_COLUMNS)
-        self.assertNotIn("", shown[0])
+        self.assertNotIn("\x1b", shown[0])
+
+
+class PcNotFoundHelpTest(base.WizardTestCase):
+    """An asleep or unreachable gaming PC gets a short checklist, with the buttons to press."""
+
+    def failed_screen(self, *answers, texts=()):
+        self.texts = list(texts)
+        ui = base.FakeUI(*answers, "CONTINUE WITHOUT")
+        self.assertEqual(self.wizard(ui, base.FakeSystem()).step_streaming(), "failed")
+        return next(screen for screen in ui.screens if screen["title"] == "NOT PAIRED YET")
+
+    def test_the_checklist_names_the_three_usual_causes(self):
+        screen = self.failed_screen("FIND MY GAMING PC", "OPEN MOONLIGHT")
+        text = " ".join(screen["lines"]).upper()
+        self.assertRegex(text, r"ON AND AWAKE|WAKE")
+        self.assertIn("SUNSHINE", text)
+        self.assertIn("SAME NETWORK", text)
+        self.assertIn("PIN", text)
+
+    def test_the_pin_route_also_asks_to_check_the_address(self):
+        screen = self.failed_screen("PAIR WITH A PIN", "START PAIRING", texts=["192.168.1.20"])
+        self.assertIn("192.168.1.20", " ".join(screen["lines"]))
+
+    def test_the_checklist_names_the_controller_buttons(self):
+        text = " ".join(self.failed_screen("FIND MY GAMING PC", "OPEN MOONLIGHT")["lines"])
+        self.assertIn("PRESS A", text)
+        self.assertIn("B", text.split("PRESS A")[-1])
+
+    def test_the_choices_stay_try_again_and_continue_without_pairing(self):
+        screen = self.failed_screen("FIND MY GAMING PC", "OPEN MOONLIGHT")
+        self.assertEqual(screen["choices"], ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
+
+    def test_every_line_fits_76_columns_even_with_a_long_address(self):
+        long_host = "gaming-pc." + "x" * 60 + ".example.com"
+        for answers, texts in ((("FIND MY GAMING PC", "OPEN MOONLIGHT"), ()),
+                               (("PAIR WITH A PIN", "START PAIRING"), (long_host,))):
+            with self.subTest(route=answers[0]):
+                screen = self.failed_screen(*answers, texts=texts)
+                for line in screen["lines"]:
+                    self.assertLessEqual(len(line), MAX_COLUMNS, line)
+
+
+class LauncherPairingTest(unittest.TestCase):
+    """The hidden pairing app must not raise the generic "FAILED TO START" dialog."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        spec = importlib.util.spec_from_file_location("launcher_for_pairing", path)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def launcher(self):
+        with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
+            launcher = self.module.Launcher(Screen([-1] * 50))
+        launcher.show_launch_failure = mock.Mock()
+        return launcher
+
+    def pairing_app(self):
+        return self.module.apps.Application(
+            id="moonlight-pair", name="MOONLIGHT PAIRING", kind="command", command="/bin/true",
+            status_id="moonlight-pair", visible=False,
+        )
+
+    def launch(self, launcher, *, status, quiet, clock):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+
+            def request_launch(*_arguments):
+                # The launcher clears the status first; the started unit then writes its own.
+                if status:
+                    (run / "moonlight-pair-status").write_text(status + "\n")
+
+            options = {"quiet": True} if quiet else {}
+            with mock.patch.object(self.module, "RUN", run), \
+                    mock.patch.object(self.module.apps, "atomic_write", side_effect=request_launch), \
+                    mock.patch.object(self.module.time, "monotonic", side_effect=clock):
+                return launcher.launch_app(self.pairing_app(), **options)
+
+    QUICK_EXIT = "failed: exited before the application became ready (status 1)"
+
+    def test_a_quick_exit_is_reported_quietly_when_asked(self):
+        launcher = self.launcher()
+        self.assertFalse(self.launch(launcher, status=self.QUICK_EXIT, quiet=True, clock=itertools.count(0, 1.0).__next__))
+        launcher.show_launch_failure.assert_not_called()
+        self.assertIn("FAILED TO START", launcher.status)
+
+    def test_a_timeout_is_reported_quietly_when_asked(self):
+        launcher = self.launcher()
+        clock = iter([0.0, 100.0, 100.0, 100.0])
+        self.assertFalse(self.launch(launcher, status="", quiet=True, clock=lambda: next(clock)))
+        launcher.show_launch_failure.assert_not_called()
+        self.assertIn("TIMED OUT", launcher.status)
+
+    def test_other_applications_still_show_the_dialog(self):
+        launcher = self.launcher()
+        self.assertFalse(self.launch(launcher, status=self.QUICK_EXIT, quiet=False, clock=itertools.count(0, 1.0).__next__))
+        launcher.show_launch_failure.assert_called_once()
+        launcher = self.launcher()
+        clock = iter([0.0, 100.0, 100.0, 100.0])
+        self.assertFalse(self.launch(launcher, status="", quiet=False, clock=lambda: next(clock)))
+        launcher.show_launch_failure.assert_called_once()
+
+    def test_launch_and_wait_passes_quiet_on_only_when_asked(self):
+        launcher = self.launcher()
+        launcher.app_by_id = mock.Mock(return_value=self.pairing_app())
+        launcher.launch_app = mock.Mock(return_value=False)
+        self.assertFalse(launcher.launch_and_wait("moonlight-pair", quiet=True))
+        launcher.launch_app.assert_called_once_with(self.pairing_app(), quiet=True)
+        launcher.launch_app.reset_mock()
+        launcher.launch_and_wait("moonlight-pair")
+        launcher.launch_app.assert_called_once_with(self.pairing_app())
+
+    def test_moonlight_pairing_asks_for_a_quiet_launch(self):
+        launcher = self.launcher()
+        launcher.launch_and_wait = mock.Mock(return_value=False)
+        with mock.patch.object(self.module.apps, "write_user_application"), \
+                mock.patch.object(self.module.apps, "delete_user_application"):
+            self.assertFalse(launcher.pair_moonlight("192.168.1.20", "0427"))
+        self.assertIs(launcher.launch_and_wait.call_args.kwargs["quiet"], True)
 
 
 if __name__ == "__main__":
