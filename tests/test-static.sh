@@ -682,4 +682,11 @@ rg -Fq '"systemd-analyze", "--no-pager", "critical-chain", "moonlightos-launcher
 rg -q '^source "\$ROOT/build/lb-cache\.sh"$' build/build.sh
 rg -q 'MOONLIGHTOS_LB_CACHE' build/build.sh
 
+# Easier everyday use: NO CONTROLLER FOUND banner (reads only the kernel's device list)
+rg -q 'moonlightos_padcheck.py' build/configure.sh
+rg -q 'moonlightos_padcheck.py' launcher/Makefile
+rg -q '^import moonlightos_padcheck as padcheck' launcher/moonlightos-launcher.py
+rg -q '/proc/bus/input/devices' launcher/moonlightos_padcheck.py
+refute rg -q 'evdev|/dev/input' launcher/moonlightos_padcheck.py
+
 printf 'Static tests passed.\n'
