@@ -2,10 +2,11 @@
 set -uo pipefail
 
 watch_mode=0
+log_dir=${MOONLIGHTOS_LOG_DIR:-/var/log/moonlightos}
 [[ ${1:-} == --watch ]] && watch_mode=1
 
 report() {
-  clear 2>/dev/null || true
+  [[ -t 1 ]] && clear 2>/dev/null
   echo 'MoonlightOS diagnostics'
   echo "Generated: $(date --iso-8601=seconds)"
   echo
@@ -99,13 +100,96 @@ report() {
   systemctl --no-pager --plain --state=failed 2>&1 || true
 }
 
+# This window closes when the script exits and a controller cannot type a
+# command: Enter is controller A, Esc is B, and the D-pad sends arrow keys.
+# Sets KEY to enter, esc, up, down, other or timeout. A closed terminal reads
+# as esc so the loops below cannot spin.
+read_key() {
+  local key rest status
+  KEY=timeout
+  IFS= read -rsn1 ${1:+-t "$1"} key
+  status=$?
+  if ((status > 128)); then return; fi
+  if ((status != 0)); then KEY=esc; return; fi
+  case $key in
+    '') KEY=enter ;;
+    $'\e')
+      IFS= read -rsn2 -t 0.05 rest || true
+      case ${rest:-} in
+        '') KEY=esc ;;
+        '[A' | 'OA') KEY=up ;;
+        '[B' | 'OB') KEY=down ;;
+        *) KEY=other ;;
+      esac
+      ;;
+    *) KEY=other ;;
+  esac
+}
+
+# Show a file one screen at a time: Enter or Down for the next page, Up for the
+# previous one, Esc (or Enter on the last page) to return.
+page_file() {
+  local file=$1 saved_note=$2 rows=24 cols=80 page start=0 end total i footer
+  local -a lines
+  read -r rows cols < <(stty size 2>/dev/null) || true
+  [[ ${rows:-} =~ ^[0-9]+$ && ${cols:-} =~ ^[0-9]+$ ]] || { rows=24; cols=80; }
+  ((rows >= 8 && cols >= 40)) || { rows=24; cols=80; }
+  page=$((rows - 3))
+  mapfile -t lines < "$file"
+  total=${#lines[@]}
+  while :; do
+    end=$((start + page))
+    ((end < total)) || end=$total
+    printf '\033[H\033[2J'
+    for ((i = start; i < end; i++)); do
+      printf '%s\n' "${lines[i]:0:cols}"
+    done
+    if ((end < total)); then
+      footer="lines $((start + 1))-$end of $total"
+    else
+      footer="END OF REPORT. $saved_note"
+    fi
+    printf '%s\n%s' "${footer:0:cols}" 'ENTER (A): next page   UP: back   ESC (B): return'
+    read_key
+    case $KEY in
+      enter) ((end < total)) || return 0; start=$end ;;
+      down) ((end < total)) && start=$end ;;
+      up) start=$((start - page)); ((start >= 0)) || start=0 ;;
+      esc) return 0 ;;
+    esac
+  done
+}
+
 if ((watch_mode)); then
-  while true; do report; echo; echo 'Refresh: 5 seconds. Close with Alt+F4.'; sleep 5; done
+  while true; do
+    report
+    echo
+    echo 'Refreshing every 5 seconds. Press ESC (controller B) to close.'
+    if [[ -t 0 ]]; then
+      read_key 5
+      [[ $KEY == esc || $KEY == enter ]] && break
+    else
+      sleep 5
+    fi
+  done
 else
-  report
-  if [[ -d /var/log/moonlightos ]]; then
-    outfile=/var/log/moonlightos/diagnostics-$(date +%Y%m%d-%H%M%S).txt
-    report > "$outfile" 2>&1
-    echo "Saved: $outfile"
+  # One collection pass: it is saved, then shown (the tailscale pings alone
+  # take about 25 seconds, so never run it twice).
+  saved_note=
+  if [[ -d $log_dir ]]; then
+    outfile=$log_dir/diagnostics-$(date +%Y%m%d-%H%M%S).txt
+    saved_note="Saved: $outfile"
+  else
+    outfile=$(mktemp) || exit 1
+    trap 'rm -f -- "$outfile"' EXIT
+    saved_note='Not saved: the log directory is missing.'
+  fi
+  [[ -t 1 ]] && echo 'Collecting system information; this can take up to 30 seconds...'
+  report > "$outfile" 2>&1
+  if [[ -t 0 && -t 1 ]]; then
+    page_file "$outfile" "$saved_note"
+  else
+    cat -- "$outfile"
+    echo "$saved_note"
   fi
 fi

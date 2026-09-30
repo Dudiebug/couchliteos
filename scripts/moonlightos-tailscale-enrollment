@@ -14,13 +14,38 @@ connected() {
     jq -e '.BackendState == "Running"' >/dev/null 2>&1
 }
 
-wait_for_input_or_poll() {
-  if [[ -t 0 ]]; then
-    read -r -t "$poll_seconds" _ && return 0
-  else
-    sleep "$poll_seconds"
+# This window closes when the script exits and a controller cannot type a
+# command, so the return key is Enter (controller A) or a lone Esc (controller
+# B); arrow keys and everything else are ignored. Status 0: pressed, 1: timed
+# out. A closed terminal counts as pressed so the loops below cannot spin.
+return_key_pressed() {
+  local key rest status
+  IFS= read -rsn1 ${1:+-t "$1"} key
+  status=$?
+  if ((status > 128)); then return 1; fi
+  if ((status != 0)); then return 0; fi
+  [[ -z $key ]] && return 0
+  if [[ $key == $'\e' ]]; then
+    IFS= read -rsn2 -t 0.05 rest || true
+    [[ -z ${rest:-} ]] && return 0
   fi
   return 1
+}
+
+wait_to_return() {
+  [[ -t 0 ]] || return 0
+  echo
+  echo 'Press ENTER (controller A) to return to MoonlightOS.'
+  until return_key_pressed; do :; done
+}
+
+wait_for_input_or_poll() {
+  if [[ -t 0 ]]; then
+    return_key_pressed "$poll_seconds"
+  else
+    sleep "$poll_seconds"
+    return 1
+  fi
 }
 
 echo 'Tailscale enrollment'
@@ -34,7 +59,9 @@ for ((elapsed = 0; ; elapsed++)); do
   fi
 
   if systemctl is-failed --quiet moonlightos-tailscale-enroll.service; then
-    echo 'Enrollment failed. Run moonlightos-tailscale-diagnostics.' >&2
+    echo 'Tailscale sign-in failed.' >&2
+    echo 'Open SETTINGS > SYSTEM DIAGNOSTICS to see why, then try TAILSCALE again.' >&2
+    wait_to_return
     exit 1
   fi
 
@@ -53,11 +80,13 @@ for ((elapsed = 0; ; elapsed++)); do
       printf '%s\n' "$url"
       echo
       echo 'This URL is short-lived and is not written to persistent logs.'
-      echo 'Press ENTER to return; enrollment will continue in the background.'
+      echo 'Press ENTER (controller A) to return; enrollment will continue in the background.'
       url_rendered=true
     fi
   elif [[ "$url_rendered" == false && "$elapsed" -ge "$url_wait_seconds" ]]; then
-    echo 'No authentication URL appeared before the local timeout.' >&2
+    echo 'Tailscale did not offer a sign-in code in time.' >&2
+    echo 'Check the network connection (SETTINGS > SYSTEM DIAGNOSTICS shows details), then try TAILSCALE again.' >&2
+    wait_to_return
     exit 1
   fi
 
