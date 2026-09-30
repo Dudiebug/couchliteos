@@ -478,7 +478,15 @@ class Launcher:
             "google-chrome": ("app_id:google-chrome", "title:Google Chrome"),
             "moonlight": ("app_id:moonlight", "title:Moonlight"),
             "chiaki-ng": ("app_id:chiaki", "app_id:io.github.streetpea.Chiaki4deck", "title:Chiaki"),
-        }.get(app.id, (f"title:{app.name}",))
+        }.get(app.id)
+        if matches is None:
+            matches = (f"title:{app.name}",)
+            if app.kind == "command" and not app.terminal:
+                # Windows of user-added apps (Chrome kiosk pages, Steam, ...) are not
+                # titled with the stored name, but their app_id follows the binary.
+                binary = pathlib.PurePath(app.command).name
+                ids = dict.fromkeys((binary.removesuffix("-stable"), binary))
+                matches = tuple(f"app_id:{item}" for item in ids) + matches
         if app.kind == "rdp":
             matches = (f"app_id:{rdp.WAYLAND_APP_ID}", f"title:{app.name}")
         for match in matches:

@@ -447,6 +447,34 @@ class LauncherTest(unittest.TestCase):
                     self.assertFalse(launcher.launch_app(app))
                 self.assertFalse((run / request).exists(), request)
 
+    def test_user_added_apps_are_resumed_by_the_wayland_app_id_of_their_command(self):
+        # UI-created apps store an uppercased name and Chrome kiosk windows are titled
+        # by the page, so a title match can never find them.
+        web = self.module.apps.Application(
+            id="youtube", name="YOUTUBE", kind="command", command="/usr/bin/google-chrome-stable",
+            arguments="--ozone-platform=wayland --kiosk --no-first-run https://youtube.com",
+            status_id="youtube",
+        )
+        other = self.module.apps.Application(
+            id="steam", name="STEAM", kind="command", command="/usr/bin/steam", status_id="steam",
+        )
+        for app, expected in ((web, "app_id:google-chrome"), (other, "app_id:steam")):
+            with mock.patch.object(
+                self.module.subprocess, "run", return_value=mock.Mock(returncode=0)
+            ) as run:
+                self.assertTrue(self.module.Launcher.focus_app(app))
+            self.assertEqual(run.call_args_list[0].args[0], ["wlrctl", "toplevel", "focus", expected])
+        with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+            self.assertFalse(self.module.Launcher.focus_app(web))
+        self.assertEqual(
+            [call.args[0][-1] for call in run.call_args_list],
+            ["app_id:google-chrome", "app_id:google-chrome-stable", "title:YOUTUBE"],
+        )
+        # Terminal apps are foot windows titled with the app name.
+        with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+            self.module.Launcher.focus_app(self.terminal_app())
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["title:TERMINAL"])
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:
