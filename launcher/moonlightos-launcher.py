@@ -857,6 +857,9 @@ class Settings:
             self.rollback(old_output, old_mode)
             self.refresh_outputs()
             return
+        self.finish_preview(old_output, old_mode, requested)
+
+    def finish_preview(self, old_output: display.Output, old_mode: display.Mode, requested: display.Mode) -> None:
         try:
             validated = display.valid_output_mode(old_output.name, old_output.identity, requested)
             if not validated or validated[0].current_mode is None:
@@ -868,7 +871,15 @@ class Settings:
                 requested.refresh_mhz,
             ):
                 raise RuntimeError("compositor did not retain the requested mode")
-            display.save_display(validated[0], requested)
+            try:
+                display.save_display(validated[0], requested)
+            except (OSError, RuntimeError) as error:
+                # The user confirmed a working mode: keep it for this session.
+                display.log(f"Confirmed {requested.argument} but could not save it: {error}")
+                self.refresh_outputs()
+                reason = getattr(error, "strerror", None) or str(error)
+                self.status = f"MODE APPLIED BUT NOT SAVED: {reason.upper()[:60]}"
+                return
             display.log(f"Confirmed and saved {requested.argument} on {old_output.name}")
             self.status = "DISPLAY MODE CONFIRMED AND SAVED"
             self.refresh_outputs()

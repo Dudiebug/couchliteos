@@ -1,5 +1,6 @@
 """Launcher behaviours fixed after field testing (live mode, network, saving)."""
 
+import errno
 import importlib.util
 import pathlib
 import tempfile
@@ -199,6 +200,63 @@ class NetworkStatusTest(LauncherFixesTest):
         with mock.patch.object(launcher, "launch_by_id", return_value=True) as launch:
             self.assertTrue(settings.activate())
         launch.assert_called_once_with("network-setup")
+
+
+class DisplayConfirmSaveTest(LauncherFixesTest):
+    BEFORE = 'DP-1 "Dell Inc. DELL U2723QE ABC123"\n  Enabled: yes\n  Modes:\n    3840x2160 px, 60.000000 Hz (preferred, current)\n    1920x1080 px, 120.000000 Hz\n'
+    AFTER = 'DP-1 "Dell Inc. DELL U2723QE ABC123"\n  Enabled: yes\n  Modes:\n    3840x2160 px, 60.000000 Hz (preferred)\n    1920x1080 px, 120.000000 Hz (current)\n'
+
+    def finish(self, save_display, after=None):
+        display = self.module.display
+        old = display.parse_wlr_randr(self.BEFORE)[0]
+        new = display.parse_wlr_randr(after or self.AFTER)[0]
+        requested = display.Mode(1920, 1080, 120000)
+        settings = self.module.Settings(Screen(), self.launcher())
+        settings.output, settings.original_mode = old, old.current_mode
+        settings.rollback = mock.Mock()
+        with mock.patch.object(display, "valid_output_mode", return_value=(new, requested)), mock.patch.object(
+            display, "query_outputs", return_value=[new]
+        ), mock.patch.object(display, "save_display", side_effect=save_display) as save, mock.patch.object(
+            display, "apply_mode"
+        ) as apply, mock.patch.object(display, "log"):
+            settings.finish_preview(old, old.current_mode, requested)
+        return settings, save, apply
+
+    def test_saved_mode_is_not_rolled_back(self):
+        settings, save, apply = self.finish(lambda *_args: None)
+        save.assert_called_once()
+        settings.rollback.assert_not_called()
+        apply.assert_not_called()
+
+    def test_full_disk_keeps_the_mode_and_says_why_it_was_not_saved(self):
+        def full(*_args):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        settings, _save, apply = self.finish(full)
+        settings.rollback.assert_not_called()
+        apply.assert_not_called()
+        self.assertEqual(settings.status, "MODE APPLIED BUT NOT SAVED: NO SPACE LEFT ON DEVICE")
+
+    def test_read_only_disk_keeps_the_mode_and_says_why_it_was_not_saved(self):
+        def read_only(*_args):
+            raise OSError(errno.EROFS, "Read-only file system")
+
+        settings, _save, _apply = self.finish(read_only)
+        settings.rollback.assert_not_called()
+        self.assertEqual(settings.status, "MODE APPLIED BUT NOT SAVED: READ-ONLY FILE SYSTEM")
+
+    def test_display_without_identity_reports_why_nothing_was_saved(self):
+        def anonymous(*_args):
+            raise RuntimeError("display identity is unavailable; mode was not saved")
+
+        settings, _save, _apply = self.finish(anonymous)
+        settings.rollback.assert_not_called()
+        self.assertTrue(settings.status.startswith("MODE APPLIED BUT NOT SAVED: DISPLAY IDENTITY"))
+
+    def test_mode_the_compositor_did_not_keep_is_still_rolled_back(self):
+        settings, save, _apply = self.finish(lambda *_args: None, after=self.BEFORE)
+        settings.rollback.assert_called_once()
+        save.assert_not_called()
 
 
 if __name__ == "__main__":
