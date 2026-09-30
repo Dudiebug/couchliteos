@@ -401,6 +401,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_rdp.py launcher/moonlightos_stream.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
+python3 -m py_compile launcher/moonlightos_cec.py scripts/moonlightos-cec
 
 python3 - <<'PY'
 import configparser, pathlib, re, subprocess
@@ -591,5 +592,29 @@ printf -- '--evil\nDesktop\n' > "$tmp/stream.request"
 stream_status=0
 python3 launcher/moonlightos_stream.py take-request "$tmp/stream.request" > "$tmp/stream.out" || stream_status=$?
 [[ $stream_status == 1 && ! -s "$tmp/stream.out" && ! -e "$tmp/stream.request" ]]
+
+# HDMI-CEC TV control: optional, started only when the kernel exposes /dev/cec*.
+for required in services/moonlightos-cec.service services/moonlightos-cec-wake.service \
+  'services/moonlightos-pulse8-inputattach@.service' overlay/etc/udev/rules.d/75-moonlightos-cec.rules \
+  scripts/moonlightos-cec launcher/moonlightos_cec.py; do
+  test -s "$required"
+done
+rg -q '^ConditionPathExistsGlob=/dev/cec\[0-9\]\*$' services/moonlightos-cec.service
+rg -q '^ExecStart=/usr/libexec/moonlightos-cec$' services/moonlightos-cec.service
+rg -q 'install -D -m 0755 "\$ROOT/scripts/moonlightos-cec" "\$CHROOT/usr/libexec/moonlightos-cec"' build/configure.sh
+rg -q 'install -D -m 0644 "\$ROOT/launcher/moonlightos_cec.py" "\$CHROOT/usr/libexec/moonlightos_cec.py"' build/configure.sh
+rg -q '^ConditionPathExistsGlob=/dev/cec\[0-9\]\*$' services/moonlightos-cec-wake.service
+rg -q '^After=suspend.target$' services/moonlightos-cec-wake.service
+rg -q '^WantedBy=suspend.target$' services/moonlightos-cec-wake.service
+rg -q '^ExecStart=/usr/bin/systemctl restart moonlightos-cec.service$' services/moonlightos-cec-wake.service
+rg -q '^systemctl enable moonlightos-cec-wake.service$' config/live-build/hooks/live/0100-moonlightos.hook.chroot
+refute rg -q 'sh -c|/bin/sh|/bin/bash' services/moonlightos-cec.service services/moonlightos-cec-wake.service
+rg -q 'SUBSYSTEM=="cec".*SYSTEMD_WANTS.*moonlightos-cec\.service' overlay/etc/udev/rules.d/75-moonlightos-cec.rules
+rg -q 'idVendor.*2548.*SYSTEMD_WANTS.*moonlightos-pulse8-inputattach@%k\.service' overlay/etc/udev/rules.d/75-moonlightos-cec.rules
+rg -q '^ExecStart=/usr/bin/inputattach --pulse8-cec /dev/%I$' 'services/moonlightos-pulse8-inputattach@.service'
+rg -q '^v4l-utils$' config/live-build/package-lists/moonlightos.list.chroot
+rg -q '^inputattach$' config/live-build/package-lists/moonlightos.list.chroot
+rg -q '"TV CONTROL"' launcher/moonlightos-launcher.py
+rg -q 'import moonlightos_cec as cec' launcher/gamepad-nav.py
 
 printf 'Static tests passed.\n'

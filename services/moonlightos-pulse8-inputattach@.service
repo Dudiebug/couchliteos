@@ -1,0 +1,15 @@
+[Unit]
+Description=Attach the Pulse-Eight USB-CEC adapter on /dev/%I to the kernel CEC driver
+ConditionPathExists=/dev/%I
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/inputattach --pulse8-cec /dev/%I
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+StandardOutput=journal
+StandardError=journal

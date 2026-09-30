@@ -88,6 +88,8 @@ systemctl enable bluetooth.service moonlightos-bluetooth.service
 systemctl enable moonlightos-qemu-smoke.service
 systemctl enable moonlightos-hwdetect-early.service moonlightos-hwdetect.service
 systemctl enable tailscaled.service moonlightos-tailscale-enroll.path moonlightos-tailscale-ssh.path
+# HDMI-CEC: the daemon is started by udev (75-moonlightos-cec.rules) only when a CEC adapter exists.
+systemctl enable moonlightos-cec-wake.service
 
 # The standard kernel supplies these modules; load them on the applicable side.
 printf '%s\n' usbip_host uinput tun > /etc/modules-load.d/moonlightos-usbip.conf
