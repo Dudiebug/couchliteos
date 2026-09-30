@@ -23,6 +23,7 @@ import moonlightos_bluetooth as bluetooth
 import moonlightos_apps as apps
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
+import moonlightos_controllers as controllers
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -225,14 +226,14 @@ def tailscale_summary() -> str:
     return "TAILSCALE CONNECTED" if result.returncode == 0 else "TAILSCALE DISCONNECTED"
 
 
-def add_centered(screen: curses.window, row: int, text: str) -> None:
+def add_centered(screen: curses.window, row: int, text: str, attr: int = 0) -> None:
     height, width = screen.getmaxyx()
     if not 0 <= row < height or width < 2:
         return
     clipped = text[: max(0, width - 4)]
     column = max(1, (width - len(clipped)) // 2)
     try:
-        screen.addstr(row, column, clipped)
+        screen.addstr(row, column, clipped, attr)
     except curses.error:
         pass
 
@@ -258,6 +259,7 @@ class Launcher:
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
+        self.controllers = controllers.Monitor()
         self.reload_applications()
 
     def reload_applications(self) -> None:
@@ -316,8 +318,19 @@ class Launcher:
             except curses.error:
                 pass
 
-        add_centered(self.screen, max(row + 2, height - 4), self.status)
+        footer = self.footer_lines()
+        add_centered(self.screen, max(row + 2, height - 4 - len(footer)), self.status)
+        for offset, (text, attr) in enumerate(reversed(footer)):
+            add_centered(self.screen, height - 3 - offset, text, attr)
         self.screen.refresh()
+
+    def footer_lines(self) -> list[tuple[str, int]]:
+        """Extra home-screen lines below the status line: (text, curses attribute)."""
+        lines: list[tuple[str, int]] = []
+        battery = self.controllers.line()
+        if battery:
+            lines.append((battery, curses.A_REVERSE if self.controllers.low() else curses.A_NORMAL))
+        return lines
 
     def draw_launching(self, label: str, frame: str) -> None:
         self.screen.erase()
@@ -554,6 +567,7 @@ class Launcher:
         except curses.error:
             pass
 
+        self.controllers.start()
         self.draw()
         (RUN / "launcher-ready").touch()
         display.restore_saved_mode()

@@ -398,7 +398,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
-  launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_rdp.py launcher/moonlightos_controllers.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 
@@ -497,5 +497,10 @@ MOONLIGHTOS_SYSFS_ROOT="$tmp/sys" \
 MOONLIGHTOS_USBIP_ALLOWLIST="$tmp/allowlist" \
 MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
   bash usbip/moonlightos-usbip unbind-all
+
+# Easier everyday use: controller batteries
+rg -q 'moonlightos_controllers.py' build/configure.sh
+rg -q '^import moonlightos_controllers as controllers' launcher/moonlightos-launcher.py
+rg -q '/sys/class/power_supply' launcher/moonlightos_controllers.py
 
 printf 'Static tests passed.\n'
