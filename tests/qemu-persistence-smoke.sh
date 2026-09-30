@@ -85,7 +85,14 @@ common=(
   -device virtio-vga -display none -monitor none -no-reboot
   -netdev user,id=net0 -device e1000,netdev=net0
 )
-[[ -r /dev/kvm && -w /dev/kvm ]] && common=(-enable-kvm -cpu host "${common[@]}")
+# Without KVM, MOONLIGHTOS_QEMU_ACCEL_ARGS can name another accelerator, for
+# example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  common=(-enable-kvm -cpu host "${common[@]}")
+elif [[ -n ${MOONLIGHTOS_QEMU_ACCEL_ARGS:-} ]]; then
+  read -r -a accel <<< "$MOONLIGHTOS_QEMU_ACCEL_ARGS"
+  common=("${accel[@]}" "${common[@]}")
+fi
 install -D -m 0644 /dev/null "$LOG"
 
 boot_and_wait() {

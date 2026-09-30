@@ -1,19 +1,40 @@
 # Known limitations
 
-- No physical DCC36X3 test has been recorded in this repository yet.
-- To keep each ISO under GitHub's 2 GiB release-asset limit, v0.1.12 no
-  longer copies firmware packages into the ISO for the text installer. The
-  live system and the system it installs keep their firmware; only network
-  hardware that needs firmware is unavailable inside the installer itself,
-  which the live-copy installation does not require.
-- No physical iMac Late 2013 test has been recorded yet, including the section 0
-  identification (model, serial, GPU, Wi-Fi). See [IMAC-2013.md](IMAC-2013.md).
-- The iMac profile decodes Moonlight video in software (H.264 only): Kepler has
-  no HEVC decoder and nouveau's H.264 decoder needs non-redistributable NVIDIA
-  firmware. nouveau also leaves Kepler at its boot clocks. The proprietary
-  NVIDIA driver cannot be used (no GBM for Cage).
-- iMac Wi-Fi uses Broadcom's proprietary `wl` driver built with DKMS; it loads
-  only with Secure Boot off (always true on 2013 Apple firmware).
+- No physical machine has run v0.1.13 yet. Every GPU class in
+  [HARDWARE.md](HARDWARE.md) needs a recorded result from the checklist in
+  [TESTING.md](TESTING.md) before the release is published; that includes the
+  Dell OptiPlex 7010 Micro and the iMac Late 2013 section 0 identification
+  (model, serial, GPU, Wi-Fi). See [IMAC-2013.md](IMAC-2013.md).
+- The NVIDIA ISO has only run in virtual machines, which have no NVIDIA GPU.
+  The proprietary driver loading, GBM under Cage, NVDEC decode, and the
+  nouveau fallback on a real Kepler card are all unverified.
+- NVIDIA RTX 50 (Blackwell) cards are not supported: Debian 13's 550 driver
+  predates them, and so does nouveau in Debian 13's kernel. Expect at most the
+  firmware framebuffer. Support waits for a 570 or newer Debian driver.
+- The proprietary NVIDIA driver (NVIDIA ISO) and Broadcom `wl` (both ISOs) are
+  DKMS modules signed with a key that is deleted before the image is sealed, so
+  they do not load with Secure Boot on. Turn Secure Boot off in the firmware
+  settings, or use the Basic Graphics entry on NVIDIA and a supported USB or
+  PCIe Wi-Fi adapter. Apple firmware from 2013 has no Secure Boot.
+- XWayland applications (Moonlight among them) may flicker or show stale frames
+  on the proprietary 550 driver, because it lacks explicit sync. Use the Basic
+  Graphics entry if that happens and report the GPU model.
+- Hybrid-graphics laptops (Intel or AMD plus NVIDIA): the launcher uses the
+  GPU the firmware booted with, usually the integrated one. MoonlightOS does
+  not switch outputs or offload rendering to the discrete GPU yet.
+- When the `wl` driver owns a Broadcom Wi-Fi chip, the open Broadcom drivers
+  are blacklisted for that boot, as Debian's package does. That includes `b44`,
+  the Ethernet driver of some older Broadcom laptops; those machines lose wired
+  Ethernet while `wl` is active.
+- Moonlight decodes H.264 in software on nouveau (Kepler has no HEVC decoder,
+  nouveau's H.264 decoder needs non-redistributable NVIDIA firmware, and newer
+  cards have no nouveau decoder). nouveau also leaves Kepler at its boot
+  clocks, so the iMac targets 1080p60.
+- To keep each ISO under GitHub's 2 GiB release-asset limit, neither ISO
+  copies firmware packages for the text installer. The live system and the
+  system it installs keep their firmware; only network hardware that needs
+  firmware is unavailable inside the installer itself, which the live-copy
+  installation does not require.
 - Remote Desktop uses FreeRDP 3.15's SDL client, which upstream marks
   experimental. One RDP session runs at a time. Saved passwords are stored
   unencrypted (root-only 0600). Debian 13's xrdp 0.10.1 showed its own login
@@ -50,5 +71,5 @@
   CLI argument. Manual host entry is documented; setting a profile `app`
   enables direct CLI streaming.
 - Tailscale relay paths may not sustain game streaming or USB/IP latency.
-- A remote PlayStation is not reached through Tailscale in v0.1.2; a deliberately
+- A remote PlayStation is not reached through Tailscale; a deliberately
   designed subnet-router deployment is deferred.

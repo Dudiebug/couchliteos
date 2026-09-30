@@ -72,7 +72,14 @@ common=(
   -drive "file=$work/system.qcow2,if=virtio,format=qcow2"
   -device virtio-vga -display none -no-reboot
 )
-[[ -r /dev/kvm && -w /dev/kvm ]] && common=(-enable-kvm -cpu host "${common[@]}")
+# Without KVM, MOONLIGHTOS_QEMU_ACCEL_ARGS can name another accelerator, for
+# example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  common=(-enable-kvm -cpu host "${common[@]}")
+elif [[ -n ${MOONLIGHTOS_QEMU_ACCEL_ARGS:-} ]]; then
+  read -r -a accel <<< "$MOONLIGHTOS_QEMU_ACCEL_ARGS"
+  common=("${accel[@]}" "${common[@]}")
+fi
 
 # Hosts without Unix-domain sockets in Python can use local TCP monitors.
 if [[ -n ${MOONLIGHTOS_QEMU_MONITOR_PORT:-} ]]; then

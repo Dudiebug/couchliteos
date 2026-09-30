@@ -49,8 +49,9 @@ if [[ $(dpkg-divert --truename "$sta_blacklist") == "$sta_blacklist" ]]; then
 fi
 [[ ! -e $sta_blacklist ]] || fail "$sta_blacklist still blacklists the open Broadcom drivers globally"
 test -s /usr/share/broadcom-sta/broadcom-sta.ids || fail 'broadcom-sta.ids is missing (moonlightos-hwdetect needs it)'
+# modprobe reads only *.conf, so the diverted copy is not a live blacklist.
 for module in b43 bcma ssb brcmsmac; do
-  ! grep -Rqs "^blacklist $module\$" /etc/modprobe.d /usr/lib/modprobe.d || fail "$module is blacklisted for every machine"
+  ! grep -Rqs --include='*.conf' "^blacklist $module\$" /etc/modprobe.d /usr/lib/modprobe.d || fail "$module is blacklisted for every machine"
 done
 
 grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/moonlightos-input.conf || fail 'hid_apple fnmode is not set'

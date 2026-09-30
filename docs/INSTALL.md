@@ -1,18 +1,33 @@
 # Installation
 
+## Choose the ISO
+
+- `moonlightos-0.1.13-nvidia-amd64.iso` for a GeForce GTX 900 to RTX 40 card.
+- `moonlightos-0.1.13-amd64.iso` (general) for everything else: Intel and AMD
+  graphics, older NVIDIA cards, Intel Macs including the iMac Late 2013, and
+  virtual machines.
+
+[HARDWARE.md](HARDWARE.md) has the full table. Check the download against
+`SHA256SUMS` from the same release:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
 ## Create the USB installer
 
 Write the hybrid ISO to a whole USB device. **The selected device is erased.**
 Resolve the exact target with `lsblk` before running this example:
 
 ```bash
-sudo dd if=moonlightos-0.1.12-amd64.iso of=/dev/sdX bs=4M \
+sudo dd if=moonlightos-0.1.13-amd64.iso of=/dev/sdX bs=4M \
   status=progress conv=fsync
 ```
 
-For the iMac Late 2013, write `moonlightos-0.1.12-imac2013-amd64.iso` instead
-and boot it by holding Option (⌥) and choosing **EFI Boot**; see
-[IMAC-2013.md](IMAC-2013.md).
+On an Intel Mac, boot it by holding Option (⌥) and choosing **EFI Boot**; see
+[IMAC-2013.md](IMAC-2013.md). Both ISOs use DKMS drivers (NVIDIA, Broadcom
+`wl`) that do not load with Secure Boot on; turn it off in the firmware
+settings on PCs that have it.
 
 Rufus users should select the same ISO and write it in DD/Image mode so the
 hybrid disk layout is preserved. Rufus and physical USB boot remain unverified;
@@ -23,7 +38,14 @@ The boot menu provides:
 - `Start MoonlightOS` — uses a valid persistence backend when present.
 - `Start MoonlightOS (No Persistence)` — passes Debian Live's
   `nopersistence` recovery option.
+- `Start MoonlightOS (Basic Graphics)` (NVIDIA ISO only) — blocks the
+  proprietary driver and uses nouveau. Use it if the screen stays black or the
+  launcher misdraws on the NVIDIA driver.
 - `Install MoonlightOS` — starts the text Debian Installer.
+
+An installed system has no Basic Graphics entry of its own. To get the same
+effect once, press `e` on the GRUB entry, append `moonlightos.gpu=basic` to the
+line starting with `linux`, and press `Ctrl+X`.
 
 ## Install to the OptiPlex SSD
 
@@ -33,7 +55,7 @@ The boot menu provides:
 3. Choose `Install MoonlightOS` from the boot menu. The image includes Debian
    Installer in live mode; it copies the configured appliance system to the SSD.
 4. Select the 256 GB NVMe only. Guided partitioning with an EFI System
-   Partition and ext4 root is the v0.1.12 reference layout.
+   Partition and ext4 root is the reference layout.
 5. Reboot, remove the USB, and confirm the MoonlightOS launcher appears.
 6. Run `moonlightos-diagnostics`, pair applications, reboot, and confirm the
    host lists remain.
@@ -49,10 +71,10 @@ USB device (not a partition), and try another USB port.
 Do not use a file-copy operation. If the boot menu appears but the launcher does
 not, photograph the last screen and include it in an issue.
 
-The installed root filesystem is writable in v0.1.12. Pairings, settings, and
+The installed root filesystem is writable. Pairings, settings, and
 logs live beneath `/var/lib/moonlightos` and `/var/log/moonlightos`.
 
-The CI install smoke test performs a complete UEFI installation to a disposable
+The install smoke test (`make qemu-install-smoke`) performs a complete UEFI installation to a disposable
 24 GB virtual disk, removes the ISO, boots that disk independently, and waits
 for the real launcher-ready marker. Physical NVMe and second-USB installation
 still require the checklist in `TESTING.md`.
@@ -92,7 +114,7 @@ testing, keep the ISO and an ext4 backend labeled `persistence` on Ventoy's
 first partition:
 
 ```text
-ISO/moonlightos-0.1.12-amd64.iso
+ISO/moonlightos-0.1.13-amd64.iso
 persistence/moonlightos.dat
 ventoy/ventoy.json
 ```
@@ -103,7 +125,7 @@ ventoy/ventoy.json
 {
   "persistence": [
     {
-      "image": "/ISO/moonlightos-0.1.12-amd64.iso",
+      "image": "/ISO/moonlightos-0.1.13-amd64.iso",
       "backend": "/persistence/moonlightos.dat",
       "timeout": 0
     }

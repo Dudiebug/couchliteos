@@ -25,35 +25,54 @@ internet.
 ## USB does not boot
 
 1. Write the ISO to the whole USB device with the `dd` command in `INSTALL.md`.
-2. Use Dell `F12` and choose the `UEFI` USB entry. The image requires x86_64
-   UEFI and has Secure Boot support enabled.
+2. Use the firmware boot menu (Dell: `F12`; Mac: hold Option) and choose the
+   `UEFI` USB entry. The image boots through Debian's signed shim, but the
+   DKMS drivers (NVIDIA, Broadcom `wl`) load only with Secure Boot off.
 3. Wait for the three-second GRUB timeout. The launcher is not allowed to wait
    for DHCP, so unplugged Ethernet must not prevent it from appearing.
 4. If it still stops, capture the exact last message or a photo. Serial boot
    output is available at 115200 8N1 for development builds.
 
-IPv6 is intentionally unavailable in v0.1.12. Use `ip -4 address` and `ip -4
+IPv6 is intentionally unavailable. Use `ip -4 address` and `ip -4
 route` when troubleshooting networking.
 
 Support export details and verification commands are in
 [SUPPORT.md](SUPPORT.md).
 
+## Black screen or garbled launcher on NVIDIA
+
+Run `/usr/libexec/moonlightos-hwdetect report` (or read
+`/run/moonlightos-hardware/summary.txt` from another console) to see which
+driver was chosen and why.
+
+- NVIDIA ISO: reboot and choose **Start MoonlightOS (Basic Graphics)**. It
+  blocks the proprietary driver and uses nouveau. On an installed system, press
+  `e` in GRUB and append `moonlightos.gpu=basic` to the `linux` line. If Basic
+  Graphics works and the normal entry does not, report the GPU model and the
+  output of `nvidia-smi` and `journalctl -b -k | grep -i nvidia`.
+- With Secure Boot on, the proprietary driver cannot load and nothing replaces
+  it on the normal entry. Turn Secure Boot off, or use Basic Graphics.
+- RTX 50 (Blackwell) cards are not supported by either ISO yet.
+- Never add `nomodeset`: Cage needs KMS.
+
 ## iMac Late 2013 shows a black screen
 
-The `imac2013` image drives the NVIDIA Kepler GPU with nouveau and needs KMS.
+The general ISO drives the iMac's NVIDIA Kepler GPU with nouveau and needs KMS.
 Do not add `nomodeset`, and never install a proprietary NVIDIA driver (the last
 Kepler branch has no GBM, so Cage cannot start). Reboot with **Start
 MoonlightOS (No Persistence)**, then check `lsmod` for `nouveau` and the
 journal for `nouveau` or `cage` errors. Confirm the machine with
-`sudo moonlightos-hardware-report`; an `iMac14,1` has Intel graphics and does
-not match this profile.
+`sudo moonlightos-hardware-report`; an `iMac14,1` has Intel graphics and is
+not the machine [IMAC-2013.md](IMAC-2013.md) describes.
 
 ## iMac Wi-Fi is missing
 
-Check `lsmod | grep '^wl '` and `modinfo wl`. If `wl` is missing on an installed
+Check `lsmod | grep '^wl '`, `modinfo wl`, and the Broadcom line of
+`/usr/libexec/moonlightos-hwdetect report`. If `wl` is missing on an installed
 system after a kernel update, make sure `linux-headers-amd64`, `dkms`, and
-`broadcom-sta-dkms` are installed so DKMS can rebuild it. `b43`, `bcma`, `ssb`,
-and `brcmsmac` must stay blacklisted.
+`broadcom-sta-dkms` are installed so DKMS can rebuild it. When `wl` owns the
+chip, hardware detection blacklists `b43`, `bcma`, `ssb`, `brcmsmac`, and the
+other open Broadcom drivers for that boot; `wl` needs Secure Boot off.
 
 ## Remote Desktop does not connect
 

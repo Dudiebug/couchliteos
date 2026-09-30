@@ -91,7 +91,14 @@ args=(
   -fw_cfg "name=opt/moonlightos.smoke,string=apps"
   -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE"
 )
-[[ -r /dev/kvm && -w /dev/kvm ]] && args=(-enable-kvm -cpu host "${args[@]}")
+# Without KVM, MOONLIGHTOS_QEMU_ACCEL_ARGS can name another accelerator, for
+# example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  args=(-enable-kvm -cpu host "${args[@]}")
+elif [[ -n ${MOONLIGHTOS_QEMU_ACCEL_ARGS:-} ]]; then
+  read -r -a accel <<< "$MOONLIGHTOS_QEMU_ACCEL_ARGS"
+  args=("${accel[@]}" "${args[@]}")
+fi
 
 # OVMF requires a private writable variable store in addition to its read-only
 # code image. A code-only pflash drive can stall before GRUB with no serial log.
