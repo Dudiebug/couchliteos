@@ -45,8 +45,14 @@ class LiveModeWarningTest(LauncherFixesTest):
             with self.subTest(output=output):
                 self.assertTrue(self.module.state_is_persistent(output))
 
-    def test_squashfs_loop_device_does_not_count_as_persistence(self):
-        self.assertFalse(self.module.state_is_persistent("/dev/loop0 squashfs ro,relatime\n"))
+    def test_read_only_system_image_and_ram_devices_do_not_count_as_persistence(self):
+        for output in ("/dev/loop0 squashfs ro,relatime\n", "/dev/sr0 iso9660 ro\n", "/dev/zram0 ext4 rw\n"):
+            with self.subTest(output=output):
+                self.assertFalse(self.module.state_is_persistent(output))
+
+    def test_persistence_file_on_a_loop_device_counts(self):
+        # Real `findmnt` output for a bind mount from a loop-mounted ext4 image.
+        self.assertTrue(self.module.state_is_persistent("/dev/loop0[/moonlightos-state] ext4 rw,relatime\n"))
 
     def test_live_boot_without_persistence_warns(self):
         with tempfile.TemporaryDirectory() as directory:
