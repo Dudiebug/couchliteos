@@ -345,5 +345,34 @@ class RdpDiskFullTest(LauncherFixesTest):
         remote.text_input.assert_not_called()
 
 
+class SettingsLaunchStatusTest(LauncherFixesTest):
+    def test_unavailable_app_is_explained_inside_settings(self):
+        for label, app_id in (
+            ("TAILSCALE", "tailscale"),
+            ("SYSTEM DIAGNOSTICS", "system-diagnostics"),
+            ("NETWORK", "network-setup"),
+        ):
+            with self.subTest(label=label):
+                launcher = self.launcher()
+                settings = self.module.Settings(Screen(), launcher)
+                settings.selected = self.module.SETTINGS_MENU.index(label)
+                with mock.patch.object(launcher, "app_by_id", return_value=None):
+                    self.assertTrue(settings.activate())
+                self.assertEqual(settings.status, f"{app_id.upper()} IS UNAVAILABLE")
+
+    def test_started_app_result_is_shown_inside_settings(self):
+        launcher = self.launcher()
+        settings = self.module.Settings(Screen(), launcher)
+        settings.selected = self.module.SETTINGS_MENU.index("TAILSCALE")
+
+        def start(_app_id):
+            launcher.status = "TAILSCALE STARTED"
+            return True
+
+        with mock.patch.object(launcher, "launch_by_id", side_effect=start):
+            settings.activate()
+        self.assertEqual(settings.status, "TAILSCALE STARTED")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -977,19 +977,24 @@ class Settings:
         finally:
             self.screen.timeout(1000)
 
+    def launch(self, app_id: str) -> None:
+        """Start an app and show the launcher's result (e.g. UNAVAILABLE) on this screen."""
+        self.launcher.launch_by_id(app_id)
+        self.status = self.launcher.status
+
     def activate(self) -> bool:
         actions = {
             "DISPLAY": self.run_display,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
-            "NETWORK": lambda: self.launcher.launch_by_id("network-setup"),
+            "NETWORK": lambda: self.launch("network-setup"),
             "APPLICATIONS": self.run_applications,
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
-            "TAILSCALE": lambda: self.launcher.launch_by_id("tailscale"),
+            "TAILSCALE": lambda: self.launch("tailscale"),
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
-            "SYSTEM DIAGNOSTICS": lambda: self.launcher.launch_by_id("system-diagnostics"),
+            "SYSTEM DIAGNOSTICS": lambda: self.launch("system-diagnostics"),
         }
         action = actions.get(SETTINGS_MENU[self.selected])
         if action is None:
