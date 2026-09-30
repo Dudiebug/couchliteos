@@ -274,12 +274,15 @@ def split_terse(line: str) -> list[str]:
     return fields
 
 
-NetworkDevice = collections.namedtuple("NetworkDevice", "name kind state")
+NetworkDevice = collections.namedtuple("NetworkDevice", "name kind state connection", defaults=("",))
 
 
 def parse_devices(output: str) -> list[NetworkDevice]:
     rows = (split_terse(line) for line in output.splitlines() if line.strip())
-    return [NetworkDevice(*row[:3]) for row in rows if len(row) >= 3]
+    return [
+        NetworkDevice(*row[:3], *(["" if row[3] == "--" else row[3]] if len(row) > 3 else []))
+        for row in rows if len(row) >= 3
+    ]
 
 
 def wired_connected(devices: list[NetworkDevice]) -> bool:
@@ -288,6 +291,19 @@ def wired_connected(devices: list[NetworkDevice]) -> bool:
 
 def wifi_device(devices: list[NetworkDevice]) -> str | None:
     return next((item.name for item in devices if item.kind == "wifi"), None)
+
+
+def _wifi_up(devices: list[NetworkDevice]) -> NetworkDevice | None:
+    return next((item for item in devices if item.kind == "wifi" and item.state.split()[:1] == ["connected"]), None)
+
+
+def wifi_connected(devices: list[NetworkDevice]) -> bool:
+    return _wifi_up(devices) is not None
+
+
+def wifi_connection_name(devices: list[NetworkDevice]) -> str:
+    device = _wifi_up(devices)
+    return device.connection if device else ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -477,6 +493,8 @@ def bluetooth_gate(snapshot: dict[str, Any] | None) -> tuple[bool, str]:
 def network_mode(devices: list[NetworkDevice]) -> str:
     if wired_connected(devices):
         return "wired"
+    if wifi_connected(devices):
+        return "wifi-up"
     return "wifi" if wifi_device(devices) else "none"
 
 
@@ -537,7 +555,7 @@ class System:
         return bool(glob.glob("/dev/cec*"))
 
     def network_devices(self) -> list[NetworkDevice]:
-        result = self.run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"])
+        result = self.run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"])
         return parse_devices(result.stdout) if result and result.returncode == 0 else []
 
     def wifi_interface(self) -> str | None:
@@ -571,11 +589,17 @@ class System:
             bus.get_object(NM, "/org/freedesktop/NetworkManager/Settings"), NM + ".Settings"
         )
         name = settings["connection"]["id"]
+        # Saved profiles for this network are only replaced once the new one works:
+        # a typo in the password must not cost the user a connection that already works.
+        earlier = []
         for path in store.ListConnections():
             profile = dbus.Interface(bus.get_object(NM, path), NM + ".Settings.Connection")
-            known = profile.GetSettings().get("connection", {})
+            try:
+                known = profile.GetSettings().get("connection", {})
+            except dbus.DBusException:
+                continue
             if str(known.get("id")) == name and str(known.get("type")) == "802-11-wireless":
-                profile.Delete()
+                earlier.append(profile)
 
         typed = dbus.Dictionary(
             {
@@ -588,16 +612,30 @@ class System:
             signature="sa{sv}",
         )
         profile_path, active_path = manager.AddAndActivateConnection(typed, device, "/")
-        properties = dbus.Interface(bus.get_object(NM, active_path), "org.freedesktop.DBus.Properties")
-        deadline = time.monotonic() + 40
-        while time.monotonic() < deadline:
-            state = int(properties.Get(NM + ".Connection.Active", "State"))
-            if state == 2:
-                return True, ""
-            if state in (3, 4):
-                break
-            time.sleep(0.5)
-        dbus.Interface(bus.get_object(NM, profile_path), NM + ".Settings.Connection").Delete()
+        new_profile = dbus.Interface(bus.get_object(NM, profile_path), NM + ".Settings.Connection")
+        activated = False
+        try:
+            properties = dbus.Interface(bus.get_object(NM, active_path), "org.freedesktop.DBus.Properties")
+            deadline = time.monotonic() + 40
+            while time.monotonic() < deadline:
+                try:
+                    state = int(properties.Get(NM + ".Connection.Active", "State"))
+                except dbus.DBusException:
+                    break  # NetworkManager already removed the failed activation
+                if state == 2:
+                    activated = True
+                    break
+                if state in (3, 4):
+                    break
+                time.sleep(0.5)
+        finally:
+            for doomed in earlier if activated else [new_profile]:
+                try:
+                    doomed.Delete()
+                except dbus.DBusException:
+                    pass
+        if activated:
+            return True, ""
         return False, "COULD NOT CONNECT: CHECK THE PASSWORD AND THE SIGNAL"
 
     def gateway(self) -> str:
@@ -795,10 +833,25 @@ class SetupWizard:
 
     # 1. network
     def step_network(self) -> str:
+        offered_keep = False
         while True:
-            mode = network_mode(self.system.network_devices())
+            devices = self.system.network_devices()
+            mode = network_mode(devices)
             if mode == "wired":
                 return self.network_result("CONNECTED BY CABLE")
+            if mode == "wifi-up" and not offered_keep:
+                offered_keep = True
+                name = wifi_connection_name(devices)
+                choice = self.pick(
+                    "NETWORK",
+                    [f"THIS PC IS ALREADY ON WI-FI{': ' + name if name else ''}.",
+                     "PRESS A TO KEEP IT, OR CHOOSE A DIFFERENT NETWORK. B SKIPS."],
+                    ["KEEP THIS NETWORK", "CHOOSE ANOTHER NETWORK", SKIP],
+                )
+                if choice == "KEEP THIS NETWORK":
+                    return self.network_result(f"CONNECTED TO WI-FI{': ' + name if name else ''}")
+                if choice != "CHOOSE ANOTHER NETWORK":
+                    return SKIPPED
             if mode == "none":
                 choice = self.pick(
                     "NETWORK",
@@ -815,7 +868,10 @@ class SetupWizard:
     def wifi_flow(self) -> str | None:
         self.ui.status("NETWORK", ["LOOKING FOR WI-FI NETWORKS..."])
         networks = self.system.wifi_networks()
-        labels = [f"{item.ssid}  {item.signal}%" + ("" if item.secured else "  (OPEN)") for item in networks]
+        labels = [
+            f"{item.ssid}  {item.signal}%" + ("" if item.secured else "  (OPEN)") + ("  (CONNECTED)" if item.in_use else "")
+            for item in networks
+        ]
         index = self.ui.menu(
             "NETWORK",
             ["NO CABLE FOUND. CHOOSE YOUR WI-FI NETWORK,", "OR PLUG IN A CABLE AND CHOOSE SCAN AGAIN."],
