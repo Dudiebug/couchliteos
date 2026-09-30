@@ -364,7 +364,7 @@ class SettingsLaunchStatusTest(LauncherFixesTest):
                 settings.selected = self.module.SETTINGS_MENU.index(label)
                 with mock.patch.object(launcher, "app_by_id", return_value=None):
                     self.assertTrue(settings.activate())
-                self.assertEqual(settings.status, f"{app_id.upper()} IS UNAVAILABLE")
+                self.assertEqual(settings.status, f"{app_id.upper()} IS NOT AVAILABLE: CHECK SETTINGS > APPLICATIONS")
 
     def test_started_app_result_is_shown_inside_settings(self):
         launcher = self.launcher()
@@ -386,7 +386,9 @@ class AudioVolumeTest(LauncherFixesTest):
     def run_audio(self, keys, sinks=True, **audio_patches):
         """Open the audio screen, feed keys, return [(rows, status)] per draw and the audio mocks."""
         audio = self.module.audio
-        settings = self.module.Settings(Screen(keys), self.launcher())
+        launcher = self.launcher()
+        launcher.screen = Screen(keys)  # as in the real launcher, one screen serves Settings and its error dialogs
+        settings = self.module.Settings(launcher.screen, launcher)
         frames = []
         settings.draw = lambda _title, rows, _selected=None: frames.append((list(rows), settings.status))
         mocks = {
@@ -460,7 +462,8 @@ class AudioVolumeTest(LauncherFixesTest):
         self.assertEqual(frames[0][0], ["*  HDMI OUTPUT", "VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE", "BACK"])
 
     def test_no_outputs_means_no_volume_rows(self):
-        frames, _mocks = self.run_audio([self.ESC], sinks=False)
+        # The first ESC closes the "no sound output found" explanation (feat/easy), the second leaves AUDIO.
+        frames, _mocks = self.run_audio([self.ESC, self.ESC], sinks=False)
         self.assertEqual(frames[0][0], ["BACK"])
 
 
