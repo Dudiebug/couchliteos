@@ -908,31 +908,102 @@ class Launcher:
             self.request_sleep()
 
     def setup_wizard(self, *, force: bool = False) -> None:
-        settings = Settings(self.screen, self)
         actions = {
-            "osk": request_osk,
-            "network": lambda: self.launch_by_id("network-setup"),
-            "bluetooth": lambda: bluetooth.run_bluetooth(self.screen),
-            "display": settings.run_display,
-            "audio": lambda: self.launch_by_id("audio-test"),
-            "moonlight": lambda: self.launch_by_id("moonlight"),
-            "chiaki-ng": lambda: self.launch_by_id("chiaki-ng"),
-            "tailscale": lambda: self.launch_by_id("tailscale"),
-            "applications": settings.run_applications,
+            "text": self.wizard_text,
+            "display": self.wizard_display,
+            "tone": lambda: self.launch_and_wait("audio-test"),
+            "launch": self.launch_and_wait,
+            "pair_moonlight": self.pair_moonlight,
+            "applications": Settings(self.screen, self).run_applications,
         }
+        tv_control = getattr(self, "tv_control_screen", None)
+        if callable(tv_control):
+            actions["tv"] = tv_control
         statuses = {
-            "network": network_summary,
-            "bluetooth": bluetooth_summary,
-            "display": display_summary,
-            "audio": audio_summary,
-            "controller": controller_summary,
-            "moonlight": lambda: configuration_summary("moonlight"),
             "chiaki-ng": lambda: configuration_summary("chiaki"),
             "tailscale": tailscale_summary,
             "applications": lambda: f"{len(application_result().applications)} APPLICATIONS CONFIGURED",
         }
-        setup.SetupWizard(self.screen, actions, statuses).run(force=force)
+        setup.SetupWizard(
+            setup.CursesUI(self.screen), actions, setup.System(),
+            bluetooth_client=bluetooth.BluetoothClient(), statuses=statuses,
+        ).run(force=force)
         self.reload_applications()
+
+    def wizard_text(self, title: str, prompt: str, limit: int, *, masked: bool = False) -> str | None:
+        request_osk(masked)
+        return ApplicationsSettings(self.screen, self).text_input(title, prompt, limit, masked=masked)
+
+    def wizard_display(self, resolution: str, refresh_mhz: int) -> bool:
+        """Offer a mode through the existing 15 second preview; True only if it was confirmed."""
+        settings = Settings(self.screen, self)
+        if not settings.refresh_outputs():
+            return False
+        settings.resolution, settings.refresh_mhz = resolution, refresh_mhz
+        settings.apply_preview()
+        # Settings overwrites its status text after a rollback, so compare the real mode instead.
+        current = settings.output.current_mode if settings.output is not None else None
+        return current is not None and (current.resolution, current.refresh_mhz) == (resolution, refresh_mhz)
+
+    def launch_and_wait(
+        self, app_id: str, *, lines: list[str] | None = None, big: str | None = None,
+        patience: float | None = None,
+    ) -> bool:
+        """Start an application and return when it exits (HOME shows the running applications).
+
+        With `patience` the application is closed after that many seconds or when ESC is pressed,
+        for one-off commands that have no window of their own to close.
+        """
+        app = self.app_by_id(app_id)
+        if app is None or not self.launch_app(app):
+            return False
+        ready = RUN / f"{app.status_id}-ready"
+        ui = setup.CursesUI(self.screen)
+        shown = lines or [f"{app.name} IS OPEN.", "CLOSE IT OR PRESS THE HOME BUTTON WHEN YOU ARE DONE."]
+        started = time.monotonic()
+        closing_since: float | None = None
+        while ready.exists():
+            if HOME_REQUEST.exists():
+                HOME_REQUEST.unlink(missing_ok=True)
+                self.active_applications()
+                continue
+            ui.status("SETUP", shown, big=big)
+            key = read_key(self.screen)
+            if closing_since is not None:
+                if time.monotonic() - closing_since > 8:
+                    break
+            elif patience is not None and (key == 27 or time.monotonic() - started >= patience):
+                (RUN / f"close-{app.status_id}").touch()
+                closing_since = time.monotonic()
+        return True
+
+    def pair_moonlight(self, host: str, pin: str) -> bool:
+        """Run `moonlight pair` with the wizard's PIN as a hidden one-off application."""
+        appdir = "/opt/moonlightos/apps/moonlight"
+        app = apps.Application(
+            id="moonlight-pair", name="MOONLIGHT PAIRING", kind="command",
+            command=f"{appdir}/usr/bin/moonlight", arguments=setup.moonlight_pair_arguments(host, pin),
+            status_id="moonlight-pair", visible=False,
+            environment={"QT_QPA_PLATFORM": "xcb", "APPDIR": appdir, "LD_LIBRARY_PATH": f"{appdir}/usr/lib"},
+        )
+        try:
+            apps.write_user_application(app)
+        except (OSError, apps.ManifestError) as error:
+            self.status = f"COULD NOT START PAIRING: {error}"
+            return False
+        try:
+            return self.launch_and_wait(
+                app.id, big=pin, patience=180,
+                lines=[
+                    f"ON THE GAMING PC OPEN HTTPS://{host}:47990, CLICK THE PIN TAB AND TYPE:",
+                    "THIS SCREEN CLOSES BY ITSELF WHEN PAIRING ENDS. B OR ESC CANCELS.",
+                ],
+            )
+        finally:
+            try:
+                apps.delete_user_application(app.id)
+            except (OSError, apps.ManifestError):
+                pass
 
     def run(self) -> None:
         self.prepare_session()

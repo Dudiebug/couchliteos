@@ -682,4 +682,22 @@ rg -Fq '"systemd-analyze", "--no-pager", "critical-chain", "moonlightos-launcher
 rg -q '^source "\$ROOT/build/lb-cache\.sh"$' build/build.sh
 rg -q 'MOONLIGHTOS_LB_CACHE' build/build.sh
 
+# First-boot wizard (launcher/moonlightos_setup.py): every module it imports ships in the image.
+for module in $(rg -o --no-filename '^import (moonlightos_[a-z_]+)' -r '$1' launcher/moonlightos_setup.py); do
+  rg -q "launcher/$module.py" build/configure.sh
+done
+# Its Wi-Fi join talks to NetworkManager over D-Bus as the unprivileged launcher user, which
+# NetworkManager only allows through polkit: the image needs polkitd and a rule that grants only
+# NetworkManager actions, only to that user.
+rg -q '^polkitd$' config/live-build/package-lists/moonlightos.list.chroot
+rg -q '^python3-dbus$' config/live-build/package-lists/moonlightos.list.chroot
+rg -q '^python3-evdev$' config/live-build/package-lists/moonlightos.list.chroot
+polkit_rule=overlay/etc/polkit-1/rules.d/50-moonlightos-network.rules
+rg -q 'subject\.user == "moonlightos"' "$polkit_rule"
+rg -q 'action\.id\.indexOf\("org\.freedesktop\.NetworkManager\."\) == 0' "$polkit_rule"
+[[ $(rg -c 'polkit\.Result' "$polkit_rule") == 1 ]]
+refute rg -q 'polkit\.Result\.(AUTH_ADMIN|NOT_HANDLED)' "$polkit_rule"
+# The wizard never puts a Wi-Fi password on a command line.
+refute rg -q 'nmcli.*(password|psk)' launcher/moonlightos_setup.py
+
 printf 'Static tests passed.\n'

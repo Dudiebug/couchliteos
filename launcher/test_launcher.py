@@ -848,6 +848,275 @@ class LauncherTest(unittest.TestCase):
         save.assert_not_called()
         settings.choose.assert_not_called()
 
+    # --- setup wizard glue: the wizard logic lives in moonlightos_setup -----
+
+    def run_wizard_glue(self, launcher, **arguments):
+        captured = {}
+
+        class FakeWizard:
+            def __init__(self, ui, actions, system, **options):
+                captured.update(ui=ui, actions=actions, system=system, options=options)
+
+            def run(self, force=False):
+                captured["force"] = force
+
+        launcher.reload_applications = mock.Mock()
+        with mock.patch.object(self.module.setup, "SetupWizard", FakeWizard), mock.patch.object(
+            self.module.bluetooth, "BluetoothClient"
+        ):
+            launcher.setup_wizard(**arguments)
+        captured["reloaded"] = launcher.reload_applications.called
+        return captured
+
+    def test_wizard_glue_hands_the_wizard_exactly_the_actions_it_calls(self):
+        launcher = self.launcher()
+        captured = self.run_wizard_glue(launcher, force=True)
+        self.assertEqual(
+            set(captured["actions"]),
+            {"text", "display", "tone", "launch", "pair_moonlight", "applications"},
+        )
+        self.assertTrue(captured["force"])
+        self.assertTrue(captured["reloaded"])
+        self.assertIn("tailscale", captured["options"]["statuses"])
+
+    def test_wizard_glue_offers_tv_control_only_when_the_screen_exists(self):
+        launcher = self.launcher()
+        self.assertNotIn("tv", self.run_wizard_glue(launcher)["actions"])
+        launcher.tv_control_screen = mock.Mock()
+        actions = self.run_wizard_glue(launcher)["actions"]
+        actions["tv"]()
+        launcher.tv_control_screen.assert_called_once_with()
+
+    def test_wizard_text_entry_opens_the_keyboard_and_keeps_passwords_masked(self):
+        launcher = self.launcher()
+        actions = self.run_wizard_glue(launcher)["actions"]
+        with mock.patch.object(self.module, "request_osk") as osk, mock.patch.object(
+            self.module.ApplicationsSettings, "text_input", return_value="secret-pass"
+        ) as text_input:
+            self.assertEqual(actions["text"]("WI-FI PASSWORD", "PASSWORD FOR HomeNet", 64, masked=True), "secret-pass")
+            osk.assert_called_once_with(True)
+            text_input.assert_called_once_with("WI-FI PASSWORD", "PASSWORD FOR HomeNet", 64, masked=True)
+            osk.reset_mock()
+            actions["text"]("GAMING PC", "ADDRESS", 253)
+            osk.assert_called_once_with(False)
+
+    def display_settings(self, current_after_preview):
+        mode = self.module.display.Mode
+        settings = mock.Mock()
+        settings.refresh_outputs.return_value = True
+        settings.output = mock.Mock(current_mode=mode(1920, 1080, 60000))
+
+        def preview():
+            settings.output = mock.Mock(current_mode=current_after_preview)
+
+        settings.apply_preview.side_effect = preview
+        return settings
+
+    def test_wizard_display_reuses_the_preview_and_reports_a_confirmed_mode(self):
+        mode = self.module.display.Mode
+        settings = self.display_settings(mode(1280, 720, 60000))
+        launcher = self.launcher()
+        with mock.patch.object(self.module, "Settings", return_value=settings):
+            self.assertTrue(launcher.wizard_display("1280x720", 60000))
+        self.assertEqual((settings.resolution, settings.refresh_mhz), ("1280x720", 60000))
+        settings.apply_preview.assert_called_once_with()
+
+    def test_wizard_display_reports_a_rolled_back_mode_as_not_confirmed(self):
+        mode = self.module.display.Mode
+        settings = self.display_settings(mode(1920, 1080, 60000))
+        launcher = self.launcher()
+        with mock.patch.object(self.module, "Settings", return_value=settings):
+            self.assertFalse(launcher.wizard_display("1280x720", 60000))
+
+    def test_wizard_display_fails_cleanly_without_an_active_output(self):
+        settings = mock.Mock()
+        settings.refresh_outputs.return_value = False
+        launcher = self.launcher()
+        with mock.patch.object(self.module, "Settings", return_value=settings):
+            self.assertFalse(launcher.wizard_display("1280x720", 60000))
+        settings.apply_preview.assert_not_called()
+
+    def waiting_application(self):
+        return self.module.apps.Application(
+            id="tailscale", name="TAILSCALE", kind="request", request="start-tailscale", status_id="tailscale",
+        )
+
+    def test_launch_and_wait_returns_when_the_application_exits(self):
+        launcher = self.launcher()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "tailscale-ready").touch()
+            app = self.waiting_application()
+            launcher.app_by_id = mock.Mock(return_value=app)
+            launcher.launch_app = mock.Mock(return_value=True)
+            polls = []
+
+            def getch():
+                polls.append(1)
+                if len(polls) == 3:
+                    (run / "tailscale-ready").unlink()
+                return -1
+
+            launcher.screen = Screen()
+            launcher.screen.getch = getch
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ):
+                self.assertTrue(launcher.launch_and_wait("tailscale"))
+        self.assertEqual(len(polls), 3)
+        launcher.launch_app.assert_called_once_with(app)
+
+    def test_launch_and_wait_reports_an_unknown_or_failed_application(self):
+        launcher = self.launcher()
+        launcher.screen = Screen()
+        launcher.app_by_id = mock.Mock(return_value=None)
+        self.assertFalse(launcher.launch_and_wait("nothing"))
+        launcher.app_by_id = mock.Mock(return_value=self.rdp_button())
+        launcher.launch_app = mock.Mock(return_value=False)
+        self.assertFalse(launcher.launch_and_wait("rdp-work-pc"))
+
+    def test_launch_and_wait_shows_the_home_menu_when_home_is_pressed(self):
+        launcher = self.launcher()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "tailscale-ready").touch()
+            home = run / "home.request"
+            home.touch()
+            launcher.app_by_id = mock.Mock(return_value=self.waiting_application())
+            launcher.launch_app = mock.Mock(return_value=True)
+            launcher.active_applications = mock.Mock(side_effect=lambda: (run / "tailscale-ready").unlink())
+            launcher.screen = Screen()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(self.module, "HOME_REQUEST", home):
+                self.assertTrue(launcher.launch_and_wait("tailscale"))
+            self.assertFalse(home.exists())
+        launcher.active_applications.assert_called_once_with()
+
+    def waiting_launcher(self, run, keys):
+        launcher = self.launcher()
+        (run / "tailscale-ready").touch()
+        launcher.app_by_id = mock.Mock(return_value=self.waiting_application())
+        launcher.launch_app = mock.Mock(return_value=True)
+        launcher.screen = Screen()
+        pending = list(keys)
+
+        def getch():
+            if (run / "close-tailscale").exists():
+                (run / "tailscale-ready").unlink(missing_ok=True)
+            return pending.pop(0) if pending else -1
+
+        launcher.screen.getch = getch
+        return launcher
+
+    def test_launch_and_wait_shows_the_given_lines_and_large_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.waiting_launcher(run, [27])
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ), mock.patch.object(self.module.setup, "CursesUI") as ui:
+                launcher.launch_and_wait("tailscale", lines=["TYPE THIS"], big="0427", patience=60)
+        ui.return_value.status.assert_called_with("SETUP", ["TYPE THIS"], big="0427")
+
+    def test_escape_cancels_a_patient_wait_by_closing_the_application(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.waiting_launcher(run, [-1, 27])
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ):
+                self.assertTrue(launcher.launch_and_wait("tailscale", patience=60))
+            self.assertTrue((run / "close-tailscale").exists())
+
+    def test_a_wait_that_runs_out_of_patience_closes_the_application(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.waiting_launcher(run, [])
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ):
+                self.assertTrue(launcher.launch_and_wait("tailscale", patience=0))
+            self.assertTrue((run / "close-tailscale").exists())
+
+    def test_escape_does_not_close_an_application_that_was_not_started_patiently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.waiting_launcher(run, [27, 27])
+            polls = []
+            original = launcher.screen.getch
+
+            def getch():
+                value = original()
+                polls.append(value)
+                if len(polls) == 2:
+                    (run / "tailscale-ready").unlink()
+                return value
+
+            launcher.screen.getch = getch
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ):
+                launcher.launch_and_wait("tailscale")
+            self.assertFalse((run / "close-tailscale").exists())
+
+    def test_moonlight_pairing_runs_as_a_temporary_hidden_app_and_cleans_up(self):
+        launcher = self.launcher()
+        written = []
+        with tempfile.TemporaryDirectory() as directory:
+            user_dir = pathlib.Path(directory)
+            real_write = self.module.apps.write_user_application
+
+            def write(app):
+                written.append(app)
+                return real_write(app, system_dir=pathlib.Path("/nonexistent"), user_dir=user_dir)
+
+            def delete(app_id):
+                (user_dir / f"{app_id}.ini").unlink()
+
+            def launch(_app_id, **_options):
+                self.assertTrue((user_dir / "moonlight-pair.ini").exists())
+                return True
+
+            launcher.launch_and_wait = mock.Mock(side_effect=launch)
+            with mock.patch.object(self.module.apps, "write_user_application", side_effect=write), mock.patch.object(
+                self.module.apps, "delete_user_application", side_effect=delete
+            ):
+                self.assertTrue(launcher.pair_moonlight("192.168.1.20", "0427"))
+            self.assertEqual(list(user_dir.iterdir()), [])
+        app = written[0]
+        self.assertEqual(app.id, "moonlight-pair")
+        self.assertEqual(app.kind, "command")
+        self.assertFalse(app.visible)
+        self.assertEqual(app.command, "/opt/moonlightos/apps/moonlight/usr/bin/moonlight")
+        self.assertEqual(app.arguments, "pair 192.168.1.20 --pin 0427")
+        self.assertEqual(app.environment["QT_QPA_PLATFORM"], "xcb")
+        self.assertEqual(app.environment["APPDIR"], "/opt/moonlightos/apps/moonlight")
+        self.assertEqual(app.environment["LD_LIBRARY_PATH"], "/opt/moonlightos/apps/moonlight/usr/lib")
+        launcher.launch_and_wait.assert_called_once()
+        call = launcher.launch_and_wait.call_args
+        self.assertEqual(call.args, ("moonlight-pair",))
+        self.assertEqual(call.kwargs["big"], "0427")
+        self.assertIsNotNone(call.kwargs["patience"])
+        self.assertNotIn("0427", launcher.status)
+
+    def test_moonlight_pairing_removes_the_pin_even_when_the_launch_fails(self):
+        launcher = self.launcher()
+        launcher.launch_and_wait = mock.Mock(side_effect=RuntimeError("boom"))
+        with mock.patch.object(self.module.apps, "write_user_application"), mock.patch.object(
+            self.module.apps, "delete_user_application"
+        ) as delete:
+            with self.assertRaises(RuntimeError):
+                launcher.pair_moonlight("192.168.1.20", "0427")
+        delete.assert_called_once_with("moonlight-pair")
+
+    def test_moonlight_pairing_reports_an_unwritable_manifest(self):
+        launcher = self.launcher()
+        launcher.launch_and_wait = mock.Mock()
+        with mock.patch.object(
+            self.module.apps, "write_user_application", side_effect=OSError("read-only")
+        ), mock.patch.object(self.module.apps, "delete_user_application"):
+            self.assertFalse(launcher.pair_moonlight("192.168.1.20", "0427"))
+        launcher.launch_and_wait.assert_not_called()
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")
