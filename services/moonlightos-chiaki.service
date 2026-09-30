@@ -4,6 +4,7 @@ After=moonlightos-launcher.service
 ConditionFileIsExecutable=/opt/moonlightos/apps/chiaki-ng/usr/bin/chiaki
 StartLimitIntervalSec=60
 StartLimitBurst=3
+OnFailure=moonlightos-path-rearm@chiaki.service
 
 [Service]
 Type=simple
@@ -22,6 +23,9 @@ Environment=SDL_AUDIODRIVER=pipewire
 EnvironmentFile=-/run/moonlightos/session.env
 ExecStart=/usr/libexec/moonlightos-run-app chiaki-ng
 Restart=on-failure
+# Restart directly: with the default mode OnFailure= fires on every retried
+# crash, which would reset the start limit and retry forever.
+RestartMode=direct
 RestartSec=2
 StandardOutput=journal+console
 StandardError=journal+console

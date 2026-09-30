@@ -479,6 +479,25 @@ for required in \
   test -s "$required"
 done
 
+# A service that hits its start limit also fails the .path unit that triggers it
+# (Result: unit-start-limit-hit), so later requests are ignored until reboot.
+# Every path-triggered service with a start limit must re-arm its path on failure.
+for path_unit in services/*.path; do
+  service=services/$(sed -n 's/^Unit=//p' "$path_unit")
+  rg -q '^StartLimitBurst=' "$service" || continue
+  rg -q '^OnFailure=(moonlightos-path-rearm@.+|moonlightos-rdp-cleanup)\.service$' "$service" || {
+    printf 'static test: %s has a start limit but no OnFailure= that re-arms %s\n' "$service" "$path_unit" >&2
+    exit 1
+  }
+  # With the default restart mode OnFailure= fires on every retried crash, which
+  # would reset the start limit and retry forever.
+  if rg -q '^Restart=' "$service"; then
+    rg -q '^RestartMode=direct$' "$service"
+  fi
+done
+rg -q '^ExecStart=/usr/bin/systemctl reset-failed moonlightos-%i.service moonlightos-%i.path$' services/moonlightos-path-rearm@.service
+rg -q '^ExecStart=/usr/bin/systemctl restart moonlightos-%i.path$' services/moonlightos-path-rearm@.service
+
 tmp=$(mktemp -d)
 trap 'find "$tmp" -depth -delete' EXIT
 mkdir -p "$tmp/sys/bus/usb/devices/1-2/1-2:1.0" "$tmp/log"

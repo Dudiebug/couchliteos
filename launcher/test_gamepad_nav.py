@@ -1,9 +1,12 @@
+import errno
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 
 class Codes:
@@ -32,12 +35,51 @@ class Codes:
     KEY_ENTER = 28
     KEY_ESC = 1
     KEY_HOME = 102
+    KEY_HOMEPAGE = 172
     KEY_DELETE = 111
     KEY_F5 = 63
     KEY_F6 = 64
     KEY_F7 = 65
     KEY_F8 = 66
     KEY_F12 = 88
+
+
+class Stop(Exception):
+    """Ends the otherwise endless run() loop from inside a fake select/sleep."""
+
+
+class FakePad:
+    def __init__(self, *codes, dead=False, gamepad=True):
+        self.codes = codes
+        self.dead = dead
+        self.gamepad = gamepad
+        self.info = SimpleNamespace(vendor=0x045E, product=0x028E)
+        self.uniq = ""
+        self.closed = False
+
+    def capabilities(self):
+        return {Codes.EV_KEY: [Codes.BTN_SOUTH if self.gamepad else Codes.KEY_ENTER]}
+
+    def read(self):
+        if self.dead:
+            raise OSError(19, "No such device")
+        return [SimpleNamespace(type=Codes.EV_KEY, value=1, code=code) for code in self.codes]
+
+    def read_loop(self):
+        # What a one-controller implementation would use; the test ends it here.
+        if self.dead:
+            raise Stop
+        yield from self.read()
+        raise Stop
+
+    def grab(self):
+        pass
+
+    def ungrab(self):
+        pass
+
+    def close(self):
+        self.closed = True
 
 
 class GamepadMappingTest(unittest.TestCase):
@@ -93,6 +135,154 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertTrue(self.module.is_home_event(mode))
         self.assertTrue(self.module.is_home_event(home))
         self.assertFalse(self.module.is_home_event(release))
+
+    def test_bluetooth_xbox_guide_button_is_a_home_event_and_its_device_is_watched(self):
+        # Xbox pads over Bluetooth report Guide as KEY_HOMEPAGE (172), not BTN_MODE.
+        guide = SimpleNamespace(type=Codes.EV_KEY, value=1, code=Codes.KEY_HOMEPAGE)
+        self.assertTrue(self.module.is_home_event(guide))
+
+        class Stop(Exception):
+            pass
+
+        class Device:
+            def capabilities(self):
+                return {Codes.EV_KEY: [Codes.KEY_HOMEPAGE]}
+
+            def close(self):
+                pass
+
+        device = Device()
+        watched = []
+
+        def select(devices, *_args):
+            watched.extend(devices)
+            raise Stop
+
+        with mock.patch.object(self.module.glob, "glob", return_value=["/dev/input/event9"]), mock.patch.object(
+            self.module, "InputDevice", return_value=device
+        ), mock.patch.object(self.module.select, "select", side_effect=select):
+            with self.assertRaises(Stop):
+                self.module.watch_home()
+        self.assertEqual(watched, [device])
+
+    def test_launcher_focus_marker_lets_the_controller_navigate_while_an_app_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "app-active").write_text("chrome\n")
+            focus = run / "launcher-focus"
+            with mock.patch.object(self.module, "APP_ACTIVE", run / "app-active", create=True), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", focus, create=True
+            ), mock.patch.object(self.module, "_last_state_check", -1e9):
+                # An app has focus: controller input belongs to the app.
+                self.assertTrue(self.module.navigation_blocked(False))
+                # Home showed the launcher while the app keeps running: navigate it.
+                focus.touch()
+                self.assertFalse(self.module.navigation_blocked(False))
+                # The on-screen keyboard always gets the controller.
+                focus.unlink()
+                self.assertFalse(self.module.navigation_blocked(True))
+
+    def drive_run(self, listings, ready_rounds):
+        """Run gamepad-nav's main loop over fake /dev/input listings.
+
+        listings[i] is the {path: device} set glob() reports during round i; ready_rounds[i]
+        lists the paths select() reports readable in round i. Returns (keys pressed on the
+        navigation keyboard, the device lists select() was asked to watch, identity text).
+        """
+        module = self.module
+        universe = {}
+        for listing in listings:
+            universe.update(listing)
+        state = {"round": 0, "sleeps": 0}
+        pressed, watched = [], []
+
+        def fake_glob(_pattern):
+            return list(listings[min(state["round"], len(listings) - 1)])
+
+        def fake_select(devices, *_args):
+            watched.append(list(devices))
+            if state["round"] >= len(ready_rounds):
+                raise Stop
+            ready = [universe[path] for path in ready_rounds[state["round"]]]
+            state["round"] += 1
+            return ready, [], []
+
+        def fake_sleep(_seconds):
+            state["sleeps"] += 1
+            if state["sleeps"] > 20:
+                raise Stop
+
+        nav = mock.Mock()
+        nav.write.side_effect = lambda _type, code, value: pressed.append(code) if value == 1 else None
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            identity = root / "launcher-controller.id"
+            with mock.patch.object(module.glob, "glob", side_effect=fake_glob), mock.patch.object(
+                module, "InputDevice", side_effect=lambda path: universe[path]
+            ), mock.patch.object(module, "UInput", return_value=nav), mock.patch.object(
+                module.select, "select", side_effect=fake_select
+            ), mock.patch.object(module.threading, "Thread"), mock.patch.object(
+                module.time, "sleep", side_effect=fake_sleep
+            ), mock.patch.object(module, "CONTROLLER_ID", identity, create=True), mock.patch.object(
+                module, "OSK_ACTIVE", root / "osk-active"
+            ), mock.patch.object(module, "APP_ACTIVE", root / "app-active"), mock.patch.object(
+                module, "LAUNCHER_FOCUS", root / "launcher-focus"
+            ), mock.patch.object(module, "_last_state_check", -1e9):
+                with self.assertRaises(Stop):
+                    module.run()
+            text = identity.read_text() if identity.exists() else None
+        return pressed, watched, text
+
+    def test_every_connected_controller_drives_the_launcher(self):
+        first, second = FakePad(Codes.BTN_SOUTH), FakePad(Codes.BTN_EAST)
+        keyboard = FakePad(Codes.KEY_ENTER, gamepad=False)
+        pressed, watched, identity = self.drive_run(
+            [{"/dev/input/event3": first, "/dev/input/event4": second, "/dev/input/event5": keyboard}],
+            [["/dev/input/event3", "/dev/input/event4"]],
+        )
+        self.assertEqual(pressed, [Codes.KEY_ENTER, Codes.KEY_ESC])
+        self.assertEqual(watched[0], [first, second], "a keyboard must not be treated as a controller")
+        self.assertEqual(identity, "045e:028e:*\n")
+
+    def test_a_controller_plugged_in_later_is_picked_up_without_restarting(self):
+        first, second = FakePad(Codes.BTN_SOUTH), FakePad(Codes.BTN_EAST)
+        pressed, watched, _identity = self.drive_run(
+            [{"/dev/input/event3": first}, {"/dev/input/event3": first, "/dev/input/event4": second}],
+            [["/dev/input/event3"], ["/dev/input/event4"]],
+        )
+        self.assertEqual(pressed, [Codes.KEY_ENTER, Codes.KEY_ESC])
+        self.assertEqual(watched[1], [first, second])
+
+    def test_an_unplugged_controller_is_dropped_and_the_others_keep_working(self):
+        gone, stays = FakePad(Codes.BTN_SOUTH, dead=True), FakePad(Codes.BTN_EAST)
+        pressed, watched, _identity = self.drive_run(
+            [{"/dev/input/event3": gone, "/dev/input/event4": stays}, {"/dev/input/event4": stays}],
+            [["/dev/input/event3", "/dev/input/event4"], ["/dev/input/event4"]],
+        )
+        self.assertEqual(pressed, [Codes.KEY_ESC, Codes.KEY_ESC])
+        self.assertTrue(gone.closed)
+        self.assertEqual(watched[1], [stays])
+
+    def test_a_full_or_read_only_disk_does_not_stop_the_controller_working(self):
+        # The identity file is only a hint for USB/IP; failing to save it must not skip the pad.
+        pad = FakePad(Codes.BTN_SOUTH)
+        with mock.patch.object(pathlib.Path, "write_text", side_effect=OSError(errno.ENOSPC, "No space left")):
+            pressed, _watched, _identity = self.drive_run(
+                [{"/dev/input/event3": pad}], [["/dev/input/event3"]]
+            )
+        self.assertEqual(pressed, [Codes.KEY_ENTER])
+
+    def test_the_on_screen_keyboard_grabs_every_controller_and_lets_go_again(self):
+        pads = self.module.Pads()
+        pads.devices = {"/dev/input/event3": mock.Mock(), "/dev/input/event4": mock.Mock()}
+        pads.sync_grab(True)
+        pads.sync_grab(True)
+        for dev in pads.devices.values():
+            dev.grab.assert_called_once_with()
+        pads.sync_grab(False)
+        for dev in pads.devices.values():
+            dev.ungrab.assert_called_once_with()
+        self.assertEqual(pads.grabbed, set())
 
 
 if __name__ == "__main__":

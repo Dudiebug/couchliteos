@@ -175,10 +175,8 @@ if ((CLOSE_REQUESTED == 1)); then
   rc=0
 fi
 
-if ((READY_REACHED == 0)); then
+if ((READY_REACHED == 0 && rc != 0)); then
   write_status "failed: exited before the application became ready (status $rc)"
-elif ((rc == 0)); then
-  write_status "exited: status 0"
 else
   write_status "exited: status $rc"
 fi

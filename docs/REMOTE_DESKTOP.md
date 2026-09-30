@@ -107,7 +107,8 @@ also enable, disable, reorder, or delete it.
 requests a connection. The session behaves like the other applications:
 
 - **Home/Guide** opens Active Applications; **A** resumes the session and
-  **X** closes it.
+  **Y** (Xbox) / **Square** (PlayStation) closes it. X/Triangle open the
+  on-screen keyboard instead.
 - If the client crashes or the connection drops, systemd restarts it (up to
   three starts per minute) and it reconnects with the same credentials. When
   the restarts are exhausted, `moonlightos-rdp-cleanup.service` removes the

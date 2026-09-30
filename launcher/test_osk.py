@@ -2,6 +2,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import moonlightos_osk as osk
 
@@ -75,6 +76,17 @@ class KeyboardTest(unittest.TestCase):
         self.assertEqual(events[-1], (codes.KEY_ENTER, False))
         with self.assertRaisesRegex(ValueError, "unsupported"):
             osk.character_events("é", False, codes)
+
+
+class EscapeDelayTest(unittest.TestCase):
+    def test_escape_does_not_wait_a_second_for_an_escape_sequence(self):
+        screen = mock.Mock()
+        screen.get_wch.return_value = "\x1b"
+        with mock.patch.object(osk.curses, "set_escdelay") as set_escdelay, mock.patch.object(
+            osk.curses, "curs_set"
+        ), mock.patch.object(osk, "draw"), mock.patch.object(osk, "consume_mask_request", return_value=False):
+            osk.ui(screen)
+        set_escdelay.assert_called_once_with(25)
 
 
 class MaskRequestTest(unittest.TestCase):
