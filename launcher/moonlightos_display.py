@@ -296,6 +296,8 @@ def restore_saved_mode(pending: pathlib.Path = PENDING) -> bool | None:
             output.current_mode.refresh_mhz,
         ) == (mode.width, mode.height, mode.refresh_mhz):
             log(f"Saved display mode already active on {output.name}: {mode.argument}")
+            # A launcher restarted since the restore still owes its confirmation.
+            _unconfirmed = pending.exists()
             return True
         if pending.exists():
             log("Previous saved-mode restore was never confirmed by input; skipping it")

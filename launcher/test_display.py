@@ -184,6 +184,17 @@ class RestoreConfirmationTest(unittest.TestCase):
         display.save_display(self.output, mode, config, self.pending)
         self.assertFalse(self.pending.exists())
 
+    def test_launcher_restart_in_the_same_session_can_still_confirm_the_restore(self):
+        # The first launcher applied the mode, then restarted before any key press:
+        # the mode is now active and the mark is still there.
+        self.saved.update(resolution="3840x2160", refresh_mhz="60000")
+        self.pending.write_text("pending", encoding="utf-8")
+        result, applied = self.restore()
+        self.assertTrue(result)
+        self.assertEqual(applied.call_args_list, [])
+        display.confirm_restore(self.pending)
+        self.assertFalse(self.pending.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

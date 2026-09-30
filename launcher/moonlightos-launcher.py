@@ -241,14 +241,19 @@ def state_is_persistent(findmnt_output: str) -> bool:
     """Judge `findmnt -n -o SOURCE,FSTYPE,OPTIONS --target /var/lib/moonlightos`.
 
     Saved settings survive only when that directory is a bind mount from a
-    real partition (live-boot persistence) or sits on an overlay whose upper
-    layer lives under /run/live/persistence. The plain live overlay, tmpfs and
-    the squashfs loop device do not count.
+    writable disk (live-boot persistence) or sits on an overlay whose upper
+    layer lives under /run/live/persistence. The plain live overlay, tmpfs,
+    RAM devices and the read-only system image do not count.
     """
     if "/run/live/persistence/" in findmnt_output:
         return True
-    source = findmnt_output.split()[0] if findmnt_output.split() else ""
-    return source.startswith("/dev/") and not source.startswith(("/dev/loop", "/dev/ram", "/dev/zram"))
+    fields = findmnt_output.split()
+    source, fstype = (fields + ["", ""])[:2]
+    return (
+        source.startswith("/dev/")
+        and not source.startswith(("/dev/ram", "/dev/zram"))
+        and fstype not in ("squashfs", "iso9660", "udf")
+    )
 
 
 def live_mode_warning(live_dir: pathlib.Path = LIVE_DIR) -> str:
