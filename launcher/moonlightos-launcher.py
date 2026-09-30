@@ -2469,10 +2469,16 @@ def register_failure_actions(launcher: Launcher) -> None:
     launcher.failure_actions[WAKE_PC.id] = launcher.wake_from_failure
 
 
+def connect_tv_control(launcher: Launcher) -> None:
+    """Give the setup wizard feat/cec's TV CONTROL screen (the same one Settings opens)."""
+    launcher.tv_control_screen = lambda: Settings(launcher.screen, launcher).run_tv_control()
+
+
 def main(screen: curses.window) -> None:
     curses.set_escdelay(25)  # the controller's B sends a bare Esc; don't wait 1 s for a sequence
     launcher = Launcher(screen)
     register_failure_actions(launcher)
+    connect_tv_control(launcher)
     launcher.run()
 
 

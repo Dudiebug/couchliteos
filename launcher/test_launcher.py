@@ -887,6 +887,25 @@ class LauncherTest(unittest.TestCase):
         actions["tv"]()
         launcher.tv_control_screen.assert_called_once_with()
 
+    def test_start_up_gives_the_wizard_the_settings_tv_control_screen(self):
+        launcher = self.launcher()
+        self.module.connect_tv_control(launcher)
+        actions = self.run_wizard_glue(launcher)["actions"]
+        with mock.patch.object(self.module.Settings, "run_tv_control") as tv_screen:
+            actions["tv"]()
+        tv_screen.assert_called_once_with()
+
+    def test_main_connects_tv_control_before_the_launcher_runs(self):
+        screen = Screen()
+        with mock.patch.object(self.module.curses, "set_escdelay"), mock.patch.object(
+            self.module, "Launcher"
+        ) as launcher, mock.patch.object(self.module, "connect_tv_control") as connect, mock.patch.object(
+            self.module.errors, "_EXTRA", []
+        ):
+            launcher.return_value.run.side_effect = lambda: connect.assert_called_once_with(launcher.return_value)
+            self.module.main(screen)
+        launcher.return_value.run.assert_called_once_with()
+
     def test_wizard_text_entry_opens_the_keyboard_and_keeps_passwords_masked(self):
         launcher = self.launcher()
         actions = self.run_wizard_glue(launcher)["actions"]
