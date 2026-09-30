@@ -182,6 +182,8 @@ rg -q '^options nvidia-current-drm modeset=1 fbdev=1$' config/profiles/nvidia/ov
 rg -q 'dkms install "nvidia-current/' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
 rg -q 'dpkg-divert --local --rename --divert "\$load_conf.moonlightos-disabled"' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
 rg -q 'rm -f /var/lib/dkms/mok.key' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
+# live-build's 5020 hook selects Mesa for glx, dropping the nouveau blacklist and nvidia-drm aliases.
+rg -q '^update-glx --set glx /usr/lib/nvidia$' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
 rg -q 'options nouveau' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
 refute rg -q 'gensub' config/profiles/nvidia/hooks/0300-basic-graphics.hook.binary
 # Boot-time hardware detection runs on every profile's image.

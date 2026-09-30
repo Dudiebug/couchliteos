@@ -27,6 +27,15 @@ for kernel in "${kernels[@]}"; do
 done
 rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
 
+# live-build's 5020-update-glx-alternative hook (run before this one) selects
+# Mesa for glx, which drops the glx group's kernel slaves: the nouveau
+# blacklist (also copied into the initramfs), the nvidia-drm -> nvidia-current-drm
+# aliases that moonlightos-hwdetect's module load needs, and the modules-load
+# link below. Select NVIDIA's entry; libEGL, libGL, and libGLES stay glvnd's in
+# both, so Mesa GPUs keep working.
+update-glx --set glx /usr/lib/nvidia
+[[ $(readlink -f /etc/alternatives/glx) == /usr/lib/nvidia ]] || fail 'the glx alternative is not NVIDIA'
+
 # Debian loads nvidia-drm on every boot: /etc/modules-load.d/nvidia.conf is an
 # alternatives link to nvidia-kernel-support's conffile. On a machine without
 # a supported NVIDIA GPU that load fails, so the conffile is diverted aside and
