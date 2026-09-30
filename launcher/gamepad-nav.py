@@ -24,6 +24,28 @@ LAUNCHER_FOCUS = pathlib.Path("/run/moonlightos/launcher-focus")
 CONTROLLER_ID = pathlib.Path("/var/lib/moonlightos/launcher-controller.id")
 _last_state_check = 0.0
 _last_state = False
+# A held direction repeats like a keyboard: a pause, then steady steps.
+REPEAT_DELAY = 0.4
+REPEAT_INTERVAL = 0.12
+# The left stick counts as a D-pad press past STICK_ENGAGE of full deflection and as let
+# go again below STICK_RELEASE, so drift and jitter near the edge do not flutter.
+STICK_ENGAGE = 0.6
+STICK_RELEASE = 0.4
+DPAD_BUTTONS = {
+    ecodes.BTN_DPAD_UP: ecodes.KEY_UP,
+    ecodes.BTN_DPAD_DOWN: ecodes.KEY_DOWN,
+    ecodes.BTN_DPAD_LEFT: ecodes.KEY_LEFT,
+    ecodes.BTN_DPAD_RIGHT: ecodes.KEY_RIGHT,
+}
+# axis -> (key for the negative side, key for the positive side); Y grows downward.
+HAT_AXES = {
+    ecodes.ABS_HAT0X: (ecodes.KEY_LEFT, ecodes.KEY_RIGHT),
+    ecodes.ABS_HAT0Y: (ecodes.KEY_UP, ecodes.KEY_DOWN),
+}
+STICK_AXES = {
+    ecodes.ABS_X: (ecodes.KEY_LEFT, ecodes.KEY_RIGHT),
+    ecodes.ABS_Y: (ecodes.KEY_UP, ecodes.KEY_DOWN),
+}
 
 
 def app_active() -> bool:
@@ -55,6 +77,46 @@ def save_identity(dev: InputDevice) -> None:
         pass  # the pad still has to work
 
 
+def stick_direction(value: float, held: int, other: float) -> int:
+    """-1, 0 or +1 for one left-stick axis (value is -1.0..1.0 of full deflection).
+
+    Needs a firm push, lets go only below the lower release threshold, and on a diagonal
+    only the stronger axis counts so one push is one step.
+    """
+    sign = 1 if value > 0 else -1
+    limit = STICK_RELEASE if held == sign else STICK_ENGAGE
+    return sign if abs(value) >= limit and abs(value) >= other else 0
+
+
+class Hold:
+    """The arrows one pad is holding down (newest wins) and when the next repeat is due."""
+
+    def __init__(self) -> None:
+        self.sources: dict[int, int] = {}  # input code -> arrow key, oldest first
+        self.due = 0.0
+
+    @property
+    def key(self) -> int | None:
+        return next(reversed(self.sources.values()), None)
+
+    def press(self, source: int, key: int, now: float) -> None:
+        self.sources.pop(source, None)
+        self.sources[source] = key
+        self.due = now + REPEAT_DELAY
+
+    def release(self, source: int, now: float) -> None:
+        newest = self.key
+        self.sources.pop(source, None)
+        if self.key is not None and self.key != newest:
+            self.due = now + REPEAT_DELAY  # an older direction is still held: resume it
+
+    def repeat(self, now: float) -> int | None:
+        if self.key is None or now < self.due:
+            return None
+        self.due = now + REPEAT_INTERVAL
+        return self.key
+
+
 class Pads:
     """Every gamepad driving the launcher, keyed by /dev/input path."""
 
@@ -62,6 +124,10 @@ class Pads:
         self.devices: dict[str, InputDevice] = {}
         self.grabbed: set[str] = set()
         self.ignored: set[str] = set()  # nodes already seen to be something else
+        self.clock = time.monotonic
+        self.holds: dict[str, Hold] = {}
+        self.sticks: dict[str, dict[int, list]] = {}  # path -> axis -> [-1.0..1.0, -1/0/+1 held]
+        self.spans: dict[tuple[str, int], tuple[int, int] | None] = {}
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -88,6 +154,10 @@ class Pads:
                         pass
 
     def drop(self, path: str) -> None:
+        self.holds.pop(path, None)
+        self.sticks.pop(path, None)
+        for key in [key for key in self.spans if key[0] == path]:
+            del self.spans[key]
         dev = self.devices.pop(path, None)
         if dev is None:
             return
@@ -115,36 +185,121 @@ class Pads:
                 continue
             self.grabbed.add(path) if active_osk else self.grabbed.discard(path)
 
+    def axis_span(self, path: str, dev: InputDevice, code: int) -> tuple[int, int] | None:
+        """(minimum, maximum) the pad reports for an axis; Xbox pads use +-32768, PlayStation pads 0-255."""
+        if (path, code) not in self.spans:
+            span = None
+            try:
+                info = dev.absinfo(code)
+                if info is not None and info.max > info.min:
+                    span = (info.min, info.max)
+            except OSError:
+                pass
+            self.spans[(path, code)] = span
+        return self.spans[(path, code)]
+
+    def hold(self, path: str) -> Hold:
+        return self.holds.setdefault(path, Hold())
+
+    def handle(self, path: str, dev: InputDevice, event, ui: UInput, now: float) -> bool:
+        """Translate one event; True when a left-stick axis moved (judged once per batch)."""
+        if event.type == ecodes.EV_ABS and event.code in STICK_AXES:
+            span = self.axis_span(path, dev, event.code)
+            if span is None:
+                return False
+            low, high = span
+            value = (event.value - (low + high) / 2) / ((high - low) / 2)
+            self.sticks.setdefault(path, {}).setdefault(event.code, [0.0, 0])[0] = value
+            return True
+        arrow = arrow_for_event(event)
+        if arrow is not None:
+            source, key = arrow
+            if key is None:
+                self.hold(path).release(source, now)
+            else:
+                emit(ui, key)
+                self.hold(path).press(source, key, now)
+            return False
+        key = key_for_event(event)
+        if key:
+            emit(ui, key)
+        return False
+
+    def update_stick(self, path: str, ui: UInput, now: float) -> None:
+        axes = self.sticks.get(path, {})
+        for code in STICK_AXES:
+            axes.setdefault(code, [0.0, 0])
+        horizontal, vertical = (axes[code] for code in STICK_AXES)
+        for code, entry, other in (
+            (ecodes.ABS_X, horizontal, abs(vertical[0])), (ecodes.ABS_Y, vertical, abs(horizontal[0]))
+        ):
+            direction = stick_direction(entry[0], entry[1], other)
+            if direction == entry[1]:
+                continue
+            entry[1] = direction
+            if direction == 0:
+                self.hold(path).release(code, now)
+            else:
+                key = STICK_AXES[code][direction > 0]
+                emit(ui, key)
+                self.hold(path).press(code, key, now)
+
+    def repeat_timeout(self, now: float) -> float:
+        """How long select() may sleep: a second when idle, less when a repeat is due sooner."""
+        return min([1.0, *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None)])
+
     def pump(self, ui: UInput) -> None:
         """Wait up to a second for input from any pad and translate it."""
         try:
-            readable, _writable, _errors = select.select(list(self.devices.values()), [], [], 1)
+            readable, _writable, _errors = select.select(
+                list(self.devices.values()), [], [], self.repeat_timeout(self.clock())
+            )
         except (OSError, ValueError):  # a pad vanished under select
             self.drop_all()
             time.sleep(1)
             return
+        now = self.clock()
         active_osk = OSK_ACTIVE.exists()
         self.sync_grab(active_osk)
+        blocked = navigation_blocked(active_osk)
+        if blocked:
+            self.holds.clear()  # an app owns the controller now; do not keep stepping its menus
         for path, dev in list(self.devices.items()):
             if dev not in readable:
                 continue
+            stick_moved = False
             try:
                 for event in dev.read():
-                    if navigation_blocked(active_osk):
-                        continue
-                    key = key_for_event(event)
-                    if key:
-                        emit(ui, key)
+                    if not blocked:
+                        stick_moved = self.handle(path, dev, event, ui, now) or stick_moved
             except BlockingIOError:
                 pass
             except OSError:
                 self.drop(path)
+                continue
+            if stick_moved:
+                self.update_stick(path, ui, now)
+        if not blocked:
+            for hold in self.holds.values():
+                key = hold.repeat(now)
+                if key:
+                    emit(ui, key)
 
 
 def emit(ui: UInput, key: int) -> None:
     ui.write(ecodes.EV_KEY, key, 1)
     ui.write(ecodes.EV_KEY, key, 0)
     ui.syn()
+
+
+def arrow_for_event(event) -> tuple[int, int | None] | None:
+    """(input code, arrow key now held, or None once let go) for the D-pad buttons and the hat."""
+    if event.type == ecodes.EV_KEY and event.code in DPAD_BUTTONS and event.value in (0, 1):
+        return event.code, DPAD_BUTTONS[event.code] if event.value else None
+    if event.type == ecodes.EV_ABS and event.code in HAT_AXES:
+        negative, positive = HAT_AXES[event.code]
+        return event.code, (positive if event.value > 0 else negative) if event.value else None
+    return None
 
 
 def key_for_event(event) -> int | None:
