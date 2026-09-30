@@ -234,11 +234,12 @@ TERMINAL, and run the same commands (`sudo` needs no password in the live
 session; the stick mounted at `/run/live/medium` is the ISO stick, so never
 format that one).
 
+Sticks made for MoonlightOS keep their settings automatically (the image adopts their old `/var/lib/moonlightos` and `/var/log/moonlightos`), and new sticks use the `persistence.conf` lines above. <!-- rename:keep -->
+
 Then boot the ISO stick with the persistence stick still plugged in and choose
-`Start CouchLiteOS`. Do not pre-create the five source directories on the
-persistence stick. On the first persistent boot, `live-boot` creates each
-directory and bootstraps it from the matching image directory with matching
-ownership and permissions. After boot, verify:
+`Start CouchLiteOS`. Do not pre-create those four source directories empty. On the first persistent
+boot, `live-boot` creates each directory and bootstraps it from the matching
+image directory with matching ownership and permissions. After boot, verify:
 
 ```bash
 findmnt /var/lib/couchliteos /var/log/couchliteos \

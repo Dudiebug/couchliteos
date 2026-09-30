@@ -105,6 +105,7 @@ install -D -m 0755 "$ROOT/scripts/couchliteos-support-export" "$CHROOT/usr/libex
 install -D -m 0755 "$ROOT/scripts/couchliteos-diagnostics" "$CHROOT/usr/bin/couchliteos-diagnostics"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/couchliteos-hardware-report"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
+install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"
 install -D -m 0755 "$ROOT/scripts/couchliteos-network-ready" "$CHROOT/usr/libexec/couchliteos-network-ready"
 install -D -m 0755 "$ROOT/scripts/couchliteos-firewall" "$CHROOT/usr/libexec/couchliteos-firewall"
 install -D -m 0755 "$ROOT/scripts/couchliteos-audio" "$CHROOT/usr/libexec/couchliteos-audio"

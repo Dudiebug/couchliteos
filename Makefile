@@ -38,6 +38,7 @@ build: configure
 test:
 	./tests/test-static.sh
 	python3 -m unittest -v tests/test_host_address.py
+	python3 -m unittest -v tests/test_migrate.py
 	python3 -m unittest -v tests/test_support.py
 	python3 -m unittest -v tests/test_tailscale_enrollment.py
 	python3 -m unittest -v tests/test_terminal_apps.py

@@ -1,0 +1,133 @@
+#!/usr/bin/python3 -I
+# rename:keep-file  (this file names the pre-0.2.0 MoonlightOS paths on purpose)
+"""Adopt live-USB persistence that was made for MoonlightOS (before 0.2.0).
+
+Sticks made for MoonlightOS carry a persistence.conf that maps
+/var/lib/moonlightos and /var/log/moonlightos. This image uses
+/var/lib/couchliteos and /var/log/couchliteos, so on such a stick live-boot
+mounts the old directories and the launcher would start with empty settings and
+no Moonlight pairings.
+
+Run early at every boot (before tmpfiles and before any service that uses the
+new directories). Where an old directory is a mount point and the new one is
+not:
+  1. if the old directory is still empty (a stick that never booted with
+     persistence), give it the image's defaults, as live-boot would have;
+  2. bind-mount the old tree onto the new path, so writes go on landing in the
+     stick's existing layout;
+  3. give files owned by the old system group to this image's group, because
+     the numeric gid of a system group can differ between builds (the
+     appliance user is uid 1000 in both).
+
+Does nothing on installed systems, on new sticks, or once migrated.
+"""
+
+import os
+import subprocess
+import sys
+
+PAIRS = (
+    ("/var/lib/moonlightos", "/var/lib/couchliteos"),
+    ("/var/log/moonlightos", "/var/log/couchliteos"),
+)
+GROUP = "couchliteos"
+
+
+def mountpoints(mountinfo_text):
+    """Mount points listed in /proc/self/mountinfo text (field 5, \\040-escaped)."""
+    found = set()
+    for line in mountinfo_text.splitlines():
+        fields = line.split()
+        if len(fields) > 4:
+            found.add(fields[4].replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\"))
+    return found
+
+
+def is_mount(path, mountinfo="/proc/self/mountinfo"):
+    try:
+        with open(mountinfo, encoding="utf-8", errors="replace") as handle:
+            return path in mountpoints(handle.read())
+    except OSError:
+        return False
+
+
+def plan(pairs, is_mount_fn):
+    """Pure decision: the (old, new) pairs to bind. Old persistence, new not yet."""
+    return [(old, new) for old, new in pairs if is_mount_fn(old) and not is_mount_fn(new)]
+
+
+def wants_regroup(old_gid, new_gid):
+    """Only a real, known difference; never remap a tree rooted at gid 0."""
+    return new_gid is not None and old_gid != 0 and old_gid != new_gid
+
+
+def regroup(root, old_gid, new_gid, lstat=None, lchown=None):
+    """Move files of `old_gid` under `root` to `new_gid`. Never follows symlinks.
+
+    The owner is left alone (-1) and only entries whose own gid is `old_gid`
+    change. `root` goes last: its gid is how an interrupted run is recognised
+    and resumed on the next boot. Returns the number of entries changed.
+    """
+    lstat = lstat or os.lstat
+    lchown = lchown or os.lchown
+    changed = 0
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            path = os.path.join(directory, name)
+            if lstat(path).st_gid == old_gid:
+                lchown(path, -1, new_gid)
+                changed += 1
+    if lstat(root).st_gid == old_gid:
+        lchown(root, -1, new_gid)
+        changed += 1
+    return changed
+
+
+def bind_mount(old, new):
+    subprocess.run(["/usr/bin/mount", "--bind", old, new], check=True)
+
+
+def seed_from_image(new, old):
+    """Give an empty old directory the image's defaults, as live-boot would have."""
+    subprocess.run(["/usr/bin/cp", "-a", "--", new + "/.", old], check=True)
+
+
+def run(pairs, new_gid, is_mount_fn, mount, lstat=None, lchown=None, seed=None):
+    """Migrate every pair that needs it. Returns 0, or 1 if any step failed."""
+    lstat = lstat or os.lstat
+    seed = seed or seed_from_image
+    failed = 0
+    for old, new in plan(pairs, is_mount_fn):
+        try:
+            os.makedirs(new, exist_ok=True)
+            if not os.listdir(old):
+                # An old-style stick that never booted with persistence: live-boot
+                # made an empty source directory, and binding it over the image's
+                # directory would hide config.ini, the home directory, and so on.
+                seed(new, old)
+                print(f"couchliteos-migrate: {old} was empty; seeded from the image")
+            old_gid = lstat(old).st_gid
+            mount(old, new)
+            print(f"couchliteos-migrate: {old} is bound onto {new}")
+            if wants_regroup(old_gid, new_gid):
+                count = regroup(old, old_gid, new_gid, lstat, lchown)
+                print(f"couchliteos-migrate: {count} entries moved from gid {old_gid} to {new_gid}")
+        except (OSError, subprocess.CalledProcessError) as error:
+            print(f"couchliteos-migrate: {old}: {error}", file=sys.stderr)
+            failed = 1
+    return failed
+
+
+def main():
+    import grp
+
+    try:
+        new_gid = grp.getgrnam(GROUP).gr_gid
+    except KeyError:
+        print(f"couchliteos-migrate: no {GROUP} group; ownership left as it is", file=sys.stderr)
+        new_gid = None
+    return run(PAIRS, new_gid, is_mount, bind_mount)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

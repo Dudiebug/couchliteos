@@ -71,6 +71,8 @@ EOF
 chmod 0644 /etc/apt/sources.list.d/{tailscale,google-chrome}.list \
   /usr/share/keyrings/{tailscale-archive-keyring.gpg,google-chrome.asc}
 
+# Adopts persistence made for the old name; runs before tmpfiles and the launcher.
+systemctl enable couchliteos-migrate.service
 systemctl enable NetworkManager.service NetworkManager-wait-online.service
 systemctl enable systemd-timesyncd.service
 systemctl enable seatd.service couchliteos-network-ready.service

@@ -200,6 +200,31 @@ rg -q '^EnvironmentFile=-/run/couchliteos-hardware/compositor.env$' services/cou
 rg -q 'COUCHLITEOS_VIDEO_DECODE' scripts/couchliteos-run-app
 rg -q 'couchliteos-hwdetect report' scripts/couchliteos-diagnostics scripts/couchliteos-hardware-report
 [[ $(head -1 scripts/couchliteos-hwdetect) == '#!/usr/bin/python3 -I' ]]
+
+# Live-USB sticks made for the old name (persistence.conf maps the old
+# /var/lib and /var/log directories) keep working: an early root oneshot binds
+# the old persistence onto the new paths and fixes group ownership.
+python3 -m py_compile scripts/couchliteos-migrate
+[[ $(head -1 scripts/couchliteos-migrate) == '#!/usr/bin/python3 -I' ]]
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"' build/configure.sh
+rg -q '^systemctl enable couchliteos-migrate\.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^DefaultDependencies=no$' services/couchliteos-migrate.service
+rg -q '^After=local-fs\.target$' services/couchliteos-migrate.service
+rg -q '^Before=.*\bsysinit\.target\b' services/couchliteos-migrate.service
+rg -q '^Before=.*\bsystemd-tmpfiles-setup\.service\b' services/couchliteos-migrate.service
+rg -q '^Before=.*\bcouchliteos-launcher\.service\b' services/couchliteos-migrate.service
+rg -q '^Type=oneshot$' services/couchliteos-migrate.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-migrate$' services/couchliteos-migrate.service
+rg -q '^WantedBy=sysinit\.target$' services/couchliteos-migrate.service
+rg -Fq 'ConditionPathIsMountPoint=|/var/lib/moonlightos' services/couchliteos-migrate.service # rename:keep
+rg -Fq 'ConditionPathIsMountPoint=|/var/log/moonlightos' services/couchliteos-migrate.service # rename:keep
+rg -Fq '("/var/lib/moonlightos", "/var/lib/couchliteos")' scripts/couchliteos-migrate # rename:keep
+rg -Fq '("/var/log/moonlightos", "/var/log/couchliteos")' scripts/couchliteos-migrate # rename:keep
+rg -Fq 'os.lchown' scripts/couchliteos-migrate
+refute rg -q 'os\.chown|shutil\.chown|followlinks=True|shell=True' scripts/couchliteos-migrate
+rg -Fq 'Sticks made for MoonlightOS keep their settings automatically' docs/INSTALL.md # rename:keep
+rg -Fq 'unittest -v tests/test_migrate.py' Makefile
+
 refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
 rg -q '^intel-media-va-driver$' config/profiles/intel/package-lists/intel-graphics.list.chroot
 refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools|i965-va-driver)$' config/profiles/imac2013

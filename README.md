@@ -1,5 +1,7 @@
 # CouchLiteOS v0.1.13
 
+CouchLiteOS (formerly MoonlightOS)
+
 CouchLiteOS is a Debian 13 (Trixie) x86_64 gaming-streaming appliance. It boots
 directly into a small controller-friendly launcher for Moonlight, chiaki-ng,
 Firefox ESR, official Google Chrome, and Remote Desktop, with an allowlist-only
