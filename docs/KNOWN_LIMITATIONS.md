@@ -13,9 +13,13 @@
   firmware framebuffer. Support waits for a 570 or newer Debian driver.
 - The proprietary NVIDIA driver (NVIDIA ISO) and Broadcom `wl` (both ISOs) are
   DKMS modules signed with a key that is deleted before the image is sealed, so
-  they do not load with Secure Boot on. Turn Secure Boot off in the firmware
-  settings, or use the Basic Graphics entry on NVIDIA and a supported USB or
-  PCIe Wi-Fi adapter. Apple firmware from 2013 has no Secure Boot.
+  they do not load with Secure Boot on.
+  <!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
+  If Secure Boot is on, MoonlightOS falls back to the open NVIDIA driver (lower
+  performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
+  A Broadcom chip that needs `wl` has no Wi-Fi with Secure Boot on: turn Secure
+  Boot off, or use wired Ethernet or a supported USB or PCIe Wi-Fi adapter.
+  Apple firmware from 2013 has no Secure Boot.
 - XWayland applications (Moonlight among them) may flicker or show stale frames
   on the proprietary 550 driver, because it lacks explicit sync. Use the Basic
   Graphics entry if that happens and report the GPU model.
@@ -50,6 +54,15 @@
   Debian packages remain a future goal.
 - 4K60 SDR is best effort. HDR is unverified and unsupported for acceptance.
 - The installed root filesystem is writable; A/B read-only updates are deferred.
+  There is no in-place updater and no backup or restore of pairings: a new
+  release means reinstalling (which erases the disk) or rewriting the ISO stick
+  and keeping a separate persistence stick. See
+  [Updating to a new release](INSTALL.md#updating-to-a-new-release).
+- A live USB without persistence forgets pairings, Wi-Fi, Bluetooth and the
+  Setup Wizard at every power-off. Persistence needs a second USB stick made on
+  Linux (see [INSTALL.md](INSTALL.md)); Windows and macOS have no tested way to
+  make it.
+- The boot menu and the installer need a keyboard; they ignore controllers.
 - Steam is not installed. `steam-devices` supplies controller device rules only;
   the documented Steam manifest is groundwork for a future supported install.
 - The controller keyboard is a full-screen buffered utility, not a compositor overlay.
