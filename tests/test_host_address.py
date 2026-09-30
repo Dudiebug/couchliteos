@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 
-PATH = pathlib.Path(__file__).parents[1] / "scripts" / "moonlightos-host-address"
+PATH = pathlib.Path(__file__).parents[1] / "scripts" / "couchliteos-host-address"
 
 
 def load_module():

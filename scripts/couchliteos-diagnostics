@@ -1,0 +1,214 @@
+#!/bin/bash
+set -uo pipefail
+
+watch_mode=0
+log_dir=${COUCHLITEOS_LOG_DIR:-/var/log/couchliteos}
+[[ ${1:-} == --watch ]] && watch_mode=1
+
+# Each run saves a report, so keep only the newest few (names sort by time).
+prune_reports() {
+  local -a files
+  local keep=${COUCHLITEOS_DIAGNOSTICS_KEEP:-5}
+  shopt -s nullglob
+  files=("$log_dir"/diagnostics-*.txt)
+  shopt -u nullglob
+  if ((${#files[@]} > keep)); then
+    rm -f -- "${files[@]:0:${#files[@]}-keep}"
+  fi
+  return 0
+}
+
+report() {
+  [[ -t 1 ]] && clear 2>/dev/null
+  echo 'CouchLiteOS diagnostics'
+  echo "Generated: $(date --iso-8601=seconds)"
+  echo
+  echo '== OS =='
+  cat /etc/os-release 2>/dev/null | grep -E '^(PRETTY_NAME|VERSION_ID)=' || true
+  printf 'CouchLiteOS: '; cat /etc/couchliteos-version 2>/dev/null || echo unknown
+  sed -n 's/^Build profile: /Build profile: /p' /usr/share/couchliteos/build-info 2>/dev/null || true
+  printf 'Machine: %s %s\n' "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo unknown)" \
+    "$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unknown)"
+  uname -a
+  echo
+  echo '== CPU =='
+  lscpu 2>/dev/null | grep -E '^(Model name|Architecture|CPU\(s\)|Thread|Core)' || true
+  echo
+  echo '== GPU / driver =='
+  lspci -nnk 2>/dev/null | grep -A3 -Ei 'VGA|Display|3D controller' || true
+  lsmod 2>/dev/null | grep -E '^(i915|nouveau|nvidia[a-z_]*|amdgpu|radeon) ' || echo 'no GPU kernel module shown'
+  if lsmod 2>/dev/null | grep -q '^nvidia'; then
+    printf 'NVIDIA driver: '; cat /sys/module/nvidia/version 2>/dev/null || echo 'proprietary module loaded'
+  fi
+  echo
+  echo '== Hardware detection =='
+  /usr/libexec/couchliteos-hwdetect report 2>&1 || true
+  echo
+  echo '== Vulkan =='
+  vulkaninfo --summary 2>&1 | sed -n '1,80p' || true
+  echo
+  echo '== VA-API decoders =='
+  vainfo 2>&1 | grep -E 'VAProfile|Driver version|libva info' || true
+  echo
+  echo '== Audio =='
+  wpctl status 2>&1 | sed -n '1,100p' || true
+  aplay -l 2>&1 || true
+  echo
+  echo '== Sensors =='
+  if command -v sensors >/dev/null; then
+    sensors 2>&1 | sed -n '1,60p' || true
+  else
+    echo 'lm-sensors is not installed in this build profile'
+  fi
+  if [[ -d /sys/devices/platform/applesmc.768 ]]; then
+    echo 'applesmc: present'
+  elif lsmod 2>/dev/null | grep -q '^applesmc '; then
+    echo 'applesmc: module loaded, no SMC device'
+  else
+    echo 'applesmc: not loaded'
+  fi
+  echo
+  echo '== Bluetooth =='
+  /usr/libexec/couchliteos-bluetoothd --snapshot 2>&1 || true
+  rfkill list bluetooth 2>&1 || true
+  printf 'bluetooth.service: '; systemctl is-active bluetooth.service 2>&1 || true
+  printf 'couchliteos-bluetooth.service: '; systemctl is-active couchliteos-bluetooth.service 2>&1 || true
+  journalctl -u couchliteos-bluetooth.service --since '-1 hour' --priority=warning \
+    --no-pager --output=short-iso 2>&1 | tail -n 40 || true
+  echo
+  echo '== Network =='
+  nmcli device status 2>&1 || true
+  for interface in /sys/class/net/*; do
+    [[ -e "$interface/device/driver" ]] || continue
+    printf '%s driver: %s\n' "${interface##*/}" "$(basename "$(readlink -f "$interface/device/driver")")"
+  done
+  ip -brief -4 address 2>&1 || true
+  ip route 2>&1 || true
+  echo
+  echo '== USB =='
+  lsusb 2>&1 || true
+  echo
+  echo '== USB/IP =='
+  couchliteos-usbip status 2>&1 || true
+  echo
+  couchliteos-tailscale-diagnostics 2>&1 || true
+  echo
+  echo '== Display connectors / modes =='
+  wlr-randr 2>&1 || true
+  echo
+  for connector in /sys/class/drm/card*-*/status; do
+    [[ -e "$connector" ]] || continue
+    base=${connector%/status}
+    printf '%s: %s\n' "${base##*/}" "$(cat "$connector")"
+    sed 's/^/  /' "$base/modes" 2>/dev/null || true
+  done
+  echo
+  echo '== Applications (sanitized) =='
+  /usr/bin/python3 /usr/libexec/couchliteos_apps.py 2>&1 || true
+  echo
+  echo '== Remote Desktop connections (sanitized) =='
+  /usr/bin/python3 /usr/libexec/couchliteos_rdp.py 2>&1 || true
+  echo
+  echo '== Boot timing =='
+  systemd-analyze --no-pager 2>&1 || true
+  systemd-analyze --no-pager critical-chain couchliteos-launcher.service 2>&1 || true
+  systemd-analyze --no-pager blame 2>&1 | head -n 30 || true
+  echo
+  echo '== Services =='
+  systemctl --no-pager --plain --state=failed 2>&1 || true
+}
+
+# This window closes when the script exits and a controller cannot type a
+# command: Enter is controller A, Esc is B, and the D-pad sends arrow keys.
+# Sets KEY to enter, esc, up, down, other or timeout. A closed terminal reads
+# as esc so the loops below cannot spin.
+read_key() {
+  local key rest status
+  KEY=timeout
+  IFS= read -rsn1 ${1:+-t "$1"} key
+  status=$?
+  if ((status > 128)); then return; fi
+  if ((status != 0)); then KEY=esc; return; fi
+  case $key in
+    '') KEY=enter ;;
+    $'\e')
+      IFS= read -rsn2 -t 0.05 rest || true
+      case ${rest:-} in
+        '') KEY=esc ;;
+        '[A' | 'OA') KEY=up ;;
+        '[B' | 'OB') KEY=down ;;
+        *) KEY=other ;;
+      esac
+      ;;
+    *) KEY=other ;;
+  esac
+}
+
+# Show a file one screen at a time: Enter or Down for the next page, Up for the
+# previous one, Esc (or Enter on the last page) to return.
+page_file() {
+  local file=$1 saved_note=$2 rows=24 cols=80 page start=0 end total i footer
+  local -a lines
+  read -r rows cols < <(stty size 2>/dev/null) || true
+  [[ ${rows:-} =~ ^[0-9]+$ && ${cols:-} =~ ^[0-9]+$ ]] || { rows=24; cols=80; }
+  ((rows >= 8 && cols >= 40)) || { rows=24; cols=80; }
+  page=$((rows - 3))
+  mapfile -t lines < "$file"
+  total=${#lines[@]}
+  while :; do
+    end=$((start + page))
+    ((end < total)) || end=$total
+    printf '\033[H\033[2J'
+    for ((i = start; i < end; i++)); do
+      printf '%s\n' "${lines[i]:0:cols}"
+    done
+    if ((end < total)); then
+      footer="lines $((start + 1))-$end of $total"
+    else
+      footer="END OF REPORT. $saved_note"
+    fi
+    printf '%s\n%s' "${footer:0:cols}" 'ENTER (A): next page   UP: back   ESC (B): return'
+    read_key
+    case $KEY in
+      enter) ((end < total)) || return 0; start=$end ;;
+      down) ((end < total)) && start=$end ;;
+      up) start=$((start - page)); ((start >= 0)) || start=0 ;;
+      esc) return 0 ;;
+    esac
+  done
+}
+
+if ((watch_mode)); then
+  while true; do
+    report
+    echo
+    echo 'Refreshing every 5 seconds. Press ESC (controller B) to close.'
+    if [[ -t 0 ]]; then
+      read_key 5
+      [[ $KEY == esc || $KEY == enter ]] && break
+    else
+      sleep 5
+    fi
+  done
+else
+  # One collection pass: it is saved, then shown (the tailscale pings alone
+  # take about 25 seconds, so never run it twice).
+  saved_note=
+  if [[ -d $log_dir ]]; then
+    outfile=$log_dir/diagnostics-$(date +%Y%m%d-%H%M%S).txt
+    saved_note="Saved: $outfile"
+  else
+    outfile=$(mktemp) || exit 1
+    trap 'rm -f -- "$outfile"' EXIT
+    saved_note='Not saved: the log directory is missing.'
+  fi
+  [[ -t 1 ]] && echo 'Collecting system information; this can take up to 30 seconds...'
+  report > "$outfile" 2>&1
+  [[ -d $log_dir ]] && prune_reports
+  if [[ -t 0 && -t 1 ]]; then
+    page_file "$outfile" "$saved_note"
+  else
+    cat -- "$outfile"
+    echo "$saved_note"
+  fi
+fi

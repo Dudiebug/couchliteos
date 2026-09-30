@@ -1,9 +1,9 @@
 # Hardware support
 
-MoonlightOS v0.1.13 ships two ISOs. Both detect the hardware on every boot
-(`moonlightos-hwdetect`) and write that machine's driver policy under `/run`
+CouchLiteOS v0.1.13 ships two ISOs. Both detect the hardware on every boot
+(`couchliteos-hwdetect`) and write that machine's driver policy under `/run`
 only, so a USB stick moved between machines starts clean each time. Run
-`/usr/libexec/moonlightos-hwdetect report`, or open System Diagnostics, to see
+`/usr/libexec/couchliteos-hwdetect report`, or open System Diagnostics, to see
 what it chose.
 
 | Graphics | ISO | Driver | Moonlight video decode |
@@ -23,7 +23,7 @@ Decode columns describe the design. No row has a physical hardware result yet;
 The NVIDIA ISO loads the proprietary driver only for GPUs on its supported
 list (`/usr/share/nvidia/nvidia.ids`, from Debian's 550 driver, which starts at
 Maxwell). For any other NVIDIA GPU, and when the
-**Start MoonlightOS (Basic Graphics)** boot entry is chosen, it blocks the
+**Start CouchLiteOS (Basic Graphics)** boot entry is chosen, it blocks the
 proprietary modules and loads nouveau. When the display driver is nouveau,
 Moonlight starts with software H.264 decoding. The desktop GTX 750 is Maxwell
 but the mobile GT 750M is Kepler, so check the exact chip when a name is
@@ -32,7 +32,7 @@ ambiguous; when in doubt, the NVIDIA ISO decides at boot from the GPU's PCI ID.
 NVIDIA's driver and Broadcom's `wl` are DKMS modules that are not signed, so
 they do not load with Secure Boot on.
 <!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
-If Secure Boot is on, MoonlightOS falls back to the open driver (lower
+If Secure Boot is on, CouchLiteOS falls back to the open driver (lower
 performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
 
 Broadcom Wi-Fi chips supported by Broadcom's `wl` driver (for example the
@@ -46,7 +46,7 @@ Intel, AMD, and NVIDIA (open) graphics; Intel SOF, Intel, and Cirrus sound;
 Intel, Realtek, Atheros, MediaTek, and Broadcom Wi-Fi/Bluetooth/Ethernet; Intel
 and AMD CPU microcode. The NVIDIA ISO adds the 550 driver's GSP firmware.
 
-MoonlightOS is IPv4-only. IPv6 is disabled on the live kernel command line, in
+CouchLiteOS is IPv4-only. IPv6 is disabled on the live kernel command line, in
 the installed GRUB configuration, in NetworkManager, and through sysctl.
 
 ## Reference machine: Dell OptiPlex 7010 Micro (general ISO)

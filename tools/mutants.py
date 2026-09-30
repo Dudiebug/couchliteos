@@ -10,10 +10,10 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ISO_BOOT = ("tests/qemu_iso_boot.py", ["tests/test_qemu_iso_boot.py"], ROOT)
-RDP = ("launcher/moonlightos_rdp.py", ["test_rdp.py", "test_app_runner.py"], ROOT / "launcher")
-RUNNER = ("launcher/moonlightos_app_runner.py", ["test_app_runner.py"], ROOT / "launcher")
-LAUNCHER = ("launcher/moonlightos-launcher.py", ["test_launcher.py"], ROOT / "launcher")
-EXPORT = ("scripts/moonlightos-support-export", ["tests/test_support.py"], ROOT)
+RDP = ("launcher/couchliteos_rdp.py", ["test_rdp.py", "test_app_runner.py"], ROOT / "launcher")
+RUNNER = ("launcher/couchliteos_app_runner.py", ["test_app_runner.py"], ROOT / "launcher")
+LAUNCHER = ("launcher/couchliteos-launcher.py", ["test_launcher.py"], ROOT / "launcher")
+EXPORT = ("scripts/couchliteos-support-export", ["tests/test_support.py"], ROOT)
 MUTANTS = (
     (
         ISO_BOOT,

@@ -1,0 +1,16 @@
+[Unit]
+Description=CouchLiteOS wired network readiness
+Wants=NetworkManager-wait-online.service
+After=NetworkManager-wait-online.service
+Before=couchliteos-usbipd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/couchliteos-network-ready
+RemainAfterExit=yes
+TimeoutStartSec=20
+StandardOutput=append:/var/log/couchliteos/network.log
+StandardError=append:/var/log/couchliteos/network.log
+
+[Install]
+WantedBy=multi-user.target

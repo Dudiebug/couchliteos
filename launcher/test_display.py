@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_display as display
+import couchliteos_display as display
 
 
 SAMPLE = '''DP-1 "Dell Inc. DELL U2723QE ABC123"

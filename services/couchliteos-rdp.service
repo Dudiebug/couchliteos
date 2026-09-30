@@ -1,0 +1,41 @@
+[Unit]
+Description=CouchLiteOS Remote Desktop session
+After=couchliteos-launcher.service couchliteos-audio.service
+# A new launcher request, or the session being recovered after a crash.
+ConditionPathExists=|/run/couchliteos/rdp.request
+ConditionPathExists=|/run/couchliteos/rdp-session
+StartLimitIntervalSec=60
+StartLimitBurst=3
+OnFailure=couchliteos-rdp-cleanup.service
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+SupplementaryGroups=audio input render video
+Environment=HOME=/var/lib/couchliteos/home
+Environment=XDG_CONFIG_HOME=/var/lib/couchliteos/home/.config
+Environment=XDG_DATA_HOME=/var/lib/couchliteos/home/.local/share
+Environment=XDG_CACHE_HOME=/var/lib/couchliteos/home/.cache
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+Environment=PIPEWIRE_RUNTIME_DIR=/run/couchliteos
+Environment=WAYLAND_DISPLAY=wayland-0
+EnvironmentFile=-/run/couchliteos/session.env
+# Nothing in this unit runs as root: its environment is the appliance user's.
+# Saved passwords are staged beforehand by couchliteos-rdp-secret.service.
+ExecStart=/usr/libexec/couchliteos-run-configured-app --rdp
+Restart=on-failure
+RestartSec=2
+# Restart directly: with the default (normal) mode, systemd 254+ passes through
+# the failed state and fires OnFailure= on every retried crash, which would
+# clear the session the restart needs. OnFailure= now runs only on giving up.
+RestartMode=direct
+# 65: authentication, certificate, or configuration failure; never retry
+# (retrying a wrong password can lock the account).
+RestartPreventExitStatus=65 66
+# A stop request (130/143) ends the session normally rather than failing it.
+SuccessExitStatus=130 143
+KillMode=control-group
+TimeoutStopSec=10
+StandardOutput=journal+console
+StandardError=journal+console

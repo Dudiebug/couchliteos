@@ -1,9 +1,0 @@
-[Unit]
-Description=Watch for MoonlightOS USB/IP reconciliation requests
-
-[Path]
-PathChanged=/run/moonlightos/usbip-reconcile
-Unit=moonlightos-usbip-reconcile.service
-
-[Install]
-WantedBy=multi-user.target

@@ -47,7 +47,7 @@ KEY_DOWN, ENTER, ESC = 258, 10, 27
 class TvControlScreenTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_cec", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)

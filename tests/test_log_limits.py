@@ -1,4 +1,4 @@
-"""Logs under /var/log/moonlightos persist across boots, so each must stay bounded."""
+"""Logs under /var/log/couchliteos persist across boots, so each must stay bounded."""
 import pathlib
 import re
 import subprocess
@@ -7,8 +7,8 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUN_APP = ROOT / "scripts" / "moonlightos-run-app"
-LAUNCHER_UNIT = ROOT / "services" / "moonlightos-launcher.service"
+RUN_APP = ROOT / "scripts" / "couchliteos-run-app"
+LAUNCHER_UNIT = ROOT / "services" / "couchliteos-launcher.service"
 MAX = 1024  # a small cap keeps the tests fast; both implementations are size-driven
 
 
@@ -68,14 +68,14 @@ class RunAppCapTest(CapBehavior, unittest.TestCase):
     def function(self) -> str:
         text = RUN_APP.read_text(encoding="utf-8")
         match = re.search(r"^cap_log\(\) \{\n.*?^\}\n", text, re.S | re.M)
-        self.assertIsNotNone(match, "moonlightos-run-app must define cap_log")
+        self.assertIsNotNone(match, "couchliteos-run-app must define cap_log")
         return match.group(0)
 
     def run_cap(self, log: pathlib.Path) -> None:
         script = f'set -Eeuo pipefail\n{self.function()}\ncap_log "$1"\n'
         result = subprocess.run(
             ["bash", "-c", script, "cap", str(log)],
-            env={"PATH": "/usr/bin:/bin", "MOONLIGHTOS_LOG_MAX_BYTES": str(MAX)},
+            env={"PATH": "/usr/bin:/bin", "COUCHLITEOS_LOG_MAX_BYTES": str(MAX)},
             capture_output=True,
             text=True,
             timeout=20,
@@ -110,7 +110,7 @@ class LauncherUnitCapTest(CapBehavior, unittest.TestCase):
         # systemd expands these itself before bash sees the command
         script = script.replace("$$", "$").replace("%%", "%")
         self.assertNotIn("%", script.replace("%s", ""))
-        script = script.replace("/var/log/moonlightos/launcher.log", str(log))
+        script = script.replace("/var/log/couchliteos/launcher.log", str(log))
         script = re.sub(r"\b5242880\b", str(MAX), script)
         result = subprocess.run(
             ["bash", "-c", script], capture_output=True, text=True, timeout=20,

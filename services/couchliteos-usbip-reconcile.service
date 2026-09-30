@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile explicitly allowlisted USB/IP exports
+After=couchliteos-usbipd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/couchliteos-usbip reconcile
+StandardOutput=append:/var/log/couchliteos/usbip.log
+StandardError=append:/var/log/couchliteos/usbip.log

@@ -1,9 +1,0 @@
-[Unit]
-Description=Enable native Tailscale SSH for MoonlightOS
-After=tailscaled.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/moonlightos-tailscale ssh-enable
-StandardOutput=append:/var/log/moonlightos/tailscale.log
-StandardError=append:/var/log/moonlightos/tailscale.log

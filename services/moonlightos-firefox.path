@@ -1,9 +1,0 @@
-[Unit]
-Description=Start Firefox when requested by the launcher
-
-[Path]
-PathExists=/run/moonlightos/start-firefox
-Unit=moonlightos-firefox.service
-
-[Install]
-WantedBy=graphical.target

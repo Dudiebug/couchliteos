@@ -6,7 +6,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VIEWER = ROOT / "scripts" / "moonlightos-tailscale-enrollment"
+VIEWER = ROOT / "scripts" / "couchliteos-tailscale-enrollment"
 
 
 class TailscaleEnrollmentViewerTest(unittest.TestCase):
@@ -42,9 +42,9 @@ class TailscaleEnrollmentViewerTest(unittest.TestCase):
             environment.update(
                 {
                     "PATH": f"{commands}:{environment['PATH']}",
-                    "MOONLIGHTOS_TAILSCALE_URL_FILE": str(url_file),
-                    "MOONLIGHTOS_TAILSCALE_POLL_SECONDS": "0",
-                    "MOONLIGHTOS_TAILSCALE_URL_WAIT_SECONDS": "4",
+                    "COUCHLITEOS_TAILSCALE_URL_FILE": str(url_file),
+                    "COUCHLITEOS_TAILSCALE_POLL_SECONDS": "0",
+                    "COUCHLITEOS_TAILSCALE_URL_WAIT_SECONDS": "4",
                     "TEST_COUNTER": str(counter),
                     "TEST_QR_ARGS": str(root / "qr-args"),
                     **(extra or {}),

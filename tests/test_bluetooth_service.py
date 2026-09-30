@@ -8,8 +8,8 @@ import unittest
 from unittest import mock
 
 
-PATH = pathlib.Path(__file__).parents[1] / "scripts" / "moonlightos-bluetoothd"
-LOADER = importlib.machinery.SourceFileLoader("moonlightos_bluetooth_service", str(PATH))
+PATH = pathlib.Path(__file__).parents[1] / "scripts" / "couchliteos-bluetoothd"
+LOADER = importlib.machinery.SourceFileLoader("couchliteos_bluetooth_service", str(PATH))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 bluetoothd = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(bluetoothd)

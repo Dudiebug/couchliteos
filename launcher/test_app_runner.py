@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_app_runner as runner
-import moonlightos_apps as apps
-import moonlightos_rdp as rdp
+import couchliteos_app_runner as runner
+import couchliteos_apps as apps
+import couchliteos_rdp as rdp
 
 
 PASSWORD = "Fake-Session-Password-77"
@@ -24,7 +24,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(runner.command_vector(self.app(arguments="1 'two words'")), ["/bin/sleep", "1", "two words"])
         self.assertEqual(
             runner.command_vector(self.app(terminal=True))[:6],
-            ["/usr/libexec/moonlightos-foot", "--fullscreen", "--title", "DEMO", "--", "/bin/sleep"],
+            ["/usr/libexec/couchliteos-foot", "--fullscreen", "--title", "DEMO", "--", "/bin/sleep"],
         )
 
     def test_environment_is_applied_without_losing_base_environment(self):

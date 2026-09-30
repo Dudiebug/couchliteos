@@ -1,0 +1,19 @@
+[Unit]
+Description=CouchLiteOS USB/IP daemon (no devices exported by default)
+Requires=couchliteos-firewall.service
+After=couchliteos-firewall.service couchliteos-network-ready.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe usbip_host
+ExecStart=/usr/sbin/usbipd --ipv4
+ExecStopPost=/usr/sbin/couchliteos-usbip unbind-all
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/var/log/couchliteos/usbipd.log
+StandardError=append:/var/log/couchliteos/usbipd.log
+
+[Install]
+WantedBy=multi-user.target

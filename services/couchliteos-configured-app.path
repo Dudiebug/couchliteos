@@ -1,0 +1,9 @@
+[Unit]
+Description=Start a configured CouchLiteOS application when requested
+
+[Path]
+PathExists=/run/couchliteos/launch-app.request
+Unit=couchliteos-configured-app.service
+
+[Install]
+WantedBy=graphical.target

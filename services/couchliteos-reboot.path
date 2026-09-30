@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/reboot
+Unit=couchliteos-reboot.service
+
+[Install]
+WantedBy=graphical.target

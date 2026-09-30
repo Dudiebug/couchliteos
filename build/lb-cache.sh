@@ -1,6 +1,6 @@
 #!/bin/bash
 # Optional cache shared between builds (sourced by build/build.sh, off unless
-# MOONLIGHTOS_LB_CACHE=/absolute/dir is set; unset it to build exactly as before).
+# COUCHLITEOS_LB_CACHE=/absolute/dir is set; unset it to build exactly as before).
 #
 # live-build already caches inside build/work/cache, but `make configure` wipes
 # build/work, so the general and nvidia builds each download every package and
@@ -41,7 +41,7 @@ lb_cache_key() {
 # (empty when the mirror could not be asked: then the bootstrap is never reused or saved).
 lb_cache_prepare() {
   local dir=$1 name
-  [[ $dir == /* ]] || { echo "lb-cache: MOONLIGHTOS_LB_CACHE must be an absolute path: $dir" >&2; return 1; }
+  [[ $dir == /* ]] || { echo "lb-cache: COUCHLITEOS_LB_CACHE must be an absolute path: $dir" >&2; return 1; }
   mkdir -p "$dir" cache
   for name in packages.bootstrap packages.chroot packages.binary; do
     mkdir -p "$dir/$name"

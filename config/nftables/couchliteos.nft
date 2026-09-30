@@ -1,0 +1,14 @@
+# Fail-closed template. couchliteos-firewall renders literal approved peer IPs.
+table inet couchliteos {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport 3240 iifname "tailscale0" jump usbip_tailnet
+    tcp dport 3240 jump usbip_lan
+  }
+  chain usbip_lan {
+    drop
+  }
+  chain usbip_tailnet {
+    drop
+  }
+}

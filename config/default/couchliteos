@@ -1,0 +1,5 @@
+# System defaults. User-modifiable persistent settings live in /var/lib/couchliteos.
+COUCHLITEOS_LOG_DIR=/var/log/couchliteos
+COUCHLITEOS_DATA_DIR=/var/lib/couchliteos
+COUCHLITEOS_MOONLIGHT_BACKEND=wayland
+COUCHLITEOS_CHIAKI_GAMESCOPE=0

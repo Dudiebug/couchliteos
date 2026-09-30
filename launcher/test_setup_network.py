@@ -1,4 +1,4 @@
-"""Tests for the network step of the first-boot wizard (moonlightos_setup.py).
+"""Tests for the network step of the first-boot wizard (couchliteos_setup.py).
 
 This file is separate from test_setup.py on purpose: it carries its own small
 fakes so the network tests do not depend on the other wizard test classes.
@@ -10,7 +10,7 @@ import types
 import unittest
 from unittest import mock
 
-import moonlightos_setup as setup
+import couchliteos_setup as setup
 
 HOME_NET = setup.WifiNetwork("HomeNet", 80, "WPA2")
 ETHERNET_DOWN = setup.NetworkDevice("enp2s0", "ethernet", "unavailable")
@@ -453,7 +453,7 @@ class WrongPasswordTest(unittest.TestCase):
 
 # --- finding 10: the polkit rule ----------------------------------------------
 
-RULE = pathlib.Path(__file__).resolve().parent.parent / "overlay/etc/polkit-1/rules.d/50-moonlightos-network.rules"
+RULE = pathlib.Path(__file__).resolve().parent.parent / "overlay/etc/polkit-1/rules.d/50-couchliteos-network.rules"
 
 
 class PolkitRuleTest(unittest.TestCase):
@@ -485,12 +485,12 @@ class PolkitRuleTest(unittest.TestCase):
 
     def test_only_the_launcher_user_inside_the_launcher_service_is_granted(self):
         code = self.code()
-        self.assertIn('subject.user == "moonlightos"', code)
+        self.assertIn('subject.user == "couchliteos"', code)
         # The launcher runs as a plain systemd service: it has no logind session, so
         # polkit reports subject.local and subject.active as false for it and a rule
         # that required them would refuse the wizard. The service's cgroup is what
         # tells it apart from the browser and other apps running as the same user.
-        self.assertIn("/moonlightos-launcher.service", code)
+        self.assertIn("/couchliteos-launcher.service", code)
         self.assertIn("/proc/", code)
         self.assertEqual(code.count("polkit.Result."), 1)
         self.assertIn("polkit.Result.YES", code)

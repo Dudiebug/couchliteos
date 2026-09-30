@@ -1,5 +1,5 @@
 #!/bin/bash
-# Create a Proxmox VE test VM (q35, OVMF/UEFI) that boots a MoonlightOS ISO.
+# Create a Proxmox VE test VM (q35, OVMF/UEFI) that boots a CouchLiteOS ISO.
 # Run on the Proxmox host as root after uploading the ISO to an ISO storage.
 # The VM covers boot, launcher, Settings, persistence, and Remote Desktop; it
 # cannot emulate the iMac's Kepler GPU, Broadcom Wi-Fi, or audio.
@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 usage: proxmox-create-test-vm.sh --iso STORAGE:iso/FILE.iso [options]
   --vmid ID            VM id (default: next free id)
-  --name NAME          VM name (default: moonlightos-test)
+  --name NAME          VM name (default: couchliteos-test)
   --storage STORAGE    disk and EFI storage (default: local-lvm)
   --bridge BRIDGE      network bridge (default: vmbr0)
   --memory MIB         memory (default: 4096)
@@ -22,7 +22,7 @@ EOF
   exit 64
 }
 
-iso= vmid= name=moonlightos-test storage=local-lvm bridge=vmbr0 memory=4096 cores=4 disk=32 keys=0 start=0
+iso= vmid= name=couchliteos-test storage=local-lvm bridge=vmbr0 memory=4096 cores=4 disk=32 keys=0 start=0
 while (($#)); do
   case $1 in
     --iso) iso=${2:-}; shift 2 ;;

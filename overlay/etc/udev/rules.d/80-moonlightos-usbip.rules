@@ -1,1 +1,0 @@
-ACTION=="add|remove", SUBSYSTEM=="usb", TAG+="systemd", ENV{SYSTEMD_WANTS}+="moonlightos-usbip-reconcile.service"

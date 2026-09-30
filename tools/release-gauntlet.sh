@@ -2,20 +2,20 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
+ISO=${1:-$ROOT/build/out/couchliteos-$(< "$ROOT/VERSION")-amd64.iso}
 cd "$ROOT"
 
 for report in \
-  "${MOONLIGHTOS_QEMU_LOG:-}" \
-  "${MOONLIGHTOS_QEMU_SCREENSHOT:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALL_LOG:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALLED_BOOT_LOG:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALL_MENU_SCREENSHOT:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALL_EDITOR_SCREENSHOT:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALLER_SCREENSHOT:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALLED_SCREENSHOT:-}" \
-  "${MOONLIGHTOS_QEMU_INSTALL_CONFIG:-}" \
-  "${MOONLIGHTOS_QEMU_PERSISTENCE_LOG:-}"; do
+  "${COUCHLITEOS_QEMU_LOG:-}" \
+  "${COUCHLITEOS_QEMU_SCREENSHOT:-}" \
+  "${COUCHLITEOS_QEMU_INSTALL_LOG:-}" \
+  "${COUCHLITEOS_QEMU_INSTALLED_BOOT_LOG:-}" \
+  "${COUCHLITEOS_QEMU_INSTALL_MENU_SCREENSHOT:-}" \
+  "${COUCHLITEOS_QEMU_INSTALL_EDITOR_SCREENSHOT:-}" \
+  "${COUCHLITEOS_QEMU_INSTALLER_SCREENSHOT:-}" \
+  "${COUCHLITEOS_QEMU_INSTALLED_SCREENSHOT:-}" \
+  "${COUCHLITEOS_QEMU_INSTALL_CONFIG:-}" \
+  "${COUCHLITEOS_QEMU_PERSISTENCE_LOG:-}"; do
   [[ -z "$report" ]] || rm -f -- "$report"
 done
 
@@ -27,4 +27,4 @@ make qemu-smoke ISO="$ISO"
 make qemu-install-smoke ISO="$ISO"
 make qemu-persistence-smoke ISO="$ISO"
 
-printf 'MoonlightOS release gauntlet passed.\n'
+printf 'CouchLiteOS release gauntlet passed.\n'

@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest import mock
 
-import moonlightos_stream as stream
+import couchliteos_stream as stream
 
 
 # Shaped like a real Moonlight Qt 6.1 QSettings INI file. Keys are sorted, the MAC
@@ -568,7 +568,7 @@ class ConfRewriteTest(unittest.TestCase):
 
 
 class RequestTest(unittest.TestCase):
-    """moonlightos-run-app reads the stream request through take_request; it never sees a shell."""
+    """couchliteos-run-app reads the stream request through take_request; it never sees a shell."""
 
     def test_take_request_validates_and_always_consumes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -718,7 +718,7 @@ def changed(host, **fields):
 class LauncherTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_couch", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
@@ -868,7 +868,7 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
 
 
 class LaunchFailureTest(LauncherTestCase):
-    """Moonlight problems offer WAKE PC on the shared error screen (moonlightos_errors)."""
+    """Moonlight problems offer WAKE PC on the shared error screen (couchliteos_errors)."""
 
     def setUp(self):
         patcher = mock.patch.object(self.module.errors, "_EXTRA", [])

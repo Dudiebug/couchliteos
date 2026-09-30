@@ -62,7 +62,7 @@ class Clock:
 
 
 def load_launcher():
-    path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+    path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
     spec = importlib.util.spec_from_file_location("launcher_ux2", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -212,7 +212,7 @@ class ScrollingScreensTest(unittest.TestCase):
 
 class BluetoothScrollTest(unittest.TestCase):
     def test_the_bluetooth_list_shows_the_cursor_row_on_small_screens(self):
-        import moonlightos_bluetooth as bluetooth
+        import couchliteos_bluetooth as bluetooth
 
         for size in SMALL_SCREENS:
             screen = Screen(size=size)
@@ -239,7 +239,7 @@ class BluetoothCursorTest(unittest.TestCase):
         }
 
     def run_menu(self, snapshots, keys):
-        import moonlightos_bluetooth as bluetooth
+        import couchliteos_bluetooth as bluetooth
 
         class Client:
             def __init__(self):
@@ -263,7 +263,7 @@ class BluetoothCursorTest(unittest.TestCase):
         return client.requests
 
     def test_a_device_that_appears_above_the_cursor_does_not_steal_the_selection(self):
-        import moonlightos_bluetooth as bluetooth
+        import couchliteos_bluetooth as bluetooth
 
         down, enter = bluetooth.curses.KEY_DOWN, 10
         done = self.snapshot(operations=[{"id": "op-1", "state": "completed"}])
@@ -275,7 +275,7 @@ class BluetoothCursorTest(unittest.TestCase):
         self.assertNotIn(("pair", {"device": self.APPLE["path"]}), requests)
 
     def test_the_cursor_does_not_slide_onto_a_power_button_when_its_device_leaves(self):
-        import moonlightos_bluetooth as bluetooth
+        import couchliteos_bluetooth as bluetooth
 
         down, enter = bluetooth.curses.KEY_DOWN, 10
         both = self.snapshot(self.APPLE, self.XBOX)
@@ -512,7 +512,7 @@ class HintTextTest(unittest.TestCase):
         self.assertIn("Y / SQUARE", module.TEXT_HINT)  # gamepad-nav sends Delete for BTN_WEST; the hint says so
 
     def test_bluetooth_screens(self):
-        import moonlightos_bluetooth as bluetooth
+        import couchliteos_bluetooth as bluetooth
 
         screen = FrameScreen([10])
         self.check("message", self.hints(screen, lambda: bluetooth.BluetoothMenu(screen, mock.Mock()).message("T", "m")))
@@ -529,7 +529,7 @@ class HintTextTest(unittest.TestCase):
         self.check("pairing wait", self.hints(screen, lambda: menu._wait_operation("op", "PAIRING", cancellable_pairing=True)))
 
     def test_setup_wizard_screen(self):
-        import moonlightos_setup as setup
+        import couchliteos_setup as setup
 
         screen = FrameScreen()
         setup.CursesUI(screen).draw("T", ["d"], ["ONE", "TWO"], 0, None, setup.MENU_FOOTER)

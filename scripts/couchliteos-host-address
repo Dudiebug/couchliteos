@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+"""Resolve the configured Sunshine profile without requiring Tailscale."""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import ipaddress
+import json
+import os
+import subprocess
+
+CONFIG = os.environ.get("COUCHLITEOS_CONFIG", "/var/lib/couchliteos/config.ini")
+
+
+def run(command: list[str], timeout: int = 3) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(command, 127, "", "unavailable")
+
+
+def reachable(address: str) -> bool:
+    return bool(address) and run(["ping", "-c", "1", "-W", "1", address], 2).returncode == 0
+
+
+def tailscale_running() -> bool:
+    result = run(["tailscale", "status", "--json"])
+    if result.returncode:
+        return False
+    try:
+        return json.loads(result.stdout).get("BackendState") == "Running"
+    except json.JSONDecodeError:
+        return False
+
+
+def resolve(profile: str, tailscale_only: bool = False) -> tuple[str, str, bool]:
+    config = configparser.ConfigParser()
+    config.read(CONFIG)
+    section = f"host:{profile}"
+    lan = config.get(section, "lan_address", fallback="").strip()
+    ts_name = config.get(section, "tailscale_hostname", fallback="").strip()
+    ts_ip = config.get(section, "tailscale_ip", fallback="").strip()
+    mode = config.get(section, "address_mode", fallback=
+                      config.get("tailscale", "host_address_mode", fallback="auto")).strip()
+    if mode not in {"lan", "tailscale", "auto"}:
+        mode = "auto"
+
+    if tailscale_only or mode == "tailscale":
+        candidates = [(ts_name, "tailscale-magicdns"), (ts_ip, "tailscale-ip")]
+    elif mode == "lan":
+        candidates = [(lan, "lan")]
+    else:
+        candidates = [(lan, "lan"), (ts_name, "tailscale-magicdns"), (ts_ip, "tailscale-ip")]
+
+    ts_online = tailscale_running()
+    for address, source in candidates:
+        if not address:
+            continue
+        if source.startswith("tailscale") and not ts_online:
+            continue
+        if reachable(address):
+            return address, source, True
+
+    for address, source in candidates:
+        if address and (not source.startswith("tailscale") or ts_online):
+            return address, source, False
+    return "", "unconfigured", False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("profile", nargs="?", default="gaming-pc")
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--tailscale-only", action="store_true")
+    args = parser.parse_args()
+    address, source, is_reachable = resolve(args.profile, args.tailscale_only)
+    if args.quiet:
+        print(address)
+    else:
+        state = "reachable" if is_reachable else "not currently reachable"
+        print(f"{args.profile}: {address or 'no address configured'} ({source}, {state})")
+    return 0 if address else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

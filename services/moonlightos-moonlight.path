@@ -1,9 +1,0 @@
-[Unit]
-Description=Start Moonlight when requested by the launcher
-
-[Path]
-PathExists=/run/moonlightos/start-moonlight
-Unit=moonlightos-moonlight.service
-
-[Install]
-WantedBy=graphical.target

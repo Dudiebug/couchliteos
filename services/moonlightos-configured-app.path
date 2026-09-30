@@ -1,9 +1,0 @@
-[Unit]
-Description=Start a configured MoonlightOS application when requested
-
-[Path]
-PathExists=/run/moonlightos/launch-app.request
-Unit=moonlightos-configured-app.service
-
-[Install]
-WantedBy=graphical.target

@@ -1,9 +1,0 @@
-#!/bin/bash
-set -Eeuo pipefail
-
-url=/run/moonlightos/tailscale-auth-url
-if [[ -e "$url" && ! -L "$url" && $(stat -c %u -- "$url") == "$(id -u)" ]]; then
-  rm -f -- "$url"
-fi
-touch /run/moonlightos/tailscale-enroll
-exec /usr/bin/moonlightos-tailscale-enrollment

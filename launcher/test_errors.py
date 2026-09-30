@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_errors as errors
+import couchliteos_errors as errors
 
 ENTER, ESC = 10, 27
 
@@ -250,7 +250,7 @@ class ShowTest(unittest.TestCase):
 class LauncherErrorsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_errors_under_test", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
@@ -407,7 +407,7 @@ class LauncherErrorsTest(unittest.TestCase):
         launcher = self.launcher()
         settings = self.module.Settings(launcher.screen, launcher)
         with mock.patch.object(self.module.errors, "show", return_value="dismiss") as show:
-            settings.show_error("SUPPORT EXPORT TIMED OUT", "REBOOT MOONLIGHTOS BEFORE TRYING AGAIN.", retry=False)
+            settings.show_error("SUPPORT EXPORT TIMED OUT", "REBOOT COUCHLITEOS BEFORE TRYING AGAIN.", retry=False)
         self.assertEqual(ids(show.call_args.args[1]), ["dismiss"])
 
     # --- audio: nothing to play on -------------------------------------------------------------

@@ -7,11 +7,11 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-OUT=${MOONLIGHTOS_RELEASE_DIR:-$ROOT/build/out}
+OUT=${COUCHLITEOS_RELEASE_DIR:-$ROOT/build/out}
 VERSION=$(< "$ROOT/VERSION")
 TAG=$VERSION
 NOTES="$ROOT/docs/releases/v$VERSION.md"
-REPO=${MOONLIGHTOS_RELEASE_REPO:-Dudiebug/moonlightos}
+REPO=${COUCHLITEOS_RELEASE_REPO:-Dudiebug/couchliteos}
 target=$(git -C "$ROOT" rev-parse --verify "${1:-HEAD}^{commit}")
 
 command -v gh >/dev/null || { echo 'GitHub CLI (gh) is required' >&2; exit 127; }
@@ -27,14 +27,14 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   exit 1
 fi
 
-MOONLIGHTOS_RELEASE_DIR=$OUT "$ROOT/tools/release-assets.sh"
+COUCHLITEOS_RELEASE_DIR=$OUT "$ROOT/tools/release-assets.sh"
 # Lines are "<sha256>  <name>" or, from binary-mode tools, "<sha256> *<name>".
 mapfile -t assets < <(sed -E 's/^[0-9a-f]{64} [ *]//' "$OUT/SHA256SUMS")
 gh release create "$TAG" \
   --repo "$REPO" \
   --draft \
   --target "$target" \
-  --title "MoonlightOS v$VERSION" \
+  --title "CouchLiteOS v$VERSION" \
   --notes-file "$NOTES" \
   "${assets[@]/#/$OUT/}" "$OUT/SHA256SUMS"
 gh release view "$TAG" --repo "$REPO" --json isDraft,tagName,targetCommitish,assets \

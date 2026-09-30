@@ -1,0 +1,6 @@
+[Unit]
+Description=Poweroff requested by CouchLiteOS launcher
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff

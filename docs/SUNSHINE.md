@@ -4,9 +4,9 @@
    Ryzen 5 7600X / RTX 5070 Linux PC) using Sunshine's official documentation.
 2. Keep the host and appliance on wired gigabit Ethernet where possible.
 3. Start Moonlight, add the host by name or address, and complete the PIN on the
-   Sunshine web UI. The host address is never built into MoonlightOS. On a live
+   Sunshine web UI. The host address is never built into CouchLiteOS. On a live
    USB without persistence the pairing is forgotten at power-off; install
-   MoonlightOS or add a persistence stick to keep it (see
+   CouchLiteOS or add a persistence stick to keep it (see
    [INSTALL.md](INSTALL.md)).
 4. Start at 1920x1080, 60 FPS, automatic codec, and fullscreen. Confirm hardware
    decoding in the Moonlight statistics overlay. When the display driver is
@@ -15,7 +15,7 @@
 5. Then test 1080p120, 1440p60, and finally 4K60 SDR if the display path allows.
 
 Moonlight Qt stores its host list, last-used host, pairing material, and stream
-settings below `/var/lib/moonlightos/home/.config`. Exiting Moonlight returns to
+settings below `/var/lib/couchliteos/home/.config`. Exiting Moonlight returns to
 the launcher. Non-zero exits are logged and retried by systemd up to three
 times. NetworkManager restores DHCP after link loss; Moonlight's own reconnect
 UI handles an interrupted stream.

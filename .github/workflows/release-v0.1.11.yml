@@ -29,9 +29,9 @@ jobs:
         if: steps.eligibility.outputs.publish == 'true'
         uses: actions/download-artifact@v8
         with:
-          name: moonlightos-0.1.11-amd64
+          name: couchliteos-0.1.11-amd64
           path: dist
-          repository: Dudiebug/moonlightos
+          repository: Dudiebug/couchliteos
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -41,7 +41,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          test -s dist/moonlightos-0.1.11-amd64.iso
+          test -s dist/couchliteos-0.1.11-amd64.iso
           if gh release view 0.1.11 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete 0.1.11 --repo "$GITHUB_REPOSITORY" --yes
           fi
@@ -51,6 +51,6 @@ jobs:
           gh release create 0.1.11 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$RELEASE_SHA" \
-            --title "MoonlightOS v0.1.11" \
+            --title "CouchLiteOS v0.1.11" \
             --notes-file docs/releases/v0.1.11.md \
-            dist/moonlightos-0.1.11-amd64.iso
+            dist/couchliteos-0.1.11-amd64.iso

@@ -2,20 +2,20 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
-LOG=${MOONLIGHTOS_QEMU_PERSISTENCE_LOG:-/tmp/moonlightos-qemu-persistence.log}
+ISO=${1:-$ROOT/build/out/couchliteos-$(< "$ROOT/VERSION")-amd64.iso}
+LOG=${COUCHLITEOS_QEMU_PERSISTENCE_LOG:-/tmp/couchliteos-qemu-persistence.log}
 # Slow hosts (for example nested software emulation) may stretch every timeout.
-SCALE=${MOONLIGHTOS_QEMU_TIMEOUT_SCALE:-1}
-[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'MOONLIGHTOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
+SCALE=${COUCHLITEOS_QEMU_TIMEOUT_SCALE:-1}
+[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'COUCHLITEOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
 
 command -v qemu-system-x86_64 >/dev/null || { echo 'qemu-system-x86_64 is required' >&2; exit 127; }
 # Hosts without e2fsprogs may supply a pristine image made by the same mke2fs
 # command below; hosts without xorriso may extract with libarchive's bsdtar.
-if ! command -v mke2fs >/dev/null && [[ ! -r ${MOONLIGHTOS_QEMU_PERSISTENCE_IMAGE:-} ]]; then
-  echo 'mke2fs (or MOONLIGHTOS_QEMU_PERSISTENCE_IMAGE) is required' >&2
+if ! command -v mke2fs >/dev/null && [[ ! -r ${COUCHLITEOS_QEMU_PERSISTENCE_IMAGE:-} ]]; then
+  echo 'mke2fs (or COUCHLITEOS_QEMU_PERSISTENCE_IMAGE) is required' >&2
   exit 127
 fi
-BSDTAR=${MOONLIGHTOS_BSDTAR:-bsdtar}
+BSDTAR=${COUCHLITEOS_BSDTAR:-bsdtar}
 command -v xorriso >/dev/null || command -v "$BSDTAR" >/dev/null || {
   echo 'xorriso or bsdtar is required' >&2
   exit 127
@@ -31,8 +31,8 @@ trap cleanup EXIT
 
 mkdir "$work/root"
 cat > "$work/root/persistence.conf" <<'EOF'
-/var/lib/moonlightos source=moonlightos-state
-/var/log/moonlightos source=moonlightos-logs
+/var/lib/couchliteos source=couchliteos-state
+/var/log/couchliteos source=couchliteos-logs
 /var/lib/tailscale source=tailscale-state
 /var/lib/bluetooth source=bluetooth-state
 /etc/NetworkManager/system-connections source=nm-connections
@@ -41,7 +41,7 @@ if command -v mke2fs >/dev/null; then
   truncate -s 768M "$work/persistence.img"
   mke2fs -q -F -t ext4 -L persistence -d "$work/root" "$work/persistence.img"
 else
-  cp -- "$MOONLIGHTOS_QEMU_PERSISTENCE_IMAGE" "$work/persistence.img"
+  cp -- "$COUCHLITEOS_QEMU_PERSISTENCE_IMAGE" "$work/persistence.img"
 fi
 if command -v xorriso >/dev/null; then
   xorriso -osirrox on -indev "$ISO" \
@@ -54,13 +54,13 @@ fi
 
 ovmf_code=
 ovmf_vars_template=
-if [[ -n ${MOONLIGHTOS_OVMF_CODE:-} || -n ${MOONLIGHTOS_OVMF_VARS:-} ]]; then
-  [[ -r ${MOONLIGHTOS_OVMF_CODE:-} && -r ${MOONLIGHTOS_OVMF_VARS:-} ]] || {
-    echo 'Both readable MOONLIGHTOS_OVMF_CODE and MOONLIGHTOS_OVMF_VARS are required.' >&2
+if [[ -n ${COUCHLITEOS_OVMF_CODE:-} || -n ${COUCHLITEOS_OVMF_VARS:-} ]]; then
+  [[ -r ${COUCHLITEOS_OVMF_CODE:-} && -r ${COUCHLITEOS_OVMF_VARS:-} ]] || {
+    echo 'Both readable COUCHLITEOS_OVMF_CODE and COUCHLITEOS_OVMF_VARS are required.' >&2
     exit 69
   }
-  ovmf_code=$MOONLIGHTOS_OVMF_CODE
-  ovmf_vars_template=$MOONLIGHTOS_OVMF_VARS
+  ovmf_code=$COUCHLITEOS_OVMF_CODE
+  ovmf_vars_template=$COUCHLITEOS_OVMF_VARS
 fi
 for pair in \
   '/usr/share/OVMF/OVMF_CODE_4M.fd|/usr/share/OVMF/OVMF_VARS_4M.fd' \
@@ -86,12 +86,12 @@ common=(
   -device virtio-vga -display none -monitor none -no-reboot
   -netdev user,id=net0 -device e1000,netdev=net0
 )
-# Without KVM, MOONLIGHTOS_QEMU_ACCEL_ARGS can name another accelerator, for
+# Without KVM, COUCHLITEOS_QEMU_ACCEL_ARGS can name another accelerator, for
 # example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
   common=(-enable-kvm -cpu host "${common[@]}")
-elif [[ -n ${MOONLIGHTOS_QEMU_ACCEL_ARGS:-} ]]; then
-  read -r -a accel <<< "$MOONLIGHTOS_QEMU_ACCEL_ARGS"
+elif [[ -n ${COUCHLITEOS_QEMU_ACCEL_ARGS:-} ]]; then
+  read -r -a accel <<< "$COUCHLITEOS_QEMU_ACCEL_ARGS"
   common=("${accel[@]}" "${common[@]}")
 fi
 install -D -m 0644 /dev/null "$LOG"
@@ -102,8 +102,8 @@ boot_and_wait() {
   printf '\n=== live boot: %s ===\n' "$mode" >> "$LOG"
   qemu-system-x86_64 \
     "${common[@]}" \
-    -fw_cfg "name=opt/moonlightos.smoke,string=$mode" \
-    -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE" \
+    -fw_cfg "name=opt/couchliteos.smoke,string=$mode" \
+    -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE" \
     -serial stdio "$@" >> "$LOG" 2>&1 &
   pid=$!
   for _ in $(seq 1 $((240 * SCALE))); do
@@ -121,11 +121,11 @@ boot_and_wait() {
   exit 1
 }
 
-boot_and_wait live-persistence-write MOONLIGHTOS_SMOKE_LIVE_PERSISTENCE_WRITTEN \
+boot_and_wait live-persistence-write COUCHLITEOS_SMOKE_LIVE_PERSISTENCE_WRITTEN \
   -boot d -cdrom "$ISO"
-boot_and_wait live-persistence-read MOONLIGHTOS_SMOKE_LIVE_PERSISTENCE_READY \
+boot_and_wait live-persistence-read COUCHLITEOS_SMOKE_LIVE_PERSISTENCE_READY \
   -boot d -cdrom "$ISO"
-boot_and_wait live-persistence-absent MOONLIGHTOS_SMOKE_LIVE_PERSISTENCE_IGNORED \
+boot_and_wait live-persistence-absent COUCHLITEOS_SMOKE_LIVE_PERSISTENCE_IGNORED \
   -kernel "$work/vmlinuz" -initrd "$work/initrd.img" \
   -append 'boot=live components nopersistence ipv6.disable=1 console=tty1 console=ttyS0,115200n8' \
   -drive "file=$ISO,media=cdrom,readonly=on"

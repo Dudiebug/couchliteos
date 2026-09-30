@@ -46,7 +46,7 @@ The v0.1.13 cases cover the two release profiles and hardware detection:
 - profile layout and inheritance: `nvidia` builds on `general`
   (`PROFILE_BASE`), only `nvidia` may list proprietary NVIDIA packages, and
   each release profile's required and forbidden image paths
-- `moonlightos-hwdetect` against a fake sysfs (`tests/test_hwdetect.py`):
+- `couchliteos-hwdetect` against a fake sysfs (`tests/test_hwdetect.py`):
   supported and unsupported NVIDIA GPUs on the NVIDIA ISO, the Basic Graphics
   option, Kepler on both ISOs, Intel, AMD, no GPU, Broadcom chips on and off
   `wl`'s list, Apple DMI, the nouveau fallback load, decode hints, and
@@ -57,7 +57,7 @@ The v0.1.13 cases cover the two release profiles and hardware detection:
   command (`! cmd`) never trips `set -e`, so earlier versions could not fail on
   them
 
-`make test` must run as root on a machine that already has a `moonlightos`
+`make test` must run as root on a machine that already has a `couchliteos`
 account (for example the lab build VM), because the atomic writers assign that
 account. `python3 tools/mutants.py` also checks that the tests catch removing
 `/from-stdin:force`, accepting any certificate, allowing IPv6 literals,
@@ -74,26 +74,26 @@ make qemu-smoke PROFILE=nvidia     # NVIDIA ISO
 
 Every QEMU target takes `PROFILE=` (or an explicit `ISO=`). Without KVM (for
 example inside a software-emulated build VM), set
-`MOONLIGHTOS_QEMU_TIMEOUT_SCALE=N` (1-99, default 1) to stretch every host-side
+`COUCHLITEOS_QEMU_TIMEOUT_SCALE=N` (1-99, default 1) to stretch every host-side
 wait, the installer keystroke pauses, and the in-guest waits by the same factor;
 the guest receives the factor through a QEMU fw_cfg entry.
 
 The QEMU tests also run from Git Bash on a Windows host with QEMU for Windows
 (no KVM). With Windows Hypervisor Platform enabled, set
-`MOONLIGHTOS_QEMU_ACCEL_ARGS="-accel whpx,kernel-irqchip=off -cpu max"`;
+`COUCHLITEOS_QEMU_ACCEL_ARGS="-accel whpx,kernel-irqchip=off -cpu max"`;
 without it, QEMU emulates in software. Also set
-`MOONLIGHTOS_OVMF_CODE`/`MOONLIGHTOS_OVMF_VARS` to QEMU's
+`COUCHLITEOS_OVMF_CODE`/`COUCHLITEOS_OVMF_VARS` to QEMU's
 `edk2-x86_64-code.fd`/`edk2-i386-vars.fd`, `TMPDIR` to a Windows-style
-path such as `C:/qemu-tmp`, and `MOONLIGHTOS_QEMU_MONITOR_PORT` to a free local
+path such as `C:/qemu-tmp`, and `COUCHLITEOS_QEMU_MONITOR_PORT` to a free local
 TCP port (Windows Python has no Unix-domain sockets). The persistence test
-accepts `MOONLIGHTOS_QEMU_PERSISTENCE_IMAGE` (a pristine image made by its own
-`mke2fs` command on a Linux host) and `MOONLIGHTOS_BSDTAR` (Windows'
+accepts `COUCHLITEOS_QEMU_PERSISTENCE_IMAGE` (a pristine image made by its own
+`mke2fs` command on a Linux host) and `COUCHLITEOS_BSDTAR` (Windows'
 `C:/Windows/System32/tar.exe`) when `mke2fs` and `xorriso` are unavailable.
 
 The script boots the profile's ISO (for example
-`build/out/moonlightos-0.1.13-amd64.iso`) with serial
+`build/out/couchliteos-0.1.13-amd64.iso`) with serial
 output, a virtual Ethernet NIC, and UEFI when OVMF is available. Success means
-the boot reached the MoonlightOS launcher service marker. QEMU does not prove
+the boot reached the CouchLiteOS launcher service marker. QEMU does not prove
 Intel VA-API, physical Bluetooth behavior, display audio, gamepad, USB/IP
 hardware, or streaming.
 
@@ -103,34 +103,34 @@ to a 115200-baud serial console so bootloader failures appear in CI logs. The
 test creates a disposable writable copy of `OVMF_VARS`; supplying OVMF code
 without its variable store is not a valid UEFI test setup.
 On systems where OVMF is unpacked outside the standard locations, set both
-`MOONLIGHTOS_OVMF_CODE` and `MOONLIGHTOS_OVMF_VARS` to readable firmware files.
+`COUCHLITEOS_OVMF_CODE` and `COUCHLITEOS_OVMF_VARS` to readable firmware files.
 
 On failure, CI retains the serial log and a QEMU framebuffer screenshot. The
 test also extracts `/boot/grub/grub.cfg` from the ISO and verifies the appliance
 timeout and serial settings before starting the VM.
 
-Success requires `MOONLIGHTOS_LAUNCHER_READY`, emitted only after foot presents
+Success requires `COUCHLITEOS_LAUNCHER_READY`, emitted only after foot presents
 the full-screen curses launcher. A QEMU-only firmware flag then starts the three
-production application services and requires `MOONLIGHTOS_APP_STARTED moonlight`,
-`MOONLIGHTOS_APP_STARTED chiaki-ng`, `MOONLIGHTOS_APP_STARTED firefox`, and a
+production application services and requires `COUCHLITEOS_APP_STARTED moonlight`,
+`COUCHLITEOS_APP_STARTED chiaki-ng`, `COUCHLITEOS_APP_STARTED firefox`, and a
 five-second `google-chrome-ready` marker from the generic application runner
 after each real application remains alive for five seconds. It then starts a
 Remote Desktop session through the real path unit against a local TLS endpoint:
 `sdl-freerdp3` must start under Cage with `SDL_VIDEO_DRIVER=wayland`, the session
 must fail through the systemd restart policy into the OnFailure cleanup, and the
-test password must not appear in the journal or `/var/log/moonlightos`. It also
+test password must not appear in the journal or `/var/log/couchliteos`. It also
 saves a password through the root helper and checks its root-only 0600 file
-(`MOONLIGHTOS_SMOKE_RDP_READY`). It also proves the
+(`COUCHLITEOS_SMOKE_RDP_READY`). It also proves the
 Bluetooth control service handles an absent adapter and survives restarts of
 BlueZ and its own service without changing the launcher or audio-session PID
 and restart counts.
 It checks that both hardware detection stages ran, that
 `systemd-modules-load` did not fail, and that the GPU driver and decode hints
-exist (`MOONLIGHTOS_SMOKE_HWDETECT_READY`); on the NVIDIA ISO, where QEMU has
+exist (`COUCHLITEOS_SMOKE_HWDETECT_READY`); on the NVIDIA ISO, where QEMU has
 no NVIDIA GPU, the proprietary modules must be blacklisted and unloaded.
 Launcher output is
 mirrored to the boot console and remains available in
-`/var/log/moonlightos/launcher.log`.
+`/var/log/couchliteos/launcher.log`.
 
 ## Installed-system QEMU smoke test
 
@@ -139,14 +139,14 @@ make qemu-install-smoke
 ```
 
 This test starts in OVMF, boots the built ISO as removable media, selects the
-ISO's visible `Install MoonlightOS` GRUB entry, and adds only a test-preseed URL
+ISO's visible `Install CouchLiteOS` GRUB entry, and adds only a test-preseed URL
 to that entry. It installs to a disposable 32 GiB UEFI virtual disk, boots that
 disk without the ISO, writes a configuration marker, cold-boots the disk again,
-and requires the marker and `MOONLIGHTOS_LAUNCHER_READY`. Passing an extracted
+and requires the marker and `COUCHLITEOS_LAUNCHER_READY`. Passing an extracted
 kernel or initrd directly to QEMU is forbidden by the static suite.
 The install and installed-boot logs default to
-`/tmp/moonlightos-qemu-install.log` and
-`/tmp/moonlightos-qemu-installed-boot.log`; the selected menu, edited kernel
+`/tmp/couchliteos-qemu-install.log` and
+`/tmp/couchliteos-qemu-installed-boot.log`; the selected menu, edited kernel
 line, dark installer, installed launcher, and exact VM command are captured
 beside them.
 
@@ -154,17 +154,17 @@ For an interactive install, create a disposable disk, boot the ISO with a
 graphical QEMU display, and complete Debian Installer manually:
 
 ```bash
-qemu-img create -f qcow2 build/out/moonlightos-install-test.qcow2 32G
+qemu-img create -f qcow2 build/out/couchliteos-install-test.qcow2 32G
 qemu-system-x86_64 -enable-kvm -m 4096 -cpu host \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
-  -cdrom build/out/moonlightos-0.1.13-amd64.iso \
-  -drive file=build/out/moonlightos-install-test.qcow2,if=virtio \
+  -cdrom build/out/couchliteos-0.1.13-amd64.iso \
+  -drive file=build/out/couchliteos-install-test.qcow2,if=virtio \
   -device virtio-vga -display gtk \
   -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 ```
 
 After reboot, verify launcher/app exit/crash recovery and confirm the saved
-`/var/lib/moonlightos/config.ini` values remain unchanged.
+`/var/lib/couchliteos/config.ini` values remain unchanged.
 
 The automated install test proves the public UEFI ISO/menu installation path,
 an independent installed boot, and configuration persistence across a cold
@@ -178,7 +178,7 @@ make qemu-persistence-smoke
 ```
 
 This test creates an ext4 backend with the documented `persistence.conf`, boots
-the release ISO twice, and verifies MoonlightOS, Moonlight, chiaki-ng,
+the release ISO twice, and verifies CouchLiteOS, Moonlight, chiaki-ng,
 Tailscale, BlueZ, and log state across reboot. The first boot also saves a
 Remote Desktop connection, pins it as a launcher button with a label, position,
 and shortcut, and saves its password through the root helper; the second boot
@@ -190,8 +190,8 @@ Desktop check across its cold reboot.
 ## Remote Desktop lab test (xrdp)
 
 The RDP path was also exercised end to end in the Debian 13 lab build VM: xrdp,
-a headless Cage compositor, and MoonlightOS's runner starting `sdl-freerdp3` as
-the `moonlightos` user with a generated test password. Results on 2026-09-30:
+a headless Cage compositor, and CouchLiteOS's runner starting `sdl-freerdp3` as
+the `couchliteos` user with a generated test password. Results on 2026-09-30:
 
 - `probe_certificate` returned the same SHA-256 value as
   `openssl x509 -in /etc/xrdp/cert.pem -outform der | sha256sum`.
@@ -252,7 +252,7 @@ they cover boot, launcher, Settings, persistence, and Remote Desktop only.
 Hyper-V (Generation 2; run as Administrator on the Windows host):
 
 ```powershell
-.\tools\hyperv-create-test-vm.ps1 -IsoPath D:\iso\moonlightos-0.1.13-amd64.iso -Start
+.\tools\hyperv-create-test-vm.ps1 -IsoPath D:\iso\couchliteos-0.1.13-amd64.iso -Start
 ```
 
 The ISO ships Debian's Microsoft-signed shim, so Secure Boot stays on with the
@@ -263,7 +263,7 @@ COM1 to a named pipe for the serial console.
 Proxmox VE (on the Proxmox host, after uploading the ISO to an ISO storage):
 
 ```bash
-./tools/proxmox-create-test-vm.sh --iso local:iso/moonlightos-0.1.13-amd64.iso --start
+./tools/proxmox-create-test-vm.sh --iso local:iso/couchliteos-0.1.13-amd64.iso --start
 ```
 
 In the VM: complete the setup wizard, check Settings → Display, add, edit, pin,
@@ -329,7 +329,7 @@ Support export:
 - [ ] Export to a second writable removable USB and verify exactly one readable archive
 - [ ] Inspect the extracted archive for secrets
 - [ ] With only the boot USB attached, Generate Support File says to insert a second USB drive (the boot drive and its persistence partition are never offered)
-- [ ] Export to an unlabeled, unmounted USB stick (the launcher assigns the internal `MOONLIGHTOS_SUPPORT` mount name; no drive label is required)
+- [ ] Export to an unlabeled, unmounted USB stick (the launcher assigns the internal `COUCHLITEOS_SUPPORT` mount name; no drive label is required)
 - [ ] A full, a write-protected, and an unplugged-mid-write USB drive each show a short plain message (`USB DRIVE IS FULL`, `USB DRIVE IS READ-ONLY`, `USB DRIVE ERROR: TRY ANOTHER DRIVE`)
 - [ ] Export to an NTFS USB stick: it either works (mounted with ntfs3) or shows `THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE`, never "mounted read-only"
 - [ ] Confirm the ISO9660 boot filesystem is not offered
@@ -351,7 +351,7 @@ Bluetooth (record every unperformed item as untested):
 - [ ] Disconnect, reconnect, forget, and re-pair a device
 - [ ] Reboot and confirm pairing state and automatic reconnection survive
 - [ ] Confirm Bluetooth audio reconnects without forcibly becoming the default
-- [ ] Restart `bluetooth.service` and `moonlightos-bluetooth.service`
+- [ ] Restart `bluetooth.service` and `couchliteos-bluetooth.service`
 - [ ] Unplug the adapter while scanning, reinsert it, and recover
 - [ ] Unplug the adapter while pairing, reinsert it, and recover
 - [ ] Confirm the launcher PID and restart count do not change
@@ -367,7 +367,7 @@ copy its contents into a support archive because it contains link keys.
 
 Boot the **general** ISO and record every result on the iMac itself; nothing
 here may be inferred from a VM. Save the output of
-`sudo moonlightos-hardware-report` in [IMAC-2013.md](IMAC-2013.md#recorded-report).
+`sudo couchliteos-hardware-report` in [IMAC-2013.md](IMAC-2013.md#recorded-report).
 
 | # | Check | Result |
 |---|---|---|
@@ -381,7 +381,7 @@ here may be inferred from a VM. Save the output of
 | 8 | Moonlight streams 1080p60 with software H.264; record the stats overlay (Ctrl+Alt+Shift+S): decoder, codec, FPS, frame drops, network/decode/render latency | untested |
 | 9 | RDP connects to a Windows host and to an xrdp host, and Home/Guide → X disconnects each | untested |
 | 10 | Saved RDP connections and launcher buttons (label, position, shortcut) survive a reboot | untested |
-| 11 | `/usr/libexec/moonlightos-hwdetect report` shows `wl` for the BCM4360, `applesmc` loaded, display driver `nouveau`, and software H.264 | untested |
+| 11 | `/usr/libexec/couchliteos-hwdetect report` shows `wl` for the BCM4360, `applesmc` loaded, display driver `nouveau`, and software H.264 | untested |
 | 12 | The NVIDIA ISO boots to the launcher on the iMac through its nouveau fallback (report: "not supported by the installed NVIDIA driver") | untested |
 
 ## GPU class checklist (v0.1.13)
@@ -389,13 +389,13 @@ here may be inferred from a VM. Save the output of
 Record one machine per row before publishing. Each needs: the launcher at the
 native resolution, open and close Moonlight, Firefox, and Terminal, a 10-minute
 1080p60 Moonlight stream with the stats overlay (decoder and frame drops), and
-`/usr/libexec/moonlightos-hwdetect report` saved with the result.
+`/usr/libexec/couchliteos-hwdetect report` saved with the result.
 
 | GPU class | ISO / boot entry | Expected driver and decoder | Result |
 |---|---|---|---|
 | Intel UHD 770 (OptiPlex 7010 Micro) | general | `i915`, VA-API hardware decode | untested |
 | AMD Radeon (any GCN or newer) | general | `amdgpu`, VA-API hardware decode | untested |
-| NVIDIA Maxwell to Ada (GTX 900 to RTX 40) | nvidia, Start MoonlightOS | `nvidia-drm`, no `nouveau`; hardware decode | untested |
+| NVIDIA Maxwell to Ada (GTX 900 to RTX 40) | nvidia, Start CouchLiteOS | `nvidia-drm`, no `nouveau`; hardware decode | untested |
 | Same NVIDIA card | nvidia, Basic Graphics | `nouveau`, no `nvidia` module; software H.264 | untested |
 | Same NVIDIA card | general | `nouveau`; software H.264 | untested |
 | NVIDIA Kepler (iMac Late 2013) | general, and nvidia (fallback) | `nouveau`; software H.264 | untested |

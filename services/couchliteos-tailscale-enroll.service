@@ -1,0 +1,11 @@
+[Unit]
+Description=Enroll CouchLiteOS in Tailscale
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/couchliteos-tailscale enroll
+TimeoutStartSec=12min
+StandardOutput=append:/var/log/couchliteos/tailscale.log
+StandardError=append:/var/log/couchliteos/tailscale.log

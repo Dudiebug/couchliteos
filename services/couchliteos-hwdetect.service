@@ -1,0 +1,13 @@
+[Unit]
+Description=CouchLiteOS hardware detection: graphics driver and decode hints
+After=systemd-udev-trigger.service systemd-modules-load.service couchliteos-hwdetect-early.service
+Before=couchliteos-launcher.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/couchliteos-hwdetect late
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

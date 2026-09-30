@@ -2,28 +2,28 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-Create a Hyper-V Generation 2 test VM that boots a MoonlightOS ISO.
+Create a Hyper-V Generation 2 test VM that boots a CouchLiteOS ISO.
 
 .DESCRIPTION
 The VM covers boot, launcher, Settings, persistence (install to the virtual
 disk), and Remote Desktop. It cannot emulate the iMac's NVIDIA Kepler GPU,
 Broadcom Wi-Fi, or audio; test those on the hardware (docs/TESTING.md).
 
-The MoonlightOS ISO ships Debian's Microsoft-signed shim, so Secure Boot stays
+The CouchLiteOS ISO ships Debian's Microsoft-signed shim, so Secure Boot stays
 on with the "Microsoft UEFI Certificate Authority" template. Use
 -SecureBoot Off if your host or ISO needs it. The script never replaces or
 deletes an existing VM or disk.
 
 .EXAMPLE
-.\hyperv-create-test-vm.ps1 -IsoPath D:\iso\moonlightos-0.1.12-imac2013-amd64.iso -Start
+.\hyperv-create-test-vm.ps1 -IsoPath D:\iso\couchliteos-0.1.12-imac2013-amd64.iso -Start
 
 .EXAMPLE
-.\hyperv-create-test-vm.ps1 -IsoPath .\moonlightos-0.1.12-amd64.iso -Name MoonlightOS-Intel -SwitchName LAN -SecureBoot Off
+.\hyperv-create-test-vm.ps1 -IsoPath .\couchliteos-0.1.12-amd64.iso -Name CouchLiteOS-Intel -SwitchName LAN -SecureBoot Off
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$IsoPath,
-    [string]$Name = 'MoonlightOS-Test',
+    [string]$Name = 'CouchLiteOS-Test',
     [string]$SwitchName = 'Default Switch',
     [ValidateRange(2, 64)][int]$MemoryGB = 4,
     [ValidateRange(1, 32)][int]$ProcessorCount = 4,
@@ -78,7 +78,7 @@ Set-VMComPort -VM $vm -Number 1 -Path $pipe
 
 Write-Output "Created Generation 2 VM '$Name'"
 Write-Output "  ISO:         $iso"
-Write-Output "  Disk:        $VhdPath ($DiskGB GiB, for 'Install MoonlightOS' persistence tests)"
+Write-Output "  Disk:        $VhdPath ($DiskGB GiB, for 'Install CouchLiteOS' persistence tests)"
 Write-Output "  Secure Boot: $SecureBoot$(if ($SecureBoot -eq 'On') { ' (Microsoft UEFI Certificate Authority)' })"
 Write-Output "  Network:     $SwitchName"
 Write-Output "  Serial:      $pipe"

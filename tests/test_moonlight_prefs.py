@@ -6,7 +6,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PREFS = ROOT / "scripts" / "moonlightos-moonlight-prefs"
+PREFS = ROOT / "scripts" / "couchliteos-moonlight-prefs"
 
 # Moonlight's own enums: videocfg 0 auto, 1 H.264, 2 HEVC, 4 AV1;
 # videodec 0 auto, 1 hardware, 2 software.
@@ -19,7 +19,7 @@ class MoonlightPrefsTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         base = pathlib.Path(self.temporary.name)
         self.conf = base / "Moonlight Game Streaming Project" / "Moonlight.conf"
-        self.marker = base / "moonlightos-decode-seed"
+        self.marker = base / "couchliteos-decode-seed"
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -129,7 +129,7 @@ class MoonlightPrefsTest(unittest.TestCase):
         self.assertEqual(self.pair(), AUTO)
 
     def test_settings_of_unknown_origin_are_never_rewritten(self):
-        # No marker: MoonlightOS did not write these, so a later PC must not undo them.
+        # No marker: CouchLiteOS did not write these, so a later PC must not undo them.
         self.write_conf("[General]\nvideocfg=2\nvideodec=1\n")
         self.prefs("software", codec="H.264", decoder="software")
         self.assertEqual(self.pair(), ("2", "1"))

@@ -1,0 +1,9 @@
+[Unit]
+Description=Start Tailscale enrollment when requested by the launcher
+
+[Path]
+PathExists=/run/couchliteos/tailscale-enroll
+Unit=couchliteos-tailscale-enroll.service
+
+[Install]
+WantedBy=graphical.target

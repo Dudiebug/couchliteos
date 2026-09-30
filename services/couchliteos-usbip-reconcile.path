@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for CouchLiteOS USB/IP reconciliation requests
+
+[Path]
+PathChanged=/run/couchliteos/usbip-reconcile
+Unit=couchliteos-usbip-reconcile.service
+
+[Install]
+WantedBy=multi-user.target

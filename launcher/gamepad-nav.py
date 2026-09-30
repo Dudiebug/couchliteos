@@ -12,20 +12,20 @@ import time
 
 from evdev import InputDevice, UInput, ecodes
 
-import moonlightos_power as power
-import moonlightos_cec as cec
+import couchliteos_power as power
+import couchliteos_cec as cec
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
         ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8]
-OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
-START_OSK = pathlib.Path("/run/moonlightos/start-osk")
-HOME_REQUEST = pathlib.Path("/run/moonlightos/home.request")
-APP_ACTIVE = pathlib.Path("/run/moonlightos/app-active")
+OSK_ACTIVE = pathlib.Path("/run/couchliteos/osk-active")
+START_OSK = pathlib.Path("/run/couchliteos/start-osk")
+HOME_REQUEST = pathlib.Path("/run/couchliteos/home.request")
+APP_ACTIVE = pathlib.Path("/run/couchliteos/app-active")
 # Touched by the launcher while it holds focus (Home pressed) even though an app runs.
-LAUNCHER_FOCUS = pathlib.Path("/run/moonlightos/launcher-focus")
-CONTROLLER_ID = pathlib.Path("/var/lib/moonlightos/launcher-controller.id")
-SLEEP_REQUEST = pathlib.Path("/run/moonlightos/suspend")
+LAUNCHER_FOCUS = pathlib.Path("/run/couchliteos/launcher-focus")
+CONTROLLER_ID = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
+SLEEP_REQUEST = pathlib.Path("/run/couchliteos/suspend")
 SLEEP_HOLD_SECONDS = 3.0
 CEC_NAV, CEC_HOME = cec.remote_key_maps(ecodes)
 _last_state_check = 0.0
@@ -392,7 +392,7 @@ def request_home() -> None:
     HOME_REQUEST.touch()
     try:
         subprocess.run(
-            ["wlrctl", "toplevel", "focus", "title:MoonlightOS Launcher"],
+            ["wlrctl", "toplevel", "focus", "title:CouchLiteOS Launcher"],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
         )
     except (OSError, subprocess.SubprocessError):
@@ -480,7 +480,7 @@ def watch_cec(ui: UInput) -> None:
 
 def run() -> None:
     threading.Thread(target=watch_home, daemon=True).start()
-    ui = UInput({ecodes.EV_KEY: KEYS}, name="MoonlightOS Launcher Navigation")
+    ui = UInput({ecodes.EV_KEY: KEYS}, name="CouchLiteOS Launcher Navigation")
     pads = Pads()
     threading.Thread(target=watch_cec, args=(ui,), daemon=True).start()
     while True:

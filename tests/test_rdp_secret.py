@@ -10,9 +10,9 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "launcher"))
-import moonlightos_rdp as rdp  # noqa: E402
+import couchliteos_rdp as rdp  # noqa: E402
 
-LOADER = importlib.machinery.SourceFileLoader("moonlightos_rdp_secret", str(ROOT / "scripts" / "moonlightos-rdp-secret"))
+LOADER = importlib.machinery.SourceFileLoader("couchliteos_rdp_secret", str(ROOT / "scripts" / "couchliteos-rdp-secret"))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 helper = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(helper)
@@ -50,7 +50,7 @@ class SecretHelperTest(unittest.TestCase):
         return json.loads((self.run / "rdp-secret.status").read_text())
 
     def test_shebang_isolates_python_from_the_callers_environment(self):
-        first = (ROOT / "scripts" / "moonlightos-rdp-secret").read_text().splitlines()[0]
+        first = (ROOT / "scripts" / "couchliteos-rdp-secret").read_text().splitlines()[0]
         self.assertEqual(first, "#!/usr/bin/python3 -I")
 
     def test_save_stage_and_delete(self):

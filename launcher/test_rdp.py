@@ -11,8 +11,8 @@ import tempfile
 import threading
 import unittest
 
-import moonlightos_apps as apps
-import moonlightos_rdp as rdp
+import couchliteos_apps as apps
+import couchliteos_rdp as rdp
 
 
 SYSTEM = pathlib.Path(__file__).parents[1] / "config" / "apps.d"

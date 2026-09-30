@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-import moonlightos_audio as audio
+import couchliteos_audio as audio
 
 
 STATUS = """PipeWire 'pipewire-0' [1.2.7]

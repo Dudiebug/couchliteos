@@ -1,9 +1,0 @@
-[Unit]
-Description=Start Tailscale enrollment when requested by the launcher
-
-[Path]
-PathExists=/run/moonlightos/tailscale-enroll
-Unit=moonlightos-tailscale-enroll.service
-
-[Install]
-WantedBy=graphical.target

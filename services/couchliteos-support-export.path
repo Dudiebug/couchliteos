@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for CouchLiteOS support-export requests
+
+[Path]
+PathExists=/run/couchliteos/support-export.request
+Unit=couchliteos-support-export.service
+
+[Install]
+WantedBy=multi-user.target

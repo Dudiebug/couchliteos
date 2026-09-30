@@ -1,8 +1,8 @@
 import unittest
 from unittest import mock
 
-import moonlightos_display as display
-import moonlightos_foot as foot
+import couchliteos_display as display
+import couchliteos_foot as foot
 
 TV = '''HDMI-A-1 "Sony TV XYZ"
   Enabled: yes
@@ -101,12 +101,12 @@ class ChooseSizeTest(unittest.TestCase):
 
     def test_an_environment_override_wins_when_it_is_sane(self):
         run = mock.Mock()
-        self.assertEqual(foot.choose_size({"MOONLIGHTOS_FONT_SIZE": "30"}, run=run, saved={}), 30)
+        self.assertEqual(foot.choose_size({"COUCHLITEOS_FONT_SIZE": "30"}, run=run, saved={}), 30)
         run.assert_not_called()
         for bad in ("", "abc", "0", "500", "-3", "12.5"):
             run = mock.Mock(return_value=self.completed(TV))
             self.assertEqual(
-                foot.choose_size({"MOONLIGHTOS_FONT_SIZE": bad}, run=run, saved={}, sleep=lambda _s: None), 24, bad
+                foot.choose_size({"COUCHLITEOS_FONT_SIZE": bad}, run=run, saved={}, sleep=lambda _s: None), 24, bad
             )
 
 

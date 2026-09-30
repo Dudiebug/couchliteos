@@ -1,0 +1,11 @@
+[Unit]
+Description=Tell the TV that the CouchLiteOS screen could not start
+# Started by OnFailure= of couchliteos-launcher.service (never enabled). The
+# script only shows its message once the launcher has given up for good.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/couchliteos-display-failed
+TimeoutStartSec=10
+PrivateNetwork=yes
+NoNewPrivileges=yes

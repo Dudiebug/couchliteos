@@ -1,0 +1,149 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'This command must run as root.' >&2; exit 77; }
+CONFIG=/var/lib/couchliteos/config.ini
+AUTH_FILE=/etc/couchliteos/tailscale-auth.key
+URL_FILE=/run/couchliteos/tailscale-auth-url
+REQUEST_ENROLL=/run/couchliteos/tailscale-enroll
+REQUEST_SSH=/run/couchliteos/tailscale-ssh-enable
+
+get_config() {
+  python3 - "$CONFIG" "$1" "$2" "${3:-}" <<'PY'
+import configparser, sys
+c = configparser.ConfigParser()
+c.read(sys.argv[1])
+print(c.get(sys.argv[2], sys.argv[3], fallback=sys.argv[4]))
+PY
+}
+
+set_config() {
+  python3 - "$CONFIG" "$1" "$2" "$3" <<'PY'
+import configparser, grp, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+c = configparser.ConfigParser()
+c.read(path)
+if not c.has_section(sys.argv[2]):
+    c.add_section(sys.argv[2])
+c.set(sys.argv[2], sys.argv[3], sys.argv[4])
+tmp = path.with_suffix('.tmp')
+with tmp.open('w') as f:
+    c.write(f)
+os.chmod(tmp, 0o640)
+os.chown(tmp, 1000, grp.getgrnam('couchliteos').gr_gid)
+os.replace(tmp, path)
+PY
+}
+
+backend_state() {
+  tailscale status --json 2>/dev/null | jq -r '.BackendState // "Error"' || echo Error
+}
+
+node_name() {
+  local configured machine
+  configured=$(get_config tailscale node_name '')
+  if [[ -n "$configured" ]]; then
+    [[ "$configured" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] || {
+      echo 'tailscale.node_name is not a valid hostname label' >&2; return 1;
+    }
+    printf '%s' "$configured"
+  else
+    machine=$(tr -dc 'a-fA-F0-9' < /etc/machine-id | head -c 8)
+    printf 'couchliteos-%s' "${machine,,}"
+  fi
+}
+
+accept_dns() {
+  case $(get_config tailscale accept_dns true) in
+    true|yes|1) echo true ;;
+    *) echo false ;;
+  esac
+}
+
+auth_file_ok() {
+  [[ -f "$AUTH_FILE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$AUTH_FILE") == 0:0:600 ]] || {
+    echo "$AUTH_FILE must be root:root mode 0600; refusing it" >&2
+    return 1
+  }
+}
+
+apply_incremental() {
+  local name dns
+  name=$(node_name)
+  dns=$(accept_dns)
+  tailscale set --hostname="$name" --accept-dns="$dns"
+}
+
+enroll() {
+  rm -f -- "$REQUEST_ENROLL" "$URL_FILE"
+  install -d -o root -g root -m 0700 /var/lib/tailscale
+  modprobe tun
+  systemctl start tailscaled.service
+  local state name dns rc=0
+  state=$(backend_state)
+  name=$(node_name)
+  dns=$(accept_dns)
+  if [[ "$state" == Running ]]; then
+    apply_incremental
+    set_config tailscale enabled true
+    echo 'Tailscale is already connected; incremental settings applied.'
+    return 0
+  fi
+
+  if auth_file_ok; then
+    # The file: form keeps the key out of argv, shell history, and logs.
+    tailscale up --auth-key="file:$AUTH_FILE" --hostname="$name" \
+      --accept-dns="$dns" --accept-routes=false --ssh=false
+  else
+    # Consume output privately, exposing only the short-lived login URL locally.
+    set +e
+    tailscale up --hostname="$name" --accept-dns="$dns" \
+      --accept-routes=false --ssh=false --timeout=10m 2>&1 |
+      while IFS= read -r line; do
+        if [[ "$line" =~ https://login\.tailscale\.com/[[:graph:]]+ ]]; then
+          printf '%s\n' "${BASH_REMATCH[0]}" > "$URL_FILE"
+          chown couchliteos:couchliteos "$URL_FILE"
+          chmod 0640 "$URL_FILE"
+        fi
+      done
+    rc=${PIPESTATUS[0]}
+    set -e
+    ((rc == 0)) || return "$rc"
+  fi
+  apply_incremental
+  set_config tailscale enabled true
+  echo 'Tailscale enrollment completed.'
+}
+
+case ${1:-} in
+  enroll)
+    trap 'rm -f -- "$URL_FILE"' EXIT
+    enroll
+    ;;
+  apply)
+    [[ $(backend_state) == Running ]] || { echo 'Tailscale is not connected.' >&2; exit 69; }
+    apply_incremental
+    ;;
+  ssh-enable)
+    rm -f -- "$REQUEST_SSH"
+    [[ $(backend_state) == Running ]] || { echo 'Enroll Tailscale first.' >&2; exit 69; }
+    tailscale set --ssh=true
+    set_config tailscale ssh_enabled true
+    echo 'Native Tailscale SSH enabled; tailnet ACL and SSH policy still apply.'
+    ;;
+  ssh-disable)
+    tailscale set --ssh=false
+    set_config tailscale ssh_enabled false
+    ;;
+  logout)
+    [[ ${2:-} == --confirm ]] || { echo 'Logout destroys this node identity. Re-run with: logout --confirm' >&2; exit 64; }
+    tailscale logout
+    set_config tailscale enabled false
+    set_config tailscale ssh_enabled false
+    ;;
+  *)
+    echo 'Usage: couchliteos-tailscale {enroll|apply|ssh-enable|ssh-disable|logout --confirm}' >&2
+    exit 64
+    ;;
+esac

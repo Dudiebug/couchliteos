@@ -1,6 +1,0 @@
-[Path]
-PathExists=/run/moonlightos/suspend
-Unit=moonlightos-suspend.service
-
-[Install]
-WantedBy=graphical.target

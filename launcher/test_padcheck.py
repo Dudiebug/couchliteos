@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_controllers as controllers
-import moonlightos_padcheck as padcheck
+import couchliteos_controllers as controllers
+import couchliteos_padcheck as padcheck
 
 # Real /proc/bus/input/devices text (captured on the Debian lab VM): a PC with a keyboard and
 # a mouse and nothing else.
@@ -113,7 +113,7 @@ B: ABS=260800000000003
 # ENTER, ESC, DELETE, F5-F8 and F12): it lives under /devices/virtual/input.
 UINPUT_NAV = """\
 I: Bus=0003 Vendor=0001 Product=0001 Version=0001
-N: Name="MoonlightOS Launcher Navigation"
+N: Name="CouchLiteOS Launcher Navigation"
 P: Phys=
 S: Sysfs=/devices/virtual/input/input33
 U: Uniq=
@@ -176,7 +176,7 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(padcheck.gamepads(KEYBOARD_ONLY + "\n" + UINPUT_PAD + "\n" + UINPUT_NAV), [])
 
     def test_ignores_the_launchers_own_devices_even_when_reported_elsewhere(self):
-        odd = UINPUT_PAD.replace("Microsoft X-Box 360 pad", "MoonlightOS Buffered Keyboard").replace(
+        odd = UINPUT_PAD.replace("Microsoft X-Box 360 pad", "CouchLiteOS Buffered Keyboard").replace(
             "/devices/virtual/input/input40", "/devices/platform/x/input/input40")
         self.assertEqual(padcheck.gamepads(odd), [])
 
@@ -321,7 +321,7 @@ class MonitorTest(unittest.TestCase):
 class LauncherFooterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_padcheck_under_test", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)

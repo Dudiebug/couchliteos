@@ -6,7 +6,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "moonlightos-display-failed"
+SCRIPT = ROOT / "scripts" / "couchliteos-display-failed"
 CLEAR_SCREEN = "\x1b[2J\x1b[H"
 LIVE = "BOOT_IMAGE=/live/vmlinuz boot=live components persistence\n"
 # systemd 257 starts OnFailure= units on every failed exit, even when it then
@@ -39,10 +39,10 @@ class DisplayFailedTest(unittest.TestCase):
             ["bash", str(SCRIPT)],
             env={
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "MOONLIGHTOS_TTY": str(tty or self.tty),
-                "MOONLIGHTOS_PROC_CMDLINE": str(self.cmdline),
-                "MOONLIGHTOS_NVIDIA_IDS": str(self.nvidia_ids),
-                "MOONLIGHTOS_SYSTEMCTL": str(self.systemctl),
+                "COUCHLITEOS_TTY": str(tty or self.tty),
+                "COUCHLITEOS_PROC_CMDLINE": str(self.cmdline),
+                "COUCHLITEOS_NVIDIA_IDS": str(self.nvidia_ids),
+                "COUCHLITEOS_SYSTEMCTL": str(self.systemctl),
                 "FAKE_LOG": str(self.log),
                 "FAKE_LAUNCHER_STATE": state,
             },
@@ -58,14 +58,14 @@ class DisplayFailedTest(unittest.TestCase):
         result = self.run_script(state="activating")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.tty.exists())
-        self.assertEqual(self.log.read_text().split(), ["is-failed", "--quiet", "moonlightos-launcher.service"])
+        self.assertEqual(self.log.read_text().split(), ["is-failed", "--quiet", "couchliteos-launcher.service"])
 
     def test_clears_the_screen_before_the_message(self):
         self.assertTrue(self.message().startswith(CLEAR_SCREEN))
 
     def test_says_plainly_that_the_display_could_not_start(self):
         text = self.message()
-        self.assertIn("MOONLIGHTOS COULD NOT START THE SCREEN.", text)
+        self.assertIn("COUCHLITEOS COULD NOT START THE SCREEN.", text)
         self.assertIn("HOLD THE POWER BUTTON", text)
 
     def test_message_is_uppercase_and_fits_a_tv_console(self):
@@ -82,11 +82,11 @@ class DisplayFailedTest(unittest.TestCase):
             self.assertNotIn(phrase, text)
 
     def test_basic_graphics_entry_is_named_only_where_the_boot_menu_has_it(self):
-        entry = "START MOONLIGHTOS (BASIC GRAPHICS)"
+        entry = "START COUCHLITEOS (BASIC GRAPHICS)"
         self.assertNotIn("BASIC GRAPHICS", self.message())  # general ISO: no NVIDIA driver list
         self.nvidia_ids.write_text("10DE2684\n")
         self.assertIn(entry, self.message())
-        self.cmdline.write_text(LIVE.rstrip("\n") + " moonlightos.gpu=basic\n")
+        self.cmdline.write_text(LIVE.rstrip("\n") + " couchliteos.gpu=basic\n")
         self.assertNotIn("BASIC GRAPHICS", self.message())  # already in it
         self.cmdline.write_text("BOOT_IMAGE=/vmlinuz root=/dev/sda1 ro\n")
         self.assertNotIn("BASIC GRAPHICS", self.message())  # installed system: no live menu

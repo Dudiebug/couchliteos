@@ -1,2 +1,0 @@
-Persistent settings are stored in /var/lib/moonlightos. Files in this
-directory are system defaults and policy, not pairing data.

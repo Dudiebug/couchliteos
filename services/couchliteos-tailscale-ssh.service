@@ -1,0 +1,9 @@
+[Unit]
+Description=Enable native Tailscale SSH for CouchLiteOS
+After=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/couchliteos-tailscale ssh-enable
+StandardOutput=append:/var/log/couchliteos/tailscale.log
+StandardError=append:/var/log/couchliteos/tailscale.log

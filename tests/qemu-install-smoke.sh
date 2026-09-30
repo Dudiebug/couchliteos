@@ -2,18 +2,18 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
-INSTALL_LOG=${MOONLIGHTOS_QEMU_INSTALL_LOG:-/tmp/moonlightos-qemu-install.log}
-BOOT_LOG=${MOONLIGHTOS_QEMU_INSTALLED_BOOT_LOG:-/tmp/moonlightos-qemu-installed-boot.log}
-MENU_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALL_MENU_SCREENSHOT:-/tmp/moonlightos-qemu-install-menu.ppm}
-EDITOR_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALL_EDITOR_SCREENSHOT:-/tmp/moonlightos-qemu-install-editor.ppm}
-INSTALLER_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALLER_SCREENSHOT:-/tmp/moonlightos-qemu-installer.ppm}
-INSTALLED_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALLED_SCREENSHOT:-/tmp/moonlightos-qemu-installed-launcher.ppm}
-CONFIG_LOG=${MOONLIGHTOS_QEMU_INSTALL_CONFIG:-/tmp/moonlightos-qemu-install-config.log}
+ISO=${1:-$ROOT/build/out/couchliteos-$(< "$ROOT/VERSION")-amd64.iso}
+INSTALL_LOG=${COUCHLITEOS_QEMU_INSTALL_LOG:-/tmp/couchliteos-qemu-install.log}
+BOOT_LOG=${COUCHLITEOS_QEMU_INSTALLED_BOOT_LOG:-/tmp/couchliteos-qemu-installed-boot.log}
+MENU_SCREENSHOT=${COUCHLITEOS_QEMU_INSTALL_MENU_SCREENSHOT:-/tmp/couchliteos-qemu-install-menu.ppm}
+EDITOR_SCREENSHOT=${COUCHLITEOS_QEMU_INSTALL_EDITOR_SCREENSHOT:-/tmp/couchliteos-qemu-install-editor.ppm}
+INSTALLER_SCREENSHOT=${COUCHLITEOS_QEMU_INSTALLER_SCREENSHOT:-/tmp/couchliteos-qemu-installer.ppm}
+INSTALLED_SCREENSHOT=${COUCHLITEOS_QEMU_INSTALLED_SCREENSHOT:-/tmp/couchliteos-qemu-installed-launcher.ppm}
+CONFIG_LOG=${COUCHLITEOS_QEMU_INSTALL_CONFIG:-/tmp/couchliteos-qemu-install-config.log}
 # Slow hosts (for example nested software emulation) may stretch every timeout.
-SCALE=${MOONLIGHTOS_QEMU_TIMEOUT_SCALE:-1}
-[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'MOONLIGHTOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
-export MOONLIGHTOS_QEMU_TIMEOUT_SCALE=$SCALE
+SCALE=${COUCHLITEOS_QEMU_TIMEOUT_SCALE:-1}
+[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'COUCHLITEOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
+export COUCHLITEOS_QEMU_TIMEOUT_SCALE=$SCALE
 
 for command in qemu-system-x86_64 qemu-img python3; do
   command -v "$command" >/dev/null || { echo "$command is required" >&2; exit 127; }
@@ -41,13 +41,13 @@ virtual_size=$(qemu-img info --output=json "$work/system.qcow2" | \
 
 ovmf_code=
 ovmf_vars_template=
-if [[ -n ${MOONLIGHTOS_OVMF_CODE:-} || -n ${MOONLIGHTOS_OVMF_VARS:-} ]]; then
-  [[ -r ${MOONLIGHTOS_OVMF_CODE:-} && -r ${MOONLIGHTOS_OVMF_VARS:-} ]] || {
-    echo 'Both readable MOONLIGHTOS_OVMF_CODE and MOONLIGHTOS_OVMF_VARS are required.' >&2
+if [[ -n ${COUCHLITEOS_OVMF_CODE:-} || -n ${COUCHLITEOS_OVMF_VARS:-} ]]; then
+  [[ -r ${COUCHLITEOS_OVMF_CODE:-} && -r ${COUCHLITEOS_OVMF_VARS:-} ]] || {
+    echo 'Both readable COUCHLITEOS_OVMF_CODE and COUCHLITEOS_OVMF_VARS are required.' >&2
     exit 69
   }
-  ovmf_code=$MOONLIGHTOS_OVMF_CODE
-  ovmf_vars_template=$MOONLIGHTOS_OVMF_VARS
+  ovmf_code=$COUCHLITEOS_OVMF_CODE
+  ovmf_vars_template=$COUCHLITEOS_OVMF_VARS
 fi
 for pair in \
   '/usr/share/OVMF/OVMF_CODE_4M.fd|/usr/share/OVMF/OVMF_VARS_4M.fd' \
@@ -72,19 +72,19 @@ common=(
   -drive "file=$work/system.qcow2,if=virtio,format=qcow2"
   -device virtio-vga -display none -no-reboot
 )
-# Without KVM, MOONLIGHTOS_QEMU_ACCEL_ARGS can name another accelerator, for
+# Without KVM, COUCHLITEOS_QEMU_ACCEL_ARGS can name another accelerator, for
 # example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
   common=(-enable-kvm -cpu host "${common[@]}")
-elif [[ -n ${MOONLIGHTOS_QEMU_ACCEL_ARGS:-} ]]; then
-  read -r -a accel <<< "$MOONLIGHTOS_QEMU_ACCEL_ARGS"
+elif [[ -n ${COUCHLITEOS_QEMU_ACCEL_ARGS:-} ]]; then
+  read -r -a accel <<< "$COUCHLITEOS_QEMU_ACCEL_ARGS"
   common=("${accel[@]}" "${common[@]}")
 fi
 
 # Hosts without Unix-domain sockets in Python can use local TCP monitors.
-if [[ -n ${MOONLIGHTOS_QEMU_MONITOR_PORT:-} ]]; then
-  install_monitor=tcp:127.0.0.1:$MOONLIGHTOS_QEMU_MONITOR_PORT
-  installed_monitor=tcp:127.0.0.1:$((MOONLIGHTOS_QEMU_MONITOR_PORT + 1))
+if [[ -n ${COUCHLITEOS_QEMU_MONITOR_PORT:-} ]]; then
+  install_monitor=tcp:127.0.0.1:$COUCHLITEOS_QEMU_MONITOR_PORT
+  installed_monitor=tcp:127.0.0.1:$((COUCHLITEOS_QEMU_MONITOR_PORT + 1))
   install_monitor_option="$install_monitor,server=on,wait=off"
   installed_monitor_option="$installed_monitor,server=on,wait=off"
 else
@@ -155,8 +155,8 @@ boot_and_wait() {
   qemu-system-x86_64 \
     "${common[@]}" "${monitor[@]}" \
     -netdev user,id=net0 -device e1000,netdev=net0 \
-    -fw_cfg "name=opt/moonlightos.smoke,string=$mode" \
-    -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE" \
+    -fw_cfg "name=opt/couchliteos.smoke,string=$mode" \
+    -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE" \
     -serial stdio >> "$BOOT_LOG" 2>&1 &
   pid=$!
   for _ in $(seq 1 $((240 * SCALE))); do
@@ -188,13 +188,13 @@ PY
   exit 1
 }
 
-boot_and_wait persistence-write MOONLIGHTOS_SMOKE_PERSISTENCE_WRITTEN
-grep -q MOONLIGHTOS_SMOKE_INSTALLED_DISK_READY "$BOOT_LOG" || {
+boot_and_wait persistence-write COUCHLITEOS_SMOKE_PERSISTENCE_WRITTEN
+grep -q COUCHLITEOS_SMOKE_INSTALLED_DISK_READY "$BOOT_LOG" || {
   cat "$BOOT_LOG"
   echo 'Installed root filesystem identity was not verified.' >&2
   exit 1
 }
-boot_and_wait persistence-read MOONLIGHTOS_SMOKE_PERSISTENCE_READY
+boot_and_wait persistence-read COUCHLITEOS_SMOKE_PERSISTENCE_READY
 for screenshot in "$MENU_SCREENSHOT" "$EDITOR_SCREENSHOT" "$INSTALLER_SCREENSHOT" "$INSTALLED_SCREENSHOT"; do
   [[ -s $screenshot ]] || { echo "Screenshot evidence missing: $screenshot" >&2; exit 1; }
 done

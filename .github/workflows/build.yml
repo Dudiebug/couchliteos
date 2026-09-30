@@ -40,54 +40,54 @@ jobs:
       - name: Final release gauntlet
         run: make release-gauntlet
         env:
-          MOONLIGHTOS_QEMU_LOG: /tmp/moonlightos-qemu-smoke.log
-          MOONLIGHTOS_QEMU_SCREENSHOT: /tmp/moonlightos-qemu-smoke.ppm
-          MOONLIGHTOS_QEMU_INSTALL_LOG: /tmp/moonlightos-qemu-install.log
-          MOONLIGHTOS_QEMU_INSTALLED_BOOT_LOG: /tmp/moonlightos-qemu-installed-boot.log
-          MOONLIGHTOS_QEMU_INSTALL_MENU_SCREENSHOT: /tmp/moonlightos-qemu-install-menu.ppm
-          MOONLIGHTOS_QEMU_INSTALL_EDITOR_SCREENSHOT: /tmp/moonlightos-qemu-install-editor.ppm
-          MOONLIGHTOS_QEMU_INSTALLER_SCREENSHOT: /tmp/moonlightos-qemu-installer.ppm
-          MOONLIGHTOS_QEMU_INSTALLED_SCREENSHOT: /tmp/moonlightos-qemu-installed-launcher.ppm
-          MOONLIGHTOS_QEMU_INSTALL_CONFIG: /tmp/moonlightos-qemu-install-config.log
-          MOONLIGHTOS_QEMU_PERSISTENCE_LOG: /tmp/moonlightos-qemu-persistence.log
+          COUCHLITEOS_QEMU_LOG: /tmp/couchliteos-qemu-smoke.log
+          COUCHLITEOS_QEMU_SCREENSHOT: /tmp/couchliteos-qemu-smoke.ppm
+          COUCHLITEOS_QEMU_INSTALL_LOG: /tmp/couchliteos-qemu-install.log
+          COUCHLITEOS_QEMU_INSTALLED_BOOT_LOG: /tmp/couchliteos-qemu-installed-boot.log
+          COUCHLITEOS_QEMU_INSTALL_MENU_SCREENSHOT: /tmp/couchliteos-qemu-install-menu.ppm
+          COUCHLITEOS_QEMU_INSTALL_EDITOR_SCREENSHOT: /tmp/couchliteos-qemu-install-editor.ppm
+          COUCHLITEOS_QEMU_INSTALLER_SCREENSHOT: /tmp/couchliteos-qemu-installer.ppm
+          COUCHLITEOS_QEMU_INSTALLED_SCREENSHOT: /tmp/couchliteos-qemu-installed-launcher.ppm
+          COUCHLITEOS_QEMU_INSTALL_CONFIG: /tmp/couchliteos-qemu-install-config.log
+          COUCHLITEOS_QEMU_PERSISTENCE_LOG: /tmp/couchliteos-qemu-persistence.log
       - name: Upload failed boot diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: moonlightos-failed-boot-${{ github.run_id }}
+          name: couchliteos-failed-boot-${{ github.run_id }}
           path: |
-            /tmp/moonlightos-qemu-smoke.log
-            /tmp/moonlightos-qemu-smoke.ppm
-            /tmp/moonlightos-qemu-install.log
-            /tmp/moonlightos-qemu-installed-boot.log
-            /tmp/moonlightos-qemu-install-menu.ppm
-            /tmp/moonlightos-qemu-install-editor.ppm
-            /tmp/moonlightos-qemu-installer.ppm
-            /tmp/moonlightos-qemu-installed-launcher.ppm
-            /tmp/moonlightos-qemu-install-config.log
-            /tmp/moonlightos-qemu-persistence.log
+            /tmp/couchliteos-qemu-smoke.log
+            /tmp/couchliteos-qemu-smoke.ppm
+            /tmp/couchliteos-qemu-install.log
+            /tmp/couchliteos-qemu-installed-boot.log
+            /tmp/couchliteos-qemu-install-menu.ppm
+            /tmp/couchliteos-qemu-install-editor.ppm
+            /tmp/couchliteos-qemu-installer.ppm
+            /tmp/couchliteos-qemu-installed-launcher.ppm
+            /tmp/couchliteos-qemu-install-config.log
+            /tmp/couchliteos-qemu-persistence.log
           if-no-files-found: warn
           retention-days: 2
       - name: Upload ISO
         uses: actions/upload-artifact@v7
         with:
-          name: moonlightos-0.1.13-amd64
-          path: build/out/moonlightos-0.1.13-amd64.iso
+          name: couchliteos-0.1.13-amd64
+          path: build/out/couchliteos-0.1.13-amd64.iso
           if-no-files-found: error
       - name: Upload release evidence
         uses: actions/upload-artifact@v7
         with:
-          name: moonlightos-0.1.13-evidence
+          name: couchliteos-0.1.13-evidence
           path: |
-            /tmp/moonlightos-qemu-smoke.log
-            /tmp/moonlightos-qemu-smoke.ppm
-            /tmp/moonlightos-qemu-install.log
-            /tmp/moonlightos-qemu-installed-boot.log
-            /tmp/moonlightos-qemu-install-menu.ppm
-            /tmp/moonlightos-qemu-install-editor.ppm
-            /tmp/moonlightos-qemu-installer.ppm
-            /tmp/moonlightos-qemu-installed-launcher.ppm
-            /tmp/moonlightos-qemu-install-config.log
-            /tmp/moonlightos-qemu-persistence.log
+            /tmp/couchliteos-qemu-smoke.log
+            /tmp/couchliteos-qemu-smoke.ppm
+            /tmp/couchliteos-qemu-install.log
+            /tmp/couchliteos-qemu-installed-boot.log
+            /tmp/couchliteos-qemu-install-menu.ppm
+            /tmp/couchliteos-qemu-install-editor.ppm
+            /tmp/couchliteos-qemu-installer.ppm
+            /tmp/couchliteos-qemu-installed-launcher.ppm
+            /tmp/couchliteos-qemu-install-config.log
+            /tmp/couchliteos-qemu-persistence.log
           if-no-files-found: error
           retention-days: 30

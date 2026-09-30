@@ -1,0 +1,9 @@
+[Unit]
+Description=Start a CouchLiteOS Remote Desktop session when requested
+
+[Path]
+PathExists=/run/couchliteos/rdp.request
+Unit=couchliteos-rdp.service
+
+[Install]
+WantedBy=graphical.target

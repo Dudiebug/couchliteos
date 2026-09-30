@@ -4,12 +4,12 @@ import pathlib
 import unittest
 from unittest import mock
 
-import moonlightos_cec as cec
+import couchliteos_cec as cec
 
 
 def load_daemon():
-    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "moonlightos-cec"
-    loader = importlib.machinery.SourceFileLoader("moonlightos_cec_daemon", str(path))
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "couchliteos-cec"
+    loader = importlib.machinery.SourceFileLoader("couchliteos_cec_daemon", str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)

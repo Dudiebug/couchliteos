@@ -1,0 +1,35 @@
+[Unit]
+Description=CouchLiteOS Bluetooth control service
+Wants=bluetooth.service
+After=dbus.service bluetooth.service
+Before=couchliteos-launcher.service
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+Environment=HOME=/var/lib/couchliteos/home
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+Environment=PIPEWIRE_RUNTIME_DIR=/run/couchliteos
+RuntimeDirectory=couchliteos-bluetooth
+RuntimeDirectoryMode=0700
+ExecStart=/usr/libexec/couchliteos-bluetoothd
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/run/couchliteos-bluetooth /var/lib/couchliteos
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

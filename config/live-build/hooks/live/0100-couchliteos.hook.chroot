@@ -1,0 +1,99 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+if ! getent group couchliteos >/dev/null; then
+  groupadd --system couchliteos
+fi
+if ! getent group seat >/dev/null; then
+  groupadd --system seat
+fi
+if ! id couchliteos >/dev/null 2>&1; then
+  useradd --uid 1000 --gid couchliteos --groups audio,input,render,video,seat \
+    --home-dir /var/lib/couchliteos/home --create-home --shell /bin/bash couchliteos
+fi
+
+install -d -o couchliteos -g couchliteos -m 0750 \
+  /var/lib/couchliteos /var/lib/couchliteos/home /var/lib/couchliteos/apps.d \
+  /var/lib/couchliteos/rdp /var/log/couchliteos
+
+cat > /var/lib/couchliteos/config.ini <<'EOF'
+[launcher]
+autostart = none
+
+[display]
+output =
+identity =
+resolution =
+refresh_mhz =
+
+[moonlight]
+resolution = 1920x1080
+fps = 60
+codec = auto
+decoder = auto
+fullscreen = true
+
+[chiaki-ng]
+gamescope = false
+
+[tailscale]
+enabled = false
+accept_dns = true
+ssh_enabled = false
+host_address_mode = auto
+remote_usbip = false
+allowed_usbip_peer =
+node_name =
+
+[host:gaming-pc]
+lan_address =
+tailscale_hostname =
+tailscale_ip =
+address_mode = auto
+app =
+EOF
+
+chown -R couchliteos:couchliteos /var/lib/couchliteos /var/log/couchliteos
+chmod 0640 /var/lib/couchliteos/config.ini
+# Saved Remote Desktop passwords: root-only, created after the recursive chown.
+install -d -o root -g root -m 0700 /var/lib/couchliteos/rdp-secrets
+
+install -d -o root -g root -m 0700 /var/lib/tailscale
+# Saved Wi-Fi keyfiles: root-only, so the copy live-boot persists (it keeps the
+# image directory's mode) is never readable by the couchliteos user.
+install -d -o root -g root -m 0700 /etc/NetworkManager/system-connections
+cat > /etc/apt/sources.list.d/tailscale.list <<'EOF'
+deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian trixie main
+EOF
+cat > /etc/apt/sources.list.d/google-chrome.list <<'EOF'
+deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main
+EOF
+chmod 0644 /etc/apt/sources.list.d/{tailscale,google-chrome}.list \
+  /usr/share/keyrings/{tailscale-archive-keyring.gpg,google-chrome.asc}
+
+systemctl enable NetworkManager.service NetworkManager-wait-online.service
+systemctl enable systemd-timesyncd.service
+systemctl enable seatd.service couchliteos-network-ready.service
+systemctl enable couchliteos-firewall.service couchliteos-usbipd.service
+systemctl enable couchliteos-usbip-reconcile.path
+systemctl enable couchliteos-moonlight.path couchliteos-chiaki.path couchliteos-firefox.path
+systemctl enable couchliteos-reboot.path couchliteos-poweroff.path
+systemctl enable couchliteos-suspend.path couchliteos-resume.service
+systemctl enable couchliteos-support-export.path
+systemctl enable couchliteos-configured-app.path couchliteos-osk.path
+systemctl enable couchliteos-rdp.path couchliteos-rdp-secret.path
+systemctl enable couchliteos-audio.service couchliteos-launcher.service \
+  couchliteos-gamepad-nav.service
+systemctl enable bluetooth.service couchliteos-bluetooth.service
+systemctl enable couchliteos-qemu-smoke.service
+systemctl enable couchliteos-hwdetect-early.service couchliteos-hwdetect.service
+systemctl enable tailscaled.service couchliteos-tailscale-enroll.path couchliteos-tailscale-ssh.path
+# HDMI-CEC: the daemon is started by udev (75-couchliteos-cec.rules) only when a CEC adapter exists.
+systemctl enable couchliteos-cec-wake.service
+
+# The standard kernel supplies these modules; load them on the applicable side.
+printf '%s\n' usbip_host uinput tun > /etc/modules-load.d/couchliteos-usbip.conf
+
+
+# Make the appliance boot path visible to serial-only QEMU smoke tests.
+ln -sf /dev/null /etc/systemd/system/getty@tty1.service

@@ -1,0 +1,15 @@
+[Unit]
+Description=Clear CouchLiteOS Remote Desktop state after a failed session
+
+[Service]
+Type=oneshot
+User=couchliteos
+Group=couchliteos
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+ExecStart=/usr/libexec/couchliteos-run-configured-app --rdp-cleanup
+# A service that hits its start limit also stops its path unit; clear the
+# counter and re-arm the path so the next connection can start.
+ExecStartPost=+/usr/bin/systemctl reset-failed couchliteos-rdp.service couchliteos-rdp.path
+ExecStartPost=+/usr/bin/systemctl restart couchliteos-rdp.path
+StandardOutput=journal
+StandardError=journal

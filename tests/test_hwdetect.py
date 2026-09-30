@@ -10,7 +10,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-HWDETECT = ROOT / "scripts" / "moonlightos-hwdetect"
+HWDETECT = ROOT / "scripts" / "couchliteos-hwdetect"
 
 INTEL_GPU = ("0000:00:02.0", "0x8086", "0x0412", "0x030000", "i915")
 SUPPORTED_NVIDIA = ("0000:01:00.0", "0x10de", "0x2684", "0x030000", "")
@@ -31,8 +31,8 @@ FAKE_MODPROBE = """#!/bin/sh
 printf 'modprobe %s\\n' "$*" >> "$FAKE_LOG"
 [ "${FAKE_MODPROBE_FAIL:-0}" = 1 ] && exit 1
 if [ "$1" = nouveau ]; then
-  mkdir -p "$MOONLIGHTOS_SYSFS_ROOT/module/nouveau"
-  ln -sfn ../../../bus/pci/drivers/nouveau "$MOONLIGHTOS_SYSFS_ROOT/bus/pci/devices/0000:01:00.0/driver"
+  mkdir -p "$COUCHLITEOS_SYSFS_ROOT/module/nouveau"
+  ln -sfn ../../../bus/pci/drivers/nouveau "$COUCHLITEOS_SYSFS_ROOT/bus/pci/devices/0000:01:00.0/driver"
 fi
 """
 FAKE_UDEVADM = """#!/bin/sh
@@ -62,7 +62,7 @@ class HardwareDetectionTest(unittest.TestCase):
         self.udevadm.write_text(FAKE_UDEVADM)
         self.modprobe.chmod(0o755)
         self.udevadm.chmod(0o755)
-        self.state = self.run_root / "moonlightos-hardware"
+        self.state = self.run_root / "couchliteos-hardware"
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -117,14 +117,14 @@ class HardwareDetectionTest(unittest.TestCase):
     def hwdetect(self, command, extra_env=None):
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "MOONLIGHTOS_SYSFS_ROOT": str(self.sysfs),
-            "MOONLIGHTOS_PROC_CMDLINE": str(self.cmdline),
-            "MOONLIGHTOS_RUN_ROOT": str(self.run_root),
-            "MOONLIGHTOS_MODULE_DIR": str(self.modules),
-            "MOONLIGHTOS_NVIDIA_IDS": str(self.nvidia_ids),
-            "MOONLIGHTOS_BROADCOM_STA_IDS": str(self.broadcom_ids),
-            "MOONLIGHTOS_MODPROBE": str(self.modprobe),
-            "MOONLIGHTOS_UDEVADM": str(self.udevadm),
+            "COUCHLITEOS_SYSFS_ROOT": str(self.sysfs),
+            "COUCHLITEOS_PROC_CMDLINE": str(self.cmdline),
+            "COUCHLITEOS_RUN_ROOT": str(self.run_root),
+            "COUCHLITEOS_MODULE_DIR": str(self.modules),
+            "COUCHLITEOS_NVIDIA_IDS": str(self.nvidia_ids),
+            "COUCHLITEOS_BROADCOM_STA_IDS": str(self.broadcom_ids),
+            "COUCHLITEOS_MODPROBE": str(self.modprobe),
+            "COUCHLITEOS_UDEVADM": str(self.udevadm),
             "FAKE_LOG": str(self.log),
             **(extra_env or {}),
         }
@@ -139,7 +139,7 @@ class HardwareDetectionTest(unittest.TestCase):
         return json.loads((self.state / "state.json").read_text())
 
     def modprobe_config(self):
-        return (self.run_root / "modprobe.d" / "moonlightos-hardware.conf").read_text()
+        return (self.run_root / "modprobe.d" / "couchliteos-hardware.conf").read_text()
 
     def blacklisted(self):
         return {
@@ -148,7 +148,7 @@ class HardwareDetectionTest(unittest.TestCase):
         }
 
     def loaded(self):
-        text = (self.run_root / "modules-load.d" / "moonlightos-hardware.conf").read_text()
+        text = (self.run_root / "modules-load.d" / "couchliteos-hardware.conf").read_text()
         return [line for line in text.splitlines() if line and not line.startswith("#")]
 
     def hardware_env(self):
@@ -173,9 +173,9 @@ class HardwareDetectionTest(unittest.TestCase):
         result = self.hwdetect("late")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.hardware_env(), {
-            "MOONLIGHTOS_GPU_DRIVER": "i915",
-            "MOONLIGHTOS_GPU_ID": "8086:0412",
-            "MOONLIGHTOS_VIDEO_DECODE": "auto",
+            "COUCHLITEOS_GPU_DRIVER": "i915",
+            "COUCHLITEOS_GPU_ID": "8086:0412",
+            "COUCHLITEOS_VIDEO_DECODE": "auto",
         })
         self.assertEqual((self.state / "compositor.env").read_text(), "")
         self.assertNotIn("modprobe nouveau", self.calls())
@@ -190,7 +190,7 @@ class HardwareDetectionTest(unittest.TestCase):
         self.assertEqual(self.loaded(), [])
         self.assertEqual(self.hwdetect("late").returncode, 0)
         self.assertNotIn("modprobe nouveau", self.calls())
-        self.assertEqual(self.hardware_env()["MOONLIGHTOS_GPU_DRIVER"], "i915")
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_GPU_DRIVER"], "i915")
 
     def test_supported_nvidia_gpu_loads_the_proprietary_driver(self):
         self.nvidia_iso()
@@ -205,8 +205,8 @@ class HardwareDetectionTest(unittest.TestCase):
         self.module_loaded("nvidia_drm")
         self.assertEqual(self.hwdetect("late").returncode, 0)
         env = self.hardware_env()
-        self.assertEqual(env["MOONLIGHTOS_GPU_DRIVER"], "nvidia")
-        self.assertEqual(env["MOONLIGHTOS_VIDEO_DECODE"], "auto")
+        self.assertEqual(env["COUCHLITEOS_GPU_DRIVER"], "nvidia")
+        self.assertEqual(env["COUCHLITEOS_VIDEO_DECODE"], "auto")
         self.assertEqual((self.state / "compositor.env").read_text(), "WLR_NO_HARDWARE_CURSORS=1\n")
         self.assertNotIn("modprobe nouveau", self.calls())
 
@@ -224,9 +224,9 @@ class HardwareDetectionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("modprobe nouveau", self.calls())
         self.assertEqual(self.hardware_env(), {
-            "MOONLIGHTOS_GPU_DRIVER": "nouveau",
-            "MOONLIGHTOS_GPU_ID": "10de:0fe9",
-            "MOONLIGHTOS_VIDEO_DECODE": "software",
+            "COUCHLITEOS_GPU_DRIVER": "nouveau",
+            "COUCHLITEOS_GPU_ID": "10de:0fe9",
+            "COUCHLITEOS_VIDEO_DECODE": "software",
         })
         self.assertEqual((self.state / "compositor.env").read_text(), "")
         summary = (self.state / "summary.txt").read_text()
@@ -249,12 +249,12 @@ class HardwareDetectionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("modprobe nouveau failed", result.stderr)
         # The launcher still gets hints: the GPU has no driver.
-        self.assertEqual(self.hardware_env()["MOONLIGHTOS_GPU_DRIVER"], "none")
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_GPU_DRIVER"], "none")
 
     def test_basic_graphics_uses_nouveau_on_a_supported_gpu(self):
         self.nvidia_iso()
         self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
-        self.cmdline.write_text("boot=live components moonlightos.gpu=basic\n")
+        self.cmdline.write_text("boot=live components couchliteos.gpu=basic\n")
         state = self.early()
         self.assertTrue(state["basic_graphics"])
         self.assertEqual(state["nvidia_mode"], "nouveau")
@@ -274,7 +274,7 @@ class HardwareDetectionTest(unittest.TestCase):
             "../../../bus/pci/drivers/nouveau")
         self.assertEqual(self.hwdetect("late").returncode, 0)
         self.assertNotIn("modprobe nouveau", self.calls())
-        self.assertEqual(self.hardware_env()["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_VIDEO_DECODE"], "software")
 
     def test_ids_file_without_the_dkms_module_is_not_an_installed_driver(self):
         self.nvidia_ids.write_text("10DE2684\n")
@@ -363,8 +363,8 @@ class HardwareDetectionTest(unittest.TestCase):
         self.early()
         self.hwdetect("late")
         for path in (
-            self.run_root / "modprobe.d" / "moonlightos-hardware.conf",
-            self.run_root / "modules-load.d" / "moonlightos-hardware.conf",
+            self.run_root / "modprobe.d" / "couchliteos-hardware.conf",
+            self.run_root / "modules-load.d" / "couchliteos-hardware.conf",
             self.state / "hardware.env",
             self.state / "compositor.env",
             self.state / "summary.txt",
@@ -409,8 +409,8 @@ class HardwareDetectionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("modprobe nouveau", self.calls())
         env = self.hardware_env()
-        self.assertEqual(env["MOONLIGHTOS_GPU_DRIVER"], "nouveau")
-        self.assertEqual(env["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        self.assertEqual(env["COUCHLITEOS_GPU_DRIVER"], "nouveau")
+        self.assertEqual(env["COUCHLITEOS_VIDEO_DECODE"], "software")
         summary = (self.state / "summary.txt").read_text()
         self.assertIn("Secure Boot", summary)
         self.assertEqual(self.hwdetect("report").stdout, summary)
@@ -469,8 +469,8 @@ class HardwareDetectionTest(unittest.TestCase):
         self.assertIn("modprobe nouveau", self.calls())
         self.assertIn("did not load", result.stdout)
         env = self.hardware_env()
-        self.assertEqual(env["MOONLIGHTOS_GPU_DRIVER"], "nouveau")
-        self.assertEqual(env["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        self.assertEqual(env["COUCHLITEOS_GPU_DRIVER"], "nouveau")
+        self.assertEqual(env["COUCHLITEOS_VIDEO_DECODE"], "software")
         self.assertEqual((self.state / "compositor.env").read_text(), "")
         summary = (self.state / "summary.txt").read_text()
         self.assertIn("did not load", summary)
@@ -489,7 +489,7 @@ class HardwareDetectionTest(unittest.TestCase):
                 self.module_loaded(name)
                 self.assertEqual(self.hwdetect("late").returncode, 0)
                 self.assertNotIn("modprobe nouveau", self.calls())
-                self.assertEqual(self.hardware_env()["MOONLIGHTOS_GPU_DRIVER"], "nvidia")
+                self.assertEqual(self.hardware_env()["COUCHLITEOS_GPU_DRIVER"], "nvidia")
 
     def test_late_failed_nouveau_after_a_refused_proprietary_module_is_reported(self):
         self.nvidia_iso()
@@ -504,7 +504,7 @@ class HardwareDetectionTest(unittest.TestCase):
         self.add_device(*KEPLER_NVIDIA, boot_vga=True)
         self.early()
         self.hwdetect("late")
-        self.assertEqual(self.hardware_env()["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_VIDEO_DECODE"], "software")
         # The same stick, and the same /run contents, on an Intel machine.
         pci = self.sysfs / "bus" / "pci" / "devices"
         (pci / KEPLER_NVIDIA[0] / "driver").unlink()
@@ -515,7 +515,7 @@ class HardwareDetectionTest(unittest.TestCase):
         self.add_device(*INTEL_GPU, boot_vga=True)
         self.early()
         self.hwdetect("late")
-        self.assertEqual(self.hardware_env()["MOONLIGHTOS_VIDEO_DECODE"], "auto")
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_VIDEO_DECODE"], "auto")
 
 
 if __name__ == "__main__":

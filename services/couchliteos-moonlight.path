@@ -1,0 +1,9 @@
+[Unit]
+Description=Start Moonlight when requested by the launcher
+
+[Path]
+PathExists=/run/couchliteos/start-moonlight
+Unit=couchliteos-moonlight.service
+
+[Install]
+WantedBy=graphical.target

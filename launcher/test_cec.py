@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-import moonlightos_cec as cec
+import couchliteos_cec as cec
 
 
 def lines(*rows):
@@ -31,7 +31,7 @@ INFO_PLAYBACK = lines(
     "\tLogical Address Mask       : 0x0010",
     "\tCEC Version                : 2.0",
     "\tVendor ID                  : 0x000c03 (HDMI)",
-    "\tOSD Name                   : 'MoonlightOS'",
+    "\tOSD Name                   : 'CouchLiteOS'",
     "\tLogical Addresses          : 1 (Allow RC Passthrough)",
     "",
     "\t  Logical Address          : 4 (Playback Device 1)",
@@ -351,12 +351,12 @@ class EdidPathTest(unittest.TestCase):
 
 
 class ConfigureAdapterTest(unittest.TestCase):
-    def test_registers_as_a_playback_device_named_moonlightos(self):
+    def test_registers_as_a_playback_device_named_couchliteos(self):
         run = FakeRun("", INFO_PLAYBACK)
         adapter = cec.configure_adapter(cec.parse_adapter("/dev/cec1", INFO_UNCONFIGURED), run, edid=None)
         self.assertEqual(
             run.calls[0],
-            ["cec-ctl", "-d", "/dev/cec1", "--skip-info", "--playback", "--osd-name", "MoonlightOS"],
+            ["cec-ctl", "-d", "/dev/cec1", "--skip-info", "--playback", "--osd-name", "CouchLiteOS"],
         )
         self.assertEqual(run.calls[1], ["cec-ctl", "-d", "/dev/cec1"])
         self.assertTrue(adapter.configured)
@@ -367,7 +367,7 @@ class ConfigureAdapterTest(unittest.TestCase):
         cec.configure_adapter(usb, run, edid="/sys/class/drm/card0-HDMI-A-1/edid")
         self.assertEqual(
             run.calls[0],
-            ["cec-ctl", "-d", "/dev/cec0", "--skip-info", "--playback", "--osd-name", "MoonlightOS",
+            ["cec-ctl", "-d", "/dev/cec0", "--skip-info", "--playback", "--osd-name", "CouchLiteOS",
              "--phys-addr-from-edid", "/sys/class/drm/card0-HDMI-A-1/edid"],
         )
 

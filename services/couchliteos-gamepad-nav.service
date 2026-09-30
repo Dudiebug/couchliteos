@@ -1,0 +1,20 @@
+[Unit]
+Description=CouchLiteOS launcher gamepad navigation
+After=couchliteos-launcher.service
+PartOf=couchliteos-launcher.service
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+SupplementaryGroups=input
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+EnvironmentFile=-/run/couchliteos/session.env
+ExecStart=/usr/libexec/couchliteos-gamepad-nav
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/var/log/couchliteos/gamepad-nav.log
+StandardError=append:/var/log/couchliteos/gamepad-nav.log
+
+[Install]
+WantedBy=graphical.target

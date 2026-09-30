@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-import moonlightos_confirm as confirm
+import couchliteos_confirm as confirm
 
 KEY_UP, KEY_DOWN, KEY_LEFT, ENTER = confirm.curses.KEY_UP, confirm.curses.KEY_DOWN, confirm.curses.KEY_LEFT, 10
 QUESTION = "TURN OFF BLUETOOTH? BLUETOOTH CONTROLLERS WILL DISCONNECT."

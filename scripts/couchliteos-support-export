@@ -1,0 +1,904 @@
+#!/usr/bin/python3
+"""Create a redacted CouchLiteOS support archive on validated removable media."""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import json
+import os
+import pathlib
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+from datetime import datetime, timezone
+
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "launcher"))
+from couchliteos_support import (  # noqa: E402
+    Destination,
+    REQUEST,
+    RUN,
+    STATUS,
+    discover_destinations,
+    path_is_writable,
+    safe_terminal_text,
+)
+
+
+LOCK = RUN / "support-export.lock"
+MIN_FREE = 64 * 1024 * 1024
+MAX_COMMAND_OUTPUT = 16 * 1024 * 1024
+MAX_LOG_SIZE = 8 * 1024 * 1024
+SECRET_KEY = re.compile(
+    r"(?i)(password|passwd|passphrase|secret|private[_ -]?key|auth(?:entication)?[_ -]?key|"
+    r"api[_ -]?key|access[_ -]?token|refresh[_ -]?token|cookie|credential|pairing|registration)"
+)
+SECRET_ASSIGNMENT = re.compile(
+    r"(?im)(\b(?:password|passwd|passphrase|secret|private[_ -]?key|auth(?:entication)?[_ -]?key|"
+    r"api[_ -]?key|access[_ -]?token|refresh[_ -]?token|cookie|credential)\b\s*[:=]\s*)"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)"
+)
+SECRET_JSON_ASSIGNMENT = re.compile(
+    r'(?i)("(?:password|passwd|passphrase|secret|private[_ -]?key|auth(?:entication)?[_ -]?key|'
+    r'api[_ -]?key|access[_ -]?token|refresh[_ -]?token|cookie|credential)"\s*:\s*)'
+    r'(?:"[^"\r\n]*"|[^,}\r\n]+)'
+)
+SECRET_CLI_ARGUMENT = re.compile(
+    r"(?i)(--(?:password|passwd|passphrase|secret|private-key|auth-key|api-key|"
+    r"access-token|refresh-token|cookie|credential)(?:=|\s+))\S+"
+)
+# FreeRDP-style secrets, for example /p:<password>, -p:"two words", or
+# /gateway:...,p:<password>. Quoted values are removed whole.
+FREERDP_SECRET_ARGUMENT = re.compile(
+    r"(?i)((?:^|[\s\"',])[/-](?:p|gp|pth|assistance|password)[:=])"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s\"',]+)"
+)
+FREERDP_GATEWAY_PASSWORD = re.compile(
+    r"(?i)((?:^|[\s\"',])[/-]gateway:(?:[^\s,]*,)*?p:)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,]+)"
+)
+PEM_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
+    re.DOTALL | re.IGNORECASE,
+)
+CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x1b]")
+
+
+def redact_text(text: str) -> str:
+    text = PEM_PRIVATE_KEY.sub("[REDACTED]", text)
+    text = re.sub(r"(?i)\btskey-[A-Za-z0-9_-]+", "[REDACTED]", text)
+    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    text = re.sub(r"(?i)https?://(?:login\.)?tailscale\.com/[^\s\"'<>]+", "[REDACTED]", text)
+    text = re.sub(
+        r"(?i)([?&](?:authkey|token|key)=)[^&\s\"'<>]+", r"\1[REDACTED]", text
+    )
+    text = SECRET_JSON_ASSIGNMENT.sub(r'\1"[REDACTED]"', text)
+    text = SECRET_CLI_ARGUMENT.sub(r"\1[REDACTED]", text)
+    text = FREERDP_GATEWAY_PASSWORD.sub(r"\1[REDACTED]", text)
+    text = FREERDP_SECRET_ARGUMENT.sub(r"\1[REDACTED]", text)
+    text = SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
+    return CONTROL.sub("?", text)
+
+
+def redact_json(value: object, key: str = "") -> object:
+    if SECRET_KEY.search(key):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(item): redact_json(content, str(item)) for item, content in value.items()}
+    if isinstance(value, list):
+        return [redact_json(item, key) for item in value]
+    if isinstance(value, str):
+        return redact_text(value)
+    return value
+
+
+def sanitize_config(text: str) -> str:
+    output: list[str] = []
+    for line in text.splitlines():
+        if "=" in line:
+            key, _value = line.split("=", 1)
+            if SECRET_KEY.search(key):
+                line = f"{key.rstrip()} = [REDACTED]"
+        output.append(redact_text(line))
+    return "\n".join(output) + "\n"
+
+
+def write_text(path: pathlib.Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(redact_text(text), encoding="utf-8")
+
+
+def command_output(command: list[str], *, env: dict[str, str] | None = None) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            text=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+            env=env,
+        )
+        data = result.stdout[:MAX_COMMAND_OUTPUT]
+        suffix = "\n[output truncated]\n" if len(result.stdout) > len(data) else ""
+        return data.decode("utf-8", errors="replace") + suffix
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"Command unavailable or failed: {error}\n"
+
+
+def add_command(bundle: pathlib.Path, name: str, command: list[str], **kwargs: object) -> None:
+    write_text(bundle / name, command_output(command, **kwargs))
+
+
+def read_regular_file(path: pathlib.Path, limit: int) -> bytes:
+    """Read at most `limit` bytes of a regular file.
+
+    /run/couchliteos belongs to an unprivileged user, so a symlink there must
+    not be followed (O_NOFOLLOW) and a FIFO there must not block this root
+    service (O_NONBLOCK, then require a regular file).
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        return stream.read(limit)
+
+
+BOOT_TIMING = (
+    ("systemd-analyze", ["systemd-analyze", "--no-pager"], None),
+    (
+        "systemd-analyze critical-chain couchliteos-launcher.service",
+        ["systemd-analyze", "--no-pager", "critical-chain", "couchliteos-launcher.service"],
+        None,
+    ),
+    ("systemd-analyze blame | head -30", ["systemd-analyze", "--no-pager", "blame"], 30),
+)
+
+
+def boot_timing_report() -> str:
+    sections = []
+    for label, command, limit in BOOT_TIMING:
+        output = command_output(command)
+        if limit:
+            output = "".join(output.splitlines(keepends=True)[:limit])
+        sections.append(f"$ {label}\n{output}")
+    return "\n".join(sections)
+
+
+def add_boot_timing(bundle: pathlib.Path) -> None:
+    write_text(bundle / "system/boot-timing.txt", boot_timing_report())
+
+
+def read_regular_tail(path: pathlib.Path, limit: int) -> tuple[bytes, str]:
+    """Read a regular file, or only its last `limit` bytes if it is larger.
+
+    Returns the data and "" (whole file), "last" (the end of a larger file), or
+    "first" (a larger file that cannot be seeked, such as one under /proc).
+    Same safety rules as `read_regular_file`: no symlink, no FIFO blocking.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        if info.st_size > limit:
+            stream.seek(info.st_size - limit)
+            return stream.read(limit), "last"
+        data = stream.read(limit + 1)
+        if len(data) > limit:
+            return data[:limit], "first"
+        return data, ""
+
+
+def add_file(bundle: pathlib.Path, name: str, source: pathlib.Path, *, config: bool = False) -> None:
+    try:
+        data, kept = read_regular_tail(source, MAX_LOG_SIZE)
+    except OSError as error:
+        write_text(bundle / name, f"Unavailable: {error}\n")
+        return
+    if b"\0" in data:
+        write_text(bundle / name, "Binary file omitted.\n")
+        return
+    decoded = data.decode("utf-8", errors="replace")
+    if kept:
+        if kept == "last" and "\n" in decoded:
+            # The cut usually lands inside a line; drop that partial line.
+            decoded = decoded.split("\n", 1)[1]
+        size = (
+            f"{MAX_LOG_SIZE // (1024 * 1024)} MiB"
+            if MAX_LOG_SIZE % (1024 * 1024) == 0
+            else f"{MAX_LOG_SIZE} bytes"
+        )
+        decoded = f"[Truncated: only the {kept} {size} of this file are included.]\n" + decoded
+    write_text(bundle / name, sanitize_config(decoded) if config else decoded)
+
+
+def session_environment() -> dict[str, str]:
+    environment = {
+        "HOME": "/run/couchliteos",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin"),
+        "XDG_CACHE_HOME": "/run/couchliteos/support-cache",
+        "XDG_CONFIG_HOME": "/run/couchliteos/support-config",
+        "XDG_DATA_HOME": "/run/couchliteos/support-data",
+        "XDG_RUNTIME_DIR": "/run/couchliteos",
+    }
+    try:
+        lines = read_regular_file(RUN / "session.env", 4096).decode(
+            "utf-8", errors="replace"
+        ).splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "WAYLAND_DISPLAY" and re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            environment[key] = value
+        elif key == "DISPLAY" and re.fullmatch(r":\d+(?:\.\d+)?", value):
+            environment[key] = value
+    return environment
+
+
+def user_command(command: list[str], environment: dict[str, str]) -> list[str]:
+    try:
+        account = pwd.getpwnam("couchliteos")
+    except KeyError:
+        return command
+    assignments = [f"{key}={value}" for key, value in environment.items()]
+    return [
+        "/usr/bin/setpriv",
+        f"--reuid={account.pw_uid}",
+        f"--regid={account.pw_gid}",
+        "--init-groups",
+        "--",
+        "/usr/bin/env",
+        *assignments,
+        *command,
+    ]
+
+
+def collect(bundle: pathlib.Path) -> None:
+    generated = datetime.now(timezone.utc).isoformat()
+    version = pathlib.Path("/etc/couchliteos-version")
+    build_info = f"Generated: {generated}\n"
+    if version.exists():
+        build_info += f"CouchLiteOS: {version.read_text(encoding='utf-8', errors='replace').strip()}\n"
+    add_file(bundle, "system/os-release.txt", pathlib.Path("/etc/os-release"))
+    write_text(bundle / "system/couchliteos-version-and-build.txt", build_info)
+    add_file(
+        bundle,
+        "system/installed-build-info.txt",
+        pathlib.Path("/usr/share/couchliteos/build-info"),
+    )
+    write_text(bundle / "system/date-utc.txt", generated + "\n")
+    add_command(bundle, "system/time-synchronization.txt", ["timedatectl", "show"])
+    add_command(bundle, "system/ca-certificates.txt", ["dpkg-query", "-W", "ca-certificates"])
+    add_command(bundle, "system/uptime.txt", ["uptime"])
+    add_boot_timing(bundle)
+    add_file(bundle, "system/kernel-command-line.txt", pathlib.Path("/proc/cmdline"))
+    add_command(bundle, "system/kernel-version.txt", ["uname", "-a"])
+    add_command(bundle, "hardware/cpu.txt", ["lscpu"])
+    add_command(bundle, "hardware/memory.txt", ["free", "-h"])
+    add_file(bundle, "hardware/meminfo.txt", pathlib.Path("/proc/meminfo"))
+    add_command(bundle, "hardware/pci.txt", ["lspci", "-nnk"])
+    add_command(bundle, "hardware/usb.txt", ["lsusb", "-v"])
+    add_command(bundle, "hardware/loaded-modules.txt", ["lsmod"])
+    gpu = command_output(["lspci", "-nnk"])
+    gpu_lines = []
+    include = 0
+    for line in gpu.splitlines():
+        if re.search(r"VGA|Display|3D controller", line, re.IGNORECASE):
+            include = 4
+        if include:
+            gpu_lines.append(line)
+            include -= 1
+    write_text(bundle / "hardware/gpu-driver.txt", "\n".join(gpu_lines) + "\n")
+
+    drm_lines: list[str] = []
+    for status_path in sorted(pathlib.Path("/sys/class/drm").glob("card*-*/status")):
+        if status_path.is_symlink() or not status_path.is_file():
+            continue
+        connector = status_path.parent.name
+        try:
+            status = status_path.read_text(encoding="utf-8", errors="replace").strip()
+            modes = (status_path.parent / "modes").read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        except OSError:
+            continue
+        drm_lines.append(f"{connector}: {status}")
+        drm_lines.extend(f"  {mode}" for mode in modes)
+    write_text(bundle / "display/drm-connectors-and-modes.txt", "\n".join(drm_lines) + "\n")
+
+    environment = session_environment()
+    add_command(
+        bundle,
+        "display/wlr-randr.txt",
+        user_command(["wlr-randr"], environment),
+        env=environment,
+    )
+    add_command(
+        bundle,
+        "graphics/vulkan-summary.txt",
+        user_command(["vulkaninfo", "--summary"], environment),
+        env=environment,
+    )
+    add_command(
+        bundle,
+        "graphics/va-api-capabilities.txt",
+        user_command(["vainfo"], environment),
+        env=environment,
+    )
+    add_command(
+        bundle,
+        "audio/pipewire-wireplumber.txt",
+        user_command(["wpctl", "status"], environment),
+        env=environment,
+    )
+    add_command(
+        bundle,
+        "audio/default-sink.txt",
+        user_command(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"], environment),
+        env=environment,
+    )
+    add_command(bundle, "audio/alsa-devices.txt", ["aplay", "-l"])
+    add_command(bundle, "network/networkmanager.txt", ["nmcli", "device", "show"])
+    add_command(bundle, "network/ipv4-addresses.txt", ["ip", "-4", "address", "show"])
+    add_command(bundle, "network/routes.txt", ["ip", "route", "show", "table", "all"])
+    add_command(bundle, "network/link-state.txt", ["ip", "-details", "link", "show"])
+    dns_state = command_output(
+        ["nmcli", "--fields", "GENERAL.DEVICE,IP4.DNS,IP4.DOMAIN", "device", "show"]
+    )
+    try:
+        resolv_conf = pathlib.Path("/etc/resolv.conf").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError as error:
+        resolv_conf = f"Unavailable: {error}\n"
+    write_text(
+        bundle / "network/dns-state.txt",
+        f"NetworkManager DNS state:\n{dns_state}\n/etc/resolv.conf:\n{resolv_conf}",
+    )
+
+    tailscale_raw = command_output(["tailscale", "status", "--json"])
+    try:
+        tailscale = json.loads(tailscale_raw)
+        tailscale_text = json.dumps(redact_json(tailscale), indent=2, sort_keys=True) + "\n"
+    except json.JSONDecodeError:
+        tailscale_text = redact_text(tailscale_raw)
+    write_text(bundle / "network/tailscale-sanitized.json", tailscale_text)
+    bluetooth_devices = command_output(["bluetoothctl", "devices"])
+    named_devices = []
+    for line in bluetooth_devices.splitlines():
+        match = re.match(r"Device\s+(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\s+(.+)$", line, re.IGNORECASE)
+        if not match:
+            continue
+        name = match.group(1).strip()
+        compact = re.sub(r"[^0-9A-Fa-f]", "", name)
+        if name and not (len(compact) == 12 and re.fullmatch(r"[0-9A-Fa-f]{12}", compact)):
+            named_devices.append(name)
+    write_text(
+        bundle / "bluetooth/named-devices.txt",
+        "\n".join(named_devices) + ("\n" if named_devices else "No named devices reported.\n"),
+    )
+    add_command(bundle, "bluetooth/adapter.txt", ["bluetoothctl", "show"])
+    add_command(
+        bundle, "bluetooth/services.txt",
+        ["systemctl", "--no-pager", "--full", "status", "bluetooth", "couchliteos-bluetooth"],
+    )
+    add_command(bundle, "usbip/state.txt", ["couchliteos-usbip", "status"])
+    add_command(bundle, "firewall/nftables-ruleset.txt", ["nft", "list", "ruleset"])
+    add_command(
+        bundle,
+        "software/relevant-packages.txt",
+        [
+            "dpkg-query",
+            "-W",
+            "-f=${binary:Package}\t${Version}\n",
+            "broadcom-sta-dkms",
+            "cage",
+            "firefox-esr",
+            "freerdp3-sdl",
+            "google-chrome-stable",
+            "libavcodec61",
+            "linux-image-amd64",
+            "mesa-vulkan-drivers",
+            "network-manager",
+            "pipewire",
+            "tailscale",
+            "usbip",
+            "wireplumber",
+            "wlrctl",
+            "wlr-randr",
+            "wpasupplicant",
+            "xwayland",
+        ],
+    )
+    add_file(
+        bundle,
+        "software/pinned-applications.txt",
+        pathlib.Path("/usr/share/couchliteos/applications.lock"),
+    )
+    add_file(
+        bundle,
+        "software/pinned-sources.txt",
+        pathlib.Path("/usr/share/couchliteos/sources.lock"),
+    )
+    add_command(
+        bundle,
+        "software/applications-sanitized.txt",
+        ["/usr/bin/python3", "/usr/libexec/couchliteos_apps.py"],
+    )
+    add_command(
+        bundle,
+        "remote-desktop/connections-sanitized.txt",
+        ["/usr/bin/python3", "/usr/libexec/couchliteos_rdp.py"],
+    )
+    add_command(bundle, "remote-desktop/package-source.txt", ["apt-cache", "policy", "freerdp3-sdl"])
+    add_command(bundle, "firefox/package-source.txt", ["apt-cache", "policy", "firefox-esr"])
+    add_command(bundle, "chrome/package-source.txt", ["apt-cache", "policy", "google-chrome-stable"])
+    add_file(bundle, "firefox/eme-widevine-status.txt", RUN / "firefox-drm-status")
+    add_file(bundle, "firefox/eme-policy.json", pathlib.Path("/etc/firefox/policies/policies.json"))
+    managed = []
+    for ready in sorted(RUN.glob("*-ready")):
+        app_id = ready.name.removesuffix("-ready")
+        try:
+            lines = read_regular_file(RUN / f"{app_id}-status", 4096).decode(
+                "utf-8", errors="replace"
+            ).splitlines()
+        except OSError:
+            continue
+        managed.append(f"{app_id}: running")
+        if lines:
+            managed.append(f"{app_id}: {lines[0][:160]}")
+    write_text(bundle / "session/managed-applications.txt", "\n".join(managed) + ("\n" if managed else "None running.\n"))
+    add_command(
+        bundle,
+        "services/couchliteos-services.txt",
+        ["systemctl", "--no-pager", "--full", "status", "couchliteos-*"],
+    )
+    add_command(
+        bundle,
+        "services/failed-units.txt",
+        ["systemctl", "--no-pager", "--failed"],
+    )
+    add_command(
+        bundle,
+        "logs/current-boot-journal.txt",
+        ["journalctl", "-b", "--no-pager", "--output=short-iso"],
+    )
+    add_command(bundle, "logs/kernel-log.txt", ["dmesg", "--color=never"])
+
+    log_dir = pathlib.Path(os.environ.get("COUCHLITEOS_SUPPORT_LOG_DIR", "/var/log/couchliteos"))
+    try:
+        entries = sorted(log_dir.iterdir(), key=lambda item: item.name)
+    except OSError:
+        entries = []
+    copied = 0
+    log_index: list[str] = []
+    for entry in entries:
+        try:
+            info = entry.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        copied += 1
+        archive_name = f"log-{copied:03d}.txt"
+        log_index.append(f"{archive_name} = {safe_terminal_text(entry.name)}")
+        add_file(bundle, f"logs/couchliteos/{archive_name}", entry)
+    write_text(
+        bundle / "logs/couchliteos/INDEX.txt",
+        "\n".join(log_index) + ("\n" if log_index else "No regular log files were available.\n"),
+    )
+
+    config = pathlib.Path(
+        os.environ.get("COUCHLITEOS_SUPPORT_CONFIG", "/var/lib/couchliteos/config.ini")
+    )
+    add_file(bundle, "configuration/config.ini.sanitized", config, config=True)
+    write_text(
+        bundle / "REDACTION.txt",
+        "Sensitive values and enrollment URLs were replaced with [REDACTED]. "
+        "Application/browser profiles and private state directories are not collected. "
+        "Saved Remote Desktop passwords and session password handoffs are never read; "
+        "Remote Desktop connections are listed without usernames, domains, or passwords.\n",
+    )
+
+
+def verify_archive(archive: pathlib.Path) -> None:
+    with tarfile.open(archive, "r:gz") as container:
+        members = container.getmembers()
+        regular_files = 0
+        found_root = False
+        for member in members:
+            path = pathlib.PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise RuntimeError("support archive contains an unsafe path")
+            if not path.parts or path.parts[0] != "couchliteos-support":
+                raise RuntimeError("support archive contains a path outside its root")
+            if member.name == "couchliteos-support" and member.isdir():
+                found_root = True
+            if not member.isdir() and not member.isreg():
+                raise RuntimeError("support archive contains a non-file member")
+            if not member.isreg():
+                continue
+            regular_files += 1
+            stream = container.extractfile(member)
+            if stream is None:
+                raise RuntimeError("support archive contains an unreadable file")
+            while stream.read(1024 * 1024):
+                pass
+        if not found_root or regular_files == 0:
+            raise RuntimeError("support archive is missing required support files")
+
+
+DRIVE_FULL = "USB DRIVE IS FULL"
+DRIVE_READ_ONLY = "USB DRIVE IS READ-ONLY"
+DRIVE_FAILED = "USB DRIVE ERROR: TRY ANOTHER DRIVE"
+DRIVE_REMOVED = "THE USB DRIVE WAS REMOVED OR CHANGED: TRY AGAIN"
+DRIVE_NTFS = "THIS DRIVE IS NTFS; USE A FAT32 OR EXFAT DRIVE"
+# Short plain messages for the errors a failing or full USB drive produces; the
+# launcher shows them as they are, so they must not need a shell to understand.
+DRIVE_ERRORS = {
+    errno.ENOSPC: DRIVE_FULL,
+    errno.EDQUOT: DRIVE_FULL,
+    errno.EROFS: DRIVE_READ_ONLY,
+    errno.EIO: DRIVE_FAILED,
+    errno.ENODEV: DRIVE_FAILED,
+    errno.ENXIO: DRIVE_FAILED,
+    errno.ENOMEDIUM: DRIVE_FAILED,
+    errno.EUCLEAN: DRIVE_FAILED,
+    errno.EACCES: "USB DRIVE DOES NOT ALLOW WRITING: TRY ANOTHER DRIVE",
+    errno.EPERM: "USB DRIVE DOES NOT ALLOW WRITING: TRY ANOTHER DRIVE",
+}
+
+
+def failure_message(error: BaseException, *, drive: bool) -> str:
+    """The text the launcher shows for a failed export (`drive`: error touched the USB drive)."""
+    if isinstance(error, OSError) and error.errno is not None:
+        if drive and error.errno in DRIVE_ERRORS:
+            return DRIVE_ERRORS[error.errno]
+        if not drive and error.errno in (errno.ENOSPC, errno.EDQUOT):
+            return "NOT ENOUGH TEMPORARY SPACE TO BUILD THE SUPPORT FILE"
+    return safe_terminal_text(redact_text(str(error)), 240)
+
+
+def free_bytes(path: pathlib.Path) -> int:
+    stats = os.statvfs(path)
+    return stats.f_bavail * stats.f_frsize
+
+
+def validate_destination(request: dict[str, object]) -> Destination:
+    requested = Destination(
+        str(request.get("device") or ""),
+        str(request.get("mountpoint") or ""),
+        str(request.get("label") or ""),
+        str(request.get("fstype") or ""),
+        request.get("mounted") is True,
+        str(request.get("majmin") or ""),
+        str(request.get("uuid") or ""),
+    )
+    for candidate in discover_destinations():
+        if candidate.device != requested.device or candidate.mountpoint != requested.mountpoint:
+            continue
+        if requested.majmin and candidate.majmin != requested.majmin:
+            continue
+        if requested.uuid and candidate.uuid != requested.uuid:
+            continue
+        return candidate
+    raise RuntimeError(DRIVE_REMOVED)
+
+
+def mount_labeled_destination(destination: Destination) -> tuple[Destination, bool]:
+    if destination.mounted:
+        return destination, False
+    if destination.label != "COUCHLITEOS_SUPPORT" or not destination.device.startswith("/dev/"):
+        raise RuntimeError("unmounted destination is not an explicitly labeled support partition")
+    # Never mount under /run/couchliteos: the unprivileged appliance user owns
+    # it and could pre-plant a symlink that mount(8) would follow (for example
+    # to /usr/libexec). A fresh root-only directory in the service's private
+    # /tmp cannot be pre-planted.
+    mountpoint = tempfile.mkdtemp(prefix="support-media-")
+    # Without a driver named, an NTFS stick can come up read-only or not at all;
+    # ask for the kernel's ntfs3 driver, and say so plainly if that fails too.
+    ntfs = destination.fstype.lower() == "ntfs"
+    driver = ["-t", "ntfs3"] if ntfs else []
+    try:
+        result = subprocess.run(
+            ["mount", *driver, "-o", "nosuid,nodev,noexec", "--", destination.device, mountpoint],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode:
+            if ntfs:
+                raise RuntimeError(DRIVE_NTFS)
+            raise RuntimeError((result.stderr or "could not mount support partition").strip())
+    except Exception:
+        release_mountpoint(mountpoint)
+        raise
+    mounted = Destination(
+        destination.device,
+        mountpoint,
+        destination.label,
+        destination.fstype,
+        True,
+        destination.majmin,
+        destination.uuid,
+    )
+    if not path_is_writable(mountpoint):
+        subprocess.run(["umount", "--", mountpoint], check=False)
+        release_mountpoint(mountpoint)
+        raise RuntimeError(DRIVE_NTFS if ntfs else DRIVE_READ_ONLY)
+    return mounted, True
+
+
+def release_mountpoint(mountpoint: str) -> None:
+    """Remove the private mount directory; rmdir refuses while anything is mounted on it."""
+    try:
+        os.rmdir(mountpoint)
+    except OSError:
+        pass
+
+
+def read_request() -> dict[str, object]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(REQUEST, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 8192:
+            raise RuntimeError("invalid support request file")
+        try:
+            expected_uid = pwd.getpwnam("couchliteos").pw_uid
+        except KeyError:
+            expected_uid = info.st_uid
+        if info.st_uid != expected_uid:
+            raise RuntimeError("support request has an unexpected owner")
+        data = os.read(descriptor, 8193)
+    finally:
+        os.close(descriptor)
+    payload = json.loads(data.decode("utf-8"))
+    if not isinstance(payload, dict) or not re.fullmatch(
+        r"[0-9a-f]{24}", str(payload.get("request_id") or "")
+    ):
+        raise RuntimeError("invalid support request contents")
+    return payload
+
+
+def write_status(request_id: str, state: str, message: str, destination: str = "") -> None:
+    payload = {
+        "request_id": request_id,
+        "state": state,
+        "message": safe_terminal_text(message, 240),
+        "destination": safe_terminal_text(destination, 240),
+    }
+    descriptor, temporary = tempfile.mkstemp(prefix=".support-status.", dir=RUN)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o644)
+        os.replace(temporary, STATUS)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def journal_message(message: str, *, error: bool = False) -> None:
+    cleaned = safe_terminal_text(redact_text(message), 500)
+    print(cleaned, file=sys.stderr if error else sys.stdout, flush=True)
+
+
+def settle_devices() -> None:
+    try:
+        result = subprocess.run(
+            ["udevadm", "settle", "--timeout=5"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=6,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        journal_message(f"Support export device settle unavailable: {error}", error=True)
+        return
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "udevadm settle failed").strip()
+        journal_message(f"Support export device settle warning: {detail}", error=True)
+
+
+def checked_unmount(mountpoint: str) -> None:
+    result = subprocess.run(
+        ["umount", "--", mountpoint],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    if result.returncode:
+        detail = safe_terminal_text(
+            redact_text((result.stderr or result.stdout or "unmount failed").strip()), 180
+        )
+        raise RuntimeError(
+            "support file was written, but the drive is not safe to remove: " + detail
+        )
+
+
+def finish_export(
+    request_id: str,
+    destination: Destination,
+    final: pathlib.Path,
+    mounted_here: bool,
+) -> bool:
+    if mounted_here:
+        checked_unmount(destination.mountpoint)
+        release_mountpoint(destination.mountpoint)
+        mounted_here = False
+        shown = f"{destination.device}:/{final.name}"
+        message = "Support file created; drive is safe to remove"
+    else:
+        shown = str(final)
+        message = "Support file created; safely eject or unmount before removing the drive"
+    write_status(request_id, "success", message, shown)
+    journal_message(f"Support export succeeded: {shown}")
+    return mounted_here
+
+
+def atomic_export(source: pathlib.Path, destination: pathlib.Path, filename: str) -> pathlib.Path:
+    final = destination / filename
+    partial = destination / f".{filename}.partial"
+    created_final = False
+    if final.exists():
+        raise RuntimeError("support archive filename already exists")
+    try:
+        with source.open("rb") as incoming, partial.open("xb") as outgoing:
+            shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
+            os.fchmod(outgoing.fileno(), 0o644)
+            outgoing.flush()
+            os.fsync(outgoing.fileno())
+        verify_archive(partial)
+        os.replace(partial, final)
+        created_final = True
+        directory_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        os.sync()
+        return final
+    except Exception:
+        for path in (partial,):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        if created_final:
+            try:
+                final.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def archive_filename() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    machine_id_path = pathlib.Path(
+        os.environ.get("COUCHLITEOS_SUPPORT_MACHINE_ID", "/etc/machine-id")
+    )
+    try:
+        machine_id = re.sub(
+            r"[^0-9a-f]", "", machine_id_path.read_text(encoding="ascii").lower()
+        )[:8]
+    except OSError:
+        machine_id = ""
+    return f"couchliteos-support-{timestamp}-{machine_id or 'unknown'}.tar.gz"
+
+
+def open_lock(path: pathlib.Path) -> int:
+    """Open (creating if needed) the lock without following a planted symlink."""
+    return os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+
+
+def run() -> int:
+    RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
+    request_id = "unknown"
+    mounted_here = False
+    on_drive = False  # True only while a step touches the selected USB drive
+    destination: Destination | None = None
+    try:
+        lock_fd = open_lock(LOCK)
+    except OSError as error:
+        REQUEST.unlink(missing_ok=True)
+        journal_message(f"Support export refused an unsafe lock file: {error}", error=True)
+        return 1
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        return 75
+    try:
+        request = read_request()
+        request_id = str(request["request_id"])
+        REQUEST.unlink(missing_ok=True)
+        write_status(request_id, "working", "Collecting support information")
+        settle_devices()
+        destination = validate_destination(request)
+        destination, mounted_here = mount_labeled_destination(destination)
+        target = pathlib.Path(destination.mountpoint)
+        on_drive = True
+        if free_bytes(target) < MIN_FREE:
+            raise RuntimeError("USB DRIVE IS FULL (64 MB FREE NEEDED)")
+
+        on_drive = False  # only the local temporary area until the archive is built
+        temporary_root = pathlib.Path(
+            tempfile.mkdtemp(prefix="couchliteos-support-", dir=os.environ.get("TMPDIR"))
+        )
+        try:
+            if free_bytes(temporary_root) < MIN_FREE:
+                raise RuntimeError("NOT ENOUGH TEMPORARY SPACE TO BUILD THE SUPPORT FILE")
+            bundle = temporary_root / "couchliteos-support"
+            bundle.mkdir()
+            collect(bundle)
+            local_archive = temporary_root / archive_filename()
+            with tarfile.open(local_archive, "w:gz", dereference=False) as container:
+                container.add(bundle, arcname="couchliteos-support", recursive=True)
+            verify_archive(local_archive)
+            on_drive = True
+
+            # Revalidate the selected device/mount immediately before writing.
+            if not os.path.ismount(target) or not path_is_writable(str(target)):
+                raise RuntimeError(DRIVE_REMOVED)
+            settle_devices()
+            current = validate_destination(
+                {
+                    "device": destination.device,
+                    "mountpoint": destination.mountpoint,
+                    "label": destination.label,
+                    "fstype": destination.fstype,
+                    "mounted": True,
+                    "majmin": destination.majmin,
+                    "uuid": destination.uuid,
+                }
+            )
+            if current.device != destination.device:
+                raise RuntimeError("support destination changed before writing")
+            if free_bytes(target) < local_archive.stat().st_size + 8 * 1024 * 1024:
+                raise RuntimeError(DRIVE_FULL)
+            final = atomic_export(local_archive, target, local_archive.name)
+        finally:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+
+        mounted_here = finish_export(request_id, destination, final, mounted_here)
+        return 0
+    except Exception as error:
+        REQUEST.unlink(missing_ok=True)
+        message = failure_message(error, drive=on_drive)
+        write_status(request_id, "failed", message)
+        journal_message(f"Support export failed: {message}", error=True)
+        return 1
+    finally:
+        if mounted_here and destination is not None:
+            subprocess.run(
+                ["umount", "--", destination.mountpoint],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=15,
+            )
+            release_mountpoint(destination.mountpoint)
+        os.close(lock_fd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

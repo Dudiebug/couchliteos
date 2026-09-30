@@ -17,7 +17,7 @@ command -v lb >/dev/null || { echo 'live-build is required (apt install live-bui
 source "$ROOT/config/profiles/$PROFILE/profile.conf"
 # shellcheck source=build/lb-cache.sh
 source "$ROOT/build/lb-cache.sh"
-ISO="$OUT/moonlightos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"
+ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"
 read -r -a profile_options <<< "${LB_EXTRA_CONFIG:-}"
 
 mkdir -p "$OUT"
@@ -34,22 +34,22 @@ lb config noauto \
   --debian-installer-gui false \
   --uefi-secure-boot enable \
   --debootstrap-options '--include=ca-certificates' \
-  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=moonlightos username=moonlightos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8' \
+  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8' \
   --bootappend-install 'ipv6.disable=1' \
-  --iso-application 'MoonlightOS streaming appliance' \
-  --iso-publisher 'MoonlightOS Project' \
-  --iso-volume 'MOONLIGHTOS' \
+  --iso-application 'CouchLiteOS streaming appliance' \
+  --iso-publisher 'CouchLiteOS Project' \
+  --iso-volume 'COUCHLITEOS' \
   --apt-recommends false \
   --memtest none \
   "${profile_options[@]}"
 
-if [[ -n ${MOONLIGHTOS_LB_CACHE:-} ]]; then
-  lb_cache_prepare "$MOONLIGHTOS_LB_CACHE"
+if [[ -n ${COUCHLITEOS_LB_CACHE:-} ]]; then
+  lb_cache_prepare "$COUCHLITEOS_LB_CACHE"
 fi
 
 lb build
-if [[ -n ${MOONLIGHTOS_LB_CACHE:-} ]]; then
-  lb_cache_save_bootstrap "$MOONLIGHTOS_LB_CACHE"
+if [[ -n ${COUCHLITEOS_LB_CACHE:-} ]]; then
+  lb_cache_save_bootstrap "$COUCHLITEOS_LB_CACHE"
 fi
 built_iso=$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -print -quit)
 [[ -n "$built_iso" ]] || {

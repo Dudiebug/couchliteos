@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-OUT=${MOONLIGHTOS_RELEASE_DIR:-$ROOT/build/out}
+OUT=${COUCHLITEOS_RELEASE_DIR:-$ROOT/build/out}
 VERSION=$(< "$ROOT/VERSION")
 LIMIT=$((2 * 1024 * 1024 * 1024))
 
@@ -16,16 +16,16 @@ for profile_conf in "$ROOT"/config/profiles/*/profile.conf; do
   [[ $(source "$profile_conf"; printf '%s' "${RELEASE:-0}") == 1 ]] || continue
   release_profiles=$((release_profiles + 1))
   suffix=$(source "$profile_conf"; printf '%s' "${ISO_SUFFIX:-}")
-  iso="moonlightos-$VERSION-${suffix:+$suffix-}amd64.iso"
+  iso="couchliteos-$VERSION-${suffix:+$suffix-}amd64.iso"
   if [[ -f $iso ]]; then
     isos+=("$iso")
   else
     echo "missing: $OUT/$iso" >&2
   fi
 done
-((${#isos[@]})) || { echo "No MoonlightOS $VERSION ISOs in $OUT" >&2; exit 66; }
-[[ ${MOONLIGHTOS_ALLOW_PARTIAL_RELEASE:-0} == 1 ]] || (( ${#isos[@]} == release_profiles )) || {
-  echo 'Not every release profile has an ISO; set MOONLIGHTOS_ALLOW_PARTIAL_RELEASE=1 to continue.' >&2
+((${#isos[@]})) || { echo "No CouchLiteOS $VERSION ISOs in $OUT" >&2; exit 66; }
+[[ ${COUCHLITEOS_ALLOW_PARTIAL_RELEASE:-0} == 1 ]] || (( ${#isos[@]} == release_profiles )) || {
+  echo 'Not every release profile has an ISO; set COUCHLITEOS_ALLOW_PARTIAL_RELEASE=1 to continue.' >&2
   exit 1
 }
 

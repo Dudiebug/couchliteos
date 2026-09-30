@@ -115,7 +115,7 @@ def main() -> int:
         parser.error("HMP screenshot paths must not contain spaces")
 
     # Slow hosts may stretch the pauses between keystrokes (default 1).
-    scale = int(os.environ.get("MOONLIGHTOS_QEMU_TIMEOUT_SCALE", "1"))
+    scale = int(os.environ.get("COUCHLITEOS_QEMU_TIMEOUT_SCALE", "1"))
     with connect_monitor(args.monitor, timeout=15.0 * scale) as monitor:
         for command, delay in install_commands(
             args.menu_screenshot,

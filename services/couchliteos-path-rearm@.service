@@ -1,0 +1,12 @@
+[Unit]
+Description=Re-arm couchliteos-%i.path after its service hit the start limit
+
+[Service]
+Type=oneshot
+# A service that hits its start limit also fails the path unit that triggers it
+# (unit-start-limit-hit), which would ignore every later launch request until
+# reboot. Clear the counter and restart the path; a request still waiting on
+# disk is then started immediately.
+ExecStart=/usr/bin/systemctl reset-failed couchliteos-%i.service couchliteos-%i.path
+ExecStart=/usr/bin/systemctl restart couchliteos-%i.path
+StandardOutput=journal

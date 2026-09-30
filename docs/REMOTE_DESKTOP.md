@@ -1,6 +1,6 @@
 # Remote Desktop (RDP)
 
-MoonlightOS includes FreeRDP 3's SDL client (`sdl-freerdp3`, Debian package
+CouchLiteOS includes FreeRDP 3's SDL client (`sdl-freerdp3`, Debian package
 `freerdp3-sdl`). It runs natively on Cage's Wayland socket with SDL3; it never
 uses Xwayland. Both build profiles include it. Remmina and other desktop
 clients are not installed.
@@ -24,7 +24,7 @@ password) accept the buffered on-screen keyboard: open it, type, then choose
 | Field | Values |
 |---|---|
 | Display name | required |
-| Host | IPv4 address or DNS name (MoonlightOS is IPv4-only) |
+| Host | IPv4 address or DNS name (CouchLiteOS is IPv4-only) |
 | Port | default 3389 |
 | Username | required; `DOMAIN\user` and `user@domain` also work |
 | Domain | optional |
@@ -41,18 +41,18 @@ be verified.
 
 - By default the password is typed at connect time with the on-screen
   keyboard.
-- The launcher hands it to the session runner in `/run/moonlightos` (RAM-backed,
+- The launcher hands it to the session runner in `/run/couchliteos` (RAM-backed,
   mode 0600, appliance user only). The runner writes it to `sdl-freerdp3`'s
   standard input, and FreeRDP reads it with `/from-stdin:force`. It never
   appears on a command line, in the environment of the client, or in a log. The
   handoff file is removed when the session ends; it survives only while systemd
   restarts a crashed session.
-- **Save password** stores it in `/var/lib/moonlightos/rdp-secrets/<id>`,
+- **Save password** stores it in `/var/lib/couchliteos/rdp-secrets/<id>`,
   owned by root with mode 0600, in a root-only 0700 directory, together with the
   host, port, username, and domain it was saved for. It is **not encrypted**;
   anyone with root access or physical access to the disk can read it, and so
   can software running as the appliance account, because the RDP client itself
-  must receive it. A sandboxed root helper (`moonlightos-rdp-secret`, started
+  must receive it. A sandboxed root helper (`couchliteos-rdp-secret`, started
   by a path unit, with none of the appliance account's environment) saves,
   deletes, and hands it to a session. It refuses to hand it over if the
   connection's host, port, username, or domain changed since it was saved;
@@ -66,7 +66,7 @@ be verified.
 
 ## Certificates
 
-MoonlightOS uses trust on first use:
+CouchLiteOS uses trust on first use:
 
 1. Before connecting, the launcher opens a TLS connection to the server and
    shows its SHA-256 certificate fingerprint. Compare it with the server:
@@ -76,7 +76,7 @@ MoonlightOS uses trust on first use:
 2. **TRUST AND CONNECT** pins the fingerprint to the saved connection.
 3. Every later connection is checked first. If the fingerprint changed, the
    launcher shows the old and new fingerprints, logs the event to
-   `/var/log/moonlightos/rdp.log`, and blocks the connection.
+   `/var/log/couchliteos/rdp.log`, and blocks the connection.
 4. FreeRDP itself runs with `/cert:deny,fingerprint:sha256:<pin>`, so it never
    prompts and aborts on any other certificate. Legacy RDP security (no TLS) is
    disabled with `/sec:rdp:off`.
@@ -97,13 +97,13 @@ Any saved connection can be pinned as a launcher button (text only):
   connection. A shortcut belongs to one button; assigning it again moves it.
 
 A pinned button is an ordinary user application manifest
-(`/var/lib/moonlightos/apps.d/rdp-<name>.ini`, `kind = rdp`); its position is
-stored in `/var/lib/moonlightos/apps-state.ini`. Settings → Applications can
+(`/var/lib/couchliteos/apps.d/rdp-<name>.ini`, `kind = rdp`); its position is
+stored in `/var/lib/couchliteos/apps-state.ini`. Settings → Applications can
 also enable, disable, reorder, or delete it.
 
 ## Sessions
 
-`moonlightos-rdp.path` starts `moonlightos-rdp.service` when the launcher
+`couchliteos-rdp.path` starts `couchliteos-rdp.service` when the launcher
 requests a connection. The session behaves like the other applications:
 
 - **Home/Guide** opens Active Applications; **A** resumes the session and
@@ -111,7 +111,7 @@ requests a connection. The session behaves like the other applications:
   on-screen keyboard instead.
 - If the client crashes or the connection drops, systemd restarts it (up to
   three starts per minute) and it reconnects with the same credentials. When
-  the restarts are exhausted, `moonlightos-rdp-cleanup.service` removes the
+  the restarts are exhausted, `couchliteos-rdp-cleanup.service` removes the
   session state, clears the start limit, and re-arms the path unit so the next
   connection can start.
 - If Cage restarts underneath a session, the runner notices that the Wayland
@@ -126,13 +126,13 @@ requests a connection. The session behaves like the other applications:
 
 | Purpose | Path |
 |---|---|
-| Saved connections and pinned fingerprints (no secrets) | `/var/lib/moonlightos/rdp/connections.ini` |
-| Saved passwords (root, 0600, unencrypted) | `/var/lib/moonlightos/rdp-secrets/` |
-| Launcher buttons | `/var/lib/moonlightos/apps.d/rdp-*.ini`, `/var/lib/moonlightos/apps-state.ini` |
-| Certificate trust and change events | `/var/log/moonlightos/rdp.log` |
-| Client output | `journalctl -u moonlightos-rdp.service` |
+| Saved connections and pinned fingerprints (no secrets) | `/var/lib/couchliteos/rdp/connections.ini` |
+| Saved passwords (root, 0600, unencrypted) | `/var/lib/couchliteos/rdp-secrets/` |
+| Launcher buttons | `/var/lib/couchliteos/apps.d/rdp-*.ini`, `/var/lib/couchliteos/apps-state.ini` |
+| Certificate trust and change events | `/var/log/couchliteos/rdp.log` |
+| Client output | `journalctl -u couchliteos-rdp.service` |
 
-A live USB needs `/var/lib/moonlightos` in its persistence configuration for
+A live USB needs `/var/lib/couchliteos` in its persistence configuration for
 connections, buttons, and saved passwords to survive a reboot.
 
 ## Known behavior

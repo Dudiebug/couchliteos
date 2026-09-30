@@ -1,0 +1,15 @@
+[Unit]
+Description=CouchLiteOS USB/IP firewall policy
+After=network-pre.target
+Before=couchliteos-usbipd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/couchliteos-firewall apply
+ExecReload=/usr/libexec/couchliteos-firewall apply
+RemainAfterExit=yes
+StandardOutput=append:/var/log/couchliteos/firewall.log
+StandardError=append:/var/log/couchliteos/firewall.log
+
+[Install]
+WantedBy=multi-user.target

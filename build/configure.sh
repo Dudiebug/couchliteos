@@ -55,7 +55,7 @@ for profile_dir in "${profile_dirs[@]}"; do
     cp -a "$profile_dir/overlay/." "$CHROOT/"
   fi
 done
-install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/moonlightos/profile.conf"
+install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/couchliteos/profile.conf"
 printf '%s\n' "$PROFILE" > "$WORK/profile"
 install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \
   "$WORK/config/archives/tailscale.key.chroot"
@@ -66,77 +66,77 @@ install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
 install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
   "$CHROOT/usr/share/keyrings/google-chrome.asc"
 
-install -D -m 0755 "$ROOT/launcher/moonlightos-launcher.py" "$CHROOT/usr/libexec/moonlightos-launcher"
-install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/moonlightos-gamepad-nav"
-install -D -m 0644 "$ROOT/launcher/moonlightos_apps.py" "$CHROOT/usr/libexec/moonlightos_apps.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_rdp.py" "$CHROOT/usr/libexec/moonlightos_rdp.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_controllers.py" "$CHROOT/usr/libexec/moonlightos_controllers.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_pcstatus.py" "$CHROOT/usr/libexec/moonlightos_pcstatus.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_update.py" "$CHROOT/usr/libexec/moonlightos_update.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_errors.py" "$CHROOT/usr/libexec/moonlightos_errors.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_whatsnew.py" "$CHROOT/usr/libexec/moonlightos_whatsnew.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_padcheck.py" "$CHROOT/usr/libexec/moonlightos_padcheck.py"
-install -D -m 0755 "$ROOT/scripts/moonlightos-rdp-secret" "$CHROOT/usr/libexec/moonlightos-rdp-secret"
-install -D -m 0755 "$ROOT/launcher/moonlightos_app_runner.py" "$CHROOT/usr/libexec/moonlightos-run-configured-app"
-install -D -m 0644 "$ROOT/launcher/moonlightos_setup.py" "$CHROOT/usr/libexec/moonlightos_setup.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_netmenu.py" "$CHROOT/usr/libexec/moonlightos_netmenu.py"
-install -D -m 0755 "$ROOT/launcher/moonlightos_osk.py" "$CHROOT/usr/libexec/moonlightos-osk"
-install -D -m 0644 "$ROOT/launcher/moonlightos_display.py" "$CHROOT/usr/libexec/moonlightos_display.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_audio.py" "$CHROOT/usr/libexec/moonlightos_audio.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_power.py" "$CHROOT/usr/libexec/moonlightos_power.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_support.py" "$CHROOT/usr/libexec/moonlightos_support.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_bluetooth.py" "$CHROOT/usr/libexec/moonlightos_bluetooth.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_stream.py" "$CHROOT/usr/libexec/moonlightos_stream.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_cec.py" "$CHROOT/usr/libexec/moonlightos_cec.py"
-install -D -m 0755 "$ROOT/scripts/moonlightos-cec" "$CHROOT/usr/libexec/moonlightos-cec"
-install -D -m 0644 "$ROOT/launcher/moonlightos_confirm.py" "$CHROOT/usr/libexec/moonlightos_confirm.py"
-install -D -m 0644 "$ROOT/launcher/moonlightos_listview.py" "$CHROOT/usr/libexec/moonlightos_listview.py"
-install -D -m 0755 "$ROOT/launcher/moonlightos_foot.py" "$CHROOT/usr/libexec/moonlightos-foot"
-install -D -m 0644 "$ROOT/launcher/moonlightos_controls.py" "$CHROOT/usr/libexec/moonlightos_controls.py"
-install -D -m 0755 "$ROOT/scripts/moonlightos-bluetoothd" "$CHROOT/usr/libexec/moonlightos-bluetoothd"
-install -D -m 0755 "$ROOT/scripts/moonlightos-osk-session" "$CHROOT/usr/libexec/moonlightos-osk-session"
-install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale-ui" "$CHROOT/usr/bin/moonlightos-tailscale-ui"
-install -D -m 0755 "$ROOT/scripts/moonlightos-run-app" "$CHROOT/usr/libexec/moonlightos-run-app"
-install -D -m 0755 "$ROOT/scripts/moonlightos-moonlight-prefs" "$CHROOT/usr/libexec/moonlightos-moonlight-prefs"
-install -D -m 0755 "$ROOT/scripts/moonlightos-display-failed" "$CHROOT/usr/libexec/moonlightos-display-failed"
-install -D -m 0755 "$ROOT/scripts/moonlightos-firefox-drm-check" "$CHROOT/usr/libexec/moonlightos-firefox-drm-check"
-install -D -m 0755 "$ROOT/scripts/moonlightos-qemu-smoke" "$CHROOT/usr/libexec/moonlightos-qemu-smoke"
-install -D -m 0755 "$ROOT/scripts/moonlightos-support-export" "$CHROOT/usr/libexec/moonlightos-support-export"
-install -D -m 0755 "$ROOT/scripts/moonlightos-diagnostics" "$CHROOT/usr/bin/moonlightos-diagnostics"
-install -D -m 0755 "$ROOT/scripts/moonlightos-hardware-report" "$CHROOT/usr/bin/moonlightos-hardware-report"
-install -D -m 0755 "$ROOT/scripts/moonlightos-hwdetect" "$CHROOT/usr/libexec/moonlightos-hwdetect"
-install -D -m 0755 "$ROOT/scripts/moonlightos-network-ready" "$CHROOT/usr/libexec/moonlightos-network-ready"
-install -D -m 0755 "$ROOT/scripts/moonlightos-firewall" "$CHROOT/usr/libexec/moonlightos-firewall"
-install -D -m 0755 "$ROOT/scripts/moonlightos-audio" "$CHROOT/usr/libexec/moonlightos-audio"
-install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale" "$CHROOT/usr/sbin/moonlightos-tailscale"
-install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale-diagnostics" "$CHROOT/usr/bin/moonlightos-tailscale-diagnostics"
-install -D -m 0755 "$ROOT/scripts/moonlightos-host-address" "$CHROOT/usr/bin/moonlightos-host-address"
-install -D -m 0755 "$ROOT/scripts/moonlightos-tailscale-enrollment" "$CHROOT/usr/bin/moonlightos-tailscale-enrollment"
-install -D -m 0755 "$ROOT/usbip/moonlightos-usbip" "$CHROOT/usr/sbin/moonlightos-usbip"
-install -D -m 0644 "$ROOT/config/default/moonlightos" "$CHROOT/etc/default/moonlightos"
-install -D -m 0644 "$ROOT/config/nftables/moonlightos.nft" "$CHROOT/etc/moonlightos/nftables.template"
-install -D -m 0644 "$ROOT/usbip/usbip-allowlist.conf" "$CHROOT/etc/moonlightos/usbip-allowlist.conf"
+install -D -m 0755 "$ROOT/launcher/couchliteos-launcher.py" "$CHROOT/usr/libexec/couchliteos-launcher"
+install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/couchliteos-gamepad-nav"
+install -D -m 0644 "$ROOT/launcher/couchliteos_apps.py" "$CHROOT/usr/libexec/couchliteos_apps.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_rdp.py" "$CHROOT/usr/libexec/couchliteos_rdp.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_controllers.py" "$CHROOT/usr/libexec/couchliteos_controllers.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_pcstatus.py" "$CHROOT/usr/libexec/couchliteos_pcstatus.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_update.py" "$CHROOT/usr/libexec/couchliteos_update.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_errors.py" "$CHROOT/usr/libexec/couchliteos_errors.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_whatsnew.py" "$CHROOT/usr/libexec/couchliteos_whatsnew.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_padcheck.py" "$CHROOT/usr/libexec/couchliteos_padcheck.py"
+install -D -m 0755 "$ROOT/scripts/couchliteos-rdp-secret" "$CHROOT/usr/libexec/couchliteos-rdp-secret"
+install -D -m 0755 "$ROOT/launcher/couchliteos_app_runner.py" "$CHROOT/usr/libexec/couchliteos-run-configured-app"
+install -D -m 0644 "$ROOT/launcher/couchliteos_setup.py" "$CHROOT/usr/libexec/couchliteos_setup.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_netmenu.py" "$CHROOT/usr/libexec/couchliteos_netmenu.py"
+install -D -m 0755 "$ROOT/launcher/couchliteos_osk.py" "$CHROOT/usr/libexec/couchliteos-osk"
+install -D -m 0644 "$ROOT/launcher/couchliteos_display.py" "$CHROOT/usr/libexec/couchliteos_display.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_audio.py" "$CHROOT/usr/libexec/couchliteos_audio.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_power.py" "$CHROOT/usr/libexec/couchliteos_power.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_support.py" "$CHROOT/usr/libexec/couchliteos_support.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_bluetooth.py" "$CHROOT/usr/libexec/couchliteos_bluetooth.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_stream.py" "$CHROOT/usr/libexec/couchliteos_stream.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_cec.py" "$CHROOT/usr/libexec/couchliteos_cec.py"
+install -D -m 0755 "$ROOT/scripts/couchliteos-cec" "$CHROOT/usr/libexec/couchliteos-cec"
+install -D -m 0644 "$ROOT/launcher/couchliteos_confirm.py" "$CHROOT/usr/libexec/couchliteos_confirm.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_listview.py" "$CHROOT/usr/libexec/couchliteos_listview.py"
+install -D -m 0755 "$ROOT/launcher/couchliteos_foot.py" "$CHROOT/usr/libexec/couchliteos-foot"
+install -D -m 0644 "$ROOT/launcher/couchliteos_controls.py" "$CHROOT/usr/libexec/couchliteos_controls.py"
+install -D -m 0755 "$ROOT/scripts/couchliteos-bluetoothd" "$CHROOT/usr/libexec/couchliteos-bluetoothd"
+install -D -m 0755 "$ROOT/scripts/couchliteos-osk-session" "$CHROOT/usr/libexec/couchliteos-osk-session"
+install -D -m 0755 "$ROOT/scripts/couchliteos-tailscale-ui" "$CHROOT/usr/bin/couchliteos-tailscale-ui"
+install -D -m 0755 "$ROOT/scripts/couchliteos-run-app" "$CHROOT/usr/libexec/couchliteos-run-app"
+install -D -m 0755 "$ROOT/scripts/couchliteos-moonlight-prefs" "$CHROOT/usr/libexec/couchliteos-moonlight-prefs"
+install -D -m 0755 "$ROOT/scripts/couchliteos-display-failed" "$CHROOT/usr/libexec/couchliteos-display-failed"
+install -D -m 0755 "$ROOT/scripts/couchliteos-firefox-drm-check" "$CHROOT/usr/libexec/couchliteos-firefox-drm-check"
+install -D -m 0755 "$ROOT/scripts/couchliteos-qemu-smoke" "$CHROOT/usr/libexec/couchliteos-qemu-smoke"
+install -D -m 0755 "$ROOT/scripts/couchliteos-support-export" "$CHROOT/usr/libexec/couchliteos-support-export"
+install -D -m 0755 "$ROOT/scripts/couchliteos-diagnostics" "$CHROOT/usr/bin/couchliteos-diagnostics"
+install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/couchliteos-hardware-report"
+install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
+install -D -m 0755 "$ROOT/scripts/couchliteos-network-ready" "$CHROOT/usr/libexec/couchliteos-network-ready"
+install -D -m 0755 "$ROOT/scripts/couchliteos-firewall" "$CHROOT/usr/libexec/couchliteos-firewall"
+install -D -m 0755 "$ROOT/scripts/couchliteos-audio" "$CHROOT/usr/libexec/couchliteos-audio"
+install -D -m 0755 "$ROOT/scripts/couchliteos-tailscale" "$CHROOT/usr/sbin/couchliteos-tailscale"
+install -D -m 0755 "$ROOT/scripts/couchliteos-tailscale-diagnostics" "$CHROOT/usr/bin/couchliteos-tailscale-diagnostics"
+install -D -m 0755 "$ROOT/scripts/couchliteos-host-address" "$CHROOT/usr/bin/couchliteos-host-address"
+install -D -m 0755 "$ROOT/scripts/couchliteos-tailscale-enrollment" "$CHROOT/usr/bin/couchliteos-tailscale-enrollment"
+install -D -m 0755 "$ROOT/usbip/couchliteos-usbip" "$CHROOT/usr/sbin/couchliteos-usbip"
+install -D -m 0644 "$ROOT/config/default/couchliteos" "$CHROOT/etc/default/couchliteos"
+install -D -m 0644 "$ROOT/config/nftables/couchliteos.nft" "$CHROOT/etc/couchliteos/nftables.template"
+install -D -m 0644 "$ROOT/usbip/usbip-allowlist.conf" "$CHROOT/etc/couchliteos/usbip-allowlist.conf"
 install -D -m 0644 "$ROOT/build/applications.lock" \
-  "$CHROOT/usr/share/moonlightos/applications.lock"
+  "$CHROOT/usr/share/couchliteos/applications.lock"
 install -D -m 0644 "$ROOT/build/sources.lock" \
-  "$CHROOT/usr/share/moonlightos/sources.lock"
+  "$CHROOT/usr/share/couchliteos/sources.lock"
 for manifest in "$ROOT"/config/apps.d/*.ini; do
-  install -D -m 0644 "$manifest" "$CHROOT/usr/share/moonlightos/apps.d/$(basename "$manifest")"
+  install -D -m 0644 "$manifest" "$CHROOT/usr/share/couchliteos/apps.d/$(basename "$manifest")"
 done
 install -D -m 0644 "$ROOT/docs/examples/steam.ini" \
-  "$CHROOT/usr/share/doc/moonlightos/examples/steam.ini"
+  "$CHROOT/usr/share/doc/couchliteos/examples/steam.ini"
 build_commit=$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)
 build_state=clean
 git -C "$ROOT" status --porcelain --untracked-files=normal 2>/dev/null | grep -q . && build_state=modified
-printf 'MoonlightOS: %s\nBuild profile: %s\nSource commit: %s\nSource state: %s\nBuild date: %s\n' \
+printf 'CouchLiteOS: %s\nBuild profile: %s\nSource commit: %s\nSource state: %s\nBuild date: %s\n' \
   "$(< "$ROOT/VERSION")" "$PROFILE" "$build_commit" "$build_state" "$(date --utc --iso-8601=seconds)" \
-  > "$CHROOT/usr/share/moonlightos/build-info"
+  > "$CHROOT/usr/share/couchliteos/build-info"
 
 for unit in "$ROOT"/services/*; do
   install -D -m 0644 "$unit" "$CHROOT/etc/systemd/system/$(basename "$unit")"
 done
 
-install -d -m 0755 "$CHROOT/opt/moonlightos/apps"
+install -d -m 0755 "$CHROOT/opt/couchliteos/apps"
 while IFS='|' read -r name _version _url filename; do
   [[ -z "$name" || "$name" == \#* ]] && continue
   extract=$(mktemp -d "$ROOT/build/.appimage.XXXXXX")
@@ -145,16 +145,16 @@ while IFS='|' read -r name _version _url filename; do
   offset=$("$extract/application.AppImage" --appimage-offset)
   unsquashfs -quiet -offset "$offset" -dest "$extract/squashfs-root" \
     "$extract/application.AppImage"
-  install -d -m 0755 "$CHROOT/opt/moonlightos/apps/$name"
-  cp -a "$extract/squashfs-root/." "$CHROOT/opt/moonlightos/apps/$name/"
+  install -d -m 0755 "$CHROOT/opt/couchliteos/apps/$name"
+  cp -a "$extract/squashfs-root/." "$CHROOT/opt/couchliteos/apps/$name/"
   case "$name" in
     moonlight)
-      test -x "$CHROOT/opt/moonlightos/apps/$name/usr/bin/moonlight"
-      test -f "$CHROOT/opt/moonlightos/apps/$name/usr/plugins/platforms/libqxcb.so"
+      test -x "$CHROOT/opt/couchliteos/apps/$name/usr/bin/moonlight"
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/plugins/platforms/libqxcb.so"
       ;;
     chiaki-ng)
-      test -x "$CHROOT/opt/moonlightos/apps/$name/usr/bin/chiaki"
-      test -f "$CHROOT/opt/moonlightos/apps/$name/usr/plugins/platforms/libqwayland-egl.so"
+      test -x "$CHROOT/opt/couchliteos/apps/$name/usr/bin/chiaki"
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/plugins/platforms/libqwayland-egl.so"
       ;;
   esac
   find "$extract" -depth -delete

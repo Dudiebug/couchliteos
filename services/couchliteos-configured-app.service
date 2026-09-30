@@ -1,0 +1,26 @@
+[Unit]
+Description=CouchLiteOS configured application
+After=couchliteos-launcher.service
+ConditionPathExists=/run/couchliteos/launch-app.request
+StartLimitIntervalSec=60
+StartLimitBurst=3
+OnFailure=couchliteos-path-rearm@configured-app.service
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+SupplementaryGroups=audio input render video
+Environment=HOME=/var/lib/couchliteos/home
+Environment=XDG_CONFIG_HOME=/var/lib/couchliteos/home/.config
+Environment=XDG_DATA_HOME=/var/lib/couchliteos/home/.local/share
+Environment=XDG_CACHE_HOME=/var/lib/couchliteos/home/.cache
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+Environment=PIPEWIRE_RUNTIME_DIR=/run/couchliteos
+Environment=WAYLAND_DISPLAY=wayland-0
+EnvironmentFile=-/run/couchliteos/session.env
+ExecStart=/usr/libexec/couchliteos-run-configured-app
+KillMode=control-group
+TimeoutStopSec=10
+StandardOutput=journal+console
+StandardError=journal+console

@@ -1,6 +1,6 @@
 # Optional Tailscale overlay
 
-Tailscale connects MoonlightOS to the Linux Sunshine host when the two systems
+Tailscale connects CouchLiteOS to the Linux Sunshine host when the two systems
 are on different networks. It is optional: ordinary wired LAN Moonlight,
 chiaki-ng, and LAN USB/IP continue to work when Tailscale is disabled, logged
 out, or unavailable.
@@ -26,13 +26,13 @@ Official references: [Linux install](https://tailscale.com/docs/install/linux),
 
 ## Enrollment
 
-Choose **TAILSCALE** in the local launcher. MoonlightOS starts the native daemon,
-generates `moonlightos-<first-eight-machine-id>` unless `node_name` is configured,
+Choose **TAILSCALE** in the local launcher. CouchLiteOS starts the native daemon,
+generates `couchliteos-<first-eight-machine-id>` unless `node_name` is configured,
 and displays the short-lived login URL as a scannable QR code plus text. The URL
 is kept only under `/run`; it is not written to persistent logs.
 
 For out-of-band provisioning, place a single-use key in
-`/etc/moonlightos/tailscale-auth.key`, owned by root with mode `0600`. The
+`/etc/couchliteos/tailscale-auth.key`, owned by root with mode `0600`. The
 enrollment service uses Tailscale's `file:` auth-key form, so the key is not in
 argv, shell history, or logs. Never put this file in Git or the image.
 Remove the out-of-band file after a single-use enrollment succeeds.
@@ -53,7 +53,7 @@ initial unauthenticated enrollment. Key expiry is not automatically disabled;
 an administrator may change it for a trusted always-on appliance in the
 Tailscale admin console after weighing the security tradeoff.
 
-MoonlightOS never enables route acceptance, advertised routes, subnet routing,
+CouchLiteOS never enables route acceptance, advertised routes, subnet routing,
 exit-node behavior, Serve, Funnel, or public ingress.
 
 ## Sunshine host profile
@@ -71,10 +71,10 @@ app =
 
 `auto` tries reachable LAN first, then MagicDNS, then the literal Tailscale IP.
 It never waits for Tailscale before opening Moonlight. Run
-`moonlightos-host-address` to see the selected address. Add that address
+`couchliteos-host-address` to see the selected address. Add that address
 manually in Moonlight; LAN discovery and mDNS are not expected to cross the
 overlay. If `app` is set to a paired Sunshine application such as `Desktop`,
-MoonlightOS uses Moonlight's direct `stream HOST APP` CLI.
+CouchLiteOS uses Moonlight's direct `stream HOST APP` CLI.
 
 The Sunshine host firewall must allow streaming on `tailscale0` for the
 current Sunshine installation. Do not paste an old static port list. Verify
@@ -88,7 +88,7 @@ No router port forwards are required for the tailnet path.
 Tailscale SSH is off by default and no OpenSSH server is installed. After
 enrollment, choose **Enable Tailscale SSH**. This runs the supported incremental
 command `tailscale set --ssh=true`. Both a network grant and an SSH rule in the
-tailnet policy remain mandatory. `moonlightos-tailscale logout` refuses to run
+tailnet policy remain mandatory. `couchliteos-tailscale logout` refuses to run
 without `--confirm` because logout destroys the node identity.
 
 Example least-privilege policy (replace the example administrator identity):
@@ -122,7 +122,7 @@ Example least-privilege policy (replace the example administrator identity):
       "action": "check",
       "src": ["tag:moonlight-admin"],
       "dst": ["tag:moonlight-client"],
-      "users": ["moonlightos"],
+      "users": ["couchliteos"],
       "checkPeriod": "1h"
     }
   ]
@@ -142,7 +142,7 @@ admin console, not trusted to appliance-local nftables alone.
 
 ## Direct and relayed paths
 
-Run `moonlightos-tailscale-diagnostics`. It shows backend state, node name,
+Run `couchliteos-tailscale-diagnostics`. It shows backend state, node name,
 Tailscale IPv4, MagicDNS name, status, ping, netcheck, selected host, approximate
 latency, and whether the active path is direct, peer-relay, or DERP. Relays are
 warned but never block launch. Direct is normally best for throughput/latency;
@@ -159,7 +159,7 @@ USB/IP remains LAN-only unless both `remote_usbip = true` and one literal
 `tailscale0` chains, and the VID/PID/serial allowlist still applies. Relay paths
 can be unsuitable for latency-sensitive devices.
 
-chiaki-ng runs locally on MoonlightOS and expects the PlayStation on the local
+chiaki-ng runs locally on CouchLiteOS and expects the PlayStation on the local
 LAN. Tailscale does not turn a PlayStation into a tailnet node. v0.1.2 does not
 enable a [subnet router](https://tailscale.com/docs/features/subnet-routers) or
 an [exit node](https://tailscale.com/docs/features/exit-nodes); reaching a

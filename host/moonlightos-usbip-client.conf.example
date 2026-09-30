@@ -1,3 +1,0 @@
-# Copy to /etc/moonlightos-usbip-client.conf on the Linux gaming PC.
-SERVER_IP=192.0.2.50
-POLL_SECONDS=5

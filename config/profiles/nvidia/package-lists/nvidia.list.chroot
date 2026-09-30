@@ -15,7 +15,7 @@ nvidia-vulkan-icd
 libcuda1
 libnvcuvid1
 nvidia-vaapi-driver
-# Diagnostics and the supported-GPU list moonlightos-hwdetect reads
+# Diagnostics and the supported-GPU list couchliteos-hwdetect reads
 nvidia-smi
 nvidia-detect
 # Sleep and wake: nvidia-suspend.service / nvidia-resume.service (not pulled in

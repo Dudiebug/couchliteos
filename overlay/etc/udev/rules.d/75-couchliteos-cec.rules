@@ -1,0 +1,4 @@
+# HDMI-CEC: start the TV-control daemon only when the kernel exposes a CEC adapter.
+SUBSYSTEM=="cec", KERNEL=="cec[0-9]*", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}+="couchliteos-cec.service"
+# Pulse-Eight USB-CEC adapter: attach its serial line to the kernel pulse8-cec driver.
+SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*", ACTION=="add", ATTRS{idVendor}=="2548", ATTRS{idProduct}=="1001|1002", TAG+="systemd", ENV{SYSTEMD_WANTS}+="couchliteos-pulse8-inputattach@%k.service"

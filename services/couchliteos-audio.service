@@ -1,0 +1,22 @@
+[Unit]
+Description=CouchLiteOS PipeWire audio session
+Wants=bluetooth.service
+After=systemd-tmpfiles-setup.service dbus.service bluetooth.service
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+SupplementaryGroups=audio
+Environment=HOME=/var/lib/couchliteos/home
+Environment=XDG_CONFIG_HOME=/var/lib/couchliteos/home/.config
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+Environment=PIPEWIRE_RUNTIME_DIR=/run/couchliteos
+ExecStart=/usr/libexec/couchliteos-audio
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/var/log/couchliteos/audio.log
+StandardError=append:/var/log/couchliteos/audio.log
+
+[Install]
+WantedBy=graphical.target

@@ -2,27 +2,27 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
-SCREENSHOT=${MOONLIGHTOS_QEMU_SCREENSHOT:-/tmp/moonlightos-qemu-smoke.ppm}
+ISO=${1:-$ROOT/build/out/couchliteos-$(< "$ROOT/VERSION")-amd64.iso}
+SCREENSHOT=${COUCHLITEOS_QEMU_SCREENSHOT:-/tmp/couchliteos-qemu-smoke.ppm}
 # Slow hosts (for example nested software emulation) may stretch every timeout.
-SCALE=${MOONLIGHTOS_QEMU_TIMEOUT_SCALE:-1}
-[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'MOONLIGHTOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
+SCALE=${COUCHLITEOS_QEMU_TIMEOUT_SCALE:-1}
+[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'COUCHLITEOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
 command -v qemu-system-x86_64 >/dev/null || { echo 'qemu-system-x86_64 is required' >&2; exit 127; }
 [[ -f "$ISO" ]] || { echo "ISO not found: $ISO" >&2; exit 66; }
 
-if [[ -n ${MOONLIGHTOS_QEMU_LOG:-} ]]; then
-  log=$MOONLIGHTOS_QEMU_LOG
+if [[ -n ${COUCHLITEOS_QEMU_LOG:-} ]]; then
+  log=$COUCHLITEOS_QEMU_LOG
   install -D -m 0644 /dev/null "$log"
 else
   log=$(mktemp)
 fi
 temporary_files=()
-[[ -z ${MOONLIGHTOS_QEMU_LOG:-} ]] && temporary_files+=("$log")
-monitor_socket=$(mktemp /tmp/moonlightos-qemu-monitor.XXXXXX)
+[[ -z ${COUCHLITEOS_QEMU_LOG:-} ]] && temporary_files+=("$log")
+monitor_socket=$(mktemp /tmp/couchliteos-qemu-monitor.XXXXXX)
 find "$monitor_socket" -delete
 # Hosts without Unix-domain sockets in Python can use a local TCP monitor.
-if [[ -n ${MOONLIGHTOS_QEMU_MONITOR_PORT:-} ]]; then
-  monitor_address=tcp:127.0.0.1:$MOONLIGHTOS_QEMU_MONITOR_PORT
+if [[ -n ${COUCHLITEOS_QEMU_MONITOR_PORT:-} ]]; then
+  monitor_address=tcp:127.0.0.1:$COUCHLITEOS_QEMU_MONITOR_PORT
   monitor_option="$monitor_address,server=on,wait=off"
 else
   monitor_address=$monitor_socket
@@ -50,13 +50,13 @@ if command -v xorriso >/dev/null; then
   grep -q '^serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1$' "$grub_cfg" || { echo 'ISO GRUB config lacks serial setup' >&2; exit 65; }
   grep -q '^terminal_input console serial$' "$grub_cfg" || { echo 'ISO GRUB config lacks serial input' >&2; exit 65; }
   grep -q '^terminal_output console serial$' "$grub_cfg" || { echo 'ISO GRUB config lacks serial output' >&2; exit 65; }
-  grep -q '^menuentry "Start MoonlightOS"' "$grub_cfg" || { echo 'ISO GRUB config lacks the MoonlightOS live entry' >&2; exit 65; }
-  grep -q '^menuentry "Start MoonlightOS (No Persistence)"' "$grub_cfg" || { echo 'ISO GRUB config lacks the recovery live entry' >&2; exit 65; }
+  grep -q '^menuentry "Start CouchLiteOS"' "$grub_cfg" || { echo 'ISO GRUB config lacks the CouchLiteOS live entry' >&2; exit 65; }
+  grep -q '^menuentry "Start CouchLiteOS (No Persistence)"' "$grub_cfg" || { echo 'ISO GRUB config lacks the recovery live entry' >&2; exit 65; }
   grep -q 'boot=live.*components.*persistence.*ipv6.disable=1.*console=tty1.*console=ttyS0,115200n8' "$grub_cfg" || { echo 'ISO GRUB config lacks expected live boot arguments' >&2; exit 65; }
   grep -q 'boot=live.*components.*nopersistence.*ipv6.disable=1' "$grub_cfg" || { echo 'ISO GRUB recovery entry does not disable persistence' >&2; exit 65; }
   installer_cfg=$boot_extract/install_start.cfg
   xorriso -osirrox on -indev "$ISO" -extract /boot/grub/install_start.cfg "$installer_cfg" >/dev/null 2>&1
-  grep -q "menuentry 'Install MoonlightOS'" "$installer_cfg" || { echo 'ISO GRUB config lacks the MoonlightOS installer entry' >&2; exit 65; }
+  grep -q "menuentry 'Install CouchLiteOS'" "$installer_cfg" || { echo 'ISO GRUB config lacks the CouchLiteOS installer entry' >&2; exit 65; }
   grep -q 'vga=788 theme=dark ipv6.disable=1 --- quiet' "$installer_cfg" || { echo 'ISO installer does not use the dark text theme' >&2; exit 65; }
   theme_cfg=$boot_extract/theme.cfg
   xorriso -osirrox on -indev "$ISO" -extract /boot/grub/theme.cfg "$theme_cfg" >/dev/null 2>&1
@@ -88,15 +88,15 @@ args=(
   -device virtio-vga -display none -serial stdio -no-reboot
   -monitor "$monitor_option"
   -netdev "user,id=net0" -device "e1000,netdev=net0"
-  -fw_cfg "name=opt/moonlightos.smoke,string=apps"
-  -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE"
+  -fw_cfg "name=opt/couchliteos.smoke,string=apps"
+  -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE"
 )
-# Without KVM, MOONLIGHTOS_QEMU_ACCEL_ARGS can name another accelerator, for
+# Without KVM, COUCHLITEOS_QEMU_ACCEL_ARGS can name another accelerator, for
 # example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
   args=(-enable-kvm -cpu host "${args[@]}")
-elif [[ -n ${MOONLIGHTOS_QEMU_ACCEL_ARGS:-} ]]; then
-  read -r -a accel <<< "$MOONLIGHTOS_QEMU_ACCEL_ARGS"
+elif [[ -n ${COUCHLITEOS_QEMU_ACCEL_ARGS:-} ]]; then
+  read -r -a accel <<< "$COUCHLITEOS_QEMU_ACCEL_ARGS"
   args=("${accel[@]}" "${args[@]}")
 fi
 
@@ -104,13 +104,13 @@ fi
 # code image. A code-only pflash drive can stall before GRUB with no serial log.
 ovmf_code=
 ovmf_vars_template=
-if [[ -n ${MOONLIGHTOS_OVMF_CODE:-} || -n ${MOONLIGHTOS_OVMF_VARS:-} ]]; then
-  [[ -r ${MOONLIGHTOS_OVMF_CODE:-} && -r ${MOONLIGHTOS_OVMF_VARS:-} ]] || {
-    echo 'Both readable MOONLIGHTOS_OVMF_CODE and MOONLIGHTOS_OVMF_VARS are required.' >&2
+if [[ -n ${COUCHLITEOS_OVMF_CODE:-} || -n ${COUCHLITEOS_OVMF_VARS:-} ]]; then
+  [[ -r ${COUCHLITEOS_OVMF_CODE:-} && -r ${COUCHLITEOS_OVMF_VARS:-} ]] || {
+    echo 'Both readable COUCHLITEOS_OVMF_CODE and COUCHLITEOS_OVMF_VARS are required.' >&2
     exit 69
   }
-  ovmf_code=$MOONLIGHTOS_OVMF_CODE
-  ovmf_vars_template=$MOONLIGHTOS_OVMF_VARS
+  ovmf_code=$COUCHLITEOS_OVMF_CODE
+  ovmf_vars_template=$COUCHLITEOS_OVMF_VARS
 else
   for pair in \
     '/usr/share/OVMF/OVMF_CODE_4M.fd|/usr/share/OVMF/OVMF_VARS_4M.fd' \
@@ -161,20 +161,20 @@ fail() {
   exit 1
 }
 
-wait_for_marker 'MOONLIGHTOS_LAUNCHER_READY' 180 || fail 'Launcher did not become ready.'
+wait_for_marker 'COUCHLITEOS_LAUNCHER_READY' 180 || fail 'Launcher did not become ready.'
 capture_screen
-wait_for_marker 'MOONLIGHTOS_SMOKE_HWDETECT_READY' 30 || fail 'Hardware detection did not run, or a module failed to load.'
-wait_for_marker 'MOONLIGHTOS_SMOKE_CONFIGURED_PLATFORM_READY' 30 || fail 'Configured applications, OSK, or setup-ready ordering failed.'
-wait_for_marker 'MOONLIGHTOS_SMOKE_USBIP_READY' 30 || fail 'USB/IP daemon did not remain active.'
-wait_for_marker 'MOONLIGHTOS_SMOKE_BLUETOOTH_READY' 30 || fail 'Bluetooth control service or launcher-survival check failed.'
+wait_for_marker 'COUCHLITEOS_SMOKE_HWDETECT_READY' 30 || fail 'Hardware detection did not run, or a module failed to load.'
+wait_for_marker 'COUCHLITEOS_SMOKE_CONFIGURED_PLATFORM_READY' 30 || fail 'Configured applications, OSK, or setup-ready ordering failed.'
+wait_for_marker 'COUCHLITEOS_SMOKE_USBIP_READY' 30 || fail 'USB/IP daemon did not remain active.'
+wait_for_marker 'COUCHLITEOS_SMOKE_BLUETOOTH_READY' 30 || fail 'Bluetooth control service or launcher-survival check failed.'
 
 # A QEMU fw_cfg flag activates the otherwise inert smoke driver inside the
 # guest. It reports success only after all three real application processes
 # have remained alive for five seconds.
-wait_for_marker 'MOONLIGHTOS_SMOKE_APPS_READY' 180 || fail 'Applications did not remain running.'
+wait_for_marker 'COUCHLITEOS_SMOKE_APPS_READY' 180 || fail 'Applications did not remain running.'
 capture_screen
-wait_for_marker 'MOONLIGHTOS_SMOKE_RDP_CLIENT_STARTED' 120 || fail 'Remote Desktop session did not start sdl-freerdp3.'
-wait_for_marker 'MOONLIGHTOS_SMOKE_RDP_READY' 180 || fail 'Remote Desktop restart, cleanup, password, or persistence checks failed.'
+wait_for_marker 'COUCHLITEOS_SMOKE_RDP_CLIENT_STARTED' 120 || fail 'Remote Desktop session did not start sdl-freerdp3.'
+wait_for_marker 'COUCHLITEOS_SMOKE_RDP_READY' 180 || fail 'Remote Desktop restart, cleanup, password, or persistence checks failed.'
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true

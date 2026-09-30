@@ -1,0 +1,9 @@
+[Unit]
+Description=Open the CouchLiteOS buffered keyboard when requested
+
+[Path]
+PathExists=/run/couchliteos/start-osk
+Unit=couchliteos-osk.service
+
+[Install]
+WantedBy=graphical.target

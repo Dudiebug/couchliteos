@@ -1,0 +1,14 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+active=/run/couchliteos/osk-active
+payload=/run/couchliteos/osk-payload.json
+request=/run/couchliteos/start-osk
+rm -f -- "$request" "$payload"
+touch "$active"
+cleanup() { rm -f -- "$active"; }
+trap cleanup EXIT INT TERM
+/usr/libexec/couchliteos-foot --fullscreen --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk
+rm -f -- "$active"
+sleep 0.25
+exec /usr/libexec/couchliteos-osk --inject

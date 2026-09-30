@@ -1,9 +1,0 @@
-[Unit]
-Description=Open the MoonlightOS buffered keyboard when requested
-
-[Path]
-PathExists=/run/moonlightos/start-osk
-Unit=moonlightos-osk.service
-
-[Install]
-WantedBy=graphical.target

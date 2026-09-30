@@ -5,8 +5,8 @@ import threading
 import unittest
 from unittest import mock
 
-import moonlightos_pcstatus as pcstatus
-import moonlightos_stream as stream
+import couchliteos_pcstatus as pcstatus
+import couchliteos_stream as stream
 
 MAC = bytes.fromhex("aabbccddeeff")
 
@@ -225,7 +225,7 @@ class LauncherHookTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_pcstatus", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
@@ -260,12 +260,12 @@ class LauncherHookTest(unittest.TestCase):
         launcher.pcstatus.line.return_value = "GAMING PC: X READY"
         launcher.draw()
         title_row = max(2, 30 // 8)
-        self.assertIn((title_row, "MOONLIGHTOS"), drawn)
+        self.assertIn((title_row, "COUCHLITEOS"), drawn)
         self.assertIn((title_row + 1, "GAMING PC: X READY"), drawn)
         launcher.pcstatus.probe.assert_not_called()
 
     def test_launcher_starts_the_monitor_with_the_other_monitors(self):
-        source = pathlib.Path(__file__).with_name("moonlightos-launcher.py").read_text()
+        source = pathlib.Path(__file__).with_name("couchliteos-launcher.py").read_text()
         self.assertIn("self.pcstatus = pcstatus.Monitor()", source)
         self.assertIn("self.pcstatus.start()", source)
 

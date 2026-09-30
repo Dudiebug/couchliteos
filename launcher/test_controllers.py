@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_controllers as controllers
+import couchliteos_controllers as controllers
 
 
 def supply(root, name, **files):
@@ -226,7 +226,7 @@ class MonitorTest(unittest.TestCase):
 class LauncherFooterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_under_test", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)

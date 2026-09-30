@@ -37,14 +37,14 @@ rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
 for module in b43 bcma ssb brcmsmac; do
   grep -Rqs "^blacklist $module\$" /etc/modprobe.d || fail "$module is not blacklisted"
 done
-grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/moonlightos-imac2013.conf || fail 'hid_apple fnmode is not set'
-grep -qsx 'applesmc' /etc/modules-load.d/moonlightos-imac2013.conf || fail 'applesmc is not loaded at boot'
+grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/couchliteos-imac2013.conf || fail 'hid_apple fnmode is not set'
+grep -qsx 'applesmc' /etc/modules-load.d/couchliteos-imac2013.conf || fail 'applesmc is not loaded at boot'
 test -f /usr/lib/firmware/tigon/tg357766.bin || fail 'BCM57766 (tg3) firmware is missing'
 
 # Kepler has no HEVC decoder and nouveau's H.264 decoder needs firmware that
 # cannot be redistributed, so Moonlight defaults to software H.264 at 1080p60.
 sed -i \
   -e '/^\[moonlight\]$/,/^\[/{s/^codec = .*/codec = H.264/;s/^decoder = .*/decoder = software/}' \
-  /var/lib/moonlightos/config.ini
-grep -qx 'codec = H.264' /var/lib/moonlightos/config.ini || fail 'Moonlight codec default was not set'
-grep -qx 'decoder = software' /var/lib/moonlightos/config.ini || fail 'Moonlight decoder default was not set'
+  /var/lib/couchliteos/config.ini
+grep -qx 'codec = H.264' /var/lib/couchliteos/config.ini || fail 'Moonlight codec default was not set'
+grep -qx 'decoder = software' /var/lib/couchliteos/config.ini || fail 'Moonlight decoder default was not set'

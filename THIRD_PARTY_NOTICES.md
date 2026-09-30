@@ -1,6 +1,6 @@
 # Third-party notices
 
-MoonlightOS aggregates unmodified third-party software. It does not claim
+CouchLiteOS aggregates unmodified third-party software. It does not claim
 ownership of third-party names, trademarks, or code. Debian package copyright
 and source records remain installed under `/usr/share/doc/*/copyright`.
 
@@ -33,7 +33,7 @@ releases by `scripts/fetch-apps.sh` and verified against
 `build/applications.lock`. Their corresponding source is available at the
 tagged upstream repositories. Firefox ESR is installed as a Debian package, and
 its Debian copyright and source records remain in the image. Google Chrome is
-installed from Google's signed stable Debian repository. MoonlightOS does
+installed from Google's signed stable Debian repository. CouchLiteOS does
 not bundle Sony, Steam, or other proprietary game/service binaries,
 credentials, keys, firmware from unapproved sources, or user pairing material.
 The general ISO contains no proprietary NVIDIA driver, library, or driver GSP

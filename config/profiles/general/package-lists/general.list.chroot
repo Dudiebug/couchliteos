@@ -31,7 +31,7 @@ i965-va-driver
 mesa-va-drivers
 
 # Broadcom STA Wi-Fi (for example the iMac's BCM4360): wl.ko is built by DKMS
-# against the image kernel; moonlightos-hwdetect enables it per machine.
+# against the image kernel; couchliteos-hwdetect enables it per machine.
 linux-headers-amd64
 dkms
 broadcom-sta-dkms

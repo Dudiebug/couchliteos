@@ -10,15 +10,15 @@ while IFS= read -r -d '' cfg; do
 done < <(find . -type f -name grub.cfg -print0)
 
 while IFS= read -r -d '' cfg; do
-  sed -i 's/menuentry "Live system (amd64)"/menuentry "Start MoonlightOS"/' "$cfg"
-  grep -Fq 'menuentry "Start MoonlightOS (No Persistence)"' "$cfg" && continue
+  sed -i 's/menuentry "Live system (amd64)"/menuentry "Start CouchLiteOS"/' "$cfg"
+  grep -Fq 'menuentry "Start CouchLiteOS (No Persistence)"' "$cfg" && continue
   output=$(mktemp "${cfg}.XXXXXX")
   awk '
-    /^menuentry "Start MoonlightOS"/ && !done { capture=1 }
+    /^menuentry "Start CouchLiteOS"/ && !done { capture=1 }
     capture { block=block $0 ORS }
     capture && /^}/ {
       printf "%s", block
-      sub(/"Start MoonlightOS"[^\{]*/, "\"Start MoonlightOS (No Persistence)\" ", block)
+      sub(/"Start CouchLiteOS"[^\{]*/, "\"Start CouchLiteOS (No Persistence)\" ", block)
       gsub(/ persistence /, " nopersistence ", block)
       printf "%s", block
       block=""; capture=0; done=1; next
@@ -30,7 +30,7 @@ while IFS= read -r -d '' cfg; do
 done < <(find . -type f -path '*/boot/grub/grub.cfg' -print0)
 
 while IFS= read -r -d '' cfg; do
-  sed -i "s/menuentry 'Start installer'/menuentry 'Install MoonlightOS'/" "$cfg"
+  sed -i "s/menuentry 'Start installer'/menuentry 'Install CouchLiteOS'/" "$cfg"
   sed -i 's/vga=788 ipv6.disable=1/vga=788 theme=dark ipv6.disable=1/g' "$cfg"
 done < <(find . -type f -path '*/boot/grub/install*.cfg' -print0)
 
@@ -49,14 +49,14 @@ while IFS= read -r -d '' cfg; do
 done < <(find . -type f -name isolinux.cfg -print0)
 
 while IFS= read -r -d '' cfg; do
-  grep -Fq 'menu label Start MoonlightOS (No Persistence)' "$cfg" && continue
+  grep -Fq 'menu label Start CouchLiteOS (No Persistence)' "$cfg" && continue
   output=$(mktemp "${cfg}.XXXXXX")
   awk 'BEGIN { RS=""; ORS="\n\n" }
     $1 == "label" && $2 == "live-amd64" {
-      gsub(/menu label \^Live system \(amd64\)/, "menu label ^Start MoonlightOS")
+      gsub(/menu label \^Live system \(amd64\)/, "menu label ^Start CouchLiteOS")
       print
       sub(/^label live-amd64/, "label live-amd64-nopersistence")
-      gsub(/menu label \^Start MoonlightOS/, "menu label Start MoonlightOS (No Persistence)")
+      gsub(/menu label \^Start CouchLiteOS/, "menu label Start CouchLiteOS (No Persistence)")
       gsub(/\n[[:space:]]*menu default/, "")
       gsub(/ persistence /, " nopersistence ")
       print
@@ -69,7 +69,7 @@ while IFS= read -r -d '' cfg; do
 done < <(find . -type f -path '*/isolinux/live.cfg' -print0)
 
 while IFS= read -r -d '' cfg; do
-  sed -i 's/menu label Start \^installer/menu label ^Install MoonlightOS/' "$cfg"
+  sed -i 's/menu label Start \^installer/menu label ^Install CouchLiteOS/' "$cfg"
   sed -i 's/vga=788 ipv6.disable=1/vga=788 theme=dark ipv6.disable=1/g' "$cfg"
 done < <(find . -type f -path '*/isolinux/install.cfg' -print0)
 

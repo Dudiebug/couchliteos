@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_whatsnew as whatsnew
+import couchliteos_whatsnew as whatsnew
 from test_launcher import Screen as LauncherScreen
 
 
@@ -283,7 +283,7 @@ class ContentTest(unittest.TestCase):
     def test_markers_live_with_the_other_state(self):
         self.assertEqual(whatsnew.SEEN.name, "whatsnew-seen")
         self.assertEqual(whatsnew.SEEN.parent, whatsnew.setup.MARKER.parent)
-        self.assertEqual(whatsnew.SESSION_SEEN.parent, pathlib.Path("/run/moonlightos"))
+        self.assertEqual(whatsnew.SESSION_SEEN.parent, pathlib.Path("/run/couchliteos"))
 
     def test_the_version_comes_from_the_same_files_as_the_update_check(self):
         self.assertEqual(whatsnew.VERSION_FILES, whatsnew.update.VERSION_FILES)
@@ -292,7 +292,7 @@ class ContentTest(unittest.TestCase):
 class LauncherHookTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_whatsnew", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)

@@ -1,0 +1,30 @@
+[Unit]
+Description=Export a redacted CouchLiteOS support archive
+ConditionPathExists=/run/couchliteos/support-export.request
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/libexec/couchliteos-support-export
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SETGID CAP_SETUID CAP_SYS_ADMIN CAP_SYSLOG
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=no
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+InaccessiblePaths=/var/lib/couchliteos/home /var/lib/tailscale -/var/lib/bluetooth -/var/lib/couchliteos/rdp-secrets -/run/couchliteos/rdp-session.secret -/run/couchliteos/rdp-secret.request
+ReadOnlyPaths=/var/lib/couchliteos/config.ini /var/log/couchliteos
+ReadWritePaths=/run/couchliteos
+StandardOutput=journal
+StandardError=journal

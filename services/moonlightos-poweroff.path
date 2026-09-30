@@ -1,6 +1,0 @@
-[Path]
-PathExists=/run/moonlightos/poweroff
-Unit=moonlightos-poweroff.service
-
-[Install]
-WantedBy=graphical.target

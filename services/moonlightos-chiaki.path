@@ -1,9 +1,0 @@
-[Unit]
-Description=Start chiaki-ng when requested by the launcher
-
-[Path]
-PathExists=/run/moonlightos/start-chiaki
-Unit=moonlightos-chiaki.service
-
-[Install]
-WantedBy=graphical.target

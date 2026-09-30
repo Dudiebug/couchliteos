@@ -42,7 +42,7 @@ class Screen:
 class LauncherTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
@@ -423,7 +423,7 @@ class LauncherTest(unittest.TestCase):
         )
 
     def test_second_configured_app_is_refused_while_another_one_runs(self):
-        # One moonlightos-configured-app.service runs one app at a time; a queued
+        # One couchliteos-configured-app.service runs one app at a time; a queued
         # request would pop up unasked when the running app closes.
         chrome, terminal = self.command_app("google-chrome", "GOOGLE CHROME"), self.command_app("terminal", "TERMINAL")
         launcher = self.launcher()
@@ -853,7 +853,7 @@ class LauncherTest(unittest.TestCase):
 
     def test_unwritable_request_directory_reports_instead_of_crashing(self):
         launcher = self.launcher()
-        with mock.patch.object(self.module, "RUN", pathlib.Path("/nonexistent-moonlightos-run")):
+        with mock.patch.object(self.module, "RUN", pathlib.Path("/nonexistent-couchliteos-run")):
             launcher.request_sleep()
         self.assertIn("COULD NOT REQUEST SLEEP", launcher.status)
 
@@ -1002,7 +1002,7 @@ class LauncherTest(unittest.TestCase):
         save.assert_not_called()
         settings.choose.assert_not_called()
 
-    # --- setup wizard glue: the wizard logic lives in moonlightos_setup -----
+    # --- setup wizard glue: the wizard logic lives in couchliteos_setup -----
 
     def run_wizard_glue(self, launcher, **arguments):
         captured = {}
@@ -1259,11 +1259,11 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(app.id, "moonlight-pair")
         self.assertEqual(app.kind, "command")
         self.assertFalse(app.visible)
-        self.assertEqual(app.command, "/opt/moonlightos/apps/moonlight/usr/bin/moonlight")
+        self.assertEqual(app.command, "/opt/couchliteos/apps/moonlight/usr/bin/moonlight")
         self.assertEqual(app.arguments, "pair 192.168.1.20 --pin 0427")
         self.assertEqual(app.environment["QT_QPA_PLATFORM"], "xcb")
-        self.assertEqual(app.environment["APPDIR"], "/opt/moonlightos/apps/moonlight")
-        self.assertEqual(app.environment["LD_LIBRARY_PATH"], "/opt/moonlightos/apps/moonlight/usr/lib")
+        self.assertEqual(app.environment["APPDIR"], "/opt/couchliteos/apps/moonlight")
+        self.assertEqual(app.environment["LD_LIBRARY_PATH"], "/opt/couchliteos/apps/moonlight/usr/lib")
         launcher.launch_and_wait.assert_called_once()
         call = launcher.launch_and_wait.call_args
         self.assertEqual(call.args, ("moonlight-pair",))

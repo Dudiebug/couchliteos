@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_power as power
+import couchliteos_power as power
 
 MINUTE = 60.0
 RESIZE = 410

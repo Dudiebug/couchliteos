@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # NVIDIA profile: prove the proprietary driver is built for the image kernel
-# and loads only where moonlightos-hwdetect allows it.
+# and loads only where couchliteos-hwdetect allows it.
 fail() { echo "nvidia profile: $*" >&2; exit 1; }
 
 # Build explicitly for every image kernel (as for wl.ko) and prove the result.
@@ -30,7 +30,7 @@ rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
 # live-build's 5020-update-glx-alternative hook (run before this one) selects
 # Mesa for glx, which drops the glx group's kernel slaves: the nouveau
 # blacklist (also copied into the initramfs), the nvidia-drm -> nvidia-current-drm
-# aliases that moonlightos-hwdetect's module load needs, and the modules-load
+# aliases that couchliteos-hwdetect's module load needs, and the modules-load
 # link below. Select NVIDIA's entry; libEGL, libGL, and libGLES stay glvnd's in
 # both, so Mesa GPUs keep working.
 update-glx --set glx /usr/lib/nvidia
@@ -39,22 +39,22 @@ update-glx --set glx /usr/lib/nvidia
 # Debian loads nvidia-drm on every boot: /etc/modules-load.d/nvidia.conf is an
 # alternatives link to nvidia-kernel-support's conffile. On a machine without
 # a supported NVIDIA GPU that load fails, so the conffile is diverted aside and
-# moonlightos-hwdetect writes /run/modules-load.d per machine instead.
+# couchliteos-hwdetect writes /run/modules-load.d per machine instead.
 load_conf=/etc/nvidia/current/nvidia-load.conf
 [[ $(readlink -f /etc/modules-load.d/nvidia.conf) == "$load_conf" ]] ||
   fail "/etc/modules-load.d/nvidia.conf does not resolve to $load_conf; the nvidia-kernel-support layout changed"
 if [[ $(dpkg-divert --truename "$load_conf") == "$load_conf" ]]; then
-  dpkg-divert --local --rename --divert "$load_conf.moonlightos-disabled" --add "$load_conf"
+  dpkg-divert --local --rename --divert "$load_conf.couchliteos-disabled" --add "$load_conf"
 fi
-printf '%s\n' '# MoonlightOS: moonlightos-hwdetect loads nvidia-drm at boot only for a' \
-  '# supported NVIDIA GPU (/run/modules-load.d/moonlightos-hardware.conf).' > "$load_conf"
+printf '%s\n' '# CouchLiteOS: couchliteos-hwdetect loads nvidia-drm at boot only for a' \
+  '# supported NVIDIA GPU (/run/modules-load.d/couchliteos-hardware.conf).' > "$load_conf"
 ! grep -Rhs '^[^#]*nvidia' /etc/modules-load.d /usr/lib/modules-load.d || fail 'an NVIDIA module is still loaded on every boot'
 
 # nouveau stays blacklisted (also in the initramfs) so it never grabs a GPU
-# the proprietary driver supports; moonlightos-hwdetect loads it by name for
+# the proprietary driver supports; couchliteos-hwdetect loads it by name for
 # unsupported cards and for Basic Graphics.
 grep -Rqs '^blacklist nouveau$' /etc/modprobe.d || fail 'nouveau is not blacklisted'
-grep -qs '^options nvidia-current-drm modeset=1 fbdev=1$' /etc/modprobe.d/moonlightos-nvidia.conf || fail 'nvidia-drm modesetting is not enabled'
+grep -qs '^options nvidia-current-drm modeset=1 fbdev=1$' /etc/modprobe.d/couchliteos-nvidia.conf || fail 'nvidia-drm modesetting is not enabled'
 # Captured first: grep -q closing the pipe early would fail a pipefail pipeline.
 modprobe_config=$(modprobe --showconfig)
 grep -q '^options nvidia_current_drm .*modeset=1' <<< "$modprobe_config" || fail 'modprobe does not see the nvidia-drm options'

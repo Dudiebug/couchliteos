@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 from unittest import mock
 
-import moonlightos_update as update
+import couchliteos_update as update
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600.0
@@ -114,9 +114,9 @@ class FetchTest(unittest.TestCase):
         opener = mock.Mock(return_value=Response({"tag_name": "0.1.14"}))
         self.assertEqual(update.fetch_latest("0.1.13", opener=opener), "0.1.14")
         request = opener.call_args.args[0]
-        self.assertEqual(request.full_url, "https://api.github.com/repos/Dudiebug/moonlightos/releases/latest")
+        self.assertEqual(request.full_url, "https://api.github.com/repos/Dudiebug/couchliteos/releases/latest")
         headers = {key.lower(): value for key, value in request.header_items()}
-        self.assertEqual(headers["user-agent"], "MoonlightOS/0.1.13")
+        self.assertEqual(headers["user-agent"], "CouchLiteOS/0.1.13")
         self.assertEqual(set(headers), {"user-agent", "accept"})
         self.assertEqual(opener.call_args.kwargs["timeout"], 5)
 
@@ -140,7 +140,7 @@ class NoticeTest(unittest.TestCase):
         state = update.State(latest="0.1.14", checked_at=NOW)
         self.assertEqual(
             update.notice(state, "0.1.13"),
-            "UPDATE AVAILABLE: 0.1.14 — github.com/Dudiebug/moonlightos/releases",
+            "UPDATE AVAILABLE: 0.1.14 — github.com/Dudiebug/couchliteos/releases",
         )
 
     def test_no_notice_when_current_equal_older_disabled_or_unknown(self):
@@ -332,7 +332,7 @@ class CheckerTest(unittest.TestCase):
 class LauncherUpdateTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_update_under_test", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
@@ -352,7 +352,7 @@ class LauncherUpdateTest(unittest.TestCase):
     def test_home_shows_the_update_notice(self):
         launcher = self.launcher(update.State(latest="0.1.14", checked_at=NOW))
         texts = [text for text, _attr in launcher.footer_lines()]
-        self.assertEqual(texts, ["UPDATE AVAILABLE: 0.1.14 — github.com/Dudiebug/moonlightos/releases"])
+        self.assertEqual(texts, ["UPDATE AVAILABLE: 0.1.14 — github.com/Dudiebug/couchliteos/releases"])
 
     def test_home_is_quiet_when_up_to_date(self):
         self.assertEqual(self.launcher(update.State(latest="0.1.13", checked_at=NOW)).footer_lines(), [])

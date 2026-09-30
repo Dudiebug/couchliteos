@@ -1,6 +1,6 @@
-# MoonlightOS v0.1.13
+# CouchLiteOS v0.1.13
 
-MoonlightOS is a Debian 13 (Trixie) x86_64 gaming-streaming appliance. It boots
+CouchLiteOS is a Debian 13 (Trixie) x86_64 gaming-streaming appliance. It boots
 directly into a small controller-friendly launcher for Moonlight, chiaki-ng,
 Firefox ESR, official Google Chrome, and Remote Desktop, with an allowlist-only
 Linux USB/IP server. It is not a general-purpose desktop.
@@ -9,8 +9,8 @@ Linux USB/IP server. It is not a general-purpose desktop.
 
 | Your graphics | Download |
 |---|---|
-| Intel or AMD graphics, or no NVIDIA card | `moonlightos-<version>-amd64.iso` (general) |
-| NVIDIA Maxwell or newer: GeForce GTX 745, 750 and 750 Ti, GTX 800M/900M laptops, GTX 900, GTX 10, GTX 16, RTX 20, 30 and 40 series | `moonlightos-<version>-nvidia-amd64.iso` |
+| Intel or AMD graphics, or no NVIDIA card | `couchliteos-<version>-amd64.iso` (general) |
+| NVIDIA Maxwell or newer: GeForce GTX 745, 750 and 750 Ti, GTX 800M/900M laptops, GTX 900, GTX 10, GTX 16, RTX 20, 30 and 40 series | `couchliteos-<version>-nvidia-amd64.iso` |
 | NVIDIA Kepler or older: GTX 600 series, GTX 760 to 780, and the mobile GT 750M/755M of the iMac Late 2013 | general; the NVIDIA ISO also works and falls back to the same open driver |
 | NVIDIA RTX 50 series | not supported yet (see [known limitations](docs/KNOWN_LIMITATIONS.md)) |
 
@@ -21,7 +21,7 @@ Names mislead: the desktop GTX 750 is Maxwell, the mobile GT 750M is Kepler.
 Secure Boot: NVIDIA's driver and Broadcom's `wl` Wi-Fi driver are not signed, so
 they do not load with Secure Boot on.
 <!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
-If Secure Boot is on, MoonlightOS falls back to the open driver (lower
+If Secure Boot is on, CouchLiteOS falls back to the open driver (lower
 performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
 A Broadcom chip that needs `wl` has no Wi-Fi with Secure Boot on.
 
@@ -44,8 +44,8 @@ PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md
     DKMS for the image kernel
   - nvidia: everything in general plus NVIDIA's proprietary 550 driver (DKMS,
     GBM for Cage, NVDEC, VA-API through `nvidia-vaapi-driver`) and a
-    **Start MoonlightOS (Basic Graphics)** boot entry that uses nouveau
-- Boot-time hardware detection (`moonlightos-hwdetect`): per-machine kernel
+    **Start CouchLiteOS (Basic Graphics)** boot entry that uses nouveau
+- Boot-time hardware detection (`couchliteos-hwdetect`): per-machine kernel
   module policy under `/run` only, the proprietary NVIDIA driver only for GPUs
   on its supported list, nouveau for older cards, Broadcom `wl` only where it
   owns the Wi-Fi chip, `applesmc` on Apple hardware, and software H.264 for
@@ -80,10 +80,10 @@ PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md
 - systemd crash recovery for the launcher, streaming applications, Firefox, and Remote Desktop sessions
 - explicit USB/IP allowlist, hotplug reconciliation, and fail-closed TCP/3240
 - optional, unauthenticated-by-default Tailscale overlay and native Tailscale SSH
-- settings and pairing data under `/var/lib/moonlightos` (kept on an installed
+- settings and pairing data under `/var/lib/couchliteos` (kept on an installed
   system or a persistence stick, forgotten by a plain live USB; see
   [Live USB or installed?](#live-usb-or-installed))
-- logs and diagnostic snapshots under `/var/log/moonlightos`
+- logs and diagnostic snapshots under `/var/log/couchliteos`
 - Debian Installer integration for installation to an internal disk
 
 ## Exact build command
@@ -113,12 +113,12 @@ needed by the release tools. The other make targets need more:
 Output:
 
 ```text
-build/out/moonlightos-0.1.13-amd64.iso
-build/out/moonlightos-0.1.13-nvidia-amd64.iso
+build/out/couchliteos-0.1.13-amd64.iso
+build/out/couchliteos-0.1.13-nvidia-amd64.iso
 ```
 
 The legacy single-machine profiles `intel` (Dell OptiPlex DCC36X3) and
-`imac2013` still build (`moonlightos-<version>-intel-amd64.iso`,
+`imac2013` still build (`couchliteos-<version>-intel-amd64.iso`,
 `-imac2013-amd64.iso`) but are no longer release assets.
 
 Builds, tests, and releases run locally; nothing depends on hosted CI. Build
@@ -140,9 +140,9 @@ application binary is committed to Git.
    running, a controller is enough.
 2. Open the firmware boot menu and select the USB device: `F12` on the Dell
    (the key differs by maker), or hold Option (⌥) on the iMac and choose **EFI
-   Boot**. The MoonlightOS menu starts the live system by itself after three
+   Boot**. The CouchLiteOS menu starts the live system by itself after three
    seconds; press an arrow key to stop the countdown and choose another entry
-   such as **Install MoonlightOS**.
+   such as **Install CouchLiteOS**.
 3. The launcher becomes ready even without network, then the first-boot Setup
    Wizard opens. Complete, skip, or exit it before choosing an application.
 4. Pair Sunshine in Moonlight. Bluetooth devices are managed in Settings.
@@ -156,7 +156,7 @@ macOS are in [INSTALL.md](docs/INSTALL.md).
 
 A live USB starts from the image on every boot, so on its own it forgets your
 Moonlight pairing, Wi-Fi, Bluetooth pairings and Setup Wizard at power-off, and
-you pair again each time. To keep them, install MoonlightOS to a disk
+you pair again each time. To keep them, install CouchLiteOS to a disk
 (recommended for daily use) or, for testing, add a persistence stick; both are
 in [INSTALL.md](docs/INSTALL.md), which also explains how to update to a new
 release without losing them.
@@ -193,24 +193,24 @@ Two machines define the reference checklist in [TESTING.md](docs/TESTING.md):
 
 | Purpose | Persistent path |
 |---|---|
-| Launcher/default profile | `/var/lib/moonlightos/config.ini` |
-| Network, host profiles, and Tailscale | `/var/lib/moonlightos/config.ini` |
-| Moonlight host list/pairing | `/var/lib/moonlightos/home/.config/` |
-| chiaki-ng registration | `/var/lib/moonlightos/home/.config/` |
-| Firefox profile, bookmarks, and settings | `/var/lib/moonlightos/home/.mozilla/` |
-| Google Chrome profile, bookmarks, and settings | `/var/lib/moonlightos/home/.config/google-chrome/` |
-| Launcher controller identity | `/var/lib/moonlightos/launcher-controller.id` |
-| Bluetooth power preference | `/var/lib/moonlightos/bluetooth-enabled` |
-| Application manifests and state | `/var/lib/moonlightos/apps.d/`, `/var/lib/moonlightos/apps-state.ini` |
-| Remote Desktop connections and pinned certificates | `/var/lib/moonlightos/rdp/connections.ini` |
-| Saved Remote Desktop passwords (root-only, unencrypted) | `/var/lib/moonlightos/rdp-secrets/` |
-| Setup completion | `/var/lib/moonlightos/setup-complete` |
+| Launcher/default profile | `/var/lib/couchliteos/config.ini` |
+| Network, host profiles, and Tailscale | `/var/lib/couchliteos/config.ini` |
+| Moonlight host list/pairing | `/var/lib/couchliteos/home/.config/` |
+| chiaki-ng registration | `/var/lib/couchliteos/home/.config/` |
+| Firefox profile, bookmarks, and settings | `/var/lib/couchliteos/home/.mozilla/` |
+| Google Chrome profile, bookmarks, and settings | `/var/lib/couchliteos/home/.config/google-chrome/` |
+| Launcher controller identity | `/var/lib/couchliteos/launcher-controller.id` |
+| Bluetooth power preference | `/var/lib/couchliteos/bluetooth-enabled` |
+| Application manifests and state | `/var/lib/couchliteos/apps.d/`, `/var/lib/couchliteos/apps-state.ini` |
+| Remote Desktop connections and pinned certificates | `/var/lib/couchliteos/rdp/connections.ini` |
+| Saved Remote Desktop passwords (root-only, unencrypted) | `/var/lib/couchliteos/rdp-secrets/` |
+| Setup completion | `/var/lib/couchliteos/setup-complete` |
 | BlueZ pairing state (contains secrets) | `/var/lib/bluetooth/` |
-| USB/IP allowlist policy | `/etc/moonlightos/usbip-allowlist.conf` |
-| Logs and diagnostics | `/var/log/moonlightos/` |
+| USB/IP allowlist policy | `/etc/couchliteos/usbip-allowlist.conf` |
+| Logs and diagnostics | `/var/log/couchliteos/` |
 
 The Settings screen can generate a support archive on a mounted writable
-removable filesystem, an explicitly labeled `MOONLIGHTOS_SUPPORT` partition,
+removable filesystem, an explicitly labeled `COUCHLITEOS_SUPPORT` partition,
 or a writable live-USB persistence partition. It never writes to an internal
 SATA/NVMe filesystem. See [Support export](docs/SUPPORT.md).
 
@@ -232,5 +232,5 @@ More documentation:
 
 ## License
 
-Original MoonlightOS code is GPL-3.0-or-later. Bundled programs retain their
+Original CouchLiteOS code is GPL-3.0-or-later. Bundled programs retain their
 own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

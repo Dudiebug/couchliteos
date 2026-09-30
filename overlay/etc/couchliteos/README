@@ -1,0 +1,2 @@
+Persistent settings are stored in /var/lib/couchliteos. Files in this
+directory are system defaults and policy, not pairing data.

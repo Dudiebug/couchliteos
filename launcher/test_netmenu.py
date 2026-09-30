@@ -3,8 +3,8 @@
 import unittest
 from unittest import mock
 
-import moonlightos_netmenu as netmenu
-import moonlightos_setup as setup
+import couchliteos_netmenu as netmenu
+import couchliteos_setup as setup
 from test_launcher import Screen
 from test_launcher_fixes import LauncherFixesTest
 

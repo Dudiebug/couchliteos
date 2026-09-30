@@ -1,0 +1,9 @@
+[Unit]
+Description=Enable Tailscale SSH when requested by the launcher
+
+[Path]
+PathExists=/run/couchliteos/tailscale-ssh-enable
+Unit=couchliteos-tailscale-ssh.service
+
+[Install]
+WantedBy=graphical.target

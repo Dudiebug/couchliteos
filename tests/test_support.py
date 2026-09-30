@@ -19,10 +19,10 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "launcher"))
-import moonlightos_support as support
+import couchliteos_support as support
 
 loader = importlib.machinery.SourceFileLoader(
-    "support_exporter", str(ROOT / "scripts" / "moonlightos-support-export")
+    "support_exporter", str(ROOT / "scripts" / "couchliteos-support-export")
 )
 spec = importlib.util.spec_from_loader(loader.name, loader)
 exporter = importlib.util.module_from_spec(spec)
@@ -85,7 +85,7 @@ class DestinationTest(unittest.TestCase):
                             "type": "part",
                             "ro": False,
                             "fstype": "ext4",
-                            "label": "MOONLIGHTOS_SUPPORT",
+                            "label": "COUCHLITEOS_SUPPORT",
                             "mountpoints": ["/mnt/internal"],
                         }
                     ],
@@ -152,7 +152,7 @@ class DestinationTest(unittest.TestCase):
                             "type": "part",
                             "ro": False,
                             "fstype": "iso9660",
-                            "label": "MOONLIGHTOS",
+                            "label": "COUCHLITEOS",
                             "mountpoints": ["/run/live/medium"],
                         },
                         {
@@ -213,7 +213,7 @@ class DestinationTest(unittest.TestCase):
 
 class ExporterTest(unittest.TestCase):
     def make_archive(self, directory: pathlib.Path, secret: str = "FAKESECRET-123") -> pathlib.Path:
-        bundle = directory / "moonlightos-support"
+        bundle = directory / "couchliteos-support"
         bundle.mkdir()
         exporter.write_text(
             bundle / "status.txt",
@@ -221,19 +221,19 @@ class ExporterTest(unittest.TestCase):
         )
         archive = directory / "fixture.tar.gz"
         with tarfile.open(archive, "w:gz", dereference=False) as container:
-            container.add(bundle, arcname="moonlightos-support")
+            container.add(bundle, arcname="couchliteos-support")
         exporter.verify_archive(archive)
         return archive
 
     def test_filename_syntax(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
             exporter.os.environ,
-            {"MOONLIGHTOS_SUPPORT_MACHINE_ID": str(pathlib.Path(directory) / "machine-id")},
+            {"COUCHLITEOS_SUPPORT_MACHINE_ID": str(pathlib.Path(directory) / "machine-id")},
         ):
             pathlib.Path(directory, "machine-id").write_text("abcdef1234567890\n")
             self.assertRegex(
                 exporter.archive_filename(),
-                r"^moonlightos-support-\d{8}-\d{6}Z-abcdef12\.tar\.gz$",
+                r"^couchliteos-support-\d{8}-\d{6}Z-abcdef12\.tar\.gz$",
             )
 
     def test_destination_identity_is_revalidated(self):
@@ -298,11 +298,11 @@ class ExporterTest(unittest.TestCase):
                 )
             self.assertNotIn(secret.encode(), combined)
             self.assertIn(b"[REDACTED]", combined)
-            self.assertEqual(names, ["moonlightos-support", "moonlightos-support/status.txt"])
+            self.assertEqual(names, ["couchliteos-support", "couchliteos-support/status.txt"])
 
     def test_user_command_uses_one_way_numeric_privilege_drop(self):
         account = types.SimpleNamespace(pw_uid=1000, pw_gid=1001)
-        environment = {"HOME": "/run/moonlightos", "WAYLAND_DISPLAY": "wayland-0"}
+        environment = {"HOME": "/run/couchliteos", "WAYLAND_DISPLAY": "wayland-0"}
         with mock.patch.object(exporter.pwd, "getpwnam", return_value=account):
             command = exporter.user_command(["wpctl", "status"], environment)
         self.assertEqual(command[:6], [
@@ -314,7 +314,7 @@ class ExporterTest(unittest.TestCase):
             "/usr/bin/env",
         ])
         self.assertNotIn("runuser", command)
-        self.assertIn("HOME=/run/moonlightos", command)
+        self.assertIn("HOME=/run/couchliteos", command)
         self.assertEqual(command[-2:], ["wpctl", "status"])
 
     def test_archive_rejects_links_traversal_and_special_members(self):
@@ -322,21 +322,21 @@ class ExporterTest(unittest.TestCase):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
                 archive = pathlib.Path(directory) / f"{kind}.tar.gz"
                 with tarfile.open(archive, "w:gz") as container:
-                    root = tarfile.TarInfo("moonlightos-support")
+                    root = tarfile.TarInfo("couchliteos-support")
                     root.type = tarfile.DIRTYPE
                     container.addfile(root)
-                    regular = tarfile.TarInfo("moonlightos-support/status.txt")
+                    regular = tarfile.TarInfo("couchliteos-support/status.txt")
                     regular.size = 2
                     container.addfile(regular, io.BytesIO(b"ok"))
                     if kind == "link":
-                        unsafe = tarfile.TarInfo("moonlightos-support/link")
+                        unsafe = tarfile.TarInfo("couchliteos-support/link")
                         unsafe.type = tarfile.SYMTYPE
                         unsafe.linkname = "/etc/passwd"
                     elif kind == "traversal":
-                        unsafe = tarfile.TarInfo("moonlightos-support/../outside")
+                        unsafe = tarfile.TarInfo("couchliteos-support/../outside")
                         unsafe.size = 1
                     else:
-                        unsafe = tarfile.TarInfo("moonlightos-support/device")
+                        unsafe = tarfile.TarInfo("couchliteos-support/device")
                         unsafe.type = tarfile.CHRTYPE
                     container.addfile(unsafe, io.BytesIO(b"x") if unsafe.isreg() else None)
                 with self.assertRaises(RuntimeError):
@@ -398,7 +398,7 @@ class ExporterTest(unittest.TestCase):
 
     def test_success_status_is_written_after_temporary_unmount(self):
         destination = support.Destination(
-            "/dev/sdb1", "/run/moonlightos/support-media", "MOONLIGHTOS_SUPPORT",
+            "/dev/sdb1", "/run/couchliteos/support-media", "COUCHLITEOS_SUPPORT",
             "vfat", True
         )
         events = []
@@ -415,7 +415,7 @@ class ExporterTest(unittest.TestCase):
 
     def test_unmount_failure_never_publishes_success(self):
         destination = support.Destination(
-            "/dev/sdb1", "/run/moonlightos/support-media", "MOONLIGHTOS_SUPPORT",
+            "/dev/sdb1", "/run/couchliteos/support-media", "COUCHLITEOS_SUPPORT",
             "vfat", True
         )
         with mock.patch.object(
@@ -430,7 +430,7 @@ class ExporterTest(unittest.TestCase):
 
 
 class RunDirectoryTrustTest(unittest.TestCase):
-    """/run/moonlightos belongs to the unprivileged appliance user, so the
+    """/run/couchliteos belongs to the unprivileged appliance user, so the
     root exporter must never follow anything it finds there."""
 
     def setUp(self):
@@ -450,7 +450,7 @@ class RunDirectoryTrustTest(unittest.TestCase):
 
     def labeled_destination(self):
         return support.Destination(
-            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
+            "/dev/sdb1", "", "COUCHLITEOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
         )
 
     def mount_with_recorded_argv(self, returncode=0):
@@ -506,8 +506,8 @@ class RunDirectoryTrustTest(unittest.TestCase):
         with mock.patch.object(exporter, "command_output", return_value=""), mock.patch.dict(
             exporter.os.environ,
             {
-                "MOONLIGHTOS_SUPPORT_LOG_DIR": str(self.run_dir / "no-logs"),
-                "MOONLIGHTOS_SUPPORT_CONFIG": str(self.run_dir / "no-config"),
+                "COUCHLITEOS_SUPPORT_LOG_DIR": str(self.run_dir / "no-logs"),
+                "COUCHLITEOS_SUPPORT_CONFIG": str(self.run_dir / "no-config"),
             },
         ):
             exporter.collect(bundle)
@@ -662,7 +662,7 @@ class StatusMessageTest(unittest.TestCase):
 
     def test_read_only_mount_is_reported_plainly(self):
         destination = support.Destination(
-            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
+            "/dev/sdb1", "", "COUCHLITEOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
         )
         with mock.patch.object(
             exporter.subprocess,
@@ -813,7 +813,7 @@ class NtfsMountTest(unittest.TestCase):
 
     def destination(self, fstype):
         return support.Destination(
-            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", fstype, False, "8:17", "uuid-one", "WINDOWS"
+            "/dev/sdb1", "", "COUCHLITEOS_SUPPORT", fstype, False, "8:17", "uuid-one", "WINDOWS"
         )
 
     def mount(self, fstype, *, mount_code=0, writable=True):

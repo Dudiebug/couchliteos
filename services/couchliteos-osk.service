@@ -1,0 +1,20 @@
+[Unit]
+Description=CouchLiteOS buffered on-screen keyboard
+After=couchliteos-launcher.service
+ConditionPathExists=/run/couchliteos/start-osk
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+SupplementaryGroups=input
+Environment=HOME=/var/lib/couchliteos/home
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+Environment=WAYLAND_DISPLAY=wayland-0
+EnvironmentFile=-/run/couchliteos/session.env
+ExecStart=/usr/libexec/couchliteos-osk-session
+KillMode=control-group
+TimeoutStopSec=5
+NoNewPrivileges=yes
+StandardOutput=journal+console
+StandardError=journal+console

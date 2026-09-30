@@ -18,8 +18,8 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ENROLLMENT = ROOT / "scripts" / "moonlightos-tailscale-enrollment"
-DIAGNOSTICS = ROOT / "scripts" / "moonlightos-diagnostics"
+ENROLLMENT = ROOT / "scripts" / "couchliteos-tailscale-enrollment"
+DIAGNOSTICS = ROOT / "scripts" / "couchliteos-diagnostics"
 
 
 class Terminal:
@@ -108,7 +108,7 @@ class TerminalAppTest(unittest.TestCase):
             {
                 "PATH": f"{self.commands}:{environment['PATH']}",
                 "TERM": "xterm",
-                "MOONLIGHTOS_LOG_DIR": str(self.logs),
+                "COUCHLITEOS_LOG_DIR": str(self.logs),
             }
         )
         environment.update(extra)
@@ -132,9 +132,9 @@ class EnrollmentWaitsTest(TerminalAppTest):
 
     def enrollment_environment(self, **extra):
         values = {
-            "MOONLIGHTOS_TAILSCALE_URL_FILE": str(self.root / "auth-url"),
-            "MOONLIGHTOS_TAILSCALE_POLL_SECONDS": "0.05",
-            "MOONLIGHTOS_TAILSCALE_URL_WAIT_SECONDS": "2",
+            "COUCHLITEOS_TAILSCALE_URL_FILE": str(self.root / "auth-url"),
+            "COUCHLITEOS_TAILSCALE_POLL_SECONDS": "0.05",
+            "COUCHLITEOS_TAILSCALE_URL_WAIT_SECONDS": "2",
         }
         values.update(extra)
         return values
@@ -143,7 +143,7 @@ class EnrollmentWaitsTest(TerminalAppTest):
         self.stub("systemctl", "exit 0\n")
         terminal = self.start([str(ENROLLMENT)], **self.enrollment_environment())
         terminal.read_until("SYSTEM DIAGNOSTICS")
-        self.assertNotIn("moonlightos-tailscale-diagnostics", terminal.output)
+        self.assertNotIn("couchliteos-tailscale-diagnostics", terminal.output)
         terminal.assert_contains("SETTINGS > SYSTEM DIAGNOSTICS")
         terminal.assert_contains("ENTER")
         self.assert_still_open(terminal)
@@ -175,7 +175,7 @@ class EnrollmentWaitsTest(TerminalAppTest):
         )
         terminal = self.start(
             [str(ENROLLMENT)],
-            **self.enrollment_environment(MOONLIGHTOS_TAILSCALE_POLL_SECONDS="1"),
+            **self.enrollment_environment(COUCHLITEOS_TAILSCALE_POLL_SECONDS="1"),
         )
         terminal.read_until("to return")
         terminal.assert_contains("[QR]")
@@ -203,11 +203,11 @@ class DiagnosticsViewerTest(TerminalAppTest):
         super().setUp()
         self.calls = self.root / "tailscale-calls"
         self.stub(
-            "moonlightos-tailscale-diagnostics",
+            "couchliteos-tailscale-diagnostics",
             f"echo x >> '{self.calls}'\nfor i in $(seq 1 60); do echo \"tailscale line $i\"; done\n",
         )
         for name in (
-            "moonlightos-usbip", "journalctl", "systemctl", "clear", "vulkaninfo", "vainfo",
+            "couchliteos-usbip", "journalctl", "systemctl", "clear", "vulkaninfo", "vainfo",
             "wpctl", "aplay", "nmcli", "ip", "lsusb", "lspci", "lscpu", "rfkill", "wlr-randr",
         ):
             self.stub(name, "exit 0\n")
@@ -217,7 +217,7 @@ class DiagnosticsViewerTest(TerminalAppTest):
 
     def test_report_runs_once_and_is_saved(self):
         terminal = self.start([str(DIAGNOSTICS)])
-        terminal.read_until("MoonlightOS diagnostics")
+        terminal.read_until("CouchLiteOS diagnostics")
         terminal.drain(0.5)
         self.assertEqual(len(self.calls.read_text().split()), 1)
         (saved,) = self.saved_reports()
@@ -228,7 +228,7 @@ class DiagnosticsViewerTest(TerminalAppTest):
 
     def test_result_stays_on_screen_until_the_user_returns(self):
         terminal = self.start([str(DIAGNOSTICS)])
-        terminal.read_until("MoonlightOS diagnostics")
+        terminal.read_until("CouchLiteOS diagnostics")
         terminal.drain(1.0)
         self.assertIsNone(terminal.process.poll(), terminal.output[-600:])
         terminal.send(b"\x1b")
@@ -236,7 +236,7 @@ class DiagnosticsViewerTest(TerminalAppTest):
 
     def test_enter_pages_forward_and_the_end_names_the_saved_file(self):
         terminal = self.start([str(DIAGNOSTICS)], rows=24)
-        terminal.read_until("MoonlightOS diagnostics")
+        terminal.read_until("CouchLiteOS diagnostics")
         (saved,) = self.saved_reports()
         total = len(saved.read_text().splitlines())
         self.assertGreater(total, 3 * 21)
@@ -252,7 +252,7 @@ class DiagnosticsViewerTest(TerminalAppTest):
 
     def test_up_arrow_goes_back_a_page(self):
         terminal = self.start([str(DIAGNOSTICS)], rows=24)
-        terminal.read_until("MoonlightOS diagnostics")
+        terminal.read_until("CouchLiteOS diagnostics")
         terminal.drain(0.3)
         terminal.send(b"\n")
         terminal.read_until("lines 22-")

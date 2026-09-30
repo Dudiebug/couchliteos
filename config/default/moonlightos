@@ -1,5 +1,0 @@
-# System defaults. User-modifiable persistent settings live in /var/lib/moonlightos.
-MOONLIGHTOS_LOG_DIR=/var/log/moonlightos
-MOONLIGHTOS_DATA_DIR=/var/lib/moonlightos
-MOONLIGHTOS_MOONLIGHT_BACKEND=wayland
-MOONLIGHTOS_CHIAKI_GAMESCOPE=0

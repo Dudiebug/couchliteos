@@ -6,10 +6,10 @@ enough only once the launcher is running.
 
 ## Choose the ISO
 
-- `moonlightos-0.1.13-nvidia-amd64.iso` for an NVIDIA card from Maxwell on:
+- `couchliteos-0.1.13-nvidia-amd64.iso` for an NVIDIA card from Maxwell on:
   GeForce GTX 745, 750 and 750 Ti, the GTX 800M and 900M laptop GPUs, and every
   GTX 900, GTX 10, GTX 16, RTX 20, RTX 30 and RTX 40 card.
-- `moonlightos-0.1.13-amd64.iso` (general) for everything else: Intel and AMD
+- `couchliteos-0.1.13-amd64.iso` (general) for everything else: Intel and AMD
   graphics, NVIDIA Kepler and older (GTX 600, GTX 760 to 780, and the GT 750M
   and GT 755M of the iMac Late 2013), Intel Macs, and virtual machines. Names
   mislead here: the desktop GTX 750 is Maxwell, but the mobile GT 750M is
@@ -35,14 +35,14 @@ sha256sum -c --ignore-missing SHA256SUMS
 Windows (PowerShell, or `certutil` in a Command Prompt):
 
 ```powershell
-Get-FileHash .\moonlightos-0.1.13-amd64.iso -Algorithm SHA256
-certutil -hashfile moonlightos-0.1.13-amd64.iso SHA256
+Get-FileHash .\couchliteos-0.1.13-amd64.iso -Algorithm SHA256
+certutil -hashfile couchliteos-0.1.13-amd64.iso SHA256
 ```
 
 macOS:
 
 ```bash
-shasum -a 256 moonlightos-0.1.13-amd64.iso
+shasum -a 256 couchliteos-0.1.13-amd64.iso
 ```
 
 On Windows and macOS compare the printed hash with the matching line of
@@ -57,7 +57,7 @@ file.
 Linux: find the device with `lsblk`, then
 
 ```bash
-sudo dd if=moonlightos-0.1.13-amd64.iso of=/dev/sdX bs=4M \
+sudo dd if=couchliteos-0.1.13-amd64.iso of=/dev/sdX bs=4M \
   status=progress conv=fsync
 ```
 
@@ -66,7 +66,7 @@ macOS:
 ```bash
 diskutil list                      # find the stick, for example /dev/disk4
 diskutil unmountDisk /dev/disk4
-sudo dd if=moonlightos-0.1.13-amd64.iso of=/dev/rdisk4 bs=4m
+sudo dd if=couchliteos-0.1.13-amd64.iso of=/dev/rdisk4 bs=4m
 diskutil eject /dev/disk4
 ```
 
@@ -87,7 +87,7 @@ and Broadcom's `wl` Wi-Fi driver (both ISOs) are DKMS modules that are not
 signed, so they do not load with Secure Boot on.
 
 <!-- LEAD-CHECK secure-boot-fallback: the next paragraph assumes feat/bugfix4 (automatic nouveau fallback when Secure Boot is on) is merged. If it is not, say instead that the NVIDIA driver does not load and the screen can stay black: turn Secure Boot off or use Basic Graphics. -->
-If Secure Boot is on, MoonlightOS falls back to the open driver (lower
+If Secure Boot is on, CouchLiteOS falls back to the open driver (lower
 performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
 A Broadcom Wi-Fi chip that needs `wl` has no Wi-Fi with Secure Boot on; use
 wired Ethernet, a supported adapter, or turn Secure Boot off. On a UEFI PC the
@@ -101,48 +101,48 @@ firmware setup. Apple firmware from 2013 has no Secure Boot.
    on the reference Dell OptiPlex (choose the entry beginning with `UEFI`),
    often F10, F11, F9 or Esc elsewhere; on an Intel Mac hold Option (⌥) and
    choose **EFI Boot** (see [IMAC-2013.md](IMAC-2013.md)).
-3. The MoonlightOS menu starts **Start MoonlightOS** by itself after three
+3. The CouchLiteOS menu starts **Start CouchLiteOS** by itself after three
    seconds. Press an arrow key as soon as the menu appears to stop the
    countdown, then pick an entry with the arrow keys and Enter. The menu ignores
    controllers, so this is the only way to reach the other entries.
 
 The menu provides:
 
-- `Start MoonlightOS`: uses a valid persistence backend when present.
-- `Start MoonlightOS (No Persistence)`: passes Debian Live's `nopersistence`
+- `Start CouchLiteOS`: uses a valid persistence backend when present.
+- `Start CouchLiteOS (No Persistence)`: passes Debian Live's `nopersistence`
   option, so nothing saved on a persistence stick is used. Use it if a saved
   setting (for example a display mode your screen cannot show) keeps the
   screen black.
-- `Start MoonlightOS (Basic Graphics)` (NVIDIA ISO only): blocks the
+- `Start CouchLiteOS (Basic Graphics)` (NVIDIA ISO only): blocks the
   proprietary driver and uses nouveau. Use it if the screen stays black or the
   launcher misdraws on the NVIDIA driver.
-- `Install MoonlightOS`: starts the text Debian Installer (next section).
+- `Install CouchLiteOS`: starts the text Debian Installer (next section).
 
 <!-- LEAD-CHECK fail-safe-entry: cleanup of the stock boot-menu entries is deferred; update this paragraph if it lands. -->
 The menu also carries Debian's stock `Live system (amd64 fail-safe mode)`,
 `Advanced install options` and `Utilities` entries. They are not part of
-MoonlightOS's tested paths. In particular, the fail-safe entry uses different
+CouchLiteOS's tested paths. In particular, the fail-safe entry uses different
 boot options and is not the Basic Graphics entry; do not use it to fix a black
 screen.
 
 An installed system has no Basic Graphics entry of its own. To get the same
-effect once, press `e` on the GRUB entry, append `moonlightos.gpu=basic` to the
+effect once, press `e` on the GRUB entry, append `couchliteos.gpu=basic` to the
 line starting with `linux`, and press `Ctrl+X`.
 
 ## Install to a disk
 
 Installing is the normal way to keep pairings and settings. The Debian text
-installer copies the MoonlightOS system to the disk you choose. The screens are
+installer copies the CouchLiteOS system to the disk you choose. The screens are
 Debian's own and their wording can differ slightly; the answers below are the
-ones MoonlightOS recommends (the automated test answers the same questions from
+ones CouchLiteOS recommends (the automated test answers the same questions from
 `tests/installer-preseed.cfg`). They are the same on any PC. On the Dell
 OptiPlex 7010 Micro reference machine the target is the 256 GB NVMe.
 
 1. Back up the target disk and unplug other writable drives where practical.
 2. Boot the stick, press an arrow key to stop the countdown, and choose
-   `Install MoonlightOS`.
+   `Install CouchLiteOS`.
 3. **Language, location, keyboard:** choose yours. The keyboard layout applies
-   to the installer and the installed system's text console. MoonlightOS sets no
+   to the installer and the installed system's text console. CouchLiteOS sets no
    layout for the launcher session, so expect US key mapping there (not
    verified on an installed system).
 4. **Network:** wired DHCP is configured automatically. If it fails, or there is
@@ -151,11 +151,11 @@ OptiPlex 7010 Micro reference machine the target is the 256 GB NVMe.
    asked for missing firmware files, continue without them: the ISO carries no
    extra firmware for the installer itself, and the installed system keeps the
    firmware of the live system.
-5. **Hostname and domain:** `moonlightos` and an empty domain. Any name works.
+5. **Hostname and domain:** `couchliteos` and an empty domain. Any name works.
 6. **Root password:** leave it empty to disable the root login (the new user
-   then gets `sudo`). **New user:** any name except `moonlightos` (that account
+   then gets `sudo`). **New user:** any name except `couchliteos` (that account
    already exists in the image), and a password you will remember. The launcher
-   runs as the `moonlightos` account; this extra user is only for maintenance.
+   runs as the `couchliteos` account; this extra user is only for maintenance.
 7. **Clock:** choose your time zone.
 8. **Partition disks:** choose *Guided - use entire disk* (the plain option, not
    LVM or encrypted), then pick the target disk. Check its size and model
@@ -167,14 +167,14 @@ OptiPlex 7010 Micro reference machine the target is the 256 GB NVMe.
 9. **Network mirror:** if asked, No. The system is copied from the ISO and needs
    no downloads (the tested answer).
 10. **Software selection and popularity contest:** if asked, select nothing and
-    answer No. MoonlightOS is a kiosk; it does not use a desktop environment.
+    answer No. CouchLiteOS is a kiosk; it does not use a desktop environment.
 11. **GRUB:** on a UEFI PC it installs itself to the EFI System Partition. On a
     legacy BIOS PC it asks for a target: install to the primary drive and choose
     the disk you just installed to (for example `/dev/nvme0n1` or `/dev/sda`),
     never a partition and never the USB stick.
 12. When the installer says it is finished, remove the USB stick and continue.
 
-Then confirm the MoonlightOS launcher appears, open SYSTEM DIAGNOSTICS, pair
+Then confirm the CouchLiteOS launcher appears, open SYSTEM DIAGNOSTICS, pair
 your applications, reboot, and confirm the host lists remain.
 
 The first-boot wizard can open the existing `nmtui` network setup; wired DHCP
@@ -186,7 +186,7 @@ If the boot menu appears but the launcher does not, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-screen-stays-black-or-the-launcher-never-appears).
 
 The installed root filesystem is writable. Pairings, settings, and logs live
-beneath `/var/lib/moonlightos` and `/var/log/moonlightos`.
+beneath `/var/lib/couchliteos` and `/var/log/couchliteos`.
 
 The install smoke test (`make qemu-install-smoke`) performs a complete UEFI
 installation to a disposable 32 GB virtual disk, removes the ISO, boots that
@@ -217,8 +217,8 @@ sudo mkfs.ext4 -L persistence /dev/sdX
 sudo mkdir -p /mnt/persistence
 sudo mount /dev/sdX /mnt/persistence
 sudo tee /mnt/persistence/persistence.conf <<'EOF'
-/var/lib/moonlightos source=moonlightos-state
-/var/log/moonlightos source=moonlightos-logs
+/var/lib/couchliteos source=couchliteos-state
+/var/log/couchliteos source=couchliteos-logs
 /var/lib/tailscale source=tailscale-state
 /var/lib/bluetooth source=bluetooth-state
 /etc/NetworkManager/system-connections source=nm-connections
@@ -228,22 +228,22 @@ sudo umount /mnt/persistence
 
 Windows and macOS cannot create ext4 themselves, and this has not been tested
 from either. The practical route is any Linux system for the commands above,
-including a Linux virtual machine with USB access. MoonlightOS's own live
+including a Linux virtual machine with USB access. CouchLiteOS's own live
 session also works: boot it from the ISO stick, plug in the second stick, open
 TERMINAL, and run the same commands (`sudo` needs no password in the live
 session; the stick mounted at `/run/live/medium` is the ISO stick, so never
 format that one).
 
 Then boot the ISO stick with the persistence stick still plugged in and choose
-`Start MoonlightOS`. Do not pre-create the five source directories on the
+`Start CouchLiteOS`. Do not pre-create the five source directories on the
 persistence stick. On the first persistent boot, `live-boot` creates each
 directory and bootstraps it from the matching image directory with matching
 ownership and permissions. After boot, verify:
 
 ```bash
-findmnt /var/lib/moonlightos /var/log/moonlightos \
+findmnt /var/lib/couchliteos /var/log/couchliteos \
   /var/lib/tailscale /var/lib/bluetooth /etc/NetworkManager/system-connections
-stat -c '%U:%G %a %n' /var/lib/moonlightos /var/log/moonlightos \
+stat -c '%U:%G %a %n' /var/lib/couchliteos /var/log/couchliteos \
   /var/lib/tailscale /var/lib/bluetooth /etc/NetworkManager/system-connections
 ```
 
@@ -268,7 +268,7 @@ what happens to your pairings depends on where they are stored:
 
 | Your setup | To update | Pairings and settings |
 |---|---|---|
-| Installed to a disk | Run the installer again from the new ISO | **Lost.** Guided partitioning erases the disk, including `/var/lib/moonlightos`. Pair again. There is no backup or restore tool yet. |
+| Installed to a disk | Run the installer again from the new ISO | **Lost.** Guided partitioning erases the disk, including `/var/lib/couchliteos`. Pair again. There is no backup or restore tool yet. |
 | Live USB with a persistence stick | Write the new ISO to the ISO stick only; keep the persistence stick | **Kept** on the persistence stick. Carrying one across releases is not tested; if a release misbehaves, boot once with `No Persistence` to compare. |
 | Live USB without persistence | Write the new ISO | Nothing was kept; you pair again at every boot. |
 | Any stick you write an ISO to | - | **Wiped.** Writing an ISO replaces everything on that stick, including a persistence partition you put on it. |
@@ -280,8 +280,8 @@ testing, keep the ISO and an ext4 backend labeled `persistence` on Ventoy's
 first partition:
 
 ```text
-ISO/moonlightos-0.1.13-amd64.iso
-persistence/moonlightos.dat
+ISO/couchliteos-0.1.13-amd64.iso
+persistence/couchliteos.dat
 ventoy/ventoy.json
 ```
 
@@ -291,8 +291,8 @@ ventoy/ventoy.json
 {
   "persistence": [
     {
-      "image": "/ISO/moonlightos-0.1.13-amd64.iso",
-      "backend": "/persistence/moonlightos.dat",
+      "image": "/ISO/couchliteos-0.1.13-amd64.iso",
+      "backend": "/persistence/couchliteos.dat",
       "timeout": 0
     }
   ]

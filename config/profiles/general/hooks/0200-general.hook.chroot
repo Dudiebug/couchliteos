@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # (PROFILE_BASE=general), so this hook runs there too.
 fail() { echo "general profile: $*" >&2; exit 1; }
 # shellcheck source=config/profiles/general/profile.conf
-source /usr/share/moonlightos/profile.conf
+source /usr/share/couchliteos/profile.conf
 
 # The general ISO uses the open NVIDIA driver (nouveau) only.
 # firmware-nvidia-graphics is the open driver's firmware and stays.
@@ -40,30 +40,30 @@ done
 rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
 
 # broadcom-sta-dkms blacklists the open Broadcom drivers (b43, bcma, ssb,
-# brcmsmac, ...) for every machine. moonlightos-hwdetect applies that list at
+# brcmsmac, ...) for every machine. couchliteos-hwdetect applies that list at
 # boot only when a chip that wl supports is present, so move the global file
 # aside. The diversion keeps it aside across package upgrades.
 sta_blacklist=/etc/modprobe.d/broadcom-sta-dkms.conf
 if [[ $(dpkg-divert --truename "$sta_blacklist") == "$sta_blacklist" ]]; then
-  dpkg-divert --local --rename --divert "$sta_blacklist.moonlightos-disabled" --add "$sta_blacklist"
+  dpkg-divert --local --rename --divert "$sta_blacklist.couchliteos-disabled" --add "$sta_blacklist"
 fi
 [[ ! -e $sta_blacklist ]] || fail "$sta_blacklist still blacklists the open Broadcom drivers globally"
-test -s /usr/share/broadcom-sta/broadcom-sta.ids || fail 'broadcom-sta.ids is missing (moonlightos-hwdetect needs it)'
+test -s /usr/share/broadcom-sta/broadcom-sta.ids || fail 'broadcom-sta.ids is missing (couchliteos-hwdetect needs it)'
 # modprobe reads only *.conf, so the diverted copy is not a live blacklist.
 for module in b43 bcma ssb brcmsmac; do
   ! grep -Rqs --include='*.conf' "^blacklist $module\$" /etc/modprobe.d /usr/lib/modprobe.d || fail "$module is blacklisted for every machine"
 done
 
-grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/moonlightos-input.conf || fail 'hid_apple fnmode is not set'
+grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/couchliteos-input.conf || fail 'hid_apple fnmode is not set'
 test -f /usr/lib/firmware/tigon/tg357766.bin || fail 'BCM57766 (tg3) firmware is missing'
 for driver in iHD i965 radeonsi; do
   test -e "/usr/lib/x86_64-linux-gnu/dri/${driver}_drv_video.so" || fail "VA-API driver $driver is missing"
 done
-test -x /usr/libexec/moonlightos-hwdetect || fail 'moonlightos-hwdetect is missing'
-systemctl is-enabled --quiet moonlightos-hwdetect-early.service || fail 'moonlightos-hwdetect-early.service is not enabled'
-systemctl is-enabled --quiet moonlightos-hwdetect.service || fail 'moonlightos-hwdetect.service is not enabled'
+test -x /usr/libexec/couchliteos-hwdetect || fail 'couchliteos-hwdetect is missing'
+systemctl is-enabled --quiet couchliteos-hwdetect-early.service || fail 'couchliteos-hwdetect-early.service is not enabled'
+systemctl is-enabled --quiet couchliteos-hwdetect.service || fail 'couchliteos-hwdetect.service is not enabled'
 
-# Moonlight stays on automatic codec and decoder; moonlightos-hwdetect switches
+# Moonlight stays on automatic codec and decoder; couchliteos-hwdetect switches
 # a machine without a usable decoder (nouveau) to software H.264 at boot.
-grep -qx 'codec = auto' /var/lib/moonlightos/config.ini || fail 'Moonlight codec default must be auto'
-grep -qx 'decoder = auto' /var/lib/moonlightos/config.ini || fail 'Moonlight decoder default must be auto'
+grep -qx 'codec = auto' /var/lib/couchliteos/config.ini || fail 'Moonlight codec default must be auto'
+grep -qx 'decoder = auto' /var/lib/couchliteos/config.ini || fail 'Moonlight decoder default must be auto'

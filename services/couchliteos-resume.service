@@ -1,0 +1,12 @@
+[Unit]
+Description=Tell the CouchLiteOS launcher that the system woke from sleep
+After=suspend.target
+
+[Service]
+Type=oneshot
+# Also clears any request left over from before the sleep.
+ExecStart=/usr/bin/rm -f /run/couchliteos/suspend
+ExecStart=/usr/bin/touch /run/couchliteos/resumed
+
+[Install]
+WantedBy=suspend.target

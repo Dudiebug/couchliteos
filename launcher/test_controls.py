@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import moonlightos_controls as controls
+import couchliteos_controls as controls
 from test_gamepad_nav import Codes
 
 XBOX_PAD = """I: Bus=0003 Vendor=045e Product=028e Version=0110
@@ -69,7 +69,7 @@ B: MSC=10
 """
 # gamepad-nav's own uinput device is a virtual keyboard: never a pad, and never a pad name.
 UINPUT = """I: Bus=0003 Vendor=0000 Product=0000 Version=0000
-N: Name="MoonlightOS Launcher Navigation"
+N: Name="CouchLiteOS Launcher Navigation"
 P: Phys=
 S: Sysfs=/devices/virtual/input/input9
 U: Uniq=
@@ -326,7 +326,7 @@ _LAUNCHER = []
 
 def load_launcher():
     if not _LAUNCHER:
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_for_controls", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -338,15 +338,15 @@ class SleepSupportTest(unittest.TestCase):
     def test_sleep_supported_follows_power_can_suspend(self):
         for answer in (True, False):
             fake = types.SimpleNamespace(can_suspend=lambda answer=answer: answer)
-            with mock.patch.dict(sys.modules, {"moonlightos_power": fake}):
+            with mock.patch.dict(sys.modules, {"couchliteos_power": fake}):
                 self.assertIs(controls.sleep_supported(), answer)
 
     def test_sleep_supported_is_false_without_the_power_module_or_when_it_fails(self):
-        with mock.patch.dict(sys.modules, {"moonlightos_power": None}):  # import raises ImportError
+        with mock.patch.dict(sys.modules, {"couchliteos_power": None}):  # import raises ImportError
             self.assertFalse(controls.sleep_supported())
         def broken():
             raise OSError("no busctl")
-        with mock.patch.dict(sys.modules, {"moonlightos_power": types.SimpleNamespace(can_suspend=broken)}):
+        with mock.patch.dict(sys.modules, {"couchliteos_power": types.SimpleNamespace(can_suspend=broken)}):
             self.assertFalse(controls.sleep_supported())
 
 

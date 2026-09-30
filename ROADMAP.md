@@ -2,19 +2,19 @@
 
 ## Vision: pick one of two ISOs, and it just works
 
-MoonlightOS should boot straight to the launcher on any common x86-64 PC or
+CouchLiteOS should boot straight to the launcher on any common x86-64 PC or
 Intel Mac from roughly 2012 onward, with no per-machine build and no manual
 driver setup. A user answers one question, "does this PC have a GeForce GTX
 900-series or newer card?", and downloads one of two images:
 
 | ISO | For | Graphics |
 |---|---|---|
-| `moonlightos-<version>-amd64.iso` (**general**) | Intel and AMD graphics, older NVIDIA cards, Intel Macs, VMs | Open drivers only: i915/xe, amdgpu/radeon, nouveau, Mesa |
-| `moonlightos-<version>-nvidia-amd64.iso` (**NVIDIA**) | GeForce GTX 900 through RTX 40 (Maxwell to Ada) | NVIDIA's proprietary 550 driver with GBM; falls back to nouveau on anything else |
+| `couchliteos-<version>-amd64.iso` (**general**) | Intel and AMD graphics, older NVIDIA cards, Intel Macs, VMs | Open drivers only: i915/xe, amdgpu/radeon, nouveau, Mesa |
+| `couchliteos-<version>-nvidia-amd64.iso` (**NVIDIA**) | GeForce GTX 900 through RTX 40 (Maxwell to Ada) | NVIDIA's proprietary 550 driver with GBM; falls back to nouveau on anything else |
 
 Everything else is decided on the machine at boot, not at build time:
 
-- **Hardware detection** (`moonlightos-hwdetect`) runs before udev loads
+- **Hardware detection** (`couchliteos-hwdetect`) runs before udev loads
   drivers. It reads PCI and DMI identifiers and writes module policy to `/run`
   only, so nothing persists across machines when a USB stick moves:
   - NVIDIA ISO: loads `nvidia-drm` only when the GPU is on the 550 driver's
@@ -52,7 +52,7 @@ no GBM, which Cage/wlroots require. nouveau is the only working path there.
 - [x] `nvidia` profile builds on `general` (`PROFILE_BASE=general`) and adds
   the 550 driver built with DKMS for the image kernel, GBM backend, Vulkan,
   CUDA/NVDEC libraries, and the Basic Graphics boot entry.
-- [x] `moonlightos-hwdetect` early (module policy) and late (nouveau fallback,
+- [x] `couchliteos-hwdetect` early (module policy) and late (nouveau fallback,
   GPU driver and decode hints, compositor environment) stages, with unit tests
   against a fake sysfs.
 - [x] `intel` and `imac2013` stay buildable as legacy profiles but are no
@@ -66,7 +66,7 @@ no GBM, which Cage/wlroots require. nouveau is the only working path there.
 
 ### Phase 2: confidence on real hardware
 
-- Community hardware reports: `sudo moonlightos-hardware-report` plus the
+- Community hardware reports: `sudo couchliteos-hardware-report` plus the
   hardware detection summary, collected into `docs/HARDWARE.md` as a
   compatibility table (machine, GPU, ISO, result, date, version).
 - Per-GPU decode verification: VA-API on Intel/AMD, NVDEC/CUDA on NVIDIA; set

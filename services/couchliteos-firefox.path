@@ -1,0 +1,9 @@
+[Unit]
+Description=Start Firefox when requested by the launcher
+
+[Path]
+PathExists=/run/couchliteos/start-firefox
+Unit=couchliteos-firefox.service
+
+[Install]
+WantedBy=graphical.target

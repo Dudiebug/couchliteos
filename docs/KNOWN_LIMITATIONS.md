@@ -15,7 +15,7 @@
   DKMS modules signed with a key that is deleted before the image is sealed, so
   they do not load with Secure Boot on.
   <!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
-  If Secure Boot is on, MoonlightOS falls back to the open NVIDIA driver (lower
+  If Secure Boot is on, CouchLiteOS falls back to the open NVIDIA driver (lower
   performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
   A Broadcom chip that needs `wl` has no Wi-Fi with Secure Boot on: turn Secure
   Boot off, or use wired Ethernet or a supported USB or PCIe Wi-Fi adapter.
@@ -24,7 +24,7 @@
   on the proprietary 550 driver, because it lacks explicit sync. Use the Basic
   Graphics entry if that happens and report the GPU model.
 - Hybrid-graphics laptops (Intel or AMD plus NVIDIA): the launcher uses the
-  GPU the firmware booted with, usually the integrated one. MoonlightOS does
+  GPU the firmware booted with, usually the integrated one. CouchLiteOS does
   not switch outputs or offload rendering to the discrete GPU yet.
 - When the `wl` driver owns a Broadcom Wi-Fi chip, the open Broadcom drivers
   are blacklisted for that boot, as Debian's package does. That includes `b44`,
@@ -42,7 +42,7 @@
 - Remote Desktop uses FreeRDP 3.15's SDL client, which upstream marks
   experimental. One RDP session runs at a time. Saved passwords are stored
   unencrypted (root-only 0600). Debian 13's xrdp 0.10.1 showed its own login
-  dialog in the lab even though MoonlightOS sent the credentials. No Windows RDP
+  dialog in the lab even though CouchLiteOS sent the credentials. No Windows RDP
   host has been tested yet.
 - UEFI installation, independent virtual-disk boot, and live persistence are
   automated in QEMU. Physical NVMe/SATA installation, second-USB installation,
@@ -74,7 +74,7 @@
   support ordinary Linux distributions; Chrome therefore does not guarantee playback.
 - Bluetooth depends on kernel and firmware support for the installed adapter.
   QEMU verifies only clean no-adapter behavior; no physical Bluetooth result is
-  claimed. MoonlightOS provides no desktop Bluetooth application.
+  claimed. CouchLiteOS provides no desktop Bluetooth application.
 - Installed systems retain BlueZ pairing state normally. A live-persistent USB
   must persist `/var/lib/bluetooth` separately for pairings to survive reboot.
 - Tailscale is installed but unauthenticated and optional. No subnet router,

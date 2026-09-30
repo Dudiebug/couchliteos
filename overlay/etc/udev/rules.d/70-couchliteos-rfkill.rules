@@ -1,0 +1,4 @@
+# The Bluetooth service runs as couchliteos and unblocks a soft-blocked adapter
+# with "rfkill unblock bluetooth"; /dev/rfkill is otherwise root-only here (no
+# logind seat ACLs).
+KERNEL=="rfkill", SUBSYSTEM=="misc", GROUP="couchliteos", MODE="0660"

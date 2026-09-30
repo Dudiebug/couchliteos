@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_setup as setup
+import couchliteos_setup as setup
 
 
 class StepPlanTest(unittest.TestCase):
@@ -345,7 +345,7 @@ class ConnectivityTest(unittest.TestCase):
 
 class DisplayAndSoundLogicTest(unittest.TestCase):
     def modes(self):
-        import moonlightos_display as display
+        import couchliteos_display as display
 
         return (
             display.Mode(1920, 1080, 60000, current=True),
@@ -367,13 +367,13 @@ class DisplayAndSoundLogicTest(unittest.TestCase):
         self.assertEqual(len(labels), len(set(labels)))
 
     def test_choices_fall_back_to_every_mode_when_all_are_small(self):
-        import moonlightos_display as display
+        import couchliteos_display as display
 
         choices = setup.display_choices((display.Mode(800, 600, 60000, current=True),))
         self.assertEqual(len(choices), 1)
 
     def sinks(self, *names, default=None):
-        import moonlightos_audio as audio
+        import couchliteos_audio as audio
 
         return [audio.Sink(index + 1, name, name == default) for index, name in enumerate(names)]
 
@@ -429,9 +429,9 @@ class StreamingLogicTest(unittest.TestCase):
 
 # --- wizard flows (fake UI, fake system, fake Bluetooth service) ----------
 
-import moonlightos_audio as audio
-import moonlightos_bluetooth as bt
-import moonlightos_display as display
+import couchliteos_audio as audio
+import couchliteos_bluetooth as bt
+import couchliteos_display as display
 
 
 class FakeUI:
@@ -622,7 +622,7 @@ class WizardLifecycleTest(WizardTestCase):
         self.assertTrue(self.wizard(ui).run())
         self.assertTrue(self.marker.exists())
         screen = ui.screens[0]
-        self.assertEqual(screen["title"], "WELCOME TO MOONLIGHTOS")
+        self.assertEqual(screen["title"], "WELCOME TO COUCHLITEOS")
         text = " ".join(screen["lines"]).upper()
         self.assertIn("SKIP", text)
         self.assertIn("SETTINGS > SETUP WIZARD", text)
@@ -674,7 +674,7 @@ class WizardLifecycleTest(WizardTestCase):
         setup.save_state({"network": "done"}, self.state_path)
         ui = FakeUI(*self.SKIP_ALL, "FINISH")
         self.assertTrue(self.wizard(ui).run(force=True))
-        self.assertEqual(ui.titles()[0], "WELCOME TO MOONLIGHTOS")
+        self.assertEqual(ui.titles()[0], "WELCOME TO COUCHLITEOS")
         self.assertEqual(self.state()["network"], "skipped")
 
     def test_the_done_screen_can_redo_skipped_steps(self):

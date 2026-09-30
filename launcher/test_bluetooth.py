@@ -3,7 +3,7 @@ import pathlib
 import unittest
 from unittest import mock
 
-import moonlightos_bluetooth as bluetooth
+import couchliteos_bluetooth as bluetooth
 
 
 ADAPTER_ON = {

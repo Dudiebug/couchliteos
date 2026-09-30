@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/suspend
+Unit=couchliteos-suspend.service
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=CouchLiteOS QEMU-only application smoke driver
+After=couchliteos-launcher.service
+Wants=couchliteos-launcher.service
+ConditionPathExists=/sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.smoke/raw
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/couchliteos-qemu-smoke
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=graphical.target

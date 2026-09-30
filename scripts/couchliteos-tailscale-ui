@@ -1,0 +1,9 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+url=/run/couchliteos/tailscale-auth-url
+if [[ -e "$url" && ! -L "$url" && $(stat -c %u -- "$url") == "$(id -u)" ]]; then
+  rm -f -- "$url"
+fi
+touch /run/couchliteos/tailscale-enroll
+exec /usr/bin/couchliteos-tailscale-enrollment

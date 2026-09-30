@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_apps as apps
+import couchliteos_apps as apps
 
 
 SYSTEM = pathlib.Path(__file__).parents[1] / "config" / "apps.d"

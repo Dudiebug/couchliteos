@@ -1,0 +1,9 @@
+[Unit]
+Description=Start chiaki-ng when requested by the launcher
+
+[Path]
+PathExists=/run/couchliteos/start-chiaki
+Unit=couchliteos-chiaki.service
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,77 @@
+#!/usr/bin/python3
+"""HDMI-CEC TV control daemon. Runs as root, and only when a /dev/cec* device exists.
+
+It registers the kernel CEC adapter as a Playback device called CouchLiteOS,
+switches the TV on (if the setting is on), then follows the bus and suspends
+the PC when the TV reports Standby (if that setting is on). With no CEC
+hardware, or no link to a TV, it does nothing.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/usr/libexec")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "launcher"))
+import couchliteos_cec as cec  # noqa: E402
+
+SYSTEMCTL = "/usr/bin/systemctl"
+RETRY_SECONDS = 30  # adapter present but no link to a TV yet (TV off at the wall, cable out)
+RESTART_SECONDS = 5  # the monitor ended (adapter reset); look again
+
+
+def log(message: str) -> None:
+    print(f"couchliteos-cec: {message}", flush=True)
+
+
+def suspend() -> None:
+    try:
+        subprocess.run([SYSTEMCTL, "suspend"], check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"suspend failed: {error}")
+
+
+def settings() -> cec.Settings:
+    return cec.effective_settings(cec.load_settings(), cec.suspend_supported())
+
+
+def follow(adapter: cec.Adapter, last_tv_on: float) -> None:
+    """Read the bus until the monitor ends (adapter unplugged or reset)."""
+    monitor = subprocess.Popen(
+        cec.cec_ctl(adapter.device, "--skip-info", "--monitor"),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace",
+    )
+    try:
+        cec.watch(monitor.stdout, settings, time.monotonic, suspend, log, last_tv_on)
+    finally:
+        monitor.terminate()
+        monitor.wait()
+
+
+def main() -> int:
+    started = None
+    while True:
+        devices = cec.device_nodes()
+        if not devices:
+            log("no CEC device; nothing to do")
+            return 0
+        adapter = cec.bring_up(devices=devices, edid=cec.edid_path())
+        if adapter is None:
+            log("no CEC adapter that can reach a TV yet; waiting")
+            time.sleep(RETRY_SECONDS)
+            continue
+        if started is None:
+            log(f"{adapter.device} ({adapter.driver}) physical address {adapter.phys_addr}")
+            if cec.load_settings().turn_tv_on:
+                ok = cec.turn_tv_on(adapter.device, adapter.phys_addr, log=log)
+                log("TV switched on" if ok else "TV did not answer Image View On")
+            started = time.monotonic()  # a standby soon after this is our own doing, not the user's
+        follow(adapter, started)
+        time.sleep(RESTART_SECONDS)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

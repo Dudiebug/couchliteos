@@ -1,0 +1,15 @@
+[Unit]
+Description=Attach CouchLiteOS allowlisted USB/IP devices
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe vhci_hcd
+ExecStart=/usr/local/sbin/couchliteos-usbip-client watch
+ExecStop=/usr/local/sbin/couchliteos-usbip-client detach-all
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

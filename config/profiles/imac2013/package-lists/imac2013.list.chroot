@@ -23,5 +23,5 @@ broadcom-sta-dkms
 # applesmc temperature and fan sensors for diagnostics
 lm-sensors
 
-# Machine identification for moonlightos-hardware-report (docs/IMAC-2013.md)
+# Machine identification for couchliteos-hardware-report (docs/IMAC-2013.md)
 dmidecode

@@ -1,0 +1,30 @@
+[Unit]
+Description=CouchLiteOS Firefox browser
+After=couchliteos-launcher.service
+ConditionFileIsExecutable=/usr/bin/firefox-esr
+StartLimitIntervalSec=60
+StartLimitBurst=3
+OnFailure=couchliteos-path-rearm@firefox.service
+
+[Service]
+Type=simple
+User=couchliteos
+Group=couchliteos
+SupplementaryGroups=audio input render video
+Environment=HOME=/var/lib/couchliteos/home
+Environment=XDG_CONFIG_HOME=/var/lib/couchliteos/home/.config
+Environment=XDG_DATA_HOME=/var/lib/couchliteos/home/.local/share
+Environment=XDG_CACHE_HOME=/var/lib/couchliteos/home/.cache
+Environment=XDG_RUNTIME_DIR=/run/couchliteos
+Environment=PIPEWIRE_RUNTIME_DIR=/run/couchliteos
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=MOZ_ENABLE_WAYLAND=1
+EnvironmentFile=-/run/couchliteos/session.env
+ExecStart=/usr/libexec/couchliteos-run-app firefox
+Restart=on-failure
+# Restart directly: with the default mode OnFailure= fires on every retried
+# crash, which would reset the start limit and retry forever.
+RestartMode=direct
+RestartSec=2
+StandardOutput=journal+console
+StandardError=journal+console

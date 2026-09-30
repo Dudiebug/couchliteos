@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_osk as osk
+import couchliteos_osk as osk
 
 
 class Codes:

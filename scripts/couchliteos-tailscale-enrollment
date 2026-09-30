@@ -1,0 +1,123 @@
+#!/bin/bash
+set -uo pipefail
+
+url_file=${COUCHLITEOS_TAILSCALE_URL_FILE:-/run/couchliteos/tailscale-auth-url}
+poll_seconds=${COUCHLITEOS_TAILSCALE_POLL_SECONDS:-1}
+url_wait_seconds=${COUCHLITEOS_TAILSCALE_URL_WAIT_SECONDS:-120}
+url_rendered=false
+
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+connected() {
+  tailscale status --json 2>/dev/null |
+    jq -e '.BackendState == "Running"' >/dev/null 2>&1
+}
+
+# This window closes when the script exits and a controller cannot type a
+# command, so the return key is Enter (controller A) or a lone Esc (controller
+# B); arrow keys and everything else are ignored. Status 0: pressed, 1: timed
+# out. A closed terminal counts as pressed so the loops below cannot spin.
+return_key_pressed() {
+  local key rest status
+  IFS= read -rsn1 ${1:+-t "$1"} key
+  status=$?
+  if ((status > 128)); then return 1; fi
+  if ((status != 0)); then return 0; fi
+  [[ -z $key ]] && return 0
+  if [[ $key == $'\e' ]]; then
+    IFS= read -rsn2 -t 0.05 rest || true
+    [[ -z ${rest:-} ]] && return 0
+  fi
+  return 1
+}
+
+wait_to_return() {
+  [[ -t 0 ]] || return 0
+  echo
+  echo 'Press ENTER (controller A) to return to CouchLiteOS.'
+  until return_key_pressed; do :; done
+}
+
+wait_for_input_or_poll() {
+  if [[ -t 0 ]]; then
+    return_key_pressed "$poll_seconds"
+  else
+    sleep "$poll_seconds"
+    return 1
+  fi
+}
+
+# A TV can hide the outer columns and rows, and a QR code that scrolls off the top or
+# wraps is useless. So the code gets the standard 4-module quiet margin plus a few
+# blank columns, and is drawn only when it fits; the address is always printed.
+qr_margin=4
+qr_pad='    '
+
+show_enrollment_url() {
+  local url=$1 qr='' rows='' cols='' qr_lines=0 url_lines=1 fits=true
+  read -r rows cols < <(stty size 2>/dev/null) || true
+  if command -v qrencode >/dev/null; then
+    qr=$(qrencode -t ANSIUTF8 -m "$qr_margin" "$url")
+    qr_lines=$(printf '%s\n' "$qr" | wc -l)
+  fi
+  if [[ -n $qr && $rows =~ ^[0-9]+$ && $cols =~ ^[0-9]+$ && $cols -gt 0 ]]; then
+    url_lines=$(((${#url} + cols - 1) / cols))
+    # The screen holds the heading, the QR code, the address and notes (7 lines besides
+    # the code and the address) and the cursor line; each QR line is two modules wide.
+    if ((qr_lines + url_lines + 7 > rows || 2 * qr_lines + 2 * ${#qr_pad} > cols)); then
+      fits=false
+    fi
+  fi
+  if [[ -n $qr && $fits == true ]]; then
+    echo 'Scan this QR code with a trusted phone:'
+    printf '%s\n' "$qr" | sed "s/^/$qr_pad/"
+    echo 'Or open this address:'
+  else
+    if [[ -z $qr ]]; then
+      echo '(QR renderer unavailable)'
+    else
+      echo 'The screen is too small for a QR code.'
+    fi
+    echo 'Open this address on a phone or computer:'
+  fi
+  printf '%s\n' "$url"
+  echo 'This URL is short-lived and is not written to persistent logs.'
+  echo 'Press ENTER (A / CROSS) to return; enrollment will continue in the background.'
+}
+
+echo 'Tailscale enrollment'
+echo
+
+for ((elapsed = 0; ; elapsed++)); do
+  if connected; then
+    echo
+    echo 'Tailscale is connected. Returning to CouchLiteOS.'
+    exit 0
+  fi
+
+  if systemctl is-failed --quiet couchliteos-tailscale-enroll.service; then
+    echo 'Tailscale sign-in failed.' >&2
+    echo 'Open SETTINGS > SYSTEM DIAGNOSTICS to see why, then try TAILSCALE again.' >&2
+    wait_to_return
+    exit 1
+  fi
+
+  if [[ "$url_rendered" == false && -s "$url_file" ]]; then
+    url=$(head -n 1 "$url_file")
+    if [[ "$url" =~ ^https://login\.tailscale\.com/[^[:space:]]+$ ]]; then
+      show_enrollment_url "$url"
+      url_rendered=true
+    fi
+  elif [[ "$url_rendered" == false && "$elapsed" -ge "$url_wait_seconds" ]]; then
+    echo 'Tailscale did not offer a sign-in code in time.' >&2
+    echo 'Check the network connection (SETTINGS > SYSTEM DIAGNOSTICS shows details), then try TAILSCALE again.' >&2
+    wait_to_return
+    exit 1
+  fi
+
+  if wait_for_input_or_poll; then
+    echo 'Tailscale setup viewer closed; enrollment is still running.'
+    exit 130
+  fi
+done

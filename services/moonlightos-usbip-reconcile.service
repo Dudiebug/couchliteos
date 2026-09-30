@@ -1,9 +1,0 @@
-[Unit]
-Description=Reconcile explicitly allowlisted USB/IP exports
-After=moonlightos-usbipd.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/moonlightos-usbip reconcile
-StandardOutput=append:/var/log/moonlightos/usbip.log
-StandardError=append:/var/log/moonlightos/usbip.log

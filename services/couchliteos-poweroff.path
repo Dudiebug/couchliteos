@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/poweroff
+Unit=couchliteos-poweroff.service
+
+[Install]
+WantedBy=graphical.target

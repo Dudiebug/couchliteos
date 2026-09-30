@@ -13,7 +13,7 @@ from test_launcher import Screen
 class LauncherFixesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_fixes", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
@@ -32,8 +32,8 @@ class LiveModeWarningTest(LauncherFixesTest):
         "overlay overlay rw,noatime,lowerdir=/run/live/rootfs/filesystem.squashfs/,"
         "upperdir=/run/live/overlay/rw,workdir=/run/live/overlay/work\n"
     )
-    BIND_ON_USB = "/dev/sdb3[/moonlightos-state] ext4 rw,relatime\n"
-    ENCRYPTED = "/dev/mapper/sdb3_crypt[/moonlightos-state] ext4 rw,relatime\n"
+    BIND_ON_USB = "/dev/sdb3[/couchliteos-state] ext4 rw,relatime\n"
+    ENCRYPTED = "/dev/mapper/sdb3_crypt[/couchliteos-state] ext4 rw,relatime\n"
     UNION_ON_USB = (
         "overlay overlay rw,lowerdir=/run/live/rootfs/filesystem.squashfs/,"
         "upperdir=/run/live/persistence/sdb3/rw,workdir=/run/live/persistence/sdb3/.work\n"
@@ -56,7 +56,7 @@ class LiveModeWarningTest(LauncherFixesTest):
 
     def test_persistence_file_on_a_loop_device_counts(self):
         # Real `findmnt` output for a bind mount from a loop-mounted ext4 image.
-        self.assertTrue(self.module.state_is_persistent("/dev/loop0[/moonlightos-state] ext4 rw,relatime\n"))
+        self.assertTrue(self.module.state_is_persistent("/dev/loop0[/couchliteos-state] ext4 rw,relatime\n"))
 
     def test_live_boot_without_persistence_warns(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -65,7 +65,7 @@ class LiveModeWarningTest(LauncherFixesTest):
                 warning = self.module.live_mode_warning(pathlib.Path(directory))
         self.assertEqual(warning, "LIVE MODE: SETTINGS WILL NOT BE SAVED")
         self.assertEqual(run.call_args.args[0][0], "findmnt")
-        self.assertIn("/var/lib/moonlightos", run.call_args.args[0])
+        self.assertIn("/var/lib/couchliteos", run.call_args.args[0])
 
     def test_live_boot_with_persistence_does_not_warn(self):
         with tempfile.TemporaryDirectory() as directory:

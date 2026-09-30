@@ -6,7 +6,7 @@ Moonlight's native input path.
 
 ## Appliance server
 
-Nothing is exported by default. Edit `/etc/moonlightos/usbip-allowlist.conf`:
+Nothing is exported by default. Edit `/etc/couchliteos/usbip-allowlist.conf`:
 
 ```text
 VID:PID:SERIAL
@@ -17,16 +17,16 @@ VID:PID:SERIAL:risky      # explicit override for a blocked class
 Then run:
 
 ```bash
-sudo moonlightos-usbip list
-sudo moonlightos-usbip reconcile
-sudo moonlightos-usbip status
-sudo moonlightos-usbip unbind-all
+sudo couchliteos-usbip list
+sudo couchliteos-usbip reconcile
+sudo couchliteos-usbip status
+sudo couchliteos-usbip unbind-all
 ```
 
 Storage, video/webcam, audio/microphone, HID keyboard, and HID mouse interfaces
 are refused unless the exact entry ends in `:risky`. Security keys must never
 be added. The controller identity in
-`/var/lib/moonlightos/launcher-controller.id` is always refused. Hotplug udev
+`/var/lib/couchliteos/launcher-controller.id` is always refused. Hotplug udev
 events reconcile the allowlist; removing and reinserting a device does not
 turn arbitrary hardware into an export.
 
@@ -34,7 +34,7 @@ Set the Linux gaming PC's literal LAN IPv4 in `[host:gaming-pc] lan_address`,
 then reload:
 
 ```bash
-sudo systemctl reload moonlightos-firewall
+sudo systemctl reload couchliteos-firewall
 ```
 
 TCP/3240 is blocked from every other LAN source.
@@ -44,16 +44,16 @@ TCP/3240 is blocked from every other LAN source.
 ```bash
 sudo apt install usbip
 sudo modprobe vhci_hcd
-sudo install -m 0755 host/moonlightos-usbip-client /usr/local/sbin/
-sudo install -m 0644 host/moonlightos-usbip-client.service /etc/systemd/system/
-sudo install -m 0600 host/moonlightos-usbip-client.conf.example \
-  /etc/moonlightos-usbip-client.conf
-sudoedit /etc/moonlightos-usbip-client.conf
-sudo systemctl enable --now moonlightos-usbip-client.service
+sudo install -m 0755 host/couchliteos-usbip-client /usr/local/sbin/
+sudo install -m 0644 host/couchliteos-usbip-client.service /etc/systemd/system/
+sudo install -m 0600 host/couchliteos-usbip-client.conf.example \
+  /etc/couchliteos-usbip-client.conf
+sudoedit /etc/couchliteos-usbip-client.conf
+sudo systemctl enable --now couchliteos-usbip-client.service
 ```
 
 The client attaches only devices already exported by the appliance's exact
-VID/PID/serial policy. Use `moonlightos-usbip-client status` and `detach-all`
+VID/PID/serial policy. Use `couchliteos-usbip-client status` and `detach-all`
 for explicit control.
 
 ## Optional Tailscale remote mode

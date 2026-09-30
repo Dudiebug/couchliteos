@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-import moonlightos_audio as audio
-import moonlightos_setup as setup
+import couchliteos_audio as audio
+import couchliteos_setup as setup
 import test_setup as base
 from test_launcher import Screen
 
@@ -335,7 +335,7 @@ class LauncherPairingTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        path = pathlib.Path(__file__).with_name("moonlightos-launcher.py")
+        path = pathlib.Path(__file__).with_name("couchliteos-launcher.py")
         spec = importlib.util.spec_from_file_location("launcher_for_pairing", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)

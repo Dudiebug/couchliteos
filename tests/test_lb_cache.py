@@ -179,9 +179,9 @@ class SharedBuildCacheTest(unittest.TestCase):
     def test_build_script_uses_the_cache_only_when_asked(self):
         build = (ROOT / "build/build.sh").read_text()
         self.assertRegex(build, r'(?m)^source "\$ROOT/build/lb-cache\.sh"$')
-        self.assertRegex(build, r'(?m)^if \[\[ -n \$\{MOONLIGHTOS_LB_CACHE:-\} \]\]; then\n  lb_cache_prepare "\$MOONLIGHTOS_LB_CACHE"\nfi$')
-        self.assertRegex(build, r'(?m)^if \[\[ -n \$\{MOONLIGHTOS_LB_CACHE:-\} \]\]; then\n  lb_cache_save_bootstrap "\$MOONLIGHTOS_LB_CACHE"\nfi$')
-        self.assertEqual(len(re.findall("MOONLIGHTOS_LB_CACHE", build)), 4)
+        self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n  lb_cache_prepare "\$COUCHLITEOS_LB_CACHE"\nfi$')
+        self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n  lb_cache_save_bootstrap "\$COUCHLITEOS_LB_CACHE"\nfi$')
+        self.assertEqual(len(re.findall("COUCHLITEOS_LB_CACHE", build)), 4)
         # Order: lb config, then prepare, then lb build, then save.
         order = [build.index(marker) for marker in ("lb config noauto", "lb_cache_prepare", "\nlb build\n", "lb_cache_save_bootstrap")]
         self.assertEqual(order, sorted(order))
