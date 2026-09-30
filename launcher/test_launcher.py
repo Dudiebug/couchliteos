@@ -510,6 +510,42 @@ class LauncherTest(unittest.TestCase):
             _text, closed = self.active_applications_screen([key, 27])
             self.assertEqual(closed, ["close-terminal"])
 
+    def display_preview(self, keys):
+        """Run the display-mode confirmation with the given keys; return (events, save mock)."""
+        events = []
+
+        class Keys(Screen):
+            def getch(self):
+                events.append("getch")
+                return super().getch()
+
+        launcher = self.launcher()
+        settings = self.module.Settings(Keys(keys), launcher)
+        old = self.module.display.Mode(1280, 720, 60000, current=True)
+        new = self.module.display.Mode(1920, 1080, 60000)
+        output = mock.Mock(current_mode=new)
+        output.name, output.identity = "HDMI-A-1", "tv"
+        settings.output, settings.original_mode = output, old
+        settings.resolution, settings.refresh_mhz = "1920x1080", 60000
+        settings.refresh_outputs = mock.Mock()
+        display = self.module.display
+        with mock.patch.object(display, "valid_output_mode", return_value=(output, new)), mock.patch.object(
+            display, "apply_mode"
+        ), mock.patch.object(display, "save_display") as save, mock.patch.object(display, "log"), mock.patch.object(
+            self.module.curses, "flushinp", side_effect=lambda: events.append("flush"), create=True
+        ):
+            settings.apply_preview()
+        return events, save
+
+    def test_display_confirmation_ignores_queued_input_and_defaults_to_revert(self):
+        # A double-tapped A must not save a mode nobody has seen: it is reapplied every boot.
+        events, save = self.display_preview([10])
+        save.assert_not_called()
+        self.assertEqual(events[0], "flush")
+        # Choosing KEEP explicitly still saves it.
+        _events, save = self.display_preview([self.module.curses.KEY_DOWN, 10])
+        save.assert_called_once()
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:

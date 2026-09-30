@@ -818,13 +818,19 @@ class Settings:
         old_timeout = 250
         self.screen.timeout(old_timeout)
         confirmed = False
+        # Presses queued while the mode switched (a double-tapped A) never saw this
+        # screen, and a saved mode is reapplied on every boot: drop them, and make
+        # the safe choice the default.
+        curses.flushinp()
+        selected = 0
         while time.monotonic() < deadline:
             seconds = max(1, int(deadline - time.monotonic() + 0.999))
-            self.status = f"ENTER CONFIRMS; ESC ROLLS BACK ({seconds}S)"
-            self.draw("CONFIRM DISPLAY MODE", [requested.argument], 0)
+            self.status = f"SELECT KEEP TO SAVE; OTHERWISE REVERTS IN {seconds}S"
+            self.draw(f"CONFIRM DISPLAY MODE {requested.argument}", ["REVERT", "KEEP THIS MODE"], selected)
             key = read_key(self.screen)
+            selected = move_selection(selected, key, 2)
             if key in (curses.KEY_ENTER, 10, 13):
-                confirmed = True
+                confirmed = selected == 1
                 break
             if key == 27:
                 break
