@@ -734,5 +734,17 @@ rg -qF 'moonlightos_foot.py" "$CHROOT/usr/libexec/moonlightos-foot"' build/confi
 rg -q '/usr/libexec/moonlightos-foot --fullscreen' scripts/moonlightos-osk-session
 rg -q '^FOOT = "/usr/libexec/moonlightos-foot"' launcher/moonlightos_app_runner.py
 refute rg -q '/usr/bin/foot' services/moonlightos-launcher.service scripts/moonlightos-osk-session launcher/moonlightos_app_runner.py
+# Upgrade notice: a one-time "what's new" screen, only for people who finished setup on an older version
+rg -q 'moonlightos_whatsnew.py' build/configure.sh
+rg -q '^import moonlightos_whatsnew as whatsnew' launcher/moonlightos-launcher.py
+rg -q 'moonlightos_whatsnew.py' launcher/Makefile
+rg -q 'test_whatsnew.py' launcher/Makefile
+# It comes BEFORE the setup wizard: afterwards a new user who just finished setup would look like an upgrader.
+rg -Uq 'whatsnew\.show_once\(self\.screen, read_key\)[^\n]*\n\s+self\.setup_wizard\(\)' launcher/moonlightos-launcher.py
+# Its version and state come from the same places as the update check and the setup marker.
+rg -q 'update\.VERSION_FILES' launcher/moonlightos_whatsnew.py
+rg -q 'setup\.MARKER\.parent / "whatsnew-seen"' launcher/moonlightos_whatsnew.py
+# The notice names the old product once, on a line the rename script leaves alone.
+test "$(rg -c 'MOONLIGHTOS IS NOW CALLED COUCHLITEOS\. SAME SYSTEM.*# rename:keep$' launcher/moonlightos_whatsnew.py)" = 1  # rename:keep
 
 printf 'Static tests passed.\n'

@@ -32,6 +32,7 @@ import moonlightos_controllers as controllers
 import moonlightos_update as update
 import moonlightos_errors as errors
 import moonlightos_confirm as confirmation
+import moonlightos_whatsnew as whatsnew
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -1065,6 +1066,7 @@ class Launcher:
             self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
             self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
+        whatsnew.show_once(self.screen, read_key)  # before the wizard: only upgraders see it
         self.setup_wizard()
         self.autostream()
         self.draw()

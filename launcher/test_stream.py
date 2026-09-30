@@ -722,6 +722,10 @@ class LauncherTestCase(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("launcher_couch", path)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
+        # run() must not read or write the real what's-new marker (test_whatsnew covers it).
+        patcher = mock.patch.object(cls.module.whatsnew, "show_once")
+        patcher.start()
+        cls.addClassCleanup(patcher.stop)
 
     HOST = stream.Host(
         name="Gaming-PC", uuid="UUID-1", mac=bytes.fromhex("1c1b0d8dbfe9"),
