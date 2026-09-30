@@ -75,11 +75,18 @@ def install_commands(
 
 
 def connect_monitor(path: str, timeout: float = 15.0) -> socket.socket:
+    """Connect to a QEMU HMP monitor: a Unix socket path, or tcp:HOST:PORT."""
     deadline = time.monotonic() + timeout
     while True:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if path.startswith("tcp:"):
+            host, _separator, port = path[4:].rpartition(":")
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            address: object = (host, int(port))
+        else:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            address = path
         try:
-            client.connect(path)
+            client.connect(address)
             return client
         except OSError:
             client.close()

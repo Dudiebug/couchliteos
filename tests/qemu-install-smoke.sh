@@ -41,10 +41,19 @@ virtual_size=$(qemu-img info --output=json "$work/system.qcow2" | \
 
 ovmf_code=
 ovmf_vars_template=
+if [[ -n ${MOONLIGHTOS_OVMF_CODE:-} || -n ${MOONLIGHTOS_OVMF_VARS:-} ]]; then
+  [[ -r ${MOONLIGHTOS_OVMF_CODE:-} && -r ${MOONLIGHTOS_OVMF_VARS:-} ]] || {
+    echo 'Both readable MOONLIGHTOS_OVMF_CODE and MOONLIGHTOS_OVMF_VARS are required.' >&2
+    exit 69
+  }
+  ovmf_code=$MOONLIGHTOS_OVMF_CODE
+  ovmf_vars_template=$MOONLIGHTOS_OVMF_VARS
+fi
 for pair in \
   '/usr/share/OVMF/OVMF_CODE_4M.fd|/usr/share/OVMF/OVMF_VARS_4M.fd' \
   '/usr/share/OVMF/OVMF_CODE.fd|/usr/share/OVMF/OVMF_VARS.fd' \
   '/usr/share/pve-edk2-firmware/OVMF_CODE_4M.fd|/usr/share/pve-edk2-firmware/OVMF_VARS_4M.fd'; do
+  [[ -z $ovmf_code ]] || break
   code=${pair%%|*}
   vars=${pair#*|}
   if [[ -r "$code" && -r "$vars" ]]; then
@@ -65,6 +74,19 @@ common=(
 )
 [[ -r /dev/kvm && -w /dev/kvm ]] && common=(-enable-kvm -cpu host "${common[@]}")
 
+# Hosts without Unix-domain sockets in Python can use local TCP monitors.
+if [[ -n ${MOONLIGHTOS_QEMU_MONITOR_PORT:-} ]]; then
+  install_monitor=tcp:127.0.0.1:$MOONLIGHTOS_QEMU_MONITOR_PORT
+  installed_monitor=tcp:127.0.0.1:$((MOONLIGHTOS_QEMU_MONITOR_PORT + 1))
+  install_monitor_option="$install_monitor,server=on,wait=off"
+  installed_monitor_option="$installed_monitor,server=on,wait=off"
+else
+  install_monitor=$work/monitor.sock
+  installed_monitor=$work/installed-monitor.sock
+  install_monitor_option="unix:$install_monitor,server=on,wait=off"
+  installed_monitor_option="unix:$installed_monitor,server=on,wait=off"
+fi
+
 install -D -m 0644 /dev/null "$INSTALL_LOG"
 install -D -m 0644 /dev/null "$CONFIG_LOG"
 printf 'blank_disk=true\nvirtual_size=%s\n' "$virtual_size" >> "$CONFIG_LOG"
@@ -76,7 +98,7 @@ printf '%q ' qemu-system-x86_64 "${common[@]}" \
   -boot order=d \
   -drive "file=$ISO,media=cdrom,readonly=on" \
   -netdev user,id=installnet -device e1000,netdev=installnet \
-  -serial stdio -monitor "unix:$work/monitor.sock,server=on,wait=off" \
+  -serial stdio -monitor "$install_monitor_option" \
   > "$CONFIG_LOG"
 printf '\n' >> "$CONFIG_LOG"
 qemu-img info "$work/system.qcow2" >> "$CONFIG_LOG"
@@ -86,12 +108,12 @@ timeout $((25 * SCALE))m qemu-system-x86_64 \
   -boot order=d \
   -drive "file=$ISO,media=cdrom,readonly=on" \
   -netdev user,id=installnet -device e1000,netdev=installnet \
-  -serial stdio -monitor "unix:$work/monitor.sock,server=on,wait=off" \
+  -serial stdio -monitor "$install_monitor_option" \
   > "$INSTALL_LOG" 2>&1 &
 pid=$!
 
 if ! python3 "$ROOT/tests/qemu_iso_boot.py" \
-  "$work/monitor.sock" "$MENU_SCREENSHOT" "$EDITOR_SCREENSHOT" "$INSTALLER_SCREENSHOT" \
+  "$install_monitor" "$MENU_SCREENSHOT" "$EDITOR_SCREENSHOT" "$INSTALLER_SCREENSHOT" \
   ' auto=true priority=critical preseed/url=http://10.0.2.2:8000/installer-preseed.cfg console=ttyS0,115200n8 DEBIAN_FRONTEND=text'; then
   cat "$INSTALL_LOG"
   echo 'Could not drive the ISO installer entry.' >&2
@@ -120,7 +142,7 @@ boot_and_wait() {
   local monitor=(-monitor none)
   if [[ $mode == persistence-write ]]; then
     find "$work/installed-monitor.sock" -delete 2>/dev/null || true
-    monitor=(-monitor "unix:$work/installed-monitor.sock,server=on,wait=off")
+    monitor=(-monitor "$installed_monitor_option")
   fi
   printf '\n=== installed boot: %s ===\n' "$mode" >> "$BOOT_LOG"
   qemu-system-x86_64 \
@@ -133,7 +155,7 @@ boot_and_wait() {
   for _ in $(seq 1 $((240 * SCALE))); do
     if grep -q "$marker" "$BOOT_LOG"; then
       if [[ $mode == persistence-write ]]; then
-        python3 - "$ROOT" "$work/installed-monitor.sock" "$INSTALLED_SCREENSHOT" <<'PY'
+        python3 - "$ROOT" "$installed_monitor" "$INSTALLED_SCREENSHOT" <<'PY'
 import sys
 import time
 

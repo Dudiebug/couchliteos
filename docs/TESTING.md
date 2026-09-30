@@ -62,6 +62,15 @@ example inside a software-emulated build VM), set
 wait, the installer keystroke pauses, and the in-guest waits by the same factor;
 the guest receives the factor through a QEMU fw_cfg entry.
 
+The QEMU tests also run from Git Bash on a Windows host with QEMU for Windows
+(software emulation, no KVM): set `MOONLIGHTOS_OVMF_CODE`/`MOONLIGHTOS_OVMF_VARS`
+to QEMU's `edk2-x86_64-code.fd`/`edk2-i386-vars.fd`, `TMPDIR` to a Windows-style
+path such as `C:/qemu-tmp`, and `MOONLIGHTOS_QEMU_MONITOR_PORT` to a free local
+TCP port (Windows Python has no Unix-domain sockets). The persistence test
+accepts `MOONLIGHTOS_QEMU_PERSISTENCE_IMAGE` (a pristine image made by its own
+`mke2fs` command on a Linux host) and `MOONLIGHTOS_BSDTAR` (Windows'
+`C:/Windows/System32/tar.exe`) when `mke2fs` and `xorriso` are unavailable.
+
 The script boots `build/out/moonlightos-0.1.12-amd64.iso` with serial
 output, a virtual Ethernet NIC, and UEFI when OVMF is available. Success means
 the boot reached the MoonlightOS launcher service marker. QEMU does not prove

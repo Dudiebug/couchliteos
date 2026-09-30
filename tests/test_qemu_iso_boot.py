@@ -43,5 +43,20 @@ class QemuIsoBootTests(unittest.TestCase):
         self.assertNotIn("-initrd", " ".join(names))
 
 
+class MonitorAddressTests(unittest.TestCase):
+    def test_tcp_monitor_address(self):
+        import socket
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        try:
+            port = listener.getsockname()[1]
+            with qemu_iso_boot.connect_monitor(f"tcp:127.0.0.1:{port}", timeout=5) as client:
+                self.assertEqual(client.getpeername()[1], port)
+        finally:
+            listener.close()
+
+
 if __name__ == "__main__":
     unittest.main()

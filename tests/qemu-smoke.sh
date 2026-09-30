@@ -20,6 +20,14 @@ temporary_files=()
 [[ -z ${MOONLIGHTOS_QEMU_LOG:-} ]] && temporary_files+=("$log")
 monitor_socket=$(mktemp /tmp/moonlightos-qemu-monitor.XXXXXX)
 find "$monitor_socket" -delete
+# Hosts without Unix-domain sockets in Python can use a local TCP monitor.
+if [[ -n ${MOONLIGHTOS_QEMU_MONITOR_PORT:-} ]]; then
+  monitor_address=tcp:127.0.0.1:$MOONLIGHTOS_QEMU_MONITOR_PORT
+  monitor_option="$monitor_address,server=on,wait=off"
+else
+  monitor_address=$monitor_socket
+  monitor_option="unix:$monitor_socket,server=on,wait=off"
+fi
 cleanup() {
   ((${#temporary_files[@]} == 0)) || find "${temporary_files[@]}" -delete
   [[ ! -e "$monitor_socket" ]] || find "$monitor_socket" -delete
@@ -58,15 +66,16 @@ if command -v xorriso >/dev/null; then
 fi
 
 capture_screen() {
-  python3 - "$monitor_socket" "$SCREENSHOT" <<'PY' || true
-import socket
+  python3 - "$ROOT" "$monitor_address" "$SCREENSHOT" <<'PY' || true
 import sys
 import time
 
-monitor, screenshot = sys.argv[1:]
-client = socket.socket(socket.AF_UNIX)
+root, monitor, screenshot = sys.argv[1:]
+sys.path.insert(0, root)
+from tests.qemu_iso_boot import connect_monitor
+
+client = connect_monitor(monitor, timeout=2)
 client.settimeout(2)
-client.connect(monitor)
 client.recv(4096)
 client.sendall(f"screendump {screenshot}\n".encode())
 time.sleep(1)
@@ -77,7 +86,7 @@ PY
 args=(
   -m 3072 -smp 2 -boot d -cdrom "$ISO"
   -device virtio-vga -display none -serial stdio -no-reboot
-  -monitor "unix:$monitor_socket,server=on,wait=off"
+  -monitor "$monitor_option"
   -netdev "user,id=net0" -device "e1000,netdev=net0"
   -fw_cfg "name=opt/moonlightos.smoke,string=apps"
   -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE"
