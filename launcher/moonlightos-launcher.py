@@ -534,7 +534,10 @@ class Launcher:
         labels = [label for label, _action in self.menu]
         selected = self.selected
         first_row = max(title_row + 3, height // 3)
-        status_row = height - 4  # always on screen: it carries results and errors
+        footer = self.footer_lines()
+        # The status line is always on screen (it carries results and errors); the footer
+        # lines sit directly below it, so each one past the first moves it up a row.
+        status_row = height - 4 - max(0, len(footer) - 1)
         gap_before = (len(self.applications), len(self.applications) + 1)
         if len(labels) + len(gap_before) <= status_row - 1 - first_row:
             # Everything fits: blank rows separate the apps, SETTINGS and the power buttons.
@@ -544,7 +547,6 @@ class Launcher:
         menu_left = max(2, (width - max(len(label) for label in labels) - 3) // 2)
         listview.draw_rows(self.screen, labels, selected, first_row, status_row - 1, menu_left)
         add_centered(self.screen, status_row, self.status)
-        footer = self.footer_lines()
         for offset, (text, attr) in enumerate(reversed(footer)):
             add_centered(self.screen, height - 3 - offset, text, attr)
         self.screen.refresh()

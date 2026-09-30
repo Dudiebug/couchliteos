@@ -1286,6 +1286,51 @@ class LauncherTest(unittest.TestCase):
             self.assertFalse(launcher.pair_moonlight("192.168.1.20", "0427"))
         launcher.launch_and_wait.assert_not_called()
 
+    def draw_home(self, size, selected, *, live_warning="", update="", battery=""):
+        """Draw the home screen on a fake terminal; return every (row, text) written, in order."""
+        class Recording(Screen):
+            def __init__(self):
+                super().__init__()
+                self.writes = []
+
+            def getmaxyx(self):
+                return size
+
+            def addstr(self, row, _column, text, *_args):
+                self.writes.append((row, text.strip()))
+
+            addnstr = addstr
+
+        launcher = self.launcher()
+        launcher.screen = Recording()
+        launcher.status = "STATUS LINE"
+        launcher.selected = selected
+        launcher.live_warning = live_warning
+        launcher.updates = mock.Mock(notice=mock.Mock(return_value=update))
+        launcher.controllers = mock.Mock(
+            line=mock.Mock(return_value=battery), low=mock.Mock(return_value=False)
+        )
+        launcher.draw()
+        return launcher, launcher.screen.writes
+
+    def test_footer_lines_never_share_a_row_with_the_menu_or_the_status_line(self):
+        # 80x24 with a live-mode warning, an update notice and a battery line: three footer rows.
+        footer = {"live_warning": "LIVE SESSION WARNING", "update": "UPDATE AVAILABLE",
+                  "battery": "CONTROLLERS: PAD 80%"}
+        for selected in range(len(self.launcher().menu)):
+            with self.subTest(selected=selected):
+                launcher, writes = self.draw_home((24, 80), selected, **footer)
+                rows: dict[int, list[str]] = {}
+                for row, text in writes:
+                    rows.setdefault(row, []).append(text)
+                self.assertEqual({row: texts for row, texts in rows.items() if len(texts) > 1}, {})
+                shown = [text for _row, text in writes]
+                for text in ("STATUS LINE", *footer.values()):
+                    self.assertIn(text, shown)
+                label = launcher.menu[selected][0]
+                self.assertIn(f">  {label}", shown)  # the row the cursor is on stays visible
+                self.assertTrue(all(row < 23 for row in rows), "drew on the border row")
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")
