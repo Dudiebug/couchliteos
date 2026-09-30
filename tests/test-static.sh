@@ -398,7 +398,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
-  launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_rdp.py launcher/moonlightos_confirm.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 
@@ -521,5 +521,8 @@ MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
 # must mount in its own private directory and never follow links there.
 rg -q 'mkdtemp\(prefix="support-media-"' scripts/moonlightos-support-export
 refute rg -q 'RUN / "support-media"|LOCK\.open|os\.chmod\(temporary' scripts/moonlightos-support-export
+
+rg -q 'moonlightos_confirm.py' build/configure.sh
+rg -q 'import moonlightos_confirm' launcher/moonlightos_bluetooth.py launcher/moonlightos-launcher.py
 
 printf 'Static tests passed.\n'

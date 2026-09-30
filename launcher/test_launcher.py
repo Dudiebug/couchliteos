@@ -626,6 +626,53 @@ class LauncherTest(unittest.TestCase):
                 launcher.prepare_session()
             self.assertFalse(focus.exists())
 
+    def power_request(self, action, keys, running=()):
+        """Press A on REBOOT/SHUTDOWN, then `keys` on the question; return (files created, text drawn)."""
+        class Recording(Screen):
+            def __init__(self, keys):
+                super().__init__(keys)
+                self.text = []
+
+            def addnstr(self, _row, _column, text, *_args):
+                self.text.append(text)
+
+        launcher = self.launcher()
+        launcher.screen = Recording(keys)
+        launcher.running_applications = mock.Mock(return_value=list(running))
+        launcher.selected = [item[1] for item in launcher.menu].index(action)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            launcher.activate()
+            return sorted(path.name for path in pathlib.Path(directory).iterdir()), " ".join(launcher.screen.text)
+
+    def test_reboot_and_shutdown_ask_first_and_default_to_no(self):
+        down = self.module.curses.KEY_DOWN
+        for action in ("reboot", "poweroff"):
+            self.assertEqual(self.power_request(action, [10])[0], [], action)  # a stray A answers NO
+            self.assertEqual(self.power_request(action, [27])[0], [], action)
+            self.assertEqual(self.power_request(action, [down, 10])[0], [action])
+
+    def test_the_power_question_names_what_is_still_running(self):
+        _files, text = self.power_request("poweroff", [10], running=[self.terminal_app()])
+        self.assertIn("TERMINAL", text)
+        _files, text = self.power_request("poweroff", [10])
+        self.assertNotIn("TERMINAL", text)
+
+    def test_up_from_the_first_button_does_not_wrap_onto_shutdown(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([self.module.curses.KEY_UP, -1])
+        launcher.prepare_session = mock.Mock()
+        launcher.setup_wizard = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module.display, "restore_saved_mode"), mock.patch.object(
+            self.module.curses, "curs_set"
+        ), mock.patch.object(self.module.curses, "use_default_colors"):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                launcher.run()
+        self.assertEqual(launcher.selected, 0)
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")

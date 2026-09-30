@@ -23,6 +23,7 @@ import moonlightos_bluetooth as bluetooth
 import moonlightos_apps as apps
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
+import moonlightos_confirm as confirmation
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -566,7 +567,13 @@ class Launcher:
             Settings(self.screen, self).run()
             self.reload_applications()
         elif action in {"reboot", "poweroff"}:
-            self.request(action)
+            question = "REBOOT NOW?" if action == "reboot" else "SHUT DOWN NOW?"
+            running = ", ".join(item.name for item in self.running_applications())
+            if running:
+                question += f" {running} WILL BE CLOSED."
+            if confirmation.confirm(self.screen, question):
+                self.status = "REBOOTING..." if action == "reboot" else "SHUTTING DOWN..."
+                self.request(action)
 
     def setup_wizard(self, *, force: bool = False) -> None:
         settings = Settings(self.screen, self)
@@ -618,7 +625,8 @@ class Launcher:
                 self.active_applications()
                 self.draw()
                 continue
-            self.selected = move_selection(self.selected, key, len(self.menu))
+            if not (self.selected == 0 and key in (curses.KEY_UP, ord("k"))):  # never wrap up onto SHUTDOWN
+                self.selected = move_selection(self.selected, key, len(self.menu))
             if key in (curses.KEY_ENTER, 10, 13):
                 self.activate()
             elif key in SHORTCUT_KEYS:
