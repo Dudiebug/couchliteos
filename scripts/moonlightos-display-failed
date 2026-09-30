@@ -1,0 +1,47 @@
+#!/bin/bash
+# Started as root by OnFailure= when moonlightos-launcher.service gives up
+# (its restart limit is reached). Without this the TV stays on frozen kernel
+# text. Say what happened in plain words and how to recover. Only statements
+# that are true: nothing retries in safe graphics by itself, and a support
+# file can only be made from the launcher, so the way out is the power button.
+set -u
+
+tty=${MOONLIGHTOS_TTY:-/dev/tty1}
+systemctl=${MOONLIGHTOS_SYSTEMCTL:-/usr/bin/systemctl}
+
+# systemd 257 starts OnFailure= units on every failed exit, even when it then
+# restarts the launcher. Speak only once the unit has really given up.
+if ! "$systemctl" is-failed --quiet moonlightos-launcher.service; then
+  echo "moonlightos-display-failed: the launcher is still being restarted; nothing to show yet"
+  exit 0
+fi
+
+cmdline=$(cat "${MOONLIGHTOS_PROC_CMDLINE:-/proc/cmdline}" 2>/dev/null || true)
+nvidia_ids=${MOONLIGHTOS_NVIDIA_IDS:-/usr/share/nvidia/nvidia.ids}
+
+# The Basic Graphics entry exists only in the live boot menu of the NVIDIA ISO.
+basic_graphics_hint=0
+if [[ " $cmdline " == *" boot=live "* && " $cmdline " != *" moonlightos.gpu=basic "* && -f $nvidia_ids ]]; then
+  basic_graphics_hint=1
+fi
+
+{
+  printf '\033[2J\033[H'
+  printf '%s\n' \
+    'MOONLIGHTOS COULD NOT START THE SCREEN.' \
+    '' \
+    'THE LAUNCHER KEPT STOPPING, SO IT GAVE UP.' \
+    '' \
+    'TO TRY AGAIN, HOLD THE POWER BUTTON UNTIL THE PC TURNS OFF,' \
+    'THEN TURN IT ON AGAIN.'
+  if ((basic_graphics_hint)); then
+    printf '%s\n' \
+      '' \
+      'IF THIS KEEPS HAPPENING, CHOOSE' \
+      '"START MOONLIGHTOS (BASIC GRAPHICS)" IN THE BOOT MENU.'
+  fi
+} > "$tty" 2>/dev/null || {
+  echo "moonlightos-display-failed: cannot write to $tty" >&2
+  exit 1
+}
+echo "moonlightos-display-failed: the launcher gave up; told the user on $tty"

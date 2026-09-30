@@ -1,0 +1,121 @@
+#!/usr/bin/python3 -I
+"""Keep Moonlight's own video settings in step with this PC's decode hint.
+
+usage: moonlightos-moonlight-prefs FILE MARKER HINT WIDTH HEIGHT FPS CODEC DECODER
+
+FILE    Moonlight.conf in the persistent home: it travels with the USB stick.
+MARKER  The codec/decoder pair MoonlightOS itself last wrote for the hint.
+HINT    "software" when moonlightos-hwdetect found no usable hardware decoder
+        on THIS PC and the launcher's codec/decoder are automatic; else "auto".
+CODEC DECODER  The launcher's settings (auto|H.264|HEVC|AV1, auto|software|hardware).
+
+A missing file is seeded once when a codec or decoder is forced. An existing
+file is changed only while it still holds exactly what the marker says we
+wrote (or automatic/automatic with no marker), so a choice made in Moonlight is
+kept, and settings MoonlightOS did not write are never undone.
+"""
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+CODECS = {"auto": 0, "H.264": 1, "HEVC": 2, "AV1": 4}
+DECODERS = {"auto": 0, "hardware": 1, "software": 2}
+AUTO = (0, 0)
+SOFTWARE_H264 = (CODECS["H.264"], DECODERS["software"])
+
+
+def general_section(lines):
+    """Line indexes (start, end) of the [General] body, or None."""
+    start = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if start is not None:
+                return start, index
+            if stripped == "[General]":
+                start = index + 1
+    return (start, len(lines)) if start is not None else None
+
+
+def get_pair(lines):
+    found = {"videocfg": 0, "videodec": 0}
+    section = general_section(lines)
+    for line in lines[slice(*section)] if section else []:
+        key, _, value = line.partition("=")
+        if key.strip() in found and value.strip().isdigit():
+            found[key.strip()] = int(value.strip())
+    return found["videocfg"], found["videodec"]
+
+
+def set_pair(lines, pair):
+    values = {"videocfg": pair[0], "videodec": pair[1]}
+    if general_section(lines) is None:
+        lines = ["[General]"] + lines
+    start, end = general_section(lines)
+    body = [line for line in lines[start:end] if line.partition("=")[0].strip() not in values]
+    body += [f"{key}={value}" for key, value in values.items()]
+    return lines[:start] + body + lines[end:]
+
+
+def write_file(path, text):
+    path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    if path.exists():
+        shutil.copymode(path, temporary)
+    os.replace(temporary, path)
+
+
+def read_marker(path):
+    try:
+        cfg, dec = path.read_text(encoding="utf-8").split()
+        return int(cfg), int(dec)
+    except (OSError, ValueError):
+        return None
+
+
+def sync(path, marker, hint, width, height, fps, codec, decoder):
+    forced = (CODECS.get(codec, 0), DECODERS.get(decoder, 0))
+    if not path.exists():
+        marker.unlink(missing_ok=True)  # a deleted file leaves nothing to track
+        if forced == AUTO:
+            return ""
+        write_file(path, f"[General]\nwidth={width}\nheight={height}\nfps={fps}\n"
+                         f"videocfg={forced[0]}\nvideodec={forced[1]}\n")
+        if hint == "software":
+            write_file(marker, "%d %d\n" % forced)
+        return f"Seeded Moonlight defaults: {width}x{height}@{fps} codec={codec} decoder={decoder}\n"
+
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    current = get_pair(lines)
+    tracked = read_marker(marker)
+    if tracked is not None and current != tracked:
+        return ""  # changed in Moonlight since MoonlightOS wrote it: the user's now
+    if hint == "software" and tracked is None and current == AUTO:
+        write_file(path, "\n".join(set_pair(lines, SOFTWARE_H264)) + "\n")
+        write_file(marker, "%d %d\n" % SOFTWARE_H264)
+        return "Moonlight video settings: software H.264 (this PC has no hardware video decoder)\n"
+    if hint != "software" and tracked is not None:
+        write_file(path, "\n".join(set_pair(lines, AUTO)) + "\n")
+        marker.unlink(missing_ok=True)
+        return "Moonlight video settings: automatic again (this PC has a hardware video decoder)\n"
+    return ""
+
+
+def main(argv):
+    if len(argv) != 9:
+        print("usage: moonlightos-moonlight-prefs FILE MARKER HINT WIDTH HEIGHT FPS CODEC DECODER", file=sys.stderr)
+        return 64
+    path, marker, hint, width, height, fps, codec, decoder = argv[1:]
+    try:
+        sys.stdout.write(sync(Path(path), Path(marker), hint, width, height, fps, codec, decoder))
+    except OSError as error:
+        print(f"moonlightos-moonlight-prefs: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

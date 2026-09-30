@@ -125,28 +125,25 @@ PY
   # Automatic settings then start with software H.264 instead of failing.
   hardware_env=${MOONLIGHTOS_HARDWARE_ENV:-/run/moonlightos-hardware/hardware.env}
   decode_hint=$(sed -n 's/^MOONLIGHTOS_VIDEO_DECODE=//p' "$hardware_env" 2>/dev/null | tail -n 1 || true)
+  hint_state=auto
   if [[ $decode_hint == software && ${moonlight_settings[3]:-auto} == auto && ${moonlight_settings[4]:-auto} == auto ]]; then
     moonlight_settings[3]=H.264
     moonlight_settings[4]=software
+    hint_state=software
     echo "GPU driver $(sed -n 's/^MOONLIGHTOS_GPU_DRIVER=//p' "$hardware_env" | tail -n 1) has no usable video decoder; using software H.264"
   fi
   video_options=()
   [[ ${moonlight_settings[3]:-auto} != auto ]] && video_options+=(--video-codec "${moonlight_settings[3]}")
   [[ ${moonlight_settings[4]:-auto} != auto ]] && video_options+=(--video-decoder "${moonlight_settings[4]}")
-  preferences="$DATA_DIR/home/.config/Moonlight Game Streaming Project/Moonlight.conf"
-  if ((${#video_options[@]})) && [[ ! -e "$preferences" ]]; then
-    # A forced codec or decoder (configured, or software H.264 on nouveau)
-    # seeds Moonlight's own settings once; later changes in Moonlight persist.
-    declare -A codec_values=([auto]=0 [H.264]=1 [HEVC]=2 [AV1]=4)
-    declare -A decoder_values=([auto]=0 [hardware]=1 [software]=2)
-    resolution=${moonlight_settings[1]:-1920x1080}
-    install -d -m 0750 "${preferences%/*}"
-    printf '[General]\nwidth=%s\nheight=%s\nfps=%s\nvideocfg=%s\nvideodec=%s\n' \
-      "${resolution%x*}" "${resolution#*x}" "${moonlight_settings[2]:-60}" \
-      "${codec_values[${moonlight_settings[3]:-auto}]}" \
-      "${decoder_values[${moonlight_settings[4]:-auto}]}" > "$preferences"
-    echo "Seeded Moonlight defaults: ${resolution}@${moonlight_settings[2]:-60} ${video_options[*]}"
-  fi
+  # A forced codec or decoder seeds Moonlight's own settings once; later changes
+  # in Moonlight persist. The helper also follows the decode hint when this
+  # stick moves between PCs: it rewrites only what it wrote itself.
+  resolution=${moonlight_settings[1]:-1920x1080}
+  /usr/libexec/moonlightos-moonlight-prefs \
+    "$DATA_DIR/home/.config/Moonlight Game Streaming Project/Moonlight.conf" \
+    "$DATA_DIR/home/.config/moonlightos-decode-seed" "$hint_state" \
+    "${resolution%x*}" "${resolution#*x}" "${moonlight_settings[2]:-60}" \
+    "${moonlight_settings[3]:-auto}" "${moonlight_settings[4]:-auto}" || true
   if [[ -n "$host" ]]; then
     echo "Selected Sunshine address: $host ($(moonlightos-host-address 2>/dev/null || true))"
   fi

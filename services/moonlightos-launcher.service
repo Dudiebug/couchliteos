@@ -6,6 +6,9 @@ After=seatd.service moonlightos-audio.service moonlightos-bluetooth.service moon
 Conflicts=getty@tty1.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
+# Runs after every failed exit; the handler says on the TV that the screen could
+# not start only once the restart limit above has been reached.
+OnFailure=moonlightos-display-failed.service
 
 [Service]
 Type=simple
