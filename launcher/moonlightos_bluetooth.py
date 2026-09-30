@@ -372,29 +372,38 @@ class BluetoothMenu:
                     self.message("BLUETOOTH ADAPTER REMOVED", "RETURNING TO BLUETOOTH SETTINGS")
                     return False, None
 
+                shown_code = ""
                 prompt = snapshot.get("prompt")
                 if isinstance(prompt, dict) and str(prompt.get("operation_id") or "") == operation_id:
-                    prompt_id = str(prompt.get("id") or "")
-                    if prompt_id and prompt_id != handled_prompt:
-                        handled_prompt = prompt_id
-                        if str(prompt.get("kind")) == "display_passkey":
-                            self.draw(
-                                "BLUETOOTH PASSKEY",
-                                [str(prompt.get("passkey") or "")],
-                                None,
-                                footer="ENTER THIS CODE ON THE DEVICE",
-                            )
-                        elif not self._answer_prompt(prompt):
-                            if cancellable_pairing:
-                                self._request("cancel_pairing", operation_id=operation_id)
-                            return False, operation
+                    if str(prompt.get("kind")) == "display_passkey":
+                        # The device is waiting for this code to be typed on it,
+                        # so keep it on screen for as long as the prompt lasts.
+                        shown_code = str(prompt.get("passkey") or "")
+                    else:
+                        prompt_id = str(prompt.get("id") or "")
+                        if prompt_id and prompt_id != handled_prompt:
+                            handled_prompt = prompt_id
+                            if not self._answer_prompt(prompt):
+                                if cancellable_pairing:
+                                    self._request("cancel_pairing", operation_id=operation_id)
+                                return False, operation
 
-                self.draw(
-                    title,
-                    [f"{SPINNER[frame % len(SPINNER)]}  PLEASE WAIT"],
-                    None,
-                    footer="ESC CANCELS" if cancellable_pairing else "PLEASE WAIT",
-                )
+                footer = "ESC CANCELS" if cancellable_pairing else "PLEASE WAIT"
+                if shown_code:
+                    self.draw(
+                        "BLUETOOTH PASSKEY",
+                        [shown_code],
+                        None,
+                        details=["ENTER THIS CODE ON THE DEVICE"],
+                        footer=footer,
+                    )
+                else:
+                    self.draw(
+                        title,
+                        [f"{SPINNER[frame % len(SPINNER)]}  PLEASE WAIT"],
+                        None,
+                        footer=footer,
+                    )
                 frame += 1
                 key = self._getch()
                 if key == 27 and cancellable_pairing:
