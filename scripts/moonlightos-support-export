@@ -150,6 +150,31 @@ def read_regular_file(path: pathlib.Path, limit: int) -> bytes:
         return stream.read(limit)
 
 
+BOOT_TIMING = (
+    ("systemd-analyze", ["systemd-analyze", "--no-pager"], None),
+    (
+        "systemd-analyze critical-chain moonlightos-launcher.service",
+        ["systemd-analyze", "--no-pager", "critical-chain", "moonlightos-launcher.service"],
+        None,
+    ),
+    ("systemd-analyze blame | head -30", ["systemd-analyze", "--no-pager", "blame"], 30),
+)
+
+
+def boot_timing_report() -> str:
+    sections = []
+    for label, command, limit in BOOT_TIMING:
+        output = command_output(command)
+        if limit:
+            output = "".join(output.splitlines(keepends=True)[:limit])
+        sections.append(f"$ {label}\n{output}")
+    return "\n".join(sections)
+
+
+def add_boot_timing(bundle: pathlib.Path) -> None:
+    write_text(bundle / "system/boot-timing.txt", boot_timing_report())
+
+
 def add_file(bundle: pathlib.Path, name: str, source: pathlib.Path, *, config: bool = False) -> None:
     try:
         data = read_regular_file(source, MAX_LOG_SIZE + 1)
@@ -228,6 +253,7 @@ def collect(bundle: pathlib.Path) -> None:
     add_command(bundle, "system/time-synchronization.txt", ["timedatectl", "show"])
     add_command(bundle, "system/ca-certificates.txt", ["dpkg-query", "-W", "ca-certificates"])
     add_command(bundle, "system/uptime.txt", ["uptime"])
+    add_boot_timing(bundle)
     add_file(bundle, "system/kernel-command-line.txt", pathlib.Path("/proc/cmdline"))
     add_command(bundle, "system/kernel-version.txt", ["uname", "-a"])
     add_command(bundle, "hardware/cpu.txt", ["lscpu"])

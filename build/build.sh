@@ -15,6 +15,8 @@ command -v lb >/dev/null || { echo 'live-build is required (apt install live-bui
 }
 # shellcheck source=config/profiles/general/profile.conf
 source "$ROOT/config/profiles/$PROFILE/profile.conf"
+# shellcheck source=build/lb-cache.sh
+source "$ROOT/build/lb-cache.sh"
 ISO="$OUT/moonlightos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"
 read -r -a profile_options <<< "${LB_EXTRA_CONFIG:-}"
 
@@ -41,7 +43,14 @@ lb config noauto \
   --memtest none \
   "${profile_options[@]}"
 
+if [[ -n ${MOONLIGHTOS_LB_CACHE:-} ]]; then
+  lb_cache_prepare "$MOONLIGHTOS_LB_CACHE"
+fi
+
 lb build
+if [[ -n ${MOONLIGHTOS_LB_CACHE:-} ]]; then
+  lb_cache_save_bootstrap "$MOONLIGHTOS_LB_CACHE"
+fi
 built_iso=$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -print -quit)
 [[ -n "$built_iso" ]] || {
   echo 'live-build completed without producing an *.hybrid.iso file' >&2

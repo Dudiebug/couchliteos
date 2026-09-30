@@ -670,4 +670,16 @@ rg -q 'launch_by_id\("network-setup"\)' launcher/moonlightos-launcher.py
 refute rg -n 'ENTER OR ESC RETURNS TO LAUNCHER' launcher/moonlightos-launcher.py
 refute rg -n 'show_message\("SUPPORT EXPORT' launcher/moonlightos-launcher.py
 
+# Boot speed: an installed system boots straight in (Shift/Esc shows the menu); the live
+# ISO keeps the menu its binary hook writes; the launcher never waits for the network.
+rg -q '^GRUB_TIMEOUT_STYLE=hidden$' overlay/etc/default/grub.d/20-moonlightos.cfg
+rg -q '^GRUB_TIMEOUT=1$' overlay/etc/default/grub.d/20-moonlightos.cfg
+refute rg -q 'hidden|GRUB_TIMEOUT' config/live-build/hooks/live/0100-autoboot.hook.binary
+refute rg -q 'network-online|wait-online|network-ready|tailscale|usbip|firewall' services/moonlightos-launcher.service
+rg -Fq 'systemd-analyze --no-pager critical-chain moonlightos-launcher.service' scripts/moonlightos-diagnostics
+rg -Fq 'systemd-analyze --no-pager blame 2>&1 | head -n 30' scripts/moonlightos-diagnostics
+rg -Fq '"systemd-analyze", "--no-pager", "critical-chain", "moonlightos-launcher.service"' scripts/moonlightos-support-export
+rg -q '^source "\$ROOT/build/lb-cache\.sh"$' build/build.sh
+rg -q 'MOONLIGHTOS_LB_CACHE' build/build.sh
+
 printf 'Static tests passed.\n'
