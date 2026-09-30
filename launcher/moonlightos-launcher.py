@@ -1046,7 +1046,16 @@ class Settings:
         while True:
             try:
                 sinks = audio.query_sinks()
-                rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks] + ["BACK"]
+                rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks]
+                if sinks:
+                    try:
+                        volume = audio.get_volume()
+                        filled = volume.percent * 20 // 100
+                        rows.append(f"VOLUME  [{'#' * filled}{'.' * (20 - filled)}]  {volume.percent}%")
+                        rows.append(f"MUTE  {'ON' if volume.muted else 'OFF'}")
+                    except (OSError, RuntimeError, subprocess.SubprocessError):
+                        rows += ["VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE"]
+                rows.append("BACK")
                 self.status = result or (
                     "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
                 )
@@ -1058,15 +1067,34 @@ class Settings:
             self.draw("AUDIO OUTPUT", rows, selected)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
-            if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(sinks)):
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
                 return
-            if key not in (curses.KEY_ENTER, 10, 13) or selected >= len(sinks):
+            if key not in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
+                continue
+            if selected < len(sinks):
+                if key not in ENTER_KEYS:
+                    continue
+                try:
+                    audio.set_default(sinks[selected].id)
+                    result = f"DEFAULT OUTPUT: {sinks[selected].name}"
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                    result = f"OUTPUT NOT CHANGED: {error}"
+                    continue
+                try:
+                    note = audio.ensure_audible(sinks[selected].id)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    note = "VOLUME NOT CHECKED"
+                if note:
+                    result += f" ({note})"
                 continue
             try:
-                audio.set_default(sinks[selected].id)
-                result = f"DEFAULT OUTPUT: {sinks[selected].name}"
+                if selected == len(sinks):
+                    step = -audio.VOLUME_STEP if key == curses.KEY_LEFT else audio.VOLUME_STEP
+                    result = f"VOLUME {audio.change_volume(step).percent}%"
+                else:
+                    result = "MUTED" if audio.toggle_mute().muted else "UNMUTED"
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                result = f"OUTPUT NOT CHANGED: {error}"
+                result = f"VOLUME NOT CHANGED: {error}"
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()

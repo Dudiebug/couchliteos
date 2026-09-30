@@ -331,6 +331,8 @@ class LauncherTest(unittest.TestCase):
         settings.draw = lambda *_args, **_kwargs: statuses.append(settings.status)
         sinks = [self.module.audio.Sink(7, "HDMI OUTPUT", False)]
         with mock.patch.object(self.module.audio, "query_sinks", return_value=sinks), mock.patch.object(
+            self.module.audio, "get_volume", return_value=self.module.audio.Volume(50, False)
+        ), mock.patch.object(self.module.audio, "ensure_audible", return_value=""), mock.patch.object(
             self.module.audio, "set_default", side_effect=set_default
         ) as chosen:
             settings.run_audio()

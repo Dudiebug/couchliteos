@@ -374,5 +374,89 @@ class SettingsLaunchStatusTest(LauncherFixesTest):
         self.assertEqual(settings.status, "TAILSCALE STARTED")
 
 
+class AudioVolumeTest(LauncherFixesTest):
+    KEY_DOWN, KEY_LEFT, KEY_RIGHT, ENTER, ESC = 258, 260, 261, 10, 27
+
+    def run_audio(self, keys, sinks=True, **audio_patches):
+        """Open the audio screen, feed keys, return [(rows, status)] per draw and the audio mocks."""
+        audio = self.module.audio
+        settings = self.module.Settings(Screen(keys), self.launcher())
+        frames = []
+        settings.draw = lambda _title, rows, _selected=None: frames.append((list(rows), settings.status))
+        mocks = {
+            "query_sinks": mock.Mock(return_value=[audio.Sink(7, "HDMI OUTPUT", True)] if sinks else []),
+            "get_volume": mock.Mock(return_value=audio.Volume(50, False)),
+            "change_volume": mock.Mock(return_value=audio.Volume(55, False)),
+            "toggle_mute": mock.Mock(return_value=audio.Volume(50, True)),
+            "set_default": mock.Mock(),
+            "ensure_audible": mock.Mock(return_value=""),
+        }
+        mocks.update(audio_patches)
+        patches = [mock.patch.object(audio, name, value) for name, value in mocks.items()]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        settings.run_audio()
+        return frames, mocks
+
+    def test_rows_show_outputs_then_volume_mute_and_back(self):
+        frames, _mocks = self.run_audio([self.ESC])
+        self.assertEqual(
+            frames[0][0],
+            ["*  HDMI OUTPUT", "VOLUME  [##########..........]  50%", "MUTE  OFF", "BACK"],
+        )
+
+    def test_right_raises_and_left_lowers_the_volume_of_the_default_output(self):
+        frames, mocks = self.run_audio([self.KEY_DOWN, self.KEY_RIGHT, self.KEY_LEFT, self.ESC])
+        self.assertEqual([call.args for call in mocks["change_volume"].call_args_list], [(5,), (-5,)])
+        self.assertEqual(frames[2][1], "VOLUME 55%")
+
+    def test_enter_on_the_mute_row_toggles_mute(self):
+        frames, mocks = self.run_audio([self.KEY_DOWN, self.KEY_DOWN, self.ENTER, self.ESC])
+        mocks["toggle_mute"].assert_called_once_with()
+        self.assertEqual(frames[-1][1], "MUTED")
+
+    def test_back_is_the_last_row_and_leaves(self):
+        self.run_audio([self.KEY_DOWN, self.KEY_DOWN, self.KEY_DOWN, self.ENTER])
+
+    def test_left_right_on_an_output_row_does_not_change_anything(self):
+        _frames, mocks = self.run_audio([self.KEY_RIGHT, self.KEY_LEFT, self.ESC])
+        mocks["set_default"].assert_not_called()
+        mocks["change_volume"].assert_not_called()
+
+    def test_choosing_an_output_makes_sure_it_is_audible_and_says_so(self):
+        frames, mocks = self.run_audio(
+            [self.ENTER, self.ESC], ensure_audible=mock.Mock(return_value="UNMUTED, VOLUME SET TO 50%")
+        )
+        mocks["set_default"].assert_called_once_with(7)
+        mocks["ensure_audible"].assert_called_once_with(7)
+        self.assertEqual(frames[-1][1], "DEFAULT OUTPUT: HDMI OUTPUT (UNMUTED, VOLUME SET TO 50%)")
+
+    def test_volume_check_failure_does_not_undo_the_output_change(self):
+        def broken(_sink_id):
+            raise RuntimeError("wpctl died")
+
+        frames, _mocks = self.run_audio([self.ENTER, self.ESC], ensure_audible=broken)
+        self.assertEqual(frames[-1][1], "DEFAULT OUTPUT: HDMI OUTPUT (VOLUME NOT CHECKED)")
+
+    def test_volume_failure_is_shown(self):
+        def refuse(_step):
+            raise RuntimeError("no default sink")
+
+        frames, _mocks = self.run_audio([self.KEY_DOWN, self.KEY_RIGHT, self.ESC], change_volume=refuse)
+        self.assertEqual(frames[-1][1], "VOLUME NOT CHANGED: no default sink")
+
+    def test_unreadable_volume_still_lists_the_outputs(self):
+        def unreadable():
+            raise RuntimeError("wpctl died")
+
+        frames, _mocks = self.run_audio([self.ESC], get_volume=unreadable)
+        self.assertEqual(frames[0][0], ["*  HDMI OUTPUT", "VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE", "BACK"])
+
+    def test_no_outputs_means_no_volume_rows(self):
+        frames, _mocks = self.run_audio([self.ESC], sinks=False)
+        self.assertEqual(frames[0][0], ["BACK"])
+
+
 if __name__ == "__main__":
     unittest.main()
