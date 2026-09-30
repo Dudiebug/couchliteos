@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import pathlib
 import sys
@@ -261,6 +262,15 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertEqual(pressed, [Codes.KEY_ESC, Codes.KEY_ESC])
         self.assertTrue(gone.closed)
         self.assertEqual(watched[1], [stays])
+
+    def test_a_full_or_read_only_disk_does_not_stop_the_controller_working(self):
+        # The identity file is only a hint for USB/IP; failing to save it must not skip the pad.
+        pad = FakePad(Codes.BTN_SOUTH)
+        with mock.patch.object(pathlib.Path, "write_text", side_effect=OSError(errno.ENOSPC, "No space left")):
+            pressed, _watched, _identity = self.drive_run(
+                [{"/dev/input/event3": pad}], [["/dev/input/event3"]]
+            )
+        self.assertEqual(pressed, [Codes.KEY_ENTER])
 
     def test_the_on_screen_keyboard_grabs_every_controller_and_lets_go_again(self):
         pads = self.module.Pads()
