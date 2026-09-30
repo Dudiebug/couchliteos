@@ -356,6 +356,19 @@ class RdpRunnerTest(unittest.TestCase):
         self.assertEqual(runner.cleanup_rdp(self.run_dir), 0)
         self.assertEqual(sorted(path.name for path in self.run_dir.iterdir()), ["rdp.request"])
 
+    def test_on_failure_cleanup_keeps_the_password_for_the_pending_request(self):
+        # The same connection was launched again while the old session was giving
+        # up: its request and freshly handed-off password must survive so the
+        # re-armed path unit can start it.
+        (self.run_dir / "rdp-session").write_text("rdp-work-pc\n")
+        rdp.write_handoff("rdp-work-pc", PASSWORD, self.run_dir / "rdp-session.secret")
+        (self.run_dir / "rdp-work-pc-ready").touch()
+        (self.run_dir / "rdp.request").write_text("rdp-work-pc\n")
+        self.assertEqual(runner.cleanup_rdp(self.run_dir), 0)
+        self.assertEqual(
+            sorted(path.name for path in self.run_dir.iterdir()), ["rdp-session.secret", "rdp.request"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

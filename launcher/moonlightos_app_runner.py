@@ -413,7 +413,14 @@ def cleanup_rdp(run_dir: pathlib.Path | None = None) -> int:
         connection_id = rdp.read_connection_id(run_dir / rdp.SESSION.name)
     except (OSError, UnicodeError, ValueError):
         connection_id = None
-    rdp.clear_session_state(run_dir)
+    # The pending request's own password (same connection id) must outlive the cleanup.
+    try:
+        pending = rdp.read_connection_id(run_dir / rdp.REQUEST.name)
+        handoff = rdp.read_handoff(run_dir / rdp.HANDOFF.name)
+        keep_handoff = pending is not None and handoff is not None and handoff[0] == pending
+    except (OSError, UnicodeError, ValueError):
+        keep_handoff = False
+    rdp.clear_session_state(run_dir, keep_handoff)
     if connection_id:
         (run_dir / f"{connection_id}-ready").unlink(missing_ok=True)
         status = run_dir / f"{connection_id}-status"
