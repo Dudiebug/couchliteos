@@ -398,7 +398,8 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
-  launcher/moonlightos_rdp.py launcher/moonlightos_controllers.py launcher/moonlightos_update.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_rdp.py launcher/moonlightos_controllers.py launcher/moonlightos_update.py \
+  launcher/moonlightos_errors.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 
@@ -538,5 +539,16 @@ refute rg -n 'Authorization|Cookie|machine-id' launcher/moonlightos_update.py
 # Hardware gating: the check is skipped without a default route, before anything is recorded.
 rg -q '/proc/net/route' launcher/moonlightos_update.py
 rg -q 'if not self.online\(\)' launcher/moonlightos_update.py
+
+# Easier everyday use: actionable errors
+rg -q 'moonlightos_errors.py' build/configure.sh
+rg -q '^import moonlightos_errors as errors' launcher/moonlightos-launcher.py
+rg -q 'test_errors.py' launcher/Makefile
+# NETWORK SETTINGS opens the existing network setup app; its id must stay in step with the launcher.
+rg -q '^id = network-setup$' config/apps.d/90-network-setup.ini
+rg -q 'launch_by_id\("network-setup"\)' launcher/moonlightos-launcher.py
+# Every launcher failure screen goes through the shared helper (no hand-drawn dead ends).
+refute rg -n 'ENTER OR ESC RETURNS TO LAUNCHER' launcher/moonlightos-launcher.py
+refute rg -n 'show_message\("SUPPORT EXPORT' launcher/moonlightos-launcher.py
 
 printf 'Static tests passed.\n'
