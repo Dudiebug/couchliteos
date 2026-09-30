@@ -747,6 +747,22 @@ class LauncherTest(unittest.TestCase):
                 launcher.run()
         self.assertEqual(launcher.selected, 0)
 
+    def test_f12_while_the_keyboard_is_open_does_not_queue_a_second_one(self):
+        # The keyboard's session removes start-osk as it opens; a second press in that window
+        # used to re-create it and stack another keyboard once the first closed.
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            run = pathlib.Path(directory)
+            (run / "osk-active").touch()
+            self.module.request_osk(masked=True)
+            self.assertFalse((run / "start-osk").exists())
+            self.assertFalse((run / "osk-masked").exists(), "a stale mask flag would hide the next keyboard")
+            (run / "osk-active").unlink()
+            self.module.request_osk(masked=True)
+            self.assertTrue((run / "start-osk").exists())
+            self.assertTrue((run / "osk-masked").exists())
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")

@@ -17,6 +17,7 @@ import moonlightos_confirm
 
 SOCKET_PATH = pathlib.Path("/run/moonlightos-bluetooth/control.sock")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
+OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 SPINNER = "|/-\\"
 MAX_RESPONSE = 65536
@@ -137,7 +138,8 @@ class BluetoothMenu:
     def _getch(self) -> int:
         key = self.screen.getch()
         if key == curses.KEY_F12:
-            START_OSK.touch()
+            if not OSK_ACTIVE.exists():  # one keyboard at a time
+                START_OSK.touch()
             return -1
         return key
 

@@ -74,6 +74,8 @@ def set_launcher_focus(held: bool) -> None:
 
 
 def request_osk(masked: bool = False) -> None:
+    if (RUN / "osk-active").exists():  # one keyboard at a time; a second request would queue another
+        return
     if masked:
         (RUN / "osk-masked").touch()
     (RUN / "start-osk").touch()

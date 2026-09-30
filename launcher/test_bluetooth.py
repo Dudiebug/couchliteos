@@ -290,6 +290,22 @@ class BluetoothMenuTest(unittest.TestCase):
         commands, _drawn = self.requests_after([down, enter, down, enter], [paired, paired, done], device_screen=True)
         self.assertIn("forget", commands)
 
+    def test_f12_while_the_keyboard_is_open_does_not_queue_a_second_one(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            with mock.patch.object(bluetooth, "START_OSK", run / "start-osk"), mock.patch.object(
+                bluetooth, "OSK_ACTIVE", run / "osk-active", create=True
+            ):
+                menu = bluetooth.BluetoothMenu(FakeScreen([bluetooth.curses.KEY_F12] * 2), FakeClient([ADAPTER_ON]))
+                (run / "osk-active").touch()
+                self.assertEqual(menu._getch(), -1)
+                self.assertFalse((run / "start-osk").exists())
+                (run / "osk-active").unlink()
+                self.assertEqual(menu._getch(), -1)
+                self.assertTrue((run / "start-osk").exists())
+
     def test_device_screen_changes_action_for_connection_state(self):
         disconnected = dict(ADAPTER_ON, devices=[DEVICE])
         screen = FakeScreen([27])
