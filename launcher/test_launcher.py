@@ -475,6 +475,41 @@ class LauncherTest(unittest.TestCase):
             self.module.Launcher.focus_app(self.terminal_app())
         self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["title:TERMINAL"])
 
+    def active_applications_screen(self, keys):
+        class Recording(Screen):
+            def __init__(self, keys):
+                super().__init__(keys)
+                self.text = []
+
+            def addstr(self, _row, _column, text, *_args):
+                self.text.append(text)
+
+            addnstr = addstr
+
+        launcher = self.launcher()
+        launcher.screen = Recording(keys)
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "terminal-ready").touch()
+            result = self.module.apps.LoadResult((self.terminal_app(),), ())
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "application_result", return_value=result
+            ), mock.patch.object(self.module, "active_rdp_session", return_value=None):
+                launcher.active_applications()
+            return launcher.screen.text, sorted(path.name for path in run.glob("close-*"))
+
+    def test_active_applications_name_the_controller_button_that_closes_not_x(self):
+        # gamepad-nav sends Delete for Y/Square and F12 (on-screen keyboard) for X/Triangle.
+        text, closed = self.active_applications_screen([self.module.curses.KEY_F12, 27])
+        self.assertEqual(closed, [])
+        hint = next(row for row in text if "CLOSES" in row)
+        self.assertIn("Y (XBOX) / SQUARE (PS) CLOSES", hint)
+        self.assertNotIn("X CLOSES", hint)
+        # The keyboard keys keep working.
+        for key in (ord("x"), self.module.curses.KEY_DC):
+            _text, closed = self.active_applications_screen([key, 27])
+            self.assertEqual(closed, ["close-terminal"])
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:

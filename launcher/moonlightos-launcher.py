@@ -49,6 +49,8 @@ ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
 SHORTCUT_TAGS = {"lb": "LB", "rb": "RB", "view": "VIEW", "menu": "MENU"}
+# gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
+CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "KEYBOARD: X (XBOX) / TRIANGLE (PS) / F12  ·  A/ENTER ACCEPTS  ·  B/ESC CANCELS"
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
@@ -516,7 +518,7 @@ class Launcher:
 
     def active_applications(self) -> None:
         selected = 0
-        status = "ENTER RESUMES  ·  X CLOSES"
+        status = f"A/ENTER RESUMES  ·  {CLOSE_BUTTON} CLOSES"
         while True:
             running = self.running_applications()
             rows = [f"{app.name:<32} RUNNING" for app in running] + ["RETURN TO MAIN LAUNCHER"]
@@ -1601,7 +1603,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
             self.launcher.show_launch_failure(
                 label,
                 "ANOTHER REMOTE DESKTOP SESSION IS OPEN OR RECONNECTING. PRESS HOME/GUIDE AND CLOSE "
-                "IT WITH X, OR WAIT FOR IT TO END.",
+                f"IT WITH {CLOSE_BUTTON}, OR WAIT FOR IT TO END.",
             )
             return False
         self.status = "PLEASE WAIT"
