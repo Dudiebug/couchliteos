@@ -244,6 +244,40 @@ Notes:
 - Not run: the Hyper-V and Proxmox VE scripts (syntax-checked only), a Windows
   RDP host, the physical OptiPlex, and the physical iMac.
 
+## v0.1.13 local results (2026-09-30)
+
+Both release ISOs were built from commit `ae118b7` in the lab's Debian 13 build
+VM (QEMU with the Windows Hypervisor Platform accelerator, 14 vCPUs, 6 GiB
+RAM); nothing ran on GitHub Actions. Later commits change only documentation.
+Both builds reported `wl.ko.xz built for 6.12.111+deb13-amd64`, and the nvidia
+image contains the `nvidia-current` DKMS modules for the same kernel.
+
+| ISO | Bytes | Build time | SHA-256 |
+|---|---|---|---|
+| `moonlightos-0.1.13-amd64.iso` | 1,838,284,800 | 16 min | `f0d53baa6b7288e48ef3dbfbbabba8a250193829bb7002f61fad48c7f7da0471` |
+| `moonlightos-0.1.13-nvidia-amd64.iso` | 2,049,490,944 | 18 min | `f3d46e3bd70eec4c28cadab2c91894afa9090fbb6c960d23b49e2f423526ce65` |
+
+Both are under GitHub's 2 GiB (2,147,483,648-byte) asset limit.
+
+QEMU tests on those exact ISOs, run from Git Bash on the Windows host (QEMU
+11.1.0, software emulation, `MOONLIGHTOS_QEMU_TIMEOUT_SCALE=3`):
+
+| Test | general | nvidia |
+|---|---|---|
+| `qemu-smoke.sh` (live boot, apps, OSK, Bluetooth, USB/IP, Remote Desktop) | pass, 4 min | pass, 4 min |
+| `qemu-persistence-smoke.sh` (persistent reboot, `nopersistence`) | pass, 5 min | pass, 6 min |
+| `qemu-install-smoke.sh` (install, disk boot, cold-reboot persistence) | pass, 26 min | not completed: stalled after the installer came up (log unchanged for 38 min), stopped |
+
+Notes:
+
+- QEMU has no NVIDIA GPU, so the nvidia ISO's tests exercise its open-driver
+  fallback only. NVIDIA's driver has not run on any GPU yet.
+- The install tests took longer than for v0.1.12 because the host was also
+  running unit tests in the build VM at the same time.
+- No boot with Secure Boot enabled has been tested.
+- Not run: the Hyper-V and Proxmox VE scripts, a Windows RDP host, and every
+  row of the physical checklists below (OptiPlex, iMac, GPU classes).
+
 ## VM testing: Hyper-V and Proxmox VE
 
 VMs cannot emulate an NVIDIA GPU, the iMac's Broadcom Wi-Fi, or its audio, so
@@ -395,7 +429,7 @@ native resolution, open and close Moonlight, Firefox, and Terminal, a 10-minute
 |---|---|---|---|
 | Intel UHD 770 (OptiPlex 7010 Micro) | general | `i915`, VA-API hardware decode | untested |
 | AMD Radeon (any GCN or newer) | general | `amdgpu`, VA-API hardware decode | untested |
-| NVIDIA Maxwell to Ada (GTX 900 to RTX 40) | nvidia, Start CouchLiteOS | `nvidia-drm`, no `nouveau`; hardware decode | untested |
+| NVIDIA Maxwell to Ada (GTX 745/750, GTX 900 to RTX 40) | nvidia, Start CouchLiteOS | `nvidia-drm`, no `nouveau`; hardware decode | untested |
 | Same NVIDIA card | nvidia, Basic Graphics | `nouveau`, no `nvidia` module; software H.264 | untested |
 | Same NVIDIA card | general | `nouveau`; software H.264 | untested |
 | NVIDIA Kepler (iMac Late 2013) | general, and nvidia (fallback) | `nouveau`; software H.264 | untested |
