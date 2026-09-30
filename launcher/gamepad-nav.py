@@ -18,6 +18,9 @@ KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
 OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
 HOME_REQUEST = pathlib.Path("/run/moonlightos/home.request")
+APP_ACTIVE = pathlib.Path("/run/moonlightos/app-active")
+# Touched by the launcher while it holds focus (Home pressed) even though an app runs.
+LAUNCHER_FOCUS = pathlib.Path("/run/moonlightos/launcher-focus")
 _last_state_check = 0.0
 _last_state = False
 
@@ -28,8 +31,13 @@ def app_active() -> bool:
     if now - _last_state_check < 0.5:
         return _last_state
     _last_state_check = now
-    _last_state = pathlib.Path("/run/moonlightos/app-active").exists()
+    _last_state = APP_ACTIVE.exists()
     return _last_state
+
+
+def navigation_blocked(active_osk: bool) -> bool:
+    """An app owns the controller, unless the launcher was brought back with Home."""
+    return app_active() and not active_osk and not LAUNCHER_FOCUS.exists()
 
 
 def find_gamepad() -> InputDevice | None:
@@ -145,7 +153,7 @@ def run() -> None:
                         grabbed = active_osk
                     except OSError:
                         grabbed = False
-                if app_active() and not active_osk:
+                if navigation_blocked(active_osk):
                     continue
                 key = key_for_event(event)
                 if key:

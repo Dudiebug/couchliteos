@@ -27,6 +27,8 @@ import moonlightos_setup as setup
 
 RUN = pathlib.Path("/run/moonlightos")
 HOME_REQUEST = RUN / "home.request"
+# Tells gamepad-nav the launcher (not a running app) has focus, so it forwards keys.
+LAUNCHER_FOCUS = RUN / "launcher-focus"
 SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
 FIXED_CONTROLS = (("SETTINGS", "settings"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"))
 SETTINGS_MENU = (
@@ -56,6 +58,16 @@ SUPPORT_EXPORT_POLL_MS = 100
 def application_result() -> apps.LoadResult:
     system_dir = apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
     return apps.load_applications(system_dir=system_dir)
+
+
+def set_launcher_focus(held: bool) -> None:
+    try:
+        if held:
+            LAUNCHER_FOCUS.touch()
+        else:
+            LAUNCHER_FOCUS.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def request_osk(masked: bool = False) -> None:
@@ -283,6 +295,7 @@ class Launcher:
             f"DISPLAY={display_name}\nWAYLAND_DISPLAY={wayland}\n", encoding="utf-8"
         )
         os.chmod(RUN / "session.env", 0o640)
+        set_launcher_focus(False)
 
     def request(self, name: str) -> None:
         (RUN / name).touch()
@@ -331,6 +344,7 @@ class Launcher:
         self.screen.refresh()
 
     def show_launch_failure(self, label: str, message: str) -> None:
+        set_launcher_focus(True)
         self.screen.timeout(1000)
         while True:
             self.screen.erase()
@@ -371,6 +385,7 @@ class Launcher:
             return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
+        set_launcher_focus(False)  # the starting app takes the controller
         if app.kind == "request":
             self.request(app.request)
         elif app.kind == "rdp":
@@ -454,6 +469,7 @@ class Launcher:
             except (OSError, subprocess.SubprocessError):
                 return False
             if result.returncode == 0:
+                set_launcher_focus(False)
                 return True
         return False
 
@@ -563,6 +579,7 @@ class Launcher:
             key = read_key(self.screen)
             if HOME_REQUEST.exists() or key == curses.KEY_HOME:
                 HOME_REQUEST.unlink(missing_ok=True)
+                set_launcher_focus(True)  # gamepad-nav forwards keys while an app runs
                 self.active_applications()
                 self.draw()
                 continue

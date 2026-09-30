@@ -1,9 +1,11 @@
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 
 class Codes:
@@ -93,6 +95,23 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertTrue(self.module.is_home_event(mode))
         self.assertTrue(self.module.is_home_event(home))
         self.assertFalse(self.module.is_home_event(release))
+
+    def test_launcher_focus_marker_lets_the_controller_navigate_while_an_app_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "app-active").write_text("chrome\n")
+            focus = run / "launcher-focus"
+            with mock.patch.object(self.module, "APP_ACTIVE", run / "app-active", create=True), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", focus, create=True
+            ), mock.patch.object(self.module, "_last_state_check", -1e9):
+                # An app has focus: controller input belongs to the app.
+                self.assertTrue(self.module.navigation_blocked(False))
+                # Home showed the launcher while the app keeps running: navigate it.
+                focus.touch()
+                self.assertFalse(self.module.navigation_blocked(False))
+                # The on-screen keyboard always gets the controller.
+                focus.unlink()
+                self.assertFalse(self.module.navigation_blocked(True))
 
 
 if __name__ == "__main__":

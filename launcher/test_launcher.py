@@ -324,6 +324,84 @@ class LauncherTest(unittest.TestCase):
             self.assertFalse((run / "rdp.request").exists())
             self.assertFalse((run / "rdp-session.secret").exists())
 
+    def terminal_app(self):
+        return self.module.apps.Application(
+            id="terminal", name="TERMINAL", kind="command", command="/bin/bash",
+            status_id="terminal", terminal=True,
+        )
+
+    def test_home_marks_the_launcher_as_holding_focus_for_the_controller(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([-1])
+        launcher.prepare_session = mock.Mock()
+        launcher.setup_wizard = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "home.request").touch()
+            seen = []
+            launcher.active_applications = mock.Mock(
+                side_effect=lambda: seen.append((run / "launcher-focus").exists())
+            )
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", run / "launcher-focus", create=True
+            ), mock.patch.object(self.module.display, "restore_saved_mode"), mock.patch.object(
+                self.module.curses, "curs_set"
+            ), mock.patch.object(self.module.curses, "use_default_colors"):
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    launcher.run()
+        self.assertEqual(seen, [True])
+
+    def test_handing_focus_back_to_an_app_clears_the_launcher_focus_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            focus = pathlib.Path(directory) / "launcher-focus"
+            focus.touch()
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True), mock.patch.object(
+                self.module.subprocess, "run", return_value=mock.Mock(returncode=1)
+            ):
+                self.assertFalse(self.module.Launcher.focus_app(self.terminal_app()))
+                self.assertTrue(focus.exists())  # no window took focus
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True), mock.patch.object(
+                self.module.subprocess, "run", return_value=mock.Mock(returncode=0)
+            ):
+                self.assertTrue(self.module.Launcher.focus_app(self.terminal_app()))
+            self.assertFalse(focus.exists())
+
+    def test_starting_an_app_clears_the_marker_and_a_failed_start_restores_it(self):
+        launcher = self.launcher()
+        launcher.screen = Screen([10])
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            focus = run / "launcher-focus"
+            focus.touch()
+
+            def write(_path, _content):
+                self.assertFalse(focus.exists())  # the new app gets the controller
+                (run / "terminal-ready").touch()
+
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", focus, create=True
+            ), mock.patch.object(self.module.apps, "atomic_write", side_effect=write):
+                self.assertTrue(launcher.launch_app(self.terminal_app()))
+            self.assertFalse(focus.exists())
+            # The failure screen is drawn in the launcher, so it must be navigable.
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True):
+                launcher.show_launch_failure("TERMINAL", "boom")
+            self.assertTrue(focus.exists())
+
+    def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
+        launcher = self.launcher()
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            focus = run / "launcher-focus"
+            focus.touch()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", focus, create=True
+            ), mock.patch.dict(self.module.os.environ, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"}):
+                launcher.prepare_session()
+            self.assertFalse(focus.exists())
+
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")
