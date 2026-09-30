@@ -96,5 +96,94 @@ class DisplayTest(unittest.TestCase):
             self.assertIn("--dryrun", run.call_args.args[0])
 
 
+class RestoreConfirmationTest(unittest.TestCase):
+    """A saved mode that blacks out the TV must not be reapplied on every boot."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.pending = pathlib.Path(self.directory.name) / "display-restore.pending"
+        self.output = display.parse_wlr_randr(SAMPLE)[0]
+        self.saved = {
+            "output": "DP-1",
+            "identity": self.output.identity,
+            "resolution": "1920x1080",
+            "refresh_mhz": "120000",
+        }
+        display._unconfirmed = False
+        self.addCleanup(setattr, display, "_unconfirmed", False)
+
+    def restore(self, apply=None):
+        with mock.patch.object(display, "load_saved_display", return_value=self.saved), mock.patch.object(
+            display, "query_outputs", return_value=[self.output]
+        ), mock.patch.object(display, "apply_mode", side_effect=apply) as applied:
+            return display.restore_saved_mode(self.pending), applied
+
+    def real_applies(self, applied):
+        return [call for call in applied.call_args_list if not call.kwargs.get("dryrun")]
+
+    def test_restore_is_marked_pending_before_the_mode_is_applied(self):
+        seen = []
+
+        def apply(_output, _mode, dryrun=False):
+            if not dryrun:
+                seen.append(self.pending.exists())
+
+        result, applied = self.restore(apply)
+        self.assertTrue(result)
+        self.assertEqual(seen, [True])
+        self.assertEqual(len(self.real_applies(applied)), 1)
+        self.assertTrue(self.pending.exists())
+
+    def test_unconfirmed_previous_restore_is_skipped_and_reported(self):
+        self.pending.write_text("pending", encoding="utf-8")
+        result, applied = self.restore()
+        self.assertIsNone(result)
+        self.assertEqual(self.real_applies(applied), [])
+        self.assertTrue(self.pending.exists())
+
+    def test_first_input_confirms_the_restore(self):
+        self.restore()
+        display.confirm_restore(self.pending)
+        self.assertFalse(self.pending.exists())
+        result, applied = self.restore()
+        self.assertTrue(result)
+        self.assertEqual(len(self.real_applies(applied)), 1)
+
+    def test_confirming_without_a_restore_keeps_an_older_skip_marker(self):
+        self.pending.write_text("pending", encoding="utf-8")
+        display.confirm_restore(self.pending)
+        self.assertTrue(self.pending.exists())
+
+    def test_already_active_mode_is_not_marked_or_skipped(self):
+        self.saved.update(resolution="3840x2160", refresh_mhz="60000")
+        result, applied = self.restore()
+        self.assertTrue(result)
+        self.assertEqual(applied.call_args_list, [])
+        self.assertFalse(self.pending.exists())
+
+    def test_refused_apply_does_not_leave_a_marker(self):
+        def refuse(_output, _mode, dryrun=False):
+            if not dryrun:
+                raise RuntimeError("wlr-randr failed")
+
+        result, _applied = self.restore(refuse)
+        self.assertFalse(result)
+        self.assertFalse(self.pending.exists())
+
+    def test_unwritable_marker_skips_the_restore(self):
+        self.pending = pathlib.Path(self.directory.name) / "missing" / "display-restore.pending"
+        result, applied = self.restore()
+        self.assertFalse(result)
+        self.assertEqual(self.real_applies(applied), [])
+
+    def test_choosing_a_mode_again_clears_the_skip_marker(self):
+        mode = display.find_mode(self.output, "1920x1080", 120000)
+        config = pathlib.Path(self.directory.name) / "config.ini"
+        self.pending.write_text("pending", encoding="utf-8")
+        display.save_display(self.output, mode, config, self.pending)
+        self.assertFalse(self.pending.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

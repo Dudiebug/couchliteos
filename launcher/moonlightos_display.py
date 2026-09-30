@@ -14,6 +14,11 @@ from dataclasses import dataclass
 
 CONFIG = pathlib.Path("/var/lib/moonlightos/config.ini")
 LOG = pathlib.Path("/var/log/moonlightos/display.log")
+# Present from just before a saved mode is reapplied until the launcher sees
+# its first key press. If it is still there at the next start, that mode
+# blacked out the screen, so it is not applied again.
+PENDING = pathlib.Path("/var/lib/moonlightos/display-restore.pending")
+_unconfirmed = False
 OUTPUT_RE = re.compile(r'^(\S+)(?:\s+"(.*)")?$')
 MODE_RE = re.compile(
     r"^\s+(\d+)x(\d+)\s+px,\s+([0-9]+(?:\.[0-9]+)?)\s+Hz"
@@ -198,7 +203,9 @@ def load_saved_display(config_path: pathlib.Path = CONFIG) -> dict[str, str]:
     return values
 
 
-def save_display(output: Output, mode: Mode, config_path: pathlib.Path = CONFIG) -> None:
+def save_display(
+    output: Output, mode: Mode, config_path: pathlib.Path = CONFIG, pending: pathlib.Path | None = None
+) -> None:
     if not output.identity:
         raise RuntimeError("display identity is unavailable; mode was not saved")
     original = config_path.read_text(encoding="utf-8", errors="replace") if config_path.exists() else ""
@@ -249,9 +256,27 @@ def save_display(output: Output, mode: Mode, config_path: pathlib.Path = CONFIG)
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+    # Choosing a mode again is the user's own confirmation; restores may resume.
+    (pending or config_path.with_name(PENDING.name)).unlink(missing_ok=True)
 
 
-def restore_saved_mode() -> bool:
+def confirm_restore(pending: pathlib.Path = PENDING) -> None:
+    """Call on the first key press: the screen is usable, so clear the pending mark."""
+    global _unconfirmed
+    if _unconfirmed:
+        _unconfirmed = False
+        try:
+            pending.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def restore_saved_mode(pending: pathlib.Path = PENDING) -> bool | None:
+    """True when the saved mode is active, False when nothing was restored.
+
+    None means it was skipped because the previous restore was never confirmed.
+    """
+    global _unconfirmed
     saved = load_saved_display()
     if not saved:
         log("No valid saved display mode; keeping compositor default")
@@ -272,12 +297,26 @@ def restore_saved_mode() -> bool:
         ) == (mode.width, mode.height, mode.refresh_mhz):
             log(f"Saved display mode already active on {output.name}: {mode.argument}")
             return True
+        if pending.exists():
+            log("Previous saved-mode restore was never confirmed by input; skipping it")
+            return None
         apply_mode(output, mode, dryrun=True)
         validated = valid_output_mode(output.name, output.identity, mode)
         if not validated:
             log("Display changed after dry-run; keeping compositor default")
             return False
-        apply_mode(*validated)
+        try:
+            pending.write_text("pending", encoding="utf-8")
+        except OSError as error:
+            log(f"Cannot mark the restore pending, so not applying it: {error}")
+            return False
+        _unconfirmed = True
+        try:
+            apply_mode(*validated)
+        except RuntimeError:
+            _unconfirmed = False
+            pending.unlink(missing_ok=True)
+            raise
         log(f"Restored saved display mode on {output.name}: {mode.argument}")
         return True
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:

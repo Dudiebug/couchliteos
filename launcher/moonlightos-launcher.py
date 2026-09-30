@@ -85,6 +85,8 @@ def rdp_log(message: str) -> None:
 
 def read_key(screen: curses.window) -> int:
     key = screen.getch()
+    if key != -1:
+        display.confirm_restore()
     if key == curses.KEY_F12:
         request_osk()
         return -1
@@ -593,7 +595,9 @@ class Launcher:
 
         self.draw()
         (RUN / "launcher-ready").touch()
-        display.restore_saved_mode()
+        if display.restore_saved_mode() is None:
+            self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
+            self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
         self.setup_wizard()
         while True:

@@ -96,5 +96,45 @@ class LiveModeWarningTest(LauncherFixesTest):
         self.assertFalse([text for text in texts if "LIVE MODE" in text])
 
 
+class DisplayRestoreStartupTest(LauncherFixesTest):
+    def run_startup(self, restore_result):
+        launcher = self.launcher()
+        launcher.prepare_session = mock.Mock()
+        launcher.setup_wizard = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(
+            self.module.display, "restore_saved_mode", return_value=restore_result
+        ), mock.patch.object(self.module.curses, "curs_set"), mock.patch.object(
+            self.module.curses, "use_default_colors"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                launcher.run()
+        return launcher
+
+    def test_skipped_restore_tells_the_user_where_to_choose_the_mode_again(self):
+        launcher = self.run_startup(None)
+        self.assertEqual(
+            launcher.status,
+            "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY",
+        )
+
+    def test_message_is_not_replaced_by_the_network_status_straight_away(self):
+        launcher = self.run_startup(None)
+        self.assertGreater(launcher.last_status_update, self.module.time.monotonic())
+
+    def test_normal_restore_leaves_the_status_alone(self):
+        launcher = self.run_startup(True)
+        self.assertEqual(launcher.status, "OFFLINE")
+
+    def test_first_key_press_confirms_the_restore_but_a_timeout_does_not(self):
+        screen = Screen([-1, ord("x")])
+        with mock.patch.object(self.module.display, "confirm_restore") as confirm:
+            self.assertEqual(self.module.read_key(screen), -1)
+            confirm.assert_not_called()
+            self.assertEqual(self.module.read_key(screen), ord("x"))
+            confirm.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()
