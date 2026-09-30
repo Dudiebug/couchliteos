@@ -40,6 +40,21 @@ write_status() {
   printf '%s\n' "$1" > "$status_file"
 }
 
+# Logs persist across boots, so cap them when an app starts: a log over the
+# limit is cut down to its last MOONLIGHTOS_LOG_MAX_BYTES (default 5 MiB) and
+# kept as the single old copy (.1); the live log then starts empty.
+cap_log() {
+  local file=$1 max=${MOONLIGHTOS_LOG_MAX_BYTES:-5242880} size
+  size=$(stat -c %s -- "$file" 2>/dev/null) || return 0
+  ((size > max)) || return 0
+  if tail -c "$max" -- "$file" > "$file.1.new"; then
+    mv -f -- "$file.1.new" "$file.1"
+  else
+    rm -f -- "$file.1.new"
+  fi
+  : > "$file"
+}
+
 write_status starting
 if [[ ! -x "$binary" ]]; then
   write_status "failed: application executable is missing"
@@ -47,6 +62,7 @@ if [[ ! -x "$binary" ]]; then
   exit 66
 fi
 
+cap_log "$LOG_DIR/$APP.log"
 exec > >(tee -a "$LOG_DIR/$APP.log") 2>&1
 if [[ -n "$appdir" ]]; then
   export APPDIR="$appdir"

@@ -41,6 +41,7 @@ test:
 	python3 -m unittest -v tests/test_support.py
 	python3 -m unittest -v tests/test_tailscale_enrollment.py
 	python3 -m unittest -v tests/test_terminal_apps.py
+	python3 -m unittest -v tests/test_log_limits.py
 	python3 -m unittest -v tests/test_bluetooth_service.py
 	python3 -m unittest -v tests/test_qemu_iso_boot.py
 	python3 -m unittest -v tests/test_rdp_secret.py

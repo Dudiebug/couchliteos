@@ -749,5 +749,61 @@ class NoDestinationReasonTest(unittest.TestCase):
             )
 
 
+
+class LargeLogTest(unittest.TestCase):
+    """An oversized log is the one most worth having; keep its end, not nothing."""
+
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.directory = pathlib.Path(self._directory.name)
+        patcher = mock.patch.object(exporter, "MAX_LOG_SIZE", 1024)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def bundle_file(self, source: pathlib.Path) -> str:
+        bundle = self.directory / "bundle"
+        exporter.add_file(bundle, "logs/x.txt", source)
+        return (bundle / "logs/x.txt").read_text(encoding="utf-8")
+
+    def test_oversized_log_includes_the_last_bytes_marked_truncated(self):
+        source = self.directory / "big.log"
+        source.write_text("".join(f"line {number:05d}\n" for number in range(500)), encoding="ascii")
+        text = self.bundle_file(source)
+        first, _, rest = text.partition("\n")
+        self.assertIn("truncated", first.lower())
+        self.assertIn("last", first.lower())
+        self.assertNotIn("File exceeded", text)
+        self.assertTrue(rest.endswith("line 00499\n"), rest[-40:])
+        self.assertNotIn("line 00000", text)
+        self.assertLessEqual(len(rest.encode("utf-8")), 1024)
+        # the partial line the cut landed in is dropped, so every line is whole
+        for line in rest.splitlines():
+            self.assertRegex(line, r"^line \d{5}$")
+
+    def test_log_within_the_limit_is_unchanged(self):
+        source = self.directory / "small.log"
+        source.write_text("one\ntwo\n", encoding="ascii")
+        self.assertEqual(self.bundle_file(source), "one\ntwo\n")
+
+    def test_oversized_binary_file_is_still_omitted(self):
+        source = self.directory / "big.bin"
+        source.write_bytes(b"\0" * 4096)
+        self.assertEqual(self.bundle_file(source), "Binary file omitted.\n")
+
+    def test_oversized_log_is_still_redacted(self):
+        source = self.directory / "secret.log"
+        source.write_text("x" * 900 + "\n" * 2 + "password=hunter2-SECRET\n" * 20, encoding="ascii")
+        text = self.bundle_file(source)
+        self.assertNotIn("hunter2-SECRET", text)
+
+    def test_symlinked_oversized_log_is_not_followed(self):
+        target = self.directory / "target"
+        target.write_text("ROOT-ONLY\n" * 500, encoding="ascii")
+        link = self.directory / "link.log"
+        link.symlink_to(target)
+        self.assertNotIn("ROOT-ONLY", self.bundle_file(link))
+
+
 if __name__ == "__main__":
     unittest.main()

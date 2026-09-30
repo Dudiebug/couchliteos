@@ -275,6 +275,26 @@ class DiagnosticsViewerTest(TerminalAppTest):
         self.assertIn("tailscale line 60", result.stdout)
         self.assertEqual(len(self.calls.read_text().split()), 1)
 
+    def test_only_the_newest_saved_reports_are_kept(self):
+        for day in range(1, 9):
+            (self.logs / f"diagnostics-2026010{day}-120000.txt").write_text("old", encoding="utf-8")
+        (self.logs / "launcher.log").write_text("not a report", encoding="utf-8")
+        result = subprocess.run(
+            [str(DIAGNOSTICS)],
+            text=True,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=self.environment(),
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reports = self.saved_reports()
+        self.assertEqual(len(reports), 5, [report.name for report in reports])
+        self.assertIn("tailscale line 60", reports[-1].read_text())
+        self.assertFalse((self.logs / "diagnostics-20260101-120000.txt").exists())
+        self.assertTrue((self.logs / "diagnostics-20260108-120000.txt").exists())
+        self.assertTrue((self.logs / "launcher.log").exists())
+
     def test_watch_mode_has_a_controller_exit_and_no_alt_f4(self):
         terminal = self.start([str(DIAGNOSTICS), "--watch"])
         terminal.read_until("Refresh")

@@ -51,6 +51,13 @@ versions, MoonlightOS service status, failed units, the current-boot journal,
 kernel log when permitted, regular text files from `/var/log/moonlightos`, and
 a sanitized copy of `/var/lib/moonlightos/config.ini`.
 
+Logs are kept bounded. When an application or the launcher starts, its log in
+`/var/log/moonlightos` is cut down to its last 5 MiB if it has grown past that,
+and one older copy (`.1`) is kept. Only the newest five saved System
+Diagnostics reports are kept. A log larger than 8 MiB is still collected: the
+archive holds its last 8 MiB, and the first line of that file says it was
+truncated.
+
 The exporter validates every archive member, rejects unsafe paths, links, and
 special files, and fully reads each regular member to detect damaged or
 truncated archives. It copies to a hidden `.partial`, flushes and validates the

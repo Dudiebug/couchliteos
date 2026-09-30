@@ -5,6 +5,19 @@ watch_mode=0
 log_dir=${MOONLIGHTOS_LOG_DIR:-/var/log/moonlightos}
 [[ ${1:-} == --watch ]] && watch_mode=1
 
+# Each run saves a report, so keep only the newest few (names sort by time).
+prune_reports() {
+  local -a files
+  local keep=${MOONLIGHTOS_DIAGNOSTICS_KEEP:-5}
+  shopt -s nullglob
+  files=("$log_dir"/diagnostics-*.txt)
+  shopt -u nullglob
+  if ((${#files[@]} > keep)); then
+    rm -f -- "${files[@]:0:${#files[@]}-keep}"
+  fi
+  return 0
+}
+
 report() {
   [[ -t 1 ]] && clear 2>/dev/null
   echo 'MoonlightOS diagnostics'
@@ -186,6 +199,7 @@ else
   fi
   [[ -t 1 ]] && echo 'Collecting system information; this can take up to 30 seconds...'
   report > "$outfile" 2>&1
+  [[ -d $log_dir ]] && prune_reports
   if [[ -t 0 && -t 1 ]]; then
     page_file "$outfile" "$saved_note"
   else
