@@ -399,6 +399,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
   launcher/moonlightos_rdp.py launcher/moonlightos_stream.py launcher/moonlightos_controllers.py \
+  launcher/moonlightos_pcstatus.py \
   launcher/moonlightos_update.py launcher/moonlightos_errors.py launcher/moonlightos_confirm.py \
   scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
@@ -748,5 +749,11 @@ rg -q 'update\.VERSION_FILES' launcher/moonlightos_whatsnew.py
 rg -q 'setup\.MARKER\.parent / "whatsnew-seen"' launcher/moonlightos_whatsnew.py
 # The notice names the old product once, on a line the rename script leaves alone.
 test "$(rg -c 'MOONLIGHTOS IS NOW CALLED COUCHLITEOS\. SAME SYSTEM.*# rename:keep$' launcher/moonlightos_whatsnew.py)" = 1  # rename:keep
+# Easier everyday use: gaming PC status line under the title (the probe runs in a thread)
+rg -q 'moonlightos_pcstatus.py' build/configure.sh
+rg -q '^import moonlightos_pcstatus as pcstatus' launcher/moonlightos-launcher.py
+rg -q 'self\.pcstatus\.line\(\)' launcher/moonlightos-launcher.py
+rg -q 'probe: Callable\[\[stream\.Host\], str\] = stream\.probe' launcher/moonlightos_pcstatus.py
+rg -q 'threading\.Thread' launcher/moonlightos_pcstatus.py
 
 printf 'Static tests passed.\n'
