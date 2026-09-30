@@ -12,12 +12,15 @@ import time
 
 from evdev import InputDevice, UInput, ecodes
 
+import moonlightos_cec as cec
+
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
         ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8]
 OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
 HOME_REQUEST = pathlib.Path("/run/moonlightos/home.request")
+CEC_NAV, CEC_HOME = cec.remote_key_maps(ecodes)
 _last_state_check = 0.0
 _last_state = False
 
@@ -127,9 +130,53 @@ def watch_home() -> None:
             devices.clear()
 
 
+def handle_cec_event(ui: UInput, event) -> None:
+    """A TV remote key (HDMI-CEC) drives the launcher like the gamepad does."""
+    if event.type != ecodes.EV_KEY or event.value != 1:
+        return
+    if event.code in CEC_HOME:
+        request_home()
+    elif event.code in CEC_NAV and (not app_active() or OSK_ACTIVE.exists()):
+        emit(ui, CEC_NAV[event.code])
+
+
+def watch_cec(ui: UInput) -> None:
+    devices: dict[str, InputDevice] = {}
+    other: set[str] = set()
+    while True:
+        paths = set(glob.glob("/dev/input/event*"))
+        other &= paths
+        for path in set(devices) - paths:
+            devices.pop(path).close()
+        for path in paths - set(devices) - other:
+            try:
+                device = InputDevice(path)
+            except OSError:
+                continue
+            if not cec.is_cec_bus(device.info.bustype):
+                other.add(path)
+                device.close()
+                continue
+            try:
+                device.grab()  # the raw keys must not also reach the compositor
+            except OSError:
+                pass
+            devices[path] = device
+        try:
+            readable, _writable, _errors = select.select(list(devices.values()), [], [], 1)
+            for device in readable:
+                for event in device.read():
+                    handle_cec_event(ui, event)
+        except OSError:
+            for device in devices.values():
+                device.close()
+            devices.clear()
+
+
 def run() -> None:
     threading.Thread(target=watch_home, daemon=True).start()
     ui = UInput({ecodes.EV_KEY: KEYS}, name="MoonlightOS Launcher Navigation")
+    threading.Thread(target=watch_cec, args=(ui,), daemon=True).start()
     while True:
         dev = find_gamepad()
         if dev is None:

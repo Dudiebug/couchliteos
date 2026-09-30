@@ -23,6 +23,7 @@ import moonlightos_bluetooth as bluetooth
 import moonlightos_apps as apps
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
+import moonlightos_cec as cec
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -37,6 +38,7 @@ SETTINGS_MENU = (
     "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
+    "TV CONTROL",
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
@@ -903,6 +905,7 @@ class Settings:
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
             "TAILSCALE": lambda: self.launcher.launch_by_id("tailscale"),
+            "TV CONTROL": self.run_tv_control,
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launcher.launch_by_id("system-diagnostics"),
@@ -983,6 +986,43 @@ class Settings:
     def run_remote_desktop(self) -> None:
         RemoteDesktopSettings(self.screen, self.launcher).run()
         self.launcher.reload_applications()
+
+    def run_tv_control(self) -> None:
+        """HDMI-CEC: what the TV reports, and two switches that only work with a CEC adapter."""
+
+        def ask_tv() -> cec.Status:
+            self.status = ""
+            self.draw("TV CONTROL", ["ASKING THE TV..."], None)
+            return cec.query_status()
+
+        status = ask_tv()
+        settings = cec.load_settings()
+        can_sleep = cec.suspend_supported()
+        selected = 0
+        while True:
+            info = cec.status_lines(status)
+            actions = cec.toggle_rows(settings, status.usable, can_sleep) + ["REFRESH", "BACK"]
+            self.draw("TV CONTROL", info + [""] + actions, len(info) + 1 + selected)
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(actions))
+            if key == 27 or (key in ENTER_KEYS and selected == len(actions) - 1):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            if selected == len(actions) - 2:
+                status = ask_tv()
+            elif not status.usable:
+                self.status = "NOT AVAILABLE: " + ("NO CEC ADAPTER FOUND" if status.adapter is None else "TV NOT CONNECTED")
+            elif selected == 1 and not can_sleep:
+                self.status = "NOT AVAILABLE: SUSPEND NOT SUPPORTED ON THIS PC"
+            else:
+                changed = cec.toggled(settings, selected)
+                try:
+                    cec.save_settings(changed)
+                except OSError as error:
+                    self.status = f"NOT SAVED: {error}"
+                else:
+                    settings, self.status = changed, "SAVED"
 
     def run(self) -> None:
         self.refresh_outputs()

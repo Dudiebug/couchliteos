@@ -58,6 +58,9 @@ joystick
 bluez
 steam-devices
 systemd-timesyncd
+# HDMI-CEC TV control: cec-ctl talks to /dev/cec*; inputattach binds Pulse-Eight USB-CEC adapters
+v4l-utils
+inputattach
 
 # USB/IP and diagnostics
 usbip
