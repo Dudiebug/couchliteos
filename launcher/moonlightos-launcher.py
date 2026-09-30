@@ -1681,6 +1681,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
 
 
 def main(screen: curses.window) -> None:
+    curses.set_escdelay(25)  # the controller's B sends a bare Esc; don't wait 1 s for a sequence
     Launcher(screen).run()
 
 

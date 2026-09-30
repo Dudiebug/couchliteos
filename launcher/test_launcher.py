@@ -546,6 +546,16 @@ class LauncherTest(unittest.TestCase):
         _events, save = self.display_preview([self.module.curses.KEY_DOWN, 10])
         save.assert_called_once()
 
+    def test_escape_does_not_lag_a_second_behind_the_b_button(self):
+        # B is forwarded as a bare Esc; curses waits ESCDELAY (1000 ms) for a sequence.
+        screen = Screen()
+        with mock.patch.object(self.module.curses, "set_escdelay") as set_escdelay, mock.patch.object(
+            self.module, "Launcher"
+        ) as launcher:
+            self.module.main(screen)
+        set_escdelay.assert_called_once_with(25)
+        launcher.assert_called_once_with(screen)
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:

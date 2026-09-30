@@ -230,6 +230,7 @@ def ui(screen: curses.window) -> None:
     keyboard = Keyboard()
     keyboard.masked = consume_mask_request()
     curses.curs_set(0)
+    curses.set_escdelay(25)  # B sends a bare Esc; don't wait 1 s for an escape sequence
     screen.keypad(True)
     while True:
         draw(screen, keyboard)
