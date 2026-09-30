@@ -312,6 +312,7 @@ class WifiNetwork:
     signal: int
     security: str
     in_use: bool = False
+    hidden: bool = False
 
     @property
     def secured(self) -> bool:
@@ -356,6 +357,8 @@ def wifi_settings(network: WifiNetwork, password: str, uuid: str) -> dict[str, d
         "ipv4": {"method": "auto"},
         "ipv6": {"method": "auto"},
     }
+    if network.hidden:
+        settings["802-11-wireless"]["hidden"] = True
     if network.secured:
         settings["802-11-wireless-security"] = {"key-mgmt": network.key_mgmt, "psk": password}
     return settings
@@ -712,6 +715,12 @@ class System:
 
 SKIP = "SKIP THIS STEP"
 OK = "OK"
+HIDDEN_NETWORK = "OTHER NETWORK (HIDDEN)"
+HIDDEN_SECURITY = (
+    ("WPA2 PASSWORD (MOST HOME NETWORKS)", "WPA2"),
+    ("WPA3 PASSWORD", "WPA3"),
+    ("NO PASSWORD (OPEN NETWORK)", ""),
+)
 OPTIONAL = {
     "tailscale": ("REACH YOUR GAMING PC FROM ANYWHERE WITH TAILSCALE.", "OPEN TAILSCALE SETUP", "tailscale"),
     "chiaki-ng": ("STREAM FROM A PLAYSTATION ON YOUR NETWORK WITH CHIAKI-NG.", "OPEN CHIAKI-NG", "chiaki-ng"),
@@ -871,22 +880,58 @@ class SetupWizard:
             f"{item.ssid}  {item.signal}%" + ("" if item.secured else "  (OPEN)") + ("  (CONNECTED)" if item.in_use else "")
             for item in networks
         ]
-        index = self.ui.menu(
-            "NETWORK",
-            ["NO CABLE FOUND. CHOOSE YOUR WI-FI NETWORK,", "OR PLUG IN A CABLE AND CHOOSE SCAN AGAIN."],
-            labels + ["SCAN AGAIN", SKIP],
-        )
-        if index is None or index == len(labels) + 1:
+        lines = ["NO CABLE FOUND. CHOOSE YOUR WI-FI NETWORK,", "OR PLUG IN A CABLE AND CHOOSE SCAN AGAIN."]
+        if networks:
+            lines.append("NOT LISTED? PRESS A ON OTHER NETWORK (HIDDEN) AND TYPE ITS NAME.")
+        else:
+            lines = self.no_networks_lines()
+        index = self.ui.menu("NETWORK", lines, labels + [HIDDEN_NETWORK, "SCAN AGAIN", SKIP])
+        if index is None or index == len(labels) + 2:
             return SKIPPED
-        if index == len(labels):
+        if index == len(labels) + 1:
             return None
-        network = networks[index]
+        if index == len(labels):
+            network = self.hidden_network()
+            if network is None:
+                return None
+        else:
+            network = networks[index]
         if not network.supported:
             self.notice("NETWORK", [f"{network.ssid}: NOT SUPPORTED HERE.", "WORK, SCHOOL AND WEP NETWORKS NEED A CABLE OR A PHONE HOTSPOT."])
             return None
         if not self.join(network):
             return None
         return self.network_result(f"CONNECTED TO {network.ssid}")
+
+    def no_networks_lines(self) -> list[str]:
+        """Say why the list is empty: a blocked radio looks different from nothing in range."""
+        radio_off = any(item.kind == "wifi" and item.state == "unavailable" for item in self.system.network_devices())
+        if radio_off:
+            return [
+                "WI-FI IS OFF OR BLOCKED ON THIS PC.",
+                "LOOK FOR A WI-FI SWITCH OR AN AIRPLANE-MODE KEY, OR PLUG IN A CABLE.",
+                "PRESS A ON SCAN AGAIN WHEN IT IS ON, OR B TO SKIP.",
+            ]
+        return [
+            "NO NETWORKS FOUND.",
+            "MOVE CLOSER TO THE ROUTER, OR PLUG IN A CABLE.",
+            "PRESS A ON SCAN AGAIN, OR ON OTHER NETWORK IF YOURS IS HIDDEN.",
+            "B SKIPS THIS STEP.",
+        ]
+
+    def hidden_network(self) -> WifiNetwork | None:
+        while True:
+            name = self.actions["text"]("HIDDEN NETWORK", "NETWORK NAME (SSID)", 32, masked=False)
+            if name is None:
+                return None
+            if 1 <= len(name.encode("utf-8")) <= 32:
+                break
+            self.notice("HIDDEN NETWORK", ["THE NETWORK NAME MUST BE 1 TO 32 CHARACTERS (ACCENTS COUNT TWICE)."])
+        index = self.ui.menu(
+            "HIDDEN NETWORK", [f"HOW IS {name} PROTECTED?", "PRESS A TO CHOOSE, OR B TO GO BACK."],
+            [label for label, _security in HIDDEN_SECURITY],
+        )
+        return None if index is None else WifiNetwork(name, 0, HIDDEN_SECURITY[index][1], hidden=True)
 
     def join(self, network: WifiNetwork) -> bool:
         while True:

@@ -271,6 +271,129 @@ class ActivateKeepsTheWorkingProfileTest(unittest.TestCase):
         self.assertEqual(nm.added["802-11-wireless-security"]["psk"], "correct horse battery")
 
 
+# --- finding 3: hidden networks, and a reason when the list is empty ---------------
+
+WIFI_BLOCKED = setup.NetworkDevice("wlan0", "wifi", "unavailable")
+
+
+class HiddenNetworkTest(NetworkStepTestCase):
+    def test_the_list_offers_other_network_between_the_networks_and_scan_again(self):
+        ui = FakeUI("SKIP")
+        self.run_network(ui, FakeSystem(networks=[HOME_NET]))
+        choices = ui.screens[-1]["choices"]
+        self.assertEqual(choices[1:], ["OTHER NETWORK (HIDDEN)", "SCAN AGAIN", "SKIP THIS STEP"])
+        self.assertIn("A", " ".join(ui.screens[-1]["lines"]).split())
+        ui.assert_fits_an_80_column_screen(self)
+
+    def test_a_hidden_wpa2_network_is_joined_by_name_and_password(self):
+        self.texts = ["My Hidden Net", "hunter2-hunter2"]
+        system = FakeSystem()
+        ui = FakeUI("OTHER NETWORK", "WPA2", "CONTINUE")
+        self.assertEqual(self.run_network(ui, system), "done")
+        network, password = system.connected[0]
+        self.assertEqual((network.ssid, network.security, network.hidden), ("My Hidden Net", "WPA2", True))
+        self.assertEqual(password, "hunter2-hunter2")
+        self.assertEqual([prompt[0::3] for prompt in self.prompts], [("HIDDEN NETWORK", False), ("WI-FI PASSWORD", True)])
+        self.assertEqual(self.prompts[0][2], 32)
+        self.assertIn("CONNECTED TO My Hidden Net", ui.text())
+        self.assertNotIn("hunter2", ui.text())
+        ui.assert_fits_an_80_column_screen(self)
+
+    def test_a_wpa3_only_hidden_network_uses_sae(self):
+        self.texts = ["Modern", "hunter2-hunter2"]
+        system = FakeSystem()
+        self.run_network(FakeUI("OTHER NETWORK", "WPA3", "CONTINUE"), system)
+        self.assertEqual(system.connected[0][0].key_mgmt, "sae")
+
+    def test_a_hidden_open_network_needs_no_password(self):
+        self.texts = ["Cafe Hidden"]
+        system = FakeSystem()
+        self.assertEqual(self.run_network(FakeUI("OTHER NETWORK", "NO PASSWORD", "CONTINUE"), system), "done")
+        network, password = system.connected[0]
+        self.assertEqual((network.secured, network.hidden, password), (False, True, ""))
+        self.assertEqual(len(self.prompts), 1)
+
+    def test_the_security_screen_names_every_choice_and_the_buttons(self):
+        self.texts = ["Hidden"]
+        ui = FakeUI("OTHER NETWORK", None, "SKIP")
+        self.run_network(ui, FakeSystem())
+        screen = next(screen for screen in ui.screens if screen["title"] == "HIDDEN NETWORK")
+        self.assertEqual(len(screen["choices"]), 3)
+        self.assertTrue(any("WPA2" in choice for choice in screen["choices"]))
+        self.assertTrue(any("WPA3" in choice for choice in screen["choices"]))
+        self.assertTrue(any("OPEN" in choice for choice in screen["choices"]))
+        self.assertIn("B", " ".join(screen["lines"]).split())
+        ui.assert_fits_an_80_column_screen(self)
+
+    def test_escape_on_the_name_or_the_security_goes_back_to_the_list(self):
+        system = FakeSystem()
+        self.texts = [None]
+        ui = FakeUI("OTHER NETWORK", "SKIP")
+        self.assertEqual(self.run_network(ui, system), "skipped")
+        self.texts = ["Hidden"]
+        ui = FakeUI("OTHER NETWORK", None, "SKIP")
+        self.assertEqual(self.run_network(ui, system), "skipped")
+        self.assertEqual(system.connected, [])
+
+    def test_an_empty_or_too_long_name_is_asked_for_again(self):
+        self.texts = ["", "x" * 33, "a" * 11 + "é" * 11, "Hidden"]
+        system = FakeSystem()
+        ui = FakeUI("OTHER NETWORK", "OK", "OK", "OK", "NO PASSWORD", "CONTINUE")
+        self.assertEqual(self.run_network(ui, system), "done")
+        self.assertEqual(system.connected[0][0].ssid, "Hidden")
+        self.assertIn("1 TO 32 CHARACTERS", ui.text())
+        ui.assert_fits_an_80_column_screen(self)
+
+    def test_the_hidden_flag_reaches_the_networkmanager_settings(self):
+        hidden = setup.wifi_settings(setup.WifiNetwork("Hidden", 0, "WPA2", hidden=True), "hunter2-hunter2", "u")
+        self.assertIs(hidden["802-11-wireless"]["hidden"], True)
+        self.assertEqual(hidden["802-11-wireless"]["ssid"], b"Hidden")
+        self.assertEqual(hidden["802-11-wireless-security"]["key-mgmt"], "wpa-psk")
+        self.assertNotIn("hidden", setup.wifi_settings(HOME_NET, "hunter2-hunter2", "u")["802-11-wireless"])
+
+    def test_a_wrong_hidden_password_can_be_retyped_for_the_same_name(self):
+        self.texts = ["Hidden", "wrong-password", "right-password"]
+        system = FakeSystem(connect_results=[(False, "COULD NOT CONNECT: CHECK THE PASSWORD"), (True, "")])
+        ui = FakeUI("OTHER NETWORK", "WPA2", "TRY AGAIN", "CONTINUE")
+        self.assertEqual(self.run_network(ui, system), "done")
+        self.assertEqual([item[0].ssid for item in system.connected], ["Hidden", "Hidden"])
+        self.assertEqual([item[1] for item in system.connected], ["wrong-password", "right-password"])
+
+
+class EmptyListReasonTest(NetworkStepTestCase):
+    def test_no_networks_in_range_says_so_and_how_to_go_on(self):
+        ui = FakeUI("SKIP")
+        self.assertEqual(self.run_network(ui, FakeSystem(networks=[])), "skipped")
+        lines = ui.screens[-1]["lines"]
+        self.assertTrue(any("NO NETWORKS FOUND" in line for line in lines), lines)
+        self.assertFalse(any("WI-FI IS OFF" in line for line in lines))
+        self.assertIn("SCAN AGAIN", ui.screens[-1]["choices"])
+        self.assertIn("A", " ".join(lines).split())
+        self.assertIn("B", " ".join(lines).split())
+        ui.assert_fits_an_80_column_screen(self)
+
+    def test_a_blocked_radio_says_wifi_is_off(self):
+        system = FakeSystem(devices=[ETHERNET_DOWN, WIFI_BLOCKED], networks=[])
+        ui = FakeUI("SKIP")
+        self.assertEqual(self.run_network(ui, system), "skipped")
+        lines = ui.screens[-1]["lines"]
+        self.assertTrue(any("WI-FI IS OFF" in line for line in lines), lines)
+        self.assertFalse(any("NO NETWORKS FOUND" in line for line in lines))
+        ui.assert_fits_an_80_column_screen(self)
+
+    def test_a_list_with_networks_shows_no_reason(self):
+        ui = FakeUI("SKIP")
+        self.run_network(ui, FakeSystem(networks=[HOME_NET]))
+        self.assertNotIn("NO NETWORKS FOUND", ui.text())
+        self.assertNotIn("WI-FI IS OFF", ui.text())
+
+    def test_scanning_again_after_the_reason_looks_again(self):
+        system = FakeSystem(networks=[])
+        ui = FakeUI("SCAN AGAIN", "SKIP")
+        self.assertEqual(self.run_network(ui, system), "skipped")
+        self.assertEqual(system.scans, 2)
+
+
 # --- finding 9: a wrong password must read as one, and leave nothing saved --------
 
 def connect(nm, network=HOME_NET, password="wrong horse battery"):
