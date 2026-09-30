@@ -32,8 +32,40 @@ internet.
 4. If it still stops, capture the exact last message or a photo. Serial boot
    output is available at 115200 8N1 for development builds.
 
-IPv6 is intentionally unavailable in v0.1.11. Use `ip -4 address` and `ip -4
+IPv6 is intentionally unavailable in v0.1.12. Use `ip -4 address` and `ip -4
 route` when troubleshooting networking.
 
 Support export details and verification commands are in
 [SUPPORT.md](SUPPORT.md).
+
+## iMac Late 2013 shows a black screen
+
+The `imac2013` image drives the NVIDIA Kepler GPU with nouveau and needs KMS.
+Do not add `nomodeset`, and never install a proprietary NVIDIA driver (the last
+Kepler branch has no GBM, so Cage cannot start). Reboot with **Start
+MoonlightOS (No Persistence)**, then check `lsmod` for `nouveau` and the
+journal for `nouveau` or `cage` errors. Confirm the machine with
+`sudo moonlightos-hardware-report`; an `iMac14,1` has Intel graphics and does
+not match this profile.
+
+## iMac Wi-Fi is missing
+
+Check `lsmod | grep '^wl '` and `modinfo wl`. If `wl` is missing on an installed
+system after a kernel update, make sure `linux-headers-amd64`, `dkms`, and
+`broadcom-sta-dkms` are installed so DKMS can rebuild it. `b43`, `bcma`, `ssb`,
+and `brcmsmac` must stay blacklisted.
+
+## Remote Desktop does not connect
+
+- `COULD NOT REACH`: check the host, port, and firewall; MoonlightOS is
+  IPv4-only.
+- `CERTIFICATE CHANGED - CONNECTION BLOCKED`: the server presented a different
+  certificate. Verify the new fingerprint on the server before using Settings →
+  Remote Desktop → Forget certificate.
+- `authentication failed`, `the password is wrong`, `the account is locked out`:
+  these are never retried automatically. Check the username, domain, and
+  password, then connect again.
+- `the saved password is missing`: save it again under Save password.
+- xrdp shows its own login dialog: see [Remote Desktop](REMOTE_DESKTOP.md#known-behavior).
+- Client output: `journalctl -u moonlightos-rdp.service`; certificate decisions:
+  `/var/log/moonlightos/rdp.log`.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Clear MoonlightOS Remote Desktop state after a failed session
+
+[Service]
+Type=oneshot
+User=moonlightos
+Group=moonlightos
+Environment=XDG_RUNTIME_DIR=/run/moonlightos
+ExecStart=/usr/libexec/moonlightos-run-configured-app --rdp-cleanup
+# A service that hits its start limit also stops its path unit; clear the
+# counter and re-arm the path so the next connection can start.
+ExecStartPost=+/usr/bin/systemctl reset-failed moonlightos-rdp.service moonlightos-rdp.path
+ExecStartPost=+/usr/bin/systemctl restart moonlightos-rdp.path
+StandardOutput=journal
+StandardError=journal

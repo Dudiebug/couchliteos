@@ -9,6 +9,7 @@ import ipaddress
 import os
 import pathlib
 import shlex
+import ssl
 import subprocess
 import sys
 import textwrap
@@ -20,6 +21,7 @@ import moonlightos_audio as audio
 import moonlightos_support as support
 import moonlightos_bluetooth as bluetooth
 import moonlightos_apps as apps
+import moonlightos_rdp as rdp
 import moonlightos_setup as setup
 
 
@@ -32,6 +34,7 @@ SETTINGS_MENU = (
     "AUDIO",
     "BLUETOOTH",
     "APPLICATIONS",
+    "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
     "SETUP WIZARD",
@@ -40,6 +43,11 @@ SETTINGS_MENU = (
     "BACK",
 )
 SPINNER = "|/-\\"
+ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
+# gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
+SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
+SHORTCUT_TAGS = {"lb": "LB", "rb": "RB", "view": "VIEW", "menu": "MENU"}
+TEXT_HINT = "KEYBOARD: X (XBOX) / TRIANGLE (PS) / F12  ·  A/ENTER ACCEPTS  ·  B/ESC CANCELS"
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
@@ -50,8 +58,29 @@ def application_result() -> apps.LoadResult:
     return apps.load_applications(system_dir=system_dir)
 
 
-def request_osk() -> None:
+def request_osk(masked: bool = False) -> None:
+    if masked:
+        (RUN / "osk-masked").touch()
     (RUN / "start-osk").touch()
+
+
+def rdp_application(connection: rdp.Connection) -> apps.Application:
+    """Launchable entry for a saved connection that is not pinned to the launcher."""
+    return apps.Application(
+        id=connection.id, name=connection.name.upper(), kind="rdp",
+        connection=connection.id, status_id=connection.id,
+    )
+
+
+def active_rdp_session() -> str | None:
+    try:
+        return rdp.read_connection_id(RUN / rdp.SESSION.name)
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def rdp_log(message: str) -> None:
+    display.log(message, pathlib.Path("/var/log/moonlightos/rdp.log"))
 
 
 def read_key(screen: curses.window) -> int:
@@ -236,7 +265,10 @@ class Launcher:
         self.applications = tuple(
             app for app in result.applications if app.visible and app.enabled
         )
-        self.menu = [(app.name, app.id) for app in self.applications] + list(FIXED_CONTROLS)
+        self.menu = [
+            (f"{app.name}  [{SHORTCUT_TAGS[app.shortcut]}]" if app.shortcut else app.name, app.id)
+            for app in self.applications
+        ] + list(FIXED_CONTROLS)
         self.selected = min(self.selected, max(0, len(self.menu) - 1))
         if result.errors:
             self.status = f"{len(result.errors)} INVALID APPLICATION(S) SKIPPED"
@@ -335,10 +367,14 @@ class Launcher:
             self.status = f"{label} IS RUNNING BUT HAS NO MANAGED WINDOW"
             return False
         state = RUN / f"{app_id}-status"
+        if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
+            return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
         if app.kind == "request":
             self.request(app.request)
+        elif app.kind == "rdp":
+            rdp.write_session_request(app.connection, RUN / rdp.REQUEST.name)
         else:
             apps.atomic_write(RUN / "launch-app.request", app.id + "\n")
 
@@ -372,6 +408,11 @@ class Launcher:
             self.screen.timeout(1000)
 
         last_state = self.read_app_status(app_id)
+        if app.kind == "rdp" and not (RUN / rdp.SESSION.name).exists():
+            # The session never picked up the request: do not leave it (or a
+            # typed password) waiting in /run for a later start.
+            (RUN / rdp.REQUEST.name).unlink(missing_ok=True)
+            (RUN / rdp.HANDOFF.name).unlink(missing_ok=True)
         message = (
             last_state.removeprefix("failed:").strip()
             if last_state.startswith("failed:")
@@ -402,6 +443,8 @@ class Launcher:
             "moonlight": ("app_id:moonlight", "title:Moonlight"),
             "chiaki-ng": ("app_id:chiaki", "app_id:io.github.streetpea.Chiaki4deck", "title:Chiaki"),
         }.get(app.id, (f"title:{app.name}",))
+        if app.kind == "rdp":
+            matches = (f"app_id:{rdp.WAYLAND_APP_ID}", f"title:{app.name}")
         for match in matches:
             try:
                 result = subprocess.run(
@@ -415,10 +458,16 @@ class Launcher:
         return False
 
     def running_applications(self) -> list[apps.Application]:
-        return [
+        running = [
             app for app in application_result().applications
             if app.enabled and (RUN / f"{app.status_id}-ready").exists()
         ]
+        session = active_rdp_session()
+        if session and session not in {app.id for app in running} and (RUN / f"{session}-ready").exists():
+            connection = rdp.get_connection(session)
+            if connection is not None:
+                running.append(rdp_application(connection))
+        return running
 
     def active_applications(self) -> None:
         selected = 0
@@ -520,6 +569,12 @@ class Launcher:
             self.selected = move_selection(self.selected, key, len(self.menu))
             if key in (curses.KEY_ENTER, 10, 13):
                 self.activate()
+            elif key in SHORTCUT_KEYS:
+                app = next((item for item in self.applications if item.shortcut == SHORTCUT_KEYS[key]), None)
+                if app is None:
+                    self.status = f"NO BUTTON USES THE {SHORTCUT_TAGS[SHORTCUT_KEYS[key]]} SHORTCUT"
+                else:
+                    self.launch_app(app)
             elif key == curses.KEY_RESIZE:
                 pass
 
@@ -561,6 +616,11 @@ class Settings:
         if self.output is None:
             return []
         return list(dict.fromkeys(mode.resolution for mode in self.output.modes))
+
+    def native_resolution(self) -> str:
+        if self.output is None:
+            return ""
+        return next((mode.resolution for mode in self.output.modes if mode.preferred), "")
 
     def refresh_rates(self) -> list[int]:
         if self.output is None:
@@ -835,26 +895,22 @@ class Settings:
             self.screen.timeout(1000)
 
     def activate(self) -> bool:
-        if self.selected == 0:
-            self.run_display()
-        elif self.selected == 1:
-            self.run_audio()
-        elif self.selected == 2:
-            bluetooth.run_bluetooth(self.screen)
-        elif self.selected == 3:
-            self.run_applications()
-        elif self.selected == 4:
-            self.launcher.active_applications()
-        elif self.selected == 5:
-            self.launcher.launch_by_id("tailscale")
-        elif self.selected == 6:
-            self.launcher.setup_wizard(force=True)
-        elif self.selected == 7:
-            self.generate_support_file()
-        elif self.selected == 8:
-            self.launcher.launch_by_id("system-diagnostics")
-        else:
+        actions = {
+            "DISPLAY": self.run_display,
+            "AUDIO": self.run_audio,
+            "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
+            "APPLICATIONS": self.run_applications,
+            "REMOTE DESKTOP": self.run_remote_desktop,
+            "ACTIVE APPLICATIONS": self.launcher.active_applications,
+            "TAILSCALE": lambda: self.launcher.launch_by_id("tailscale"),
+            "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
+            "GENERATE SUPPORT FILE": self.generate_support_file,
+            "SYSTEM DIAGNOSTICS": lambda: self.launcher.launch_by_id("system-diagnostics"),
+        }
+        action = actions.get(SETTINGS_MENU[self.selected])
+        if action is None:
             return False
+        action()
         return True
 
     def run_display(self) -> None:
@@ -872,7 +928,12 @@ class Settings:
                 continue
             if selected == 0:
                 resolutions = self.resolutions()
-                chosen = self.choose("RESOLUTION", [(item, item) for item in resolutions], self.resolution)
+                native = self.native_resolution()
+                chosen = self.choose(
+                    "RESOLUTION",
+                    [(f"{item}  (NATIVE)" if item == native else item, item) for item in resolutions],
+                    self.resolution,
+                )
                 if isinstance(chosen, str):
                     self.resolution = chosen
                     rates = self.refresh_rates()
@@ -919,6 +980,10 @@ class Settings:
         ApplicationsSettings(self.screen, self.launcher).run()
         self.launcher.reload_applications()
 
+    def run_remote_desktop(self) -> None:
+        RemoteDesktopSettings(self.screen, self.launcher).run()
+        self.launcher.reload_applications()
+
     def run(self) -> None:
         self.refresh_outputs()
         while True:
@@ -959,8 +1024,11 @@ class ApplicationsSettings:
         add_centered(self.screen, height - 3, self.status or "LEFT/RIGHT MOVES  ·  ENTER EDITS  ·  F12 KEYBOARD")
         self.screen.refresh()
 
-    def text_input(self, title: str, prompt: str, limit: int) -> str | None:
-        value = ""
+    def text_input(
+        self, title: str, prompt: str, limit: int, *, initial: str = "", masked: bool = False
+    ) -> str | None:
+        value = initial[:limit]
+        previous_status, self.status = self.status, TEXT_HINT
         self.screen.timeout(-1)
         try:
             curses.curs_set(1)
@@ -968,7 +1036,7 @@ class ApplicationsSettings:
             pass
         try:
             while True:
-                shown = value[-limit:] or "_"
+                shown = ("*" * len(value) if masked else value)[-max(1, self.screen.getmaxyx()[1] - 12):] or "_"
                 self.draw(title, [prompt, shown], None)
                 key = self.screen.get_wch()
                 if isinstance(key, str):
@@ -981,10 +1049,11 @@ class ApplicationsSettings:
                     elif key.isprintable() and key not in "\r\n" and len(value) < limit:
                         value += key
                 elif key == curses.KEY_F12:
-                    request_osk()
+                    request_osk(masked)
                 elif key in (curses.KEY_BACKSPACE,):
                     value = value[:-1]
         finally:
+            self.status = previous_status
             self.screen.timeout(1000)
             try:
                 curses.curs_set(0)
@@ -1147,6 +1216,414 @@ class ApplicationsSettings:
                 self.add_web()
             else:
                 return
+
+
+class RemoteDesktopSettings(ApplicationsSettings):
+    """Saved RDP connections, their launcher buttons, and the connect flow."""
+
+    def menu(self, title: str, rows: list[str], selected: int = 0, first: int = 0) -> int | None:
+        """Return the chosen row index; rows before `first` are information only."""
+        selected = max(first, min(selected, len(rows) - 1))
+        while True:
+            self.draw(title, rows, selected)
+            key = read_key(self.screen)
+            if key in (curses.KEY_UP, ord("k")):
+                selected = selected - 1 if selected > first else len(rows) - 1
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = selected + 1 if selected < len(rows) - 1 else first
+            elif key in ENTER_KEYS:
+                return selected
+            elif key == 27:
+                return None
+
+    def message(self, title: str, message: str) -> None:
+        _height, width = self.screen.getmaxyx()
+        rows = [line for part in message.split("\n") for line in (textwrap.wrap(part, width=max(8, width - 10)) or [""])]
+        self.menu(title, rows + ["OK"], len(rows), len(rows))
+
+    @staticmethod
+    def pinned() -> dict[str, apps.Application]:
+        return {app.connection: app for app in application_result().applications if app.kind == "rdp"}
+
+    @staticmethod
+    def _system_dir() -> pathlib.Path:
+        return apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
+
+    def run(self) -> None:
+        selected = 0
+        while True:
+            connections, errors = rdp.load_connections()
+            pinned = self.pinned()
+            rows = [
+                f"{item.name[:28]:<28} {item.host}:{item.port}{'  PINNED' if item.id in pinned else ''}"
+                for item in connections
+            ] + ["ADD CONNECTION", "BACK"]
+            self.status = f"{len(errors)} INVALID CONNECTION(S) SKIPPED" if errors else (self.status or "")
+            choice = self.menu("REMOTE DESKTOP", rows, selected)
+            if choice is None or choice == len(rows) - 1:
+                return
+            selected = choice
+            if choice < len(connections):
+                self.connection_menu(connections[choice].id)
+            else:
+                self.edit_connection(None)
+
+    def connection_menu(self, connection_id: str) -> None:
+        selected = 0
+        while True:
+            connection = rdp.get_connection(connection_id)
+            if connection is None:
+                return
+            app = self.pinned().get(connection_id)
+            rows = ["CONNECT", "EDIT CONNECTION", "UNPIN FROM LAUNCHER" if app else "PIN TO LAUNCHER"]
+            if app:
+                shortcut = apps.SHORTCUTS.get(app.shortcut, "NONE")
+                rows += [f"BUTTON LABEL  {app.name}", "BUTTON POSITION", f"CONTROLLER SHORTCUT  {shortcut}"]
+            if connection.save_password:
+                rows.append("FORGET SAVED PASSWORD")
+            if connection.certificate:
+                rows.append("FORGET CERTIFICATE")
+            rows += ["DELETE CONNECTION", "BACK"]
+            choice = self.menu(connection.name.upper(), rows, selected)
+            if choice is None or rows[choice] == "BACK":
+                return
+            selected = choice
+            action = rows[choice].split("  ", 1)[0]
+            try:
+                if action == "CONNECT":
+                    self.launcher.launch_app(app or rdp_application(connection))
+                    return
+                if action == "EDIT CONNECTION":
+                    self.edit_connection(connection)
+                elif action == "PIN TO LAUNCHER":
+                    self.pin(connection)
+                elif action == "UNPIN FROM LAUNCHER" and app:
+                    apps.delete_user_application(app.id, system_dir=self._system_dir())
+                    self.status = f"UNPINNED {app.name}"
+                elif action == "BUTTON LABEL" and app:
+                    label = self.text_input("BUTTON LABEL", "LAUNCHER BUTTON LABEL", apps.MAX_NAME, initial=app.name)
+                    if label and label.strip():
+                        self._write_user(dataclasses.replace(app, name=label.strip().upper()))
+                        self.status = f"LABEL SET TO {label.strip().upper()}"
+                elif action == "BUTTON POSITION" and app:
+                    self.reposition(app.id)
+                elif action == "CONTROLLER SHORTCUT" and app:
+                    self.assign_shortcut(app)
+                elif action == "FORGET SAVED PASSWORD":
+                    self.forget_password(connection)
+                elif action == "FORGET CERTIFICATE":
+                    if self.yes_no("FORGET CERTIFICATE", "VERIFY THE FINGERPRINT AGAIN ON THE NEXT CONNECTION?"):
+                        rdp.upsert_connection(dataclasses.replace(connection, certificate=""))
+                        rdp_log(f"certificate pin cleared for {connection.id}")
+                        self.status = "CERTIFICATE FORGOTTEN"
+                elif action == "DELETE CONNECTION":
+                    if self.delete(connection, app):
+                        return
+            except (OSError, apps.ManifestError, rdp.RdpError) as error:
+                self.status = f"NOT CHANGED: {error}"
+            self.launcher.reload_applications()
+
+    def resolution_choice(self, current: str) -> str | None:
+        rows = ["NATIVE  (THIS DISPLAY'S RESOLUTION)", "FIT  (FOLLOW THE WINDOW SIZE)"]
+        rows += [f"CUSTOM  {item}" for item in rdp.RESOLUTION_PRESETS] + ["CUSTOM  TYPE A SIZE", "BACK"]
+        values: list[str | None] = ["native", "fit", *rdp.RESOLUTION_PRESETS, "type", None]
+        choice = self.menu("RESOLUTION", rows, values.index(current) if current in values else 0)
+        if choice is None or values[choice] is None:
+            return None
+        if values[choice] != "type":
+            return values[choice]
+        typed = self.text_input("CUSTOM RESOLUTION", "WIDTHxHEIGHT, FOR EXAMPLE 1920x1080", 9)
+        return typed.strip().lower() if typed else None
+
+    @staticmethod
+    def resolution_label(value: str) -> str:
+        return {"native": "NATIVE", "fit": "FIT"}.get(value, f"CUSTOM {value}")
+
+    def edit_connection(self, connection: rdp.Connection | None) -> None:
+        title = "ADD CONNECTION" if connection is None else f"EDIT {connection.name.upper()}"
+        values: dict[str, object] = dataclasses.asdict(
+            connection or rdp.Connection(id="", name="", host="", username="")
+        )
+        values["port"] = str(values["port"])
+        new_password: str | None = None
+        selected = 0
+        on_off = {True: "ON", False: "OFF"}
+        while True:
+            rows = [
+                f"DISPLAY NAME   {values['name'] or '(REQUIRED)'}",
+                f"HOST           {values['host'] or '(REQUIRED)'}",
+                f"PORT           {values['port']}",
+                f"USERNAME       {values['username'] or '(REQUIRED)'}",
+                f"DOMAIN         {values['domain'] or '(NONE)'}",
+                f"RESOLUTION     {self.resolution_label(str(values['resolution']))}",
+                f"FULLSCREEN     {on_off[bool(values['fullscreen'])]}",
+                f"AUDIO          {on_off[bool(values['audio'])]}",
+                f"CLIPBOARD      {on_off[bool(values['clipboard'])]}",
+                "SAVE PASSWORD  " + (
+                    "ON  (STORED UNENCRYPTED)" if values["save_password"] else "OFF  (ASK WHEN CONNECTING)"
+                ),
+                "SAVE CONNECTION",
+                "CANCEL",
+            ]
+            self.draw(title, rows, selected)
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27:
+                return
+            toggles = {6: "fullscreen", 7: "audio", 8: "clipboard"}
+            if selected in toggles and key in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
+                values[toggles[selected]] = not values[toggles[selected]]
+                continue
+            if key not in ENTER_KEYS:
+                continue
+            fields = {
+                0: ("name", "DISPLAY NAME", apps.MAX_NAME),
+                1: ("host", "HOST NAME OR IPV4 ADDRESS", rdp.MAX_HOST),
+                2: ("port", "PORT (DEFAULT 3389)", 5),
+                3: ("username", "USERNAME", rdp.MAX_USERNAME),
+                4: ("domain", "DOMAIN (OPTIONAL)", rdp.MAX_DOMAIN),
+            }
+            if selected in fields:
+                name, prompt, limit = fields[selected]
+                typed = self.text_input(title, prompt, limit, initial=str(values[name]))
+                if typed is not None:
+                    values[name] = typed.strip()
+            elif selected == 5:
+                chosen = self.resolution_choice(str(values["resolution"]))
+                if chosen:
+                    try:
+                        values["resolution"] = rdp.validate_resolution(chosen)
+                    except rdp.RdpError as error:
+                        self.status = str(error).upper()
+            elif selected == 9:
+                if values["save_password"]:
+                    values["save_password"] = False
+                    new_password = None
+                elif self.yes_no(
+                    "SAVE PASSWORD",
+                    "THE PASSWORD WILL BE STORED UNENCRYPTED IN A ROOT-ONLY FILE. SAVE IT?",
+                ):
+                    typed = self.text_input(title, "PASSWORD TO SAVE", rdp.MAX_PASSWORD, masked=True)
+                    if typed is not None:
+                        values["save_password"] = True
+                        new_password = typed
+            elif selected == 10:
+                if self.save_connection(connection, values, new_password):
+                    return
+            else:
+                return
+
+    def save_connection(
+        self, original: rdp.Connection | None, values: dict[str, object], new_password: str | None
+    ) -> bool:
+        try:
+            connections, _errors = rdp.load_connections()
+            taken = {item.id for item in connections} | {item.id for item in application_result().applications}
+            identifier = original.id if original else rdp.connection_id(str(values["name"]), taken)
+            certificate = original.certificate if original else ""
+            if original and (original.host, original.port) != (
+                rdp.validate_host(str(values["host"])), rdp.validate_port(values["port"])
+            ):
+                certificate = ""  # a different server must be verified again
+            updated = rdp.validate(rdp.Connection(
+                id=identifier, name=str(values["name"]), host=str(values["host"]),
+                port=rdp.validate_port(values["port"]), username=str(values["username"]),
+                domain=str(values["domain"]), resolution=str(values["resolution"]),
+                fullscreen=bool(values["fullscreen"]), audio=bool(values["audio"]),
+                clipboard=bool(values["clipboard"]),
+                save_password=bool(values["save_password"]) and (
+                    new_password is not None or bool(original and original.save_password)
+                ),
+                certificate=certificate,
+            ))
+            if updated.save_password and new_password is not None:
+                rdp.validate_password(new_password)
+            rdp.upsert_connection(updated)
+        except (OSError, rdp.RdpError, apps.ManifestError) as error:
+            self.status = f"NOT SAVED: {error}".upper()
+            return False
+        message = f"SAVED {updated.name.upper()}"
+        if (
+            original and original.save_password and updated.save_password and new_password is None
+            and rdp.secret_binding(original) != rdp.secret_binding(updated)
+        ):
+            # A saved password belongs to one server and account; never reuse it.
+            updated = dataclasses.replace(updated, save_password=False)
+            rdp.upsert_connection(updated)
+            message = "SAVED; SERVER OR ACCOUNT CHANGED, SO SAVE THE PASSWORD AGAIN"
+        if updated.save_password and new_password is not None:
+            ok, detail = self.password_request("set", updated.id, new_password)
+            if not ok:
+                rdp.upsert_connection(dataclasses.replace(updated, save_password=False))
+                self.password_request("delete", updated.id)
+                message = f"SAVED; PASSWORD NOT STORED: {detail}".upper()
+        elif original and original.save_password and not updated.save_password:
+            ok, detail = self.password_request("delete", updated.id)
+            if not ok:
+                message = f"SAVED; OLD PASSWORD NOT REMOVED: {detail}".upper()
+        self.status = message
+        return True
+
+    def password_request(self, operation: str, connection_id: str, password: str = "") -> tuple[bool, str]:
+        self.draw("REMOTE DESKTOP", ["UPDATING THE SAVED PASSWORD", "PLEASE WAIT"], None)
+        request = RUN / rdp.SECRET_REQUEST.name
+        request_id = rdp.submit_secret_request(operation, connection_id, password, request)
+        ok, detail = rdp.wait_secret_status(request_id, path=RUN / rdp.SECRET_STATUS.name)
+        if not ok:
+            request.unlink(missing_ok=True)  # never leave a password waiting in /run
+        return ok, detail
+
+    def forget_password(self, connection: rdp.Connection) -> None:
+        ok, detail = self.password_request("delete", connection.id)
+        if ok:
+            rdp.upsert_connection(dataclasses.replace(connection, save_password=False))
+            self.status = "SAVED PASSWORD REMOVED"
+        else:
+            self.status = f"PASSWORD NOT REMOVED: {detail}".upper()
+
+    def pin(self, connection: rdp.Connection) -> None:
+        result = application_result()
+        order = max([50, *(item.order for item in result.applications if item.visible)]) + 10
+        self._write_user(apps.Application(
+            id=connection.id, name=connection.name.upper(), kind="rdp", connection=connection.id,
+            status_id=connection.id, order=order,
+        ))
+        self.status = f"PINNED {connection.name.upper()}"
+
+    def assign_shortcut(self, app: apps.Application) -> None:
+        options = [("NONE", "")] + [(label, value) for value, label in apps.SHORTCUTS.items()]
+        chosen = self.choose_shortcut(options, app.shortcut)
+        if chosen is None:
+            return
+        for other in application_result().applications:
+            if chosen and other.shortcut == chosen and other.id != app.id and not other.system:
+                self._write_user(dataclasses.replace(other, shortcut=""))
+        self._write_user(dataclasses.replace(app, shortcut=chosen))
+        self.status = f"SHORTCUT {apps.SHORTCUTS.get(chosen, 'NONE')} ASSIGNED TO {app.name}" if chosen else "SHORTCUT REMOVED"
+
+    def choose_shortcut(self, options: list[tuple[str, str]], current: str) -> str | None:
+        rows = [label for label, _value in options]
+        index = next((number for number, (_label, value) in enumerate(options) if value == current), 0)
+        self.status = "PRESS THE BUTTON ON THE MAIN LAUNCHER SCREEN (KEYBOARD: F5-F8)"
+        choice = self.menu("CONTROLLER SHORTCUT", rows, index)
+        self.status = ""
+        return None if choice is None else options[choice][1]
+
+    def reposition(self, app_id: str) -> None:
+        self.status = "UP/DOWN MOVES THE BUTTON  ·  ENTER OR ESC FINISHES"
+        while True:
+            visible = [item for item in application_result().applications if item.visible]
+            index = next((number for number, item in enumerate(visible) if item.id == app_id), None)
+            if index is None:
+                return
+            self.draw("BUTTON POSITION", [item.name for item in visible], index)
+            key = read_key(self.screen)
+            if key in ENTER_KEYS or key == 27:
+                self.status = f"POSITION {index + 1} OF {len(visible)}"
+                return
+            direction = -1 if key in (curses.KEY_UP, curses.KEY_LEFT) else 1 if key in (curses.KEY_DOWN, curses.KEY_RIGHT) else 0
+            target = index + direction
+            if direction and 0 <= target < len(visible):
+                self.selected = index
+                self.move(visible, direction)
+                self.status = "UP/DOWN MOVES THE BUTTON  ·  ENTER OR ESC FINISHES"
+
+    def delete(self, connection: rdp.Connection, app: apps.Application | None) -> bool:
+        if not self.yes_no("DELETE CONNECTION", f"DELETE {connection.name.upper()}?"):
+            return False
+        # Always ask: a failed earlier save can leave a secret behind.
+        ok, detail = self.password_request("delete", connection.id)
+        if not ok and connection.save_password:
+            self.status = f"NOT DELETED: SAVED PASSWORD COULD NOT BE REMOVED: {detail}".upper()
+            return False
+        if app:
+            apps.delete_user_application(app.id, system_dir=self._system_dir())
+        rdp.remove_connection(connection.id)
+        self.status = f"DELETED {connection.name.upper()}"
+        return True
+
+    def prepare_launch(self, app: apps.Application) -> bool:
+        """Verify the server certificate and obtain a password before starting a session."""
+        label = app.name
+        connection = rdp.get_connection(app.connection)
+        if connection is None:
+            self.launcher.show_launch_failure(label, "THE SAVED CONNECTION NO LONGER EXISTS. CHECK SETTINGS > REMOTE DESKTOP.")
+            return False
+        session = active_rdp_session()
+        if session and session != connection.id:
+            # Also covers a session that is starting or reconnecting after a crash.
+            self.launcher.show_launch_failure(
+                label,
+                "ANOTHER REMOTE DESKTOP SESSION IS OPEN OR RECONNECTING. PRESS HOME/GUIDE AND CLOSE "
+                "IT WITH X, OR WAIT FOR IT TO END.",
+            )
+            return False
+        self.status = "PLEASE WAIT"
+        self.draw(label, [f"CHECKING {connection.host}:{connection.port}"], None)
+        try:
+            fingerprint = rdp.probe_certificate(connection.host, connection.port)
+        except (OSError, ssl.SSLError, ValueError) as error:
+            self.launcher.show_launch_failure(label, f"COULD NOT REACH {connection.host}:{connection.port}: {error}")
+            return False
+        finally:
+            self.status = ""
+        if not connection.certificate:
+            if not self.confirm_certificate(connection, fingerprint):
+                self.launcher.status = "CONNECTION CANCELLED"
+                return False
+            connection = dataclasses.replace(connection, certificate=fingerprint)
+            rdp.upsert_connection(connection)
+            rdp_log(f"certificate trusted on first use for {connection.id} {connection.host}:{connection.port} sha256={fingerprint}")
+        elif connection.certificate != fingerprint:
+            rdp_log(
+                f"certificate changed for {connection.id} {connection.host}:{connection.port} "
+                f"pinned={connection.certificate} presented={fingerprint}; connection blocked"
+            )
+            self.message(
+                "CERTIFICATE CHANGED - CONNECTION BLOCKED",
+                f"THE SERVER AT {connection.host}:{connection.port} PRESENTED A DIFFERENT CERTIFICATE.\n"
+                "SAVED:  " + "  ".join(rdp.fingerprint_lines(connection.certificate)) + "\n"
+                "NOW:    " + "  ".join(rdp.fingerprint_lines(fingerprint)) + "\n"
+                "THIS CAN MEAN SOMEONE IS INTERCEPTING THE CONNECTION. IF THE SERVER CERTIFICATE WAS "
+                "REPLACED ON PURPOSE, VERIFY THE NEW FINGERPRINT ON THE SERVER, THEN USE SETTINGS > "
+                "REMOTE DESKTOP > FORGET CERTIFICATE.",
+            )
+            self.launcher.status = f"{label} BLOCKED: CERTIFICATE CHANGED"
+            return False
+        handoff = RUN / rdp.HANDOFF.name
+        if connection.save_password:
+            # The root helper copies the saved password into the handoff, but only
+            # while the host, port, username, and domain match what it was saved for.
+            handoff.unlink(missing_ok=True)
+            ok, detail = self.password_request("stage", connection.id)
+            if not ok:
+                self.launcher.show_launch_failure(label, f"THE SAVED PASSWORD COULD NOT BE USED: {detail}".upper())
+                return False
+            return True
+        password = self.text_input(
+            f"CONNECT TO {connection.name.upper()}", f"PASSWORD FOR {connection.username}", rdp.MAX_PASSWORD,
+            masked=True,
+        )
+        if password is None:
+            self.launcher.status = "CONNECTION CANCELLED"
+            return False
+        rdp.write_handoff(connection.id, password, handoff)
+        return True
+
+    def confirm_certificate(self, connection: rdp.Connection, fingerprint: str) -> bool:
+        rows = [
+            f"FIRST CONNECTION TO {connection.host}:{connection.port}",
+            "COMPARE THIS SHA-256 CERTIFICATE FINGERPRINT WITH THE SERVER:",
+            "",
+            *rdp.fingerprint_lines(fingerprint),
+            "",
+            "TRUST AND CONNECT",
+            "CANCEL",
+        ]
+        self.status = "ACCEPT ONLY IF THE FINGERPRINT MATCHES"
+        choice = self.menu("VERIFY SERVER CERTIFICATE", rows, len(rows) - 1, len(rows) - 2)
+        self.status = ""
+        return choice == len(rows) - 2
 
 
 def main(screen: curses.window) -> None:

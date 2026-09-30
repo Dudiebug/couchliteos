@@ -12,7 +12,12 @@ class Codes:
     BTN_GAMEPAD = 304
     BTN_SOUTH = 304
     BTN_EAST = 305
-    BTN_WEST = 307
+    BTN_NORTH = 307
+    BTN_WEST = 308
+    BTN_TL = 310
+    BTN_TR = 311
+    BTN_SELECT = 314
+    BTN_START = 315
     BTN_MODE = 316
     BTN_DPAD_UP = 544
     BTN_DPAD_DOWN = 545
@@ -28,6 +33,11 @@ class Codes:
     KEY_ESC = 1
     KEY_HOME = 102
     KEY_DELETE = 111
+    KEY_F5 = 63
+    KEY_F6 = 64
+    KEY_F7 = 65
+    KEY_F8 = 66
+    KEY_F12 = 88
 
 
 class GamepadMappingTest(unittest.TestCase):
@@ -52,6 +62,19 @@ class GamepadMappingTest(unittest.TestCase):
     def test_west_button_maps_to_close_action(self):
         west = SimpleNamespace(type=Codes.EV_KEY, value=1, code=Codes.BTN_WEST)
         self.assertEqual(self.module.key_for_event(west), Codes.KEY_DELETE)
+
+    def test_north_button_opens_the_keyboard_and_shoulders_are_shortcuts(self):
+        expected = {
+            Codes.BTN_NORTH: Codes.KEY_F12,
+            Codes.BTN_TL: Codes.KEY_F5,
+            Codes.BTN_TR: Codes.KEY_F6,
+            Codes.BTN_SELECT: Codes.KEY_F7,
+            Codes.BTN_START: Codes.KEY_F8,
+        }
+        for code, key in expected.items():
+            event = SimpleNamespace(type=Codes.EV_KEY, value=1, code=code)
+            self.assertEqual(self.module.key_for_event(event), key)
+            self.assertIn(key, self.module.KEYS)
 
     def test_dpad_and_hat_map_to_arrows(self):
         dpad = SimpleNamespace(type=Codes.EV_KEY, value=1, code=Codes.BTN_DPAD_DOWN)

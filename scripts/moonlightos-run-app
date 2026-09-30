@@ -106,17 +106,43 @@ elif [[ "$APP" == moonlight ]]; then
   # The pinned Moonlight Qt payload includes XCB but no Wayland platform
   # plugin, so it runs through Cage's XWayland support.
   host=$(moonlightos-host-address --quiet 2>/dev/null || true)
-  profile_app=$(python3 - "$DATA_DIR/config.ini" <<'PY'
-import configparser, sys
-c=configparser.ConfigParser(); c.read(sys.argv[1])
-print(c.get('host:gaming-pc','app',fallback='').strip())
+  # Line 1: profile app. Lines 2-5: validated [moonlight] resolution, fps, codec, decoder.
+  mapfile -t moonlight_settings < <(python3 - "$DATA_DIR/config.ini" <<'PY'
+import configparser, re, sys
+c = configparser.ConfigParser(interpolation=None); c.read(sys.argv[1])
+def setting(key, default, pattern):
+    value = c.get('moonlight', key, fallback=default).strip()
+    return value if re.fullmatch(pattern, value) else default
+print(c.get('host:gaming-pc', 'app', fallback='').strip().replace('\n', ' '))
+print(setting('resolution', '1920x1080', r'[1-9][0-9]{2,3}x[1-9][0-9]{2,3}'))
+print(setting('fps', '60', r'[1-9][0-9]{1,2}'))
+print(setting('codec', 'auto', r'auto|H\.264|HEVC|AV1'))
+print(setting('decoder', 'auto', r'auto|software|hardware'))
 PY
 )
+  profile_app=${moonlight_settings[0]:-}
+  video_options=()
+  [[ ${moonlight_settings[3]:-auto} != auto ]] && video_options+=(--video-codec "${moonlight_settings[3]}")
+  [[ ${moonlight_settings[4]:-auto} != auto ]] && video_options+=(--video-decoder "${moonlight_settings[4]}")
+  preferences="$DATA_DIR/home/.config/Moonlight Game Streaming Project/Moonlight.conf"
+  if ((${#video_options[@]})) && [[ ! -e "$preferences" ]]; then
+    # A profile that forces the codec or decoder (imac2013: software H.264)
+    # seeds Moonlight's own settings once; later changes in Moonlight persist.
+    declare -A codec_values=([auto]=0 [H.264]=1 [HEVC]=2 [AV1]=4)
+    declare -A decoder_values=([auto]=0 [hardware]=1 [software]=2)
+    resolution=${moonlight_settings[1]:-1920x1080}
+    install -d -m 0750 "${preferences%/*}"
+    printf '[General]\nwidth=%s\nheight=%s\nfps=%s\nvideocfg=%s\nvideodec=%s\n' \
+      "${resolution%x*}" "${resolution#*x}" "${moonlight_settings[2]:-60}" \
+      "${codec_values[${moonlight_settings[3]:-auto}]}" \
+      "${decoder_values[${moonlight_settings[4]:-auto}]}" > "$preferences"
+    echo "Seeded Moonlight defaults: ${resolution}@${moonlight_settings[2]:-60} ${video_options[*]}"
+  fi
   if [[ -n "$host" ]]; then
     echo "Selected Sunshine address: $host ($(moonlightos-host-address 2>/dev/null || true))"
   fi
   if [[ -n "$host" && -n "$profile_app" ]]; then
-    run_client env QT_QPA_PLATFORM=xcb "$binary" stream "$host" "$profile_app"
+    run_client env QT_QPA_PLATFORM=xcb "$binary" stream "$host" "$profile_app" "${video_options[@]}"
   else
     run_client env QT_QPA_PLATFORM=xcb "$binary"
   fi

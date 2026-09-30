@@ -12,14 +12,18 @@ report() {
   echo '== OS =='
   cat /etc/os-release 2>/dev/null | grep -E '^(PRETTY_NAME|VERSION_ID)=' || true
   printf 'MoonlightOS: '; cat /etc/moonlightos-version 2>/dev/null || echo unknown
+  sed -n 's/^Build profile: /Build profile: /p' /usr/share/moonlightos/build-info 2>/dev/null || true
+  printf 'Machine: %s %s\n' "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo unknown)" \
+    "$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo unknown)"
   uname -a
   echo
   echo '== CPU =='
   lscpu 2>/dev/null | grep -E '^(Model name|Architecture|CPU\(s\)|Thread|Core)' || true
   echo
   echo '== GPU / driver =='
-  lspci -nnk 2>/dev/null | grep -A3 -Ei 'VGA|Display' || true
-  lsmod 2>/dev/null | grep '^i915' || echo 'i915 module not shown'
+  lspci -nnk 2>/dev/null | grep -A3 -Ei 'VGA|Display|3D controller' || true
+  lsmod 2>/dev/null | grep -E '^(i915|nouveau|nvidia[a-z_]*|amdgpu|radeon) ' || echo 'no GPU kernel module shown'
+  lsmod 2>/dev/null | grep -q '^nvidia' && echo 'WARNING: a proprietary NVIDIA module is loaded'
   echo
   echo '== Vulkan =='
   vulkaninfo --summary 2>&1 | sed -n '1,80p' || true
@@ -31,6 +35,20 @@ report() {
   wpctl status 2>&1 | sed -n '1,100p' || true
   aplay -l 2>&1 || true
   echo
+  echo '== Sensors =='
+  if command -v sensors >/dev/null; then
+    sensors 2>&1 | sed -n '1,60p' || true
+  else
+    echo 'lm-sensors is not installed in this build profile'
+  fi
+  if [[ -d /sys/devices/platform/applesmc.768 ]]; then
+    echo 'applesmc: present'
+  elif lsmod 2>/dev/null | grep -q '^applesmc '; then
+    echo 'applesmc: module loaded, no SMC device'
+  else
+    echo 'applesmc: not loaded'
+  fi
+  echo
   echo '== Bluetooth =='
   /usr/libexec/moonlightos-bluetoothd --snapshot 2>&1 || true
   rfkill list bluetooth 2>&1 || true
@@ -41,6 +59,10 @@ report() {
   echo
   echo '== Network =='
   nmcli device status 2>&1 || true
+  for interface in /sys/class/net/*; do
+    [[ -e "$interface/device/driver" ]] || continue
+    printf '%s driver: %s\n' "${interface##*/}" "$(basename "$(readlink -f "$interface/device/driver")")"
+  done
   ip -brief -4 address 2>&1 || true
   ip route 2>&1 || true
   echo
@@ -64,6 +86,9 @@ report() {
   echo
   echo '== Applications (sanitized) =='
   /usr/bin/python3 /usr/libexec/moonlightos_apps.py 2>&1 || true
+  echo
+  echo '== Remote Desktop connections (sanitized) =='
+  /usr/bin/python3 /usr/libexec/moonlightos_rdp.py 2>&1 || true
   echo
   echo '== Services =='
   systemctl --no-pager --plain --state=failed 2>&1 || true

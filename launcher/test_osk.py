@@ -77,5 +77,15 @@ class KeyboardTest(unittest.TestCase):
             osk.character_events("é", False, codes)
 
 
+class MaskRequestTest(unittest.TestCase):
+    def test_mask_request_is_consumed_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "osk-masked"
+            self.assertFalse(osk.consume_mask_request(marker))
+            marker.touch()
+            self.assertTrue(osk.consume_mask_request(marker))
+            self.assertFalse(marker.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

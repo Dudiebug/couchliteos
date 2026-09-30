@@ -25,6 +25,9 @@ MAX_NAME = 64
 MAX_COMMAND = 512
 MAX_ARGUMENTS = 2048
 MAX_ENV_VALUE = 1024
+KINDS = {"request", "command", "rdp"}
+# Controller buttons that gamepad-nav forwards to the launcher as F5-F8.
+SHORTCUTS = {"lb": "LB / L1", "rb": "RB / R1", "view": "VIEW / SELECT", "menu": "MENU / START"}
 
 
 class ManifestError(ValueError):
@@ -39,6 +42,8 @@ class Application:
     command: str = ""
     arguments: str = ""
     request: str = ""
+    connection: str = ""
+    shortcut: str = ""
     status_id: str = ""
     terminal: bool = False
     enabled: bool = True
@@ -103,21 +108,34 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
     if not name:
         raise ManifestError("name is required")
     kind = _scalar(section.get("kind", "").strip(), "kind", 16)
-    if kind not in {"request", "command"}:
-        raise ManifestError("kind must be request or command")
+    if kind not in KINDS:
+        raise ManifestError("kind must be request, command, or rdp")
     command = _scalar(section.get("command", "").strip(), "command", MAX_COMMAND)
     arguments = _scalar(section.get("arguments", "").strip(), "arguments", MAX_ARGUMENTS)
     request = _scalar(section.get("request", "").strip(), "request", 64)
+    connection = _scalar(section.get("connection", "").strip(), "connection", 32)
+    shortcut = _scalar(section.get("shortcut", "").strip().lower(), "shortcut", 16)
+    if shortcut and shortcut not in SHORTCUTS:
+        raise ManifestError("unsupported controller shortcut")
     status_id = _scalar(section.get("status_id", app_id).strip(), "status_id", 32)
     if not ID_RE.fullmatch(status_id):
         raise ManifestError("invalid status id")
     if not system and status_id != app_id:
         raise ManifestError("user application status_id must match id")
+    if kind != "rdp" and connection:
+        raise ManifestError("only rdp applications can define connection")
     if kind == "command":
         if not pathlib.PurePath(command).is_absolute():
             raise ManifestError("command must be an absolute path")
         if request:
             raise ManifestError("command application cannot define request")
+    elif kind == "rdp":
+        if command or arguments or request:
+            raise ManifestError("rdp application cannot define command, arguments, or request")
+        if not ID_RE.fullmatch(connection) or connection != app_id:
+            raise ManifestError("rdp application id must match its connection id")
+        if status_id != app_id:
+            raise ManifestError("rdp application status_id must match id")
     else:
         if not system:
             raise ManifestError("user applications must use kind=command")
@@ -145,8 +163,10 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
         command=command,
         arguments=arguments,
         request=request,
+        connection=connection,
+        shortcut=shortcut,
         status_id=status_id,
-        terminal=_boolean(section, "terminal", False),
+        terminal=_boolean(section, "terminal", False) and kind != "rdp",
         enabled=_boolean(section, "enabled", True),
         visible=_boolean(section, "visible", True),
         order=order,
@@ -274,6 +294,10 @@ def serialize(app: Application) -> str:
         "order": str(app.order),
         "return_to_launcher": "true",
     }
+    if app.connection:
+        parser["app"]["connection"] = app.connection
+    if app.shortcut:
+        parser["app"]["shortcut"] = app.shortcut
     if app.environment:
         parser["environment"] = app.environment
     from io import StringIO
@@ -377,7 +401,7 @@ def application_id(name: str, existing: set[str]) -> str:
 def sanitized_summary(result: LoadResult) -> str:
     rows = []
     for app in result.applications:
-        exists = "n/a" if app.kind == "request" else ("yes" if pathlib.Path(app.command).exists() else "no")
+        exists = "n/a" if app.kind != "command" else ("yes" if pathlib.Path(app.command).exists() else "no")
         rows.append(
             f"{app.id}: enabled={'yes' if app.enabled else 'no'} order={app.order} "
             f"kind={app.kind} command_exists={exists}"

@@ -13,7 +13,8 @@ import time
 from evdev import InputDevice, UInput, ecodes
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
-        ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE]
+        ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
+        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8]
 OSK_ACTIVE = pathlib.Path("/run/moonlightos/osk-active")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
 HOME_REQUEST = pathlib.Path("/run/moonlightos/home.request")
@@ -58,6 +59,14 @@ def key_for_event(event) -> int | None:
             ecodes.BTN_SOUTH: ecodes.KEY_ENTER,
             ecodes.BTN_EAST: ecodes.KEY_ESC,
             ecodes.BTN_WEST: ecodes.KEY_DELETE,
+            # BTN_NORTH is X on Xbox pads and Triangle on PlayStation pads; it opens
+            # the buffered keyboard (F12) for launcher text fields.
+            ecodes.BTN_NORTH: ecodes.KEY_F12,
+            # Launcher button shortcuts, configured per button in Settings.
+            ecodes.BTN_TL: ecodes.KEY_F5,
+            ecodes.BTN_TR: ecodes.KEY_F6,
+            ecodes.BTN_SELECT: ecodes.KEY_F7,
+            ecodes.BTN_START: ecodes.KEY_F8,
             ecodes.BTN_DPAD_UP: ecodes.KEY_UP,
             ecodes.BTN_DPAD_DOWN: ecodes.KEY_DOWN,
             ecodes.BTN_DPAD_LEFT: ecodes.KEY_LEFT,

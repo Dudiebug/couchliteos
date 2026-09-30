@@ -210,7 +210,10 @@ class ExporterTest(unittest.TestCase):
     def make_archive(self, directory: pathlib.Path, secret: str = "FAKESECRET-123") -> pathlib.Path:
         bundle = directory / "moonlightos-support"
         bundle.mkdir()
-        exporter.write_text(bundle / "status.txt", f"password={secret}\nBearer {secret}\n")
+        exporter.write_text(
+            bundle / "status.txt",
+            f"password={secret}\nBearer {secret}\nsdl-freerdp3 /u:alice /p:{secret}\n",
+        )
         archive = directory / "fixture.tar.gz"
         with tarfile.open(archive, "w:gz", dereference=False) as container:
             container.add(bundle, arcname="moonlightos-support")
@@ -261,6 +264,21 @@ class ExporterTest(unittest.TestCase):
         structured = exporter.redact_json({"AuthKey": fake, "Peer": {"DNSName": "host.ts.net"}})
         self.assertEqual(structured["AuthKey"], "[REDACTED]")
         self.assertEqual(structured["Peer"]["DNSName"], "host.ts.net")
+
+    def test_remote_desktop_passwords_are_redacted(self):
+        fake = "FAKE-RDP-PASSWORD-31337"
+        text = exporter.redact_text(
+            f"sdl-freerdp3 /v:host.example /u:alice /p:{fake} /cert:deny\n"
+            f"launch: '/gp:{fake}' /port:3389\n"
+            f"xfreerdp /gateway:g:gw.example,u:bob,p:{fake} /v:x\n"
+            f"xfreerdp /gateway:p:{fake},g:gw.example\n"
+            f'xfreerdp /p:"{fake} two words" -p:{fake} /gateway:u:x,p:"{fake} spaced"\n'
+            f'{{"request_id": "{"a" * 24}", "op": "set", "id": "rdp-a", "password": "{fake}"}}\n'
+            f"password = {fake}\n"
+        )
+        self.assertNotIn(fake, text)
+        for kept in ("/u:alice", "/cert:deny", "/port:3389", "/v:host.example", "g:gw.example"):
+            self.assertIn(kept, text)
 
     def test_fixture_archive_has_no_secret_leak_or_manifest(self):
         secret = "FAKESECRET-UNIQUE-999"

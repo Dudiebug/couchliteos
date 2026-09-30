@@ -14,6 +14,8 @@ from typing import Any
 
 
 PAYLOAD = pathlib.Path("/run/moonlightos/osk-payload.json")
+# Written by the launcher when the keyboard is opened for a password field.
+MASK_REQUEST = pathlib.Path("/run/moonlightos/osk-masked")
 MAX_TEXT = 512
 LETTERS = (
     tuple("1234567890"),
@@ -215,8 +217,18 @@ def draw(screen: curses.window, keyboard: Keyboard) -> None:
     screen.refresh()
 
 
+def consume_mask_request(path: pathlib.Path = MASK_REQUEST) -> bool:
+    try:
+        requested = path.is_file() and not path.is_symlink()
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return requested
+
+
 def ui(screen: curses.window) -> None:
     keyboard = Keyboard()
+    keyboard.masked = consume_mask_request()
     curses.curs_set(0)
     screen.keypad(True)
     while True:

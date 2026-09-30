@@ -2,8 +2,11 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-0.1.11-amd64.iso}
+ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
 SCREENSHOT=${MOONLIGHTOS_QEMU_SCREENSHOT:-/tmp/moonlightos-qemu-smoke.ppm}
+# Slow hosts (for example nested software emulation) may stretch every timeout.
+SCALE=${MOONLIGHTOS_QEMU_TIMEOUT_SCALE:-1}
+[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'MOONLIGHTOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
 command -v qemu-system-x86_64 >/dev/null || { echo 'qemu-system-x86_64 is required' >&2; exit 127; }
 [[ -f "$ISO" ]] || { echo "ISO not found: $ISO" >&2; exit 66; }
 
@@ -77,6 +80,7 @@ args=(
   -monitor "unix:$monitor_socket,server=on,wait=off"
   -netdev "user,id=net0" -device "e1000,netdev=net0"
   -fw_cfg "name=opt/moonlightos.smoke,string=apps"
+  -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE"
 )
 [[ -r /dev/kvm && -w /dev/kvm ]] && args=(-enable-kvm -cpu host "${args[@]}")
 
@@ -123,7 +127,7 @@ qemu-system-x86_64 "${args[@]}" > "$log" 2>&1 &
 pid=$!
 
 wait_for_marker() {
-  local marker=$1 timeout=$2
+  local marker=$1 timeout=$(($2 * SCALE))
   for _ in $(seq 1 "$timeout"); do
     grep -q "$marker" "$log" && return 0
     kill -0 "$pid" 2>/dev/null || return 1
@@ -152,7 +156,9 @@ wait_for_marker 'MOONLIGHTOS_SMOKE_BLUETOOTH_READY' 30 || fail 'Bluetooth contro
 # have remained alive for five seconds.
 wait_for_marker 'MOONLIGHTOS_SMOKE_APPS_READY' 180 || fail 'Applications did not remain running.'
 capture_screen
+wait_for_marker 'MOONLIGHTOS_SMOKE_RDP_CLIENT_STARTED' 120 || fail 'Remote Desktop session did not start sdl-freerdp3.'
+wait_for_marker 'MOONLIGHTOS_SMOKE_RDP_READY' 180 || fail 'Remote Desktop restart, cleanup, password, or persistence checks failed.'
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
-echo 'QEMU smoke test passed: no-backend live boot, launcher/setup readiness, configured apps, OSK, Bluetooth, USB/IP, Moonlight, Chiaki-ng, and Firefox started.'
+echo 'QEMU smoke test passed: no-backend live boot, launcher/setup readiness, configured apps, OSK, Bluetooth, USB/IP, Moonlight, Chiaki-ng, Firefox, Google Chrome, and Remote Desktop started.'

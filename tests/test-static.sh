@@ -12,7 +12,7 @@ command -v rg >/dev/null || {
 while IFS= read -r file; do
   bash -n "$file"
 done < <(rg -l -g '!build/work/**' -g '!build/out/**' '^#!/bin/bash' \
-  build host scripts tests usbip config/live-build/hooks)
+  build host scripts tests tools usbip config/live-build/hooks config/profiles)
 
 boot_test=$(mktemp -d)
 mkdir -p "$boot_test/binary/boot/grub" "$boot_test/binary/isolinux"
@@ -64,9 +64,12 @@ find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.1.11 ]]
+[[ "$(< VERSION)" == 0.1.12 ]]
 cmp -s VERSION overlay/etc/moonlightos-version
-rg -q 'moonlightos-0\.1\.11-amd64\.iso' Makefile build/build.sh .github/workflows/build.yml
+rg -q 'moonlightos-0\.1\.12-amd64\.iso' .github/workflows/build.yml
+rg -Fq 'ISO ?= build/out/moonlightos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso' Makefile
+rg -Fq 'ISO="$OUT/moonlightos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"' build/build.sh
+rg -q '^PROFILE \?= intel$' Makefile
 ! rg -qi 'sha-?256|sha256|\.sha256' .github/workflows/build.yml .github/workflows/release-v0.1.11.yml
 rg -q 'sudo chown -R .*build/out' .github/workflows/build.yml
 rg -q '^  actions: read$' .github/workflows/release-v0.1.11.yml
@@ -99,6 +102,70 @@ rg -q 'unsquashfs -quiet -offset' build/configure.sh
 removed_units='moonlightos-escape''-guard|moonlightos-stop''-active-app'
 ! rg -q "$removed_units" build/configure.sh
 rg -q '^firefox-esr$' config/live-build/package-lists/moonlightos.list.chroot
+# Build profiles: shared base plus hardware-specific packages, hooks, and files.
+for profile in intel imac2013; do
+  test -s "config/profiles/$profile/profile.conf"
+  (source "config/profiles/$profile/profile.conf"; [[ $PROFILE_NAME == "$profile" ]])
+done
+[[ -z $(source config/profiles/intel/profile.conf; printf '%s' "$ISO_SUFFIX") ]]
+[[ $(source config/profiles/imac2013/profile.conf; printf '%s' "$ISO_SUFFIX") == imac2013 ]]
+! rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
+rg -q '^intel-media-va-driver$' config/profiles/intel/package-lists/intel-graphics.list.chroot
+! rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools|i965-va-driver)$' config/profiles/imac2013
+for package in broadcom-sta-dkms linux-headers-amd64 dkms firmware-misc-nonfree lm-sensors; do
+  rg -q "^$package\$" config/profiles/imac2013/package-lists/imac2013.list.chroot
+done
+# Kepler must never get a proprietary NVIDIA driver (no GBM for Cage past the 470 branch).
+! rg -q '^[^#]*nvidia' config/live-build/package-lists config/profiles/*/package-lists
+! rg -q 'nomodeset' config overlay build
+for module in b43 bcma ssb brcmsmac; do
+  rg -q "^blacklist $module\$" config/profiles/imac2013/overlay/etc/modprobe.d/moonlightos-imac2013.conf
+done
+rg -q '^options hid_apple fnmode=2$' config/profiles/imac2013/overlay/etc/modprobe.d/moonlightos-imac2013.conf
+rg -q '^applesmc$' config/profiles/imac2013/overlay/etc/modules-load.d/moonlightos-imac2013.conf
+rg -q 'dkms install "broadcom-sta/' config/profiles/imac2013/hooks/0200-imac2013.hook.chroot
+rg -q "modinfo -k \"\\\$kernel\" -F vermagic wl" config/profiles/imac2013/hooks/0200-imac2013.hook.chroot
+rg -q 'rm -f /var/lib/dkms/mok.key' config/profiles/imac2013/hooks/0200-imac2013.hook.chroot
+rg -q 'decoder = software' config/profiles/imac2013/hooks/0200-imac2013.hook.chroot
+rg -q 'updates/dkms/wl' config/profiles/imac2013/profile.conf
+rg -q 'unsquashfs -l -d / binary/live/filesystem.squashfs' build/build.sh
+rg -q 'PROFILE_DIR/package-lists' build/configure.sh
+rg -q '/usr/share/moonlightos/profile.conf' build/configure.sh
+# Remote Desktop: FreeRDP 3 SDL3 client on Wayland, passwords only through stdin.
+rg -q '^freerdp3-sdl$' config/live-build/package-lists/moonlightos.list.chroot
+! rg -qi 'remmina|freerdp2|xfreerdp' config/live-build/package-lists config/profiles
+rg -q '"/from-stdin:force"' launcher/moonlightos_rdp.py
+rg -q 'cert:deny,fingerprint:sha256:' launcher/moonlightos_rdp.py
+rg -q '"SDL_VIDEO_DRIVER": "wayland"' launcher/moonlightos_rdp.py
+! rg -n '"/p:|/p:\{|--password' launcher/moonlightos_rdp.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py
+rg -q 'stdin=subprocess.PIPE' launcher/moonlightos_app_runner.py
+# The session unit runs with the appliance user's environment: nothing in it may run as root.
+! rg -q '^Exec[A-Za-z]*=[-@:!]*\+' services/moonlightos-rdp.service
+! rg -q '^ExecStartPre=' services/moonlightos-rdp.service
+rg -q '^SuccessExitStatus=130 143$' services/moonlightos-rdp.service
+rg -q '^ExecStartPost=\+/usr/bin/systemctl reset-failed moonlightos-rdp.service moonlightos-rdp.path$' services/moonlightos-rdp-cleanup.service
+rg -q '^ExecStartPost=\+/usr/bin/systemctl restart moonlightos-rdp.path$' services/moonlightos-rdp-cleanup.service
+! rg -q '^EnvironmentFile=' services/moonlightos-rdp-cleanup.service services/moonlightos-rdp-secret.service
+[[ $(head -1 scripts/moonlightos-rdp-secret) == '#!/usr/bin/python3 -I' ]]
+rg -q '^ExecStart=/usr/libexec/moonlightos-run-configured-app --rdp$' services/moonlightos-rdp.service
+rg -q '^Restart=on-failure$' services/moonlightos-rdp.service
+rg -q '^RestartPreventExitStatus=65 66$' services/moonlightos-rdp.service
+rg -q '^OnFailure=moonlightos-rdp-cleanup.service$' services/moonlightos-rdp.service
+rg -q '^User=moonlightos$' services/moonlightos-rdp.service
+rg -q '^PathExists=/run/moonlightos/rdp.request$' services/moonlightos-rdp.path
+rg -q '^PathExists=/run/moonlightos/rdp-secret.request$' services/moonlightos-rdp-secret.path
+rg -q '^ExecStart=/usr/libexec/moonlightos-rdp-secret request$' services/moonlightos-rdp-secret.service
+rg -q '^ProtectSystem=strict$' services/moonlightos-rdp-secret.service
+rg -q '^PrivateNetwork=yes$' services/moonlightos-rdp-secret.service
+rg -q '^NoNewPrivileges=yes$' services/moonlightos-rdp-secret.service
+rg -q 'systemctl enable moonlightos-rdp.path moonlightos-rdp-secret.path' config/live-build/hooks/live/0100-moonlightos.hook.chroot
+rg -q 'install -d -o root -g root -m 0700 /var/lib/moonlightos/rdp-secrets' config/live-build/hooks/live/0100-moonlightos.hook.chroot
+rg -q 'moonlightos_rdp.py' build/configure.sh
+rg -q 'moonlightos-rdp-secret' build/configure.sh
+rg -q 'InaccessiblePaths=.*-/var/lib/moonlightos/rdp-secrets' services/moonlightos-support-export.service
+rg -q 'FREERDP_SECRET_ARGUMENT' scripts/moonlightos-support-export
+rg -q 'BTN_NORTH: ecodes.KEY_F12' launcher/gamepad-nav.py
+rg -q '"REMOTE DESKTOP"' launcher/moonlightos-launcher.py
 rg -q '^google-chrome-stable$' config/live-build/package-lists/moonlightos.list.chroot
 ! rg -q '^chromium' config/live-build/package-lists/moonlightos.list.chroot
 rg -q 'https://dl.google.com/linux/chrome/deb/ stable main' config/live-build/archives/google-chrome.list.chroot
@@ -139,6 +206,9 @@ rg -q 'live-persistence-write' scripts/moonlightos-qemu-smoke tests/qemu-persist
 rg -q 'live-persistence-absent' scripts/moonlightos-qemu-smoke tests/qemu-persistence-smoke.sh
 rg -q 'ConditionPathExists=/sys/firmware/qemu_fw_cfg' services/moonlightos-qemu-smoke.service
 rg -q 'MOONLIGHTOS_SMOKE_APPS_READY' scripts/moonlightos-qemu-smoke tests/qemu-smoke.sh
+rg -q 'MOONLIGHTOS_SMOKE_RDP_READY' scripts/moonlightos-qemu-smoke tests/qemu-smoke.sh
+rg -q 'verify_rdp_state' scripts/moonlightos-qemu-smoke
+rg -q 'opt/moonlightos.timeout-scale' scripts/moonlightos-qemu-smoke tests/qemu-smoke.sh tests/qemu-persistence-smoke.sh tests/qemu-install-smoke.sh
 rg -q 'moonlightos-firefox.path' config/live-build/hooks/live/0100-moonlightos.hook.chroot
 rg -q 'moonlightos-support-export.path' config/live-build/hooks/live/0100-moonlightos.hook.chroot
 rg -q 'moonlightos-configured-app.path moonlightos-osk.path' config/live-build/hooks/live/0100-moonlightos.hook.chroot
@@ -175,7 +245,7 @@ rg -q 'moonlightos-run-configured-app' build/configure.sh
 rg -q 'moonlightos-osk-session' build/configure.sh
 rg -q 'usr/share/moonlightos/apps.d' build/configure.sh
 ! rg -q 'terminal_command|curses\.endwin' launcher/moonlightos-launcher.py
-! rg -q 'shell=True|\beval\b' launcher/moonlightos_apps.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py launcher/moonlightos_osk.py
+! rg -q 'shell=True|\beval\b' launcher/moonlightos_apps.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py launcher/moonlightos_osk.py launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret
 for forbidden in 'bluetooth''ctl' 'curses\.endwin' 'terminal_''command' 'SIG''INT' 'kill\(' 'shell=True'; do
   ! rg -n "$forbidden" launcher/moonlightos_bluetooth.py scripts/moonlightos-bluetoothd
 done
@@ -227,6 +297,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
+  launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd
 
@@ -294,6 +365,11 @@ for required in \
   services/moonlightos-configured-app.service \
   services/moonlightos-osk.path \
   services/moonlightos-osk.service \
+  services/moonlightos-rdp.path \
+  services/moonlightos-rdp.service \
+  services/moonlightos-rdp-cleanup.service \
+  services/moonlightos-rdp-secret.path \
+  services/moonlightos-rdp-secret.service \
   services/moonlightos-usbipd.service \
   services/moonlightos-network-ready.service \
   services/moonlightos-tailscale-enroll.service; do

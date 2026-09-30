@@ -22,3 +22,23 @@ alone; HDR requires an end-to-end physical test.
 
 MoonlightOS v0.1.2 is IPv4-only. IPv6 is disabled on the live kernel command line,
 in the installed GRUB configuration, in NetworkManager, and through sysctl.
+
+## Apple iMac Late 2013 (`imac2013` profile)
+
+| Component | Design |
+|---|---|
+| iMac14,2 (27-inch) / iMac14,3 (21.5-inch) | Separate ISO built with `PROFILE=imac2013` |
+| NVIDIA Kepler GT 750M / GT 755M / GTX 775M / GTX 780M | `nouveau` KMS with Mesa; never the proprietary driver (the 470 branch has no GBM for Cage) |
+| Video decode | Software H.264 in Moonlight; no HEVC/AV1 on Kepler, nouveau H.264 needs non-redistributable firmware |
+| Haswell quad-core i5/i7 | Debian kernel defaults |
+| 2560x1440 or 1920x1080 panel | Native (preferred) mode by default, marked in Settings → Display |
+| Broadcom BCM4360 Wi-Fi | `broadcom-sta-dkms` (`wl`) built for the image kernel; `b43`/`bcma`/`ssb`/`brcmsmac` blacklisted |
+| Broadcom BCM57766 Ethernet | `tg3` with `firmware-misc-nonfree` |
+| Cirrus Logic CS4208 audio | `snd-hda-intel` |
+| Broadcom Bluetooth | `btusb` |
+| Apple keyboard | `hid_apple fnmode=2` (F-keys first) |
+| SMC sensors | `applesmc`, shown in System Diagnostics |
+| Boot | Apple EFI: hold Option, choose **EFI Boot**; no Secure Boot |
+
+Details, the section 0 identification report, and limitations are in
+[IMAC-2013.md](IMAC-2013.md). No iMac hardware result is recorded yet.

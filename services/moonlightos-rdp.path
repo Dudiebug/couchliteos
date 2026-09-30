@@ -1,0 +1,9 @@
+[Unit]
+Description=Start a MoonlightOS Remote Desktop session when requested
+
+[Path]
+PathExists=/run/moonlightos/rdp.request
+Unit=moonlightos-rdp.service
+
+[Install]
+WantedBy=graphical.target

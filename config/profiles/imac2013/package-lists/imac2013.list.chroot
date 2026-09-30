@@ -1,0 +1,16 @@
+# Apple iMac Late 2013. Graphics use the base Mesa packages with the in-kernel
+# nouveau driver; no proprietary NVIDIA package is ever installed.
+
+# Broadcom BCM57766 Ethernet (tg3 firmware tigon/tg357766.bin) and other nonfree firmware
+firmware-misc-nonfree
+
+# Broadcom BCM4360 Wi-Fi: wl.ko is built by DKMS against the image kernel headers
+linux-headers-amd64
+dkms
+broadcom-sta-dkms
+
+# applesmc temperature and fan sensors for diagnostics
+lm-sensors
+
+# Machine identification for moonlightos-hardware-report (docs/IMAC-2013.md)
+dmidecode

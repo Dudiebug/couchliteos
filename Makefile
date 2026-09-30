@@ -1,21 +1,29 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-ISO := build/out/moonlightos-0.1.11-amd64.iso
+# Build profile: intel (Dell OptiPlex DCC36X3, default) or imac2013 (iMac Late 2013).
+PROFILE ?= intel
+export PROFILE
+VERSION := $(shell cat VERSION)
+ISO_SUFFIX := $(shell . config/profiles/$(PROFILE)/profile.conf 2>/dev/null && printf '%s' "$$ISO_SUFFIX")
+ISO ?= build/out/moonlightos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso
 
-.PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet clean
+.PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet release-assets clean
 
 help:
 	@printf '%s\n' \
 	  'make fetch-apps  Download pinned application images' \
 	  'make configure   Prepare the live-build work tree' \
-	  'sudo make build  Build the Debian 13 hybrid ISO' \
+	  'sudo make build  Build the Debian 13 hybrid ISO (PROFILE=intel|imac2013)' \
 	  'make test         Run source/static tests' \
 	  'make qemu-smoke   Boot the ISO and wait for the appliance marker' \
 	  'make qemu-persistence-smoke  Verify live persistence and recovery boot' \
 	  'make qemu-install-smoke  Install to a VM disk and boot it independently' \
 	  'make release-gauntlet  Run the final source and real-ISO release gate' \
-	  'sudo make clean   Remove generated build state'
+	  'make release-assets  Write SHA256SUMS for built ISOs and check asset sizes' \
+	  'sudo make clean   Remove generated build state' \
+	  '' \
+	  "Profile: $(PROFILE)  ISO: $(ISO)"
 
 fetch-apps:
 	./scripts/fetch-apps.sh
@@ -33,6 +41,7 @@ test:
 	python3 -m unittest -v tests/test_tailscale_enrollment.py
 	python3 -m unittest -v tests/test_bluetooth_service.py
 	python3 -m unittest -v tests/test_qemu_iso_boot.py
+	python3 -m unittest -v tests/test_rdp_secret.py
 	$(MAKE) -C launcher test
 
 
@@ -47,6 +56,9 @@ qemu-install-smoke:
 
 release-gauntlet:
 	./tools/release-gauntlet.sh "$(ISO)"
+
+release-assets:
+	./tools/release-assets.sh
 
 clean:
 	./build/clean.sh

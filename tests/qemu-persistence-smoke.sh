@@ -2,8 +2,11 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-0.1.11-amd64.iso}
+ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
 LOG=${MOONLIGHTOS_QEMU_PERSISTENCE_LOG:-/tmp/moonlightos-qemu-persistence.log}
+# Slow hosts (for example nested software emulation) may stretch every timeout.
+SCALE=${MOONLIGHTOS_QEMU_TIMEOUT_SCALE:-1}
+[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'MOONLIGHTOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
 
 for command in qemu-system-x86_64 xorriso mke2fs; do
   command -v "$command" >/dev/null || { echo "$command is required" >&2; exit 127; }
@@ -65,9 +68,10 @@ boot_and_wait() {
   qemu-system-x86_64 \
     "${common[@]}" \
     -fw_cfg "name=opt/moonlightos.smoke,string=$mode" \
+    -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE" \
     -serial stdio "$@" >> "$LOG" 2>&1 &
   pid=$!
-  for _ in $(seq 1 240); do
+  for _ in $(seq 1 $((240 * SCALE))); do
     if grep -q "$marker" "$LOG"; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true

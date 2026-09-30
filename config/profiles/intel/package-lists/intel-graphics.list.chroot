@@ -1,0 +1,4 @@
+# Intel UHD 770 firmware, VA-API media driver, and GPU diagnostics
+firmware-intel-graphics
+intel-media-va-driver
+intel-gpu-tools

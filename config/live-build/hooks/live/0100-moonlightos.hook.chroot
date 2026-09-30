@@ -14,7 +14,7 @@ fi
 
 install -d -o moonlightos -g moonlightos -m 0750 \
   /var/lib/moonlightos /var/lib/moonlightos/home /var/lib/moonlightos/apps.d \
-  /var/log/moonlightos
+  /var/lib/moonlightos/rdp /var/log/moonlightos
 
 cat > /var/lib/moonlightos/config.ini <<'EOF'
 [launcher]
@@ -30,6 +30,7 @@ refresh_mhz =
 resolution = 1920x1080
 fps = 60
 codec = auto
+decoder = auto
 fullscreen = true
 
 [chiaki-ng]
@@ -54,6 +55,8 @@ EOF
 
 chown -R moonlightos:moonlightos /var/lib/moonlightos /var/log/moonlightos
 chmod 0640 /var/lib/moonlightos/config.ini
+# Saved Remote Desktop passwords: root-only, created after the recursive chown.
+install -d -o root -g root -m 0700 /var/lib/moonlightos/rdp-secrets
 
 install -d -o root -g root -m 0700 /var/lib/tailscale
 cat > /etc/apt/sources.list.d/tailscale.list <<'EOF'
@@ -74,6 +77,7 @@ systemctl enable moonlightos-moonlight.path moonlightos-chiaki.path moonlightos-
 systemctl enable moonlightos-reboot.path moonlightos-poweroff.path
 systemctl enable moonlightos-support-export.path
 systemctl enable moonlightos-configured-app.path moonlightos-osk.path
+systemctl enable moonlightos-rdp.path moonlightos-rdp-secret.path
 systemctl enable moonlightos-audio.service moonlightos-launcher.service \
   moonlightos-gamepad-nav.service
 systemctl enable bluetooth.service moonlightos-bluetooth.service

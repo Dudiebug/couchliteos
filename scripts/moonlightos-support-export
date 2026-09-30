@@ -53,6 +53,15 @@ SECRET_CLI_ARGUMENT = re.compile(
     r"(?i)(--(?:password|passwd|passphrase|secret|private-key|auth-key|api-key|"
     r"access-token|refresh-token|cookie|credential)(?:=|\s+))\S+"
 )
+# FreeRDP-style secrets, for example /p:<password>, -p:"two words", or
+# /gateway:...,p:<password>. Quoted values are removed whole.
+FREERDP_SECRET_ARGUMENT = re.compile(
+    r"(?i)((?:^|[\s\"',])[/-](?:p|gp|pth|assistance|password)[:=])"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s\"',]+)"
+)
+FREERDP_GATEWAY_PASSWORD = re.compile(
+    r"(?i)((?:^|[\s\"',])[/-]gateway:(?:[^\s,]*,)*?p:)(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,]+)"
+)
 PEM_PRIVATE_KEY = re.compile(
     r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
     re.DOTALL | re.IGNORECASE,
@@ -70,6 +79,8 @@ def redact_text(text: str) -> str:
     )
     text = SECRET_JSON_ASSIGNMENT.sub(r'\1"[REDACTED]"', text)
     text = SECRET_CLI_ARGUMENT.sub(r"\1[REDACTED]", text)
+    text = FREERDP_GATEWAY_PASSWORD.sub(r"\1[REDACTED]", text)
+    text = FREERDP_SECRET_ARGUMENT.sub(r"\1[REDACTED]", text)
     text = SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", text)
     return CONTROL.sub("?", text)
 
@@ -324,8 +335,10 @@ def collect(bundle: pathlib.Path) -> None:
             "dpkg-query",
             "-W",
             "-f=${binary:Package}\t${Version}\n",
+            "broadcom-sta-dkms",
             "cage",
             "firefox-esr",
+            "freerdp3-sdl",
             "google-chrome-stable",
             "libavcodec61",
             "linux-image-amd64",
@@ -356,6 +369,12 @@ def collect(bundle: pathlib.Path) -> None:
         "software/applications-sanitized.txt",
         ["/usr/bin/python3", "/usr/libexec/moonlightos_apps.py"],
     )
+    add_command(
+        bundle,
+        "remote-desktop/connections-sanitized.txt",
+        ["/usr/bin/python3", "/usr/libexec/moonlightos_rdp.py"],
+    )
+    add_command(bundle, "remote-desktop/package-source.txt", ["apt-cache", "policy", "freerdp3-sdl"])
     add_command(bundle, "firefox/package-source.txt", ["apt-cache", "policy", "firefox-esr"])
     add_command(bundle, "chrome/package-source.txt", ["apt-cache", "policy", "google-chrome-stable"])
     add_file(bundle, "firefox/eme-widevine-status.txt", RUN / "firefox-drm-status")
@@ -421,7 +440,9 @@ def collect(bundle: pathlib.Path) -> None:
     write_text(
         bundle / "REDACTION.txt",
         "Sensitive values and enrollment URLs were replaced with [REDACTED]. "
-        "Application/browser profiles and private state directories are not collected.\n",
+        "Application/browser profiles and private state directories are not collected. "
+        "Saved Remote Desktop passwords and session password handoffs are never read; "
+        "Remote Desktop connections are listed without usernames, domains, or passwords.\n",
     )
 
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import time
 
@@ -106,7 +107,9 @@ def main() -> int:
     ):
         parser.error("HMP screenshot paths must not contain spaces")
 
-    with connect_monitor(args.monitor) as monitor:
+    # Slow hosts may stretch the pauses between keystrokes (default 1).
+    scale = int(os.environ.get("MOONLIGHTOS_QEMU_TIMEOUT_SCALE", "1"))
+    with connect_monitor(args.monitor, timeout=15.0 * scale) as monitor:
         for command, delay in install_commands(
             args.menu_screenshot,
             args.editor_screenshot,
@@ -114,7 +117,7 @@ def main() -> int:
             args.kernel_append,
         ):
             monitor.sendall(f"{command}\n".encode("ascii"))
-            time.sleep(delay)
+            time.sleep(delay * scale)
     return 0
 
 

@@ -4,6 +4,14 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORK="$ROOT/build/work"
 CHROOT="$WORK/config/includes.chroot"
+PROFILE=${PROFILE:-intel}
+PROFILE_DIR="$ROOT/config/profiles/$PROFILE"
+
+[[ $PROFILE =~ ^[a-z0-9][a-z0-9-]{0,31}$ && -f "$PROFILE_DIR/profile.conf" ]] || {
+  printf 'Unknown build profile: %s (available: %s)\n' "$PROFILE" \
+    "$(find "$ROOT/config/profiles" -mindepth 1 -maxdepth 1 -type d -printf '%f ' | sort)" >&2
+  exit 64
+}
 
 command -v unsquashfs >/dev/null || {
   echo 'squashfs-tools is required to extract pinned application payloads' >&2
@@ -16,6 +24,18 @@ fi
 mkdir -p "$WORK/config" "$CHROOT"
 cp -a "$ROOT/config/live-build/." "$WORK/config/"
 cp -a "$ROOT/overlay/." "$CHROOT/"
+# The build profile adds hardware-specific packages, hooks, and files.
+if [[ -d "$PROFILE_DIR/package-lists" ]]; then
+  cp -a "$PROFILE_DIR/package-lists/." "$WORK/config/package-lists/"
+fi
+if [[ -d "$PROFILE_DIR/hooks" ]]; then
+  cp -a "$PROFILE_DIR/hooks/." "$WORK/config/hooks/live/"
+fi
+if [[ -d "$PROFILE_DIR/overlay" ]]; then
+  cp -a "$PROFILE_DIR/overlay/." "$CHROOT/"
+fi
+install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/moonlightos/profile.conf"
+printf '%s\n' "$PROFILE" > "$WORK/profile"
 install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \
   "$WORK/config/archives/tailscale.key.chroot"
 install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \
@@ -28,6 +48,8 @@ install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
 install -D -m 0755 "$ROOT/launcher/moonlightos-launcher.py" "$CHROOT/usr/libexec/moonlightos-launcher"
 install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/moonlightos-gamepad-nav"
 install -D -m 0644 "$ROOT/launcher/moonlightos_apps.py" "$CHROOT/usr/libexec/moonlightos_apps.py"
+install -D -m 0644 "$ROOT/launcher/moonlightos_rdp.py" "$CHROOT/usr/libexec/moonlightos_rdp.py"
+install -D -m 0755 "$ROOT/scripts/moonlightos-rdp-secret" "$CHROOT/usr/libexec/moonlightos-rdp-secret"
 install -D -m 0755 "$ROOT/launcher/moonlightos_app_runner.py" "$CHROOT/usr/libexec/moonlightos-run-configured-app"
 install -D -m 0644 "$ROOT/launcher/moonlightos_setup.py" "$CHROOT/usr/libexec/moonlightos_setup.py"
 install -D -m 0755 "$ROOT/launcher/moonlightos_osk.py" "$CHROOT/usr/libexec/moonlightos-osk"
@@ -43,6 +65,7 @@ install -D -m 0755 "$ROOT/scripts/moonlightos-firefox-drm-check" "$CHROOT/usr/li
 install -D -m 0755 "$ROOT/scripts/moonlightos-qemu-smoke" "$CHROOT/usr/libexec/moonlightos-qemu-smoke"
 install -D -m 0755 "$ROOT/scripts/moonlightos-support-export" "$CHROOT/usr/libexec/moonlightos-support-export"
 install -D -m 0755 "$ROOT/scripts/moonlightos-diagnostics" "$CHROOT/usr/bin/moonlightos-diagnostics"
+install -D -m 0755 "$ROOT/scripts/moonlightos-hardware-report" "$CHROOT/usr/bin/moonlightos-hardware-report"
 install -D -m 0755 "$ROOT/scripts/moonlightos-network-ready" "$CHROOT/usr/libexec/moonlightos-network-ready"
 install -D -m 0755 "$ROOT/scripts/moonlightos-firewall" "$CHROOT/usr/libexec/moonlightos-firewall"
 install -D -m 0755 "$ROOT/scripts/moonlightos-audio" "$CHROOT/usr/libexec/moonlightos-audio"
@@ -66,8 +89,8 @@ install -D -m 0644 "$ROOT/docs/examples/steam.ini" \
 build_commit=$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)
 build_state=clean
 git -C "$ROOT" status --porcelain --untracked-files=normal 2>/dev/null | grep -q . && build_state=modified
-printf 'MoonlightOS: %s\nSource commit: %s\nSource state: %s\nBuild date: %s\n' \
-  "$(< "$ROOT/VERSION")" "$build_commit" "$build_state" "$(date --utc --iso-8601=seconds)" \
+printf 'MoonlightOS: %s\nBuild profile: %s\nSource commit: %s\nSource state: %s\nBuild date: %s\n' \
+  "$(< "$ROOT/VERSION")" "$PROFILE" "$build_commit" "$build_state" "$(date --utc --iso-8601=seconds)" \
   > "$CHROOT/usr/share/moonlightos/build-info"
 
 for unit in "$ROOT"/services/*; do
@@ -99,4 +122,4 @@ while IFS='|' read -r name _version _url filename; do
   trap - EXIT
 done < "$ROOT/build/applications.lock"
 
-printf 'Prepared %s\n' "$WORK"
+printf 'Prepared %s for build profile %s\n' "$WORK" "$PROFILE"

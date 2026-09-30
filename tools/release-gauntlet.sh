@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-0.1.11-amd64.iso}
+ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
 cd "$ROOT"
 
 for report in \

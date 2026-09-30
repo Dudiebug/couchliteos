@@ -17,16 +17,14 @@ kmod
 udev
 rfkill
 
-# Intel graphics, Vulkan, VA-API, and diagnostics
-firmware-intel-graphics
+# Mesa graphics, Vulkan, VA-API, and diagnostics. GPU-specific firmware and
+# drivers come from the build profile (config/profiles/<profile>/package-lists).
 mesa-vulkan-drivers
 libgl1-mesa-dri
 libegl-mesa0
 vulkan-tools
 libva2
 vainfo
-intel-media-va-driver
-intel-gpu-tools
 
 # Kiosk Wayland and applications
 cage
@@ -46,6 +44,8 @@ python3-gi
 libhidapi-hidraw0
 libopengl0
 qrencode
+# Remote Desktop: FreeRDP 3 SDL3 client (native Wayland, no Xwayland)
+freerdp3-sdl
 
 # Audio and input
 pipewire

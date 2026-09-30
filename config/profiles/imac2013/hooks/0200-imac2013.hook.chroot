@@ -1,0 +1,48 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# Apple iMac Late 2013 (iMac14,2 / iMac14,3) build checks and defaults.
+fail() { echo "imac2013 profile: $*" >&2; exit 1; }
+
+# Kepler must run on nouveau: the proprietary 470 branch has no GBM for Cage.
+if dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E '^(nvidia-|libnvidia-|xserver-xorg-video-nvidia|firmware-nvidia-gsp)'; then
+  fail 'proprietary NVIDIA packages must never be installed'
+fi
+
+# broadcom-sta-dkms normally builds wl.ko when its package or the headers are
+# configured. Build explicitly for every image kernel and prove the result.
+kernels=()
+for directory in /lib/modules/*; do
+  [[ -d "$directory/kernel" ]] && kernels+=("${directory##*/}")
+done
+((${#kernels[@]} > 0)) || fail 'no image kernel found'
+sta_version=$(dpkg-query -W -f='${Version}' broadcom-sta-dkms | sed 's/-[^-]*$//')
+for kernel in "${kernels[@]}"; do
+  [[ -d "/usr/src/linux-headers-$kernel" ]] || fail "linux headers do not match image kernel $kernel"
+  if ! find "/lib/modules/$kernel/updates/dkms" -name 'wl.ko*' 2>/dev/null | grep -q .; then
+    dkms install "broadcom-sta/$sta_version" -k "$kernel"
+  fi
+  module=$(find "/lib/modules/$kernel/updates/dkms" -name 'wl.ko*' -print -quit 2>/dev/null)
+  [[ -n "$module" ]] || fail "wl.ko was not built for $kernel"
+  depmod "$kernel"
+  modinfo -k "$kernel" -F vermagic wl | grep -q "^$kernel " || fail "wl.ko vermagic does not match $kernel"
+  printf 'imac2013 profile: %s built for %s\n' "$module" "$kernel"
+done
+# DKMS may generate a module-signing key while building; never ship a private
+# key in a public image. Installed systems generate their own on rebuild.
+rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
+
+for module in b43 bcma ssb brcmsmac; do
+  grep -Rqs "^blacklist $module\$" /etc/modprobe.d || fail "$module is not blacklisted"
+done
+grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/moonlightos-imac2013.conf || fail 'hid_apple fnmode is not set'
+grep -qsx 'applesmc' /etc/modules-load.d/moonlightos-imac2013.conf || fail 'applesmc is not loaded at boot'
+test -f /usr/lib/firmware/tigon/tg357766.bin || fail 'BCM57766 (tg3) firmware is missing'
+
+# Kepler has no HEVC decoder and nouveau's H.264 decoder needs firmware that
+# cannot be redistributed, so Moonlight defaults to software H.264 at 1080p60.
+sed -i \
+  -e '/^\[moonlight\]$/,/^\[/{s/^codec = .*/codec = H.264/;s/^decoder = .*/decoder = software/}' \
+  /var/lib/moonlightos/config.ini
+grep -qx 'codec = H.264' /var/lib/moonlightos/config.ini || fail 'Moonlight codec default was not set'
+grep -qx 'decoder = software' /var/lib/moonlightos/config.ini || fail 'Moonlight decoder default was not set'

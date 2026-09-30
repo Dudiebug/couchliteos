@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ISO=${1:-$ROOT/build/out/moonlightos-0.1.11-amd64.iso}
+ISO=${1:-$ROOT/build/out/moonlightos-$(< "$ROOT/VERSION")-amd64.iso}
 INSTALL_LOG=${MOONLIGHTOS_QEMU_INSTALL_LOG:-/tmp/moonlightos-qemu-install.log}
 BOOT_LOG=${MOONLIGHTOS_QEMU_INSTALLED_BOOT_LOG:-/tmp/moonlightos-qemu-installed-boot.log}
 MENU_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALL_MENU_SCREENSHOT:-/tmp/moonlightos-qemu-install-menu.ppm}
@@ -10,6 +10,10 @@ EDITOR_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALL_EDITOR_SCREENSHOT:-/tmp/moonlightos
 INSTALLER_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALLER_SCREENSHOT:-/tmp/moonlightos-qemu-installer.ppm}
 INSTALLED_SCREENSHOT=${MOONLIGHTOS_QEMU_INSTALLED_SCREENSHOT:-/tmp/moonlightos-qemu-installed-launcher.ppm}
 CONFIG_LOG=${MOONLIGHTOS_QEMU_INSTALL_CONFIG:-/tmp/moonlightos-qemu-install-config.log}
+# Slow hosts (for example nested software emulation) may stretch every timeout.
+SCALE=${MOONLIGHTOS_QEMU_TIMEOUT_SCALE:-1}
+[[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'MOONLIGHTOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
+export MOONLIGHTOS_QEMU_TIMEOUT_SCALE=$SCALE
 
 for command in qemu-system-x86_64 qemu-img python3; do
   command -v "$command" >/dev/null || { echo "$command is required" >&2; exit 127; }
@@ -77,7 +81,7 @@ printf '%q ' qemu-system-x86_64 "${common[@]}" \
 printf '\n' >> "$CONFIG_LOG"
 qemu-img info "$work/system.qcow2" >> "$CONFIG_LOG"
 
-timeout 25m qemu-system-x86_64 \
+timeout $((25 * SCALE))m qemu-system-x86_64 \
   "${common[@]}" \
   -boot order=d \
   -drive "file=$ISO,media=cdrom,readonly=on" \
@@ -123,9 +127,10 @@ boot_and_wait() {
     "${common[@]}" "${monitor[@]}" \
     -netdev user,id=net0 -device e1000,netdev=net0 \
     -fw_cfg "name=opt/moonlightos.smoke,string=$mode" \
+    -fw_cfg "name=opt/moonlightos.timeout-scale,string=$SCALE" \
     -serial stdio >> "$BOOT_LOG" 2>&1 &
   pid=$!
-  for _ in $(seq 1 240); do
+  for _ in $(seq 1 $((240 * SCALE))); do
     if grep -q "$marker" "$BOOT_LOG"; then
       if [[ $mode == persistence-write ]]; then
         python3 - "$ROOT" "$work/installed-monitor.sock" "$INSTALLED_SCREENSHOT" <<'PY'

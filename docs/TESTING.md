@@ -16,17 +16,53 @@ atomic copy, checked unmount ordering, failed-copy cleanup, Bluetooth protocol
 validation, BlueZ object parsing, pairing-agent callbacks, and Bluetooth UI
 recovery. They do not require a tailnet or Bluetooth adapter.
 The v0.1.11 cases also cover manifest isolation and atomic state, configured-app
-argv/environment construction, separate Foot wrapping, setup completion,
-buffered-keyboard navigation and payload validation, and the Guide+X chord.
+argv/environment construction, separate Foot wrapping, setup completion, and
+buffered-keyboard navigation and payload validation.
+
+The v0.1.12 cases cover the build-profile split and Remote Desktop:
+
+- profile layout, Intel-only packages confined to `intel`, no NVIDIA package in
+  any list, the `imac2013` DKMS/blacklist/`hid_apple`/`applesmc` checks
+- RDP connection storage: validation, 0640 atomic writes, invalid or
+  password-bearing sections isolated, unreadable stores never overwritten,
+  symlinks refused
+- FreeRDP argv: the password is never an argument, `/from-stdin:force`, the
+  pinned `/cert:deny,fingerprint:sha256:` value, resolution/fullscreen/audio/
+  clipboard options, Wayland-only client environment
+- certificate probe against a real local TLS listener, negotiation parsing,
+  trust on first use, and a blocked changed fingerprint
+- password handoff (0600, owner-checked, symlink-safe), the root helper's
+  save/delete/stage requests, and a root-owned 0600 secret store
+- session runner: password written to stdin only, crash restart keeps the
+  session, authentication failures are final and forget the password, close
+  requests, OnFailure cleanup
+- support-archive redaction of FreeRDP `/p:`, `/gp:`, gateway, and JSON
+  passwords
+- launcher button persistence (label, position, shortcut) across a fresh load,
+  controller shortcuts, and the spare face button opening the keyboard
+
+`make test` must run as root on a machine that already has a `moonlightos`
+account (for example the lab build VM), because the atomic writers assign that
+account. `python3 tools/mutants.py` also checks that the tests catch removing
+`/from-stdin:force`, accepting any certificate, allowing IPv6 literals,
+retrying authentication failures, keeping the password after a final failure,
+connecting despite a changed certificate, and dropping the FreeRDP redaction.
 
 ## QEMU ISO smoke test
 
 ```bash
 sudo apt install qemu-system-x86 ovmf
-make qemu-smoke
+make qemu-smoke                    # Intel ISO
+make qemu-smoke PROFILE=imac2013   # iMac ISO
 ```
 
-The script boots `build/out/moonlightos-0.1.11-amd64.iso` with serial
+Every QEMU target takes `PROFILE=` (or an explicit `ISO=`). Without KVM (for
+example inside a software-emulated build VM), set
+`MOONLIGHTOS_QEMU_TIMEOUT_SCALE=N` (1-99, default 1) to stretch every host-side
+wait, the installer keystroke pauses, and the in-guest waits by the same factor;
+the guest receives the factor through a QEMU fw_cfg entry.
+
+The script boots `build/out/moonlightos-0.1.12-amd64.iso` with serial
 output, a virtual Ethernet NIC, and UEFI when OVMF is available. Success means
 the boot reached the MoonlightOS launcher service marker. QEMU does not prove
 Intel VA-API, physical Bluetooth behavior, display audio, gamepad, USB/IP
@@ -49,7 +85,13 @@ the full-screen curses launcher. A QEMU-only firmware flag then starts the three
 production application services and requires `MOONLIGHTOS_APP_STARTED moonlight`,
 `MOONLIGHTOS_APP_STARTED chiaki-ng`, `MOONLIGHTOS_APP_STARTED firefox`, and a
 five-second `google-chrome-ready` marker from the generic application runner
-after each real application remains alive for five seconds. It also proves the
+after each real application remains alive for five seconds. It then starts a
+Remote Desktop session through the real path unit against a local TLS endpoint:
+`sdl-freerdp3` must start under Cage with `SDL_VIDEO_DRIVER=wayland`, the session
+must fail through the systemd restart policy into the OnFailure cleanup, and the
+test password must not appear in the journal or `/var/log/moonlightos`. It also
+saves a password through the root helper and checks its root-only 0600 file
+(`MOONLIGHTOS_SMOKE_RDP_READY`). It also proves the
 Bluetooth control service handles an absent adapter and survives restarts of
 BlueZ and its own service without changing the launcher or audio-session PID
 and restart counts.
@@ -82,7 +124,7 @@ graphical QEMU display, and complete Debian Installer manually:
 qemu-img create -f qcow2 build/out/moonlightos-install-test.qcow2 32G
 qemu-system-x86_64 -enable-kvm -m 4096 -cpu host \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
-  -cdrom build/out/moonlightos-0.1.11-amd64.iso \
+  -cdrom build/out/moonlightos-0.1.12-amd64.iso \
   -drive file=build/out/moonlightos-install-test.qcow2,if=virtio \
   -device virtio-vga -display gtk \
   -netdev user,id=net0 -device virtio-net-pci,netdev=net0
@@ -104,9 +146,61 @@ make qemu-persistence-smoke
 
 This test creates an ext4 backend with the documented `persistence.conf`, boots
 the release ISO twice, and verifies MoonlightOS, Moonlight, chiaki-ng,
-Tailscale, BlueZ, and log state across reboot. A third boot passes
+Tailscale, BlueZ, and log state across reboot. The first boot also saves a
+Remote Desktop connection, pins it as a launcher button with a label, position,
+and shortcut, and saves its password through the root helper; the second boot
+verifies all of it. A third boot passes
 `nopersistence` while the same backend remains attached and verifies that none
-of its test state is visible.
+of its test state is visible. The installed-disk test performs the same Remote
+Desktop check across its cold reboot.
+
+## Remote Desktop lab test (xrdp)
+
+The RDP path was also exercised end to end in the Debian 13 lab build VM: xrdp,
+a headless Cage compositor, and MoonlightOS's runner starting `sdl-freerdp3` as
+the `moonlightos` user with a generated test password. Results on 2026-09-30:
+
+- `probe_certificate` returned the same SHA-256 value as
+  `openssl x509 -in /etc/xrdp/cert.pem -outform der | sha256sum`.
+- With the correct pin, the client connected over TLS 1.3, stayed connected,
+  and the close request ended it with exit 0 (`exited: disconnected`) and no
+  runtime state left behind. xrdp logged the auto-logon request, the username,
+  and a supplied password.
+- With a different pin, the client stopped in under two seconds with exit 65
+  (`the TLS connection failed; the server certificate may have changed`) and no
+  sign-in reached xrdp.
+- The password never appeared in any `/proc/*/cmdline` while connected, or in
+  the client or compositor logs.
+- xrdp 0.10.1 then showed its own login dialog rather than starting the session
+  (see [Remote Desktop](REMOTE_DESKTOP.md#known-behavior)).
+
+## VM testing: Hyper-V and Proxmox VE
+
+VMs cannot emulate the iMac's NVIDIA Kepler GPU, Broadcom Wi-Fi, or audio, so
+they cover boot, launcher, Settings, persistence, and Remote Desktop only.
+
+Hyper-V (Generation 2; run as Administrator on the Windows host):
+
+```powershell
+.\tools\hyperv-create-test-vm.ps1 -IsoPath D:\iso\moonlightos-0.1.12-imac2013-amd64.iso -Start
+```
+
+The ISO ships Debian's Microsoft-signed shim, so Secure Boot stays on with the
+Microsoft UEFI Certificate Authority template; pass `-SecureBoot Off` to test
+without it. The script refuses to replace an existing VM or disk and connects
+COM1 to a named pipe for the serial console.
+
+Proxmox VE (on the Proxmox host, after uploading the ISO to an ISO storage):
+
+```bash
+./tools/proxmox-create-test-vm.sh --iso local:iso/moonlightos-0.1.12-imac2013-amd64.iso --start
+```
+
+In the VM: complete the setup wizard, check Settings → Display, add, edit, pin,
+and delete an RDP connection with the on-screen keyboard, connect to an RDP
+host reachable from the VM, close it with Home/Guide → X, then install to the
+virtual disk and confirm connections, buttons, and saved passwords survive a
+reboot.
 
 ## Deployment-mode checklist
 
@@ -156,7 +250,7 @@ Applications and acceleration:
 - [ ] Confirm Widevine protected playback in Google Chrome and record Disney+ behavior separately
 - [ ] Exit and Ctrl+D close Terminal and return to the launcher
 - [ ] Ctrl+C in Terminal, nmtui, diagnostics, and Tailscale does not interrupt the launcher
-- [ ] Guide/Home + X/Square opens the buffered keyboard over each supported application
+- [ ] X (Xbox) / Triangle (PlayStation) or F12 opens the buffered keyboard in launcher text fields
 - [ ] TYPE and TYPE + ENTER inject expected text after focus returns
 - [ ] Record `vainfo`, `vulkaninfo --summary`, `wpctl status`, and `aplay -l`
 
@@ -195,6 +289,25 @@ Bluetooth (record every unperformed item as untested):
 Installed systems retain BlueZ state under `/var/lib/bluetooth`. Live USB
 persistence must include that directory for pairings to survive reboot. Never
 copy its contents into a support archive because it contains link keys.
+
+## iMac Late 2013 hardware checklist
+
+Build with `sudo make build PROFILE=imac2013` and record every result on the
+iMac itself; nothing here may be inferred from a VM. Save the output of
+`sudo moonlightos-hardware-report` in [IMAC-2013.md](IMAC-2013.md#recorded-report).
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Section 0 identification matches the expected model (`iMac14,2` or `iMac14,3`) and serial `DCPM5026FQPG` | untested |
+| 2 | Boots via Option → EFI Boot | untested |
+| 3 | Launcher runs at the panel's native resolution (Settings → Display shows `(NATIVE)` as current) | untested |
+| 4 | `lsmod` shows `nouveau` and no `nvidia` module | untested |
+| 5 | Ethernet connects (`tg3`), and Wi-Fi connects using `wl` | untested |
+| 6 | Audio output works (Settings → Audio, AUDIO TEST) | untested |
+| 7 | A Bluetooth controller pairs | untested |
+| 8 | Moonlight streams 1080p60 with software H.264; record the stats overlay (Ctrl+Alt+Shift+S): decoder, codec, FPS, frame drops, network/decode/render latency | untested |
+| 9 | RDP connects to a Windows host and to an xrdp host, and Home/Guide → X disconnects each | untested |
+| 10 | Saved RDP connections and launcher buttons (label, position, shortcut) survive a reboot | untested |
 
 ## Opt-in live Tailscale checklist
 
