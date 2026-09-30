@@ -165,16 +165,85 @@ class InstalledVersionTest(unittest.TestCase):
         self.assertIn(repo_version, update.VERSION_FILES)
 
 
+ROUTE4_HEADER = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+ZERO6 = "0" * 32
+
+
+def route4(*rows):
+    return ROUTE4_HEADER + "".join(
+        f"{iface}\t{dest}\t{gateway}\t{flags}\t0\t0\t100\t{mask}\t0\t0\t0\n"
+        for iface, dest, gateway, flags, mask in rows
+    )
+
+
+def route6(*rows):
+    return "".join(
+        f"{dest} {plen} {ZERO6} 00 {gateway} 00000400 00000001 00000000 {flags} {iface}\n"
+        for dest, plen, gateway, flags, iface in rows
+    )
+
+
+class RouteTest(unittest.TestCase):
+    """The update check may only run when this machine has a way out."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.v4 = pathlib.Path(self._tmp.name) / "route"
+        self.v6 = pathlib.Path(self._tmp.name) / "ipv6_route"
+
+    def has_route(self, v4=None, v6=None):
+        if v4 is not None:
+            self.v4.write_text(v4)
+        if v6 is not None:
+            self.v6.write_text(v6)
+        return update.has_default_route(self.v4, self.v6)
+
+    def test_ipv4_default_route_counts(self):
+        self.assertTrue(self.has_route(route4(("eth0", "00000000", "0202000A", "0003", "00000000"))))
+
+    def test_only_subnet_and_link_local_routes_is_offline(self):
+        self.assertFalse(self.has_route(route4(
+            ("eth0", "0002000A", "00000000", "0001", "00FFFFFF"),
+            ("eth0", "0000FEA9", "00000000", "0001", "0000FFFF"),
+        )))
+
+    def test_default_route_that_is_not_up_is_ignored(self):
+        self.assertFalse(self.has_route(route4(("eth0", "00000000", "0202000A", "0002", "00000000"))))
+
+    def test_blackhole_default_route_is_ignored(self):
+        self.assertFalse(self.has_route(route4(("eth0", "00000000", "00000000", "0201", "00000000"))))
+
+    def test_ipv6_only_default_route_counts(self):
+        self.assertTrue(self.has_route(
+            route4(), route6((ZERO6, "00", "fe80000000000000021122fffe334455", "00000003", "wlan0"))
+        ))
+
+    def test_ipv6_unreachable_default_on_loopback_is_ignored(self):
+        self.assertFalse(self.has_route(route4(), route6((ZERO6, "00", ZERO6, "00200200", "lo"))))
+
+    def test_ipv6_non_default_routes_are_ignored(self):
+        self.assertFalse(self.has_route(route4(), route6(
+            ("fe800000000000000000000000000000", "40", ZERO6, "00000001", "wlan0"),
+        )))
+
+    def test_missing_or_garbage_files_mean_offline(self):
+        self.assertFalse(update.has_default_route(self.v4, self.v6))
+        self.assertFalse(self.has_route("garbage\nmore garbage\n", "x y z\n"))
+
+
 class CheckerTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.path = pathlib.Path(self._tmp.name) / "update-check.ini"
         self.now = NOW
+        self.online = True
 
     def checker(self, fetch):
         return update.Checker(
             current="0.1.13", state_path=self.path, fetch=fetch, clock=lambda: self.now,
+            online=lambda: self.online,
         )
 
     def test_check_records_the_result_and_shows_a_notice(self):
@@ -201,6 +270,31 @@ class CheckerTest(unittest.TestCase):
         checker = self.checker(mock.Mock(side_effect=update.UpdateError("offline")))
         checker.check_if_due()  # must not raise
         self.assertIn("0.1.14", checker.notice())
+
+    def test_no_network_route_means_no_request_and_the_check_stays_due(self):
+        fetch = mock.Mock(return_value="0.1.14")
+        self.online = False
+        checker = self.checker(fetch)
+        checker.check_if_due()
+        fetch.assert_not_called()
+        self.assertEqual(checker.notice(), "")
+        self.assertFalse(self.path.exists(), "an offline boot must not write or consume the daily check")
+        self.now += 30  # the network comes up shortly afterwards
+        self.online = True
+        checker.check_if_due()
+        fetch.assert_called_once_with("0.1.13")
+        self.assertIn("0.1.14", checker.notice())
+
+    def test_offline_keeps_a_notice_that_was_found_earlier(self):
+        self.checker(mock.Mock(return_value="0.1.14")).check_if_due()
+        self.now += 2 * DAY
+        self.online = False
+        checker = self.checker(mock.Mock())
+        checker.check_if_due()
+        self.assertIn("0.1.14", checker.notice())
+
+    def test_the_default_gate_reads_the_routing_tables(self):
+        self.assertIs(update.Checker(current="1.0.0", state_path=self.path).online, update.has_default_route)
 
     def test_unexpected_errors_do_not_escape_the_background_thread(self):
         checker = self.checker(mock.Mock(side_effect=RuntimeError("boom")))
@@ -229,7 +323,7 @@ class CheckerTest(unittest.TestCase):
     def test_unwritable_state_does_not_break_the_checker(self):
         checker = update.Checker(
             current="0.1.13", state_path=pathlib.Path("/proc/nonexistent/x.ini"),
-            fetch=mock.Mock(return_value="0.1.14"), clock=lambda: NOW,
+            fetch=mock.Mock(return_value="0.1.14"), clock=lambda: NOW, online=lambda: True,
         )
         checker.check_if_due()
         self.assertIn("0.1.14", checker.notice())
@@ -276,6 +370,20 @@ class LauncherUpdateTest(unittest.TestCase):
             self.assertEqual(settings.menu_label("DISPLAY"), "DISPLAY")
             settings.toggle_updates()
             self.assertTrue(launcher.updates.enabled)
+
+    def test_turning_it_on_without_a_network_says_it_waits(self):
+        launcher = self.launcher(update.State(enabled=False))
+        settings = self.module.Settings(launcher.screen, launcher)
+        with tempfile.TemporaryDirectory() as directory:
+            launcher.updates.state_path = pathlib.Path(directory) / "update-check.ini"
+            launcher.updates.online = lambda: False
+            settings.toggle_updates()
+            self.assertIn("WAITS", settings.status)
+            self.assertIn("ONLINE", settings.status)
+            launcher.updates.set_enabled(False)
+            launcher.updates.online = lambda: True
+            settings.toggle_updates()
+            self.assertNotIn("WAITS", settings.status)
 
 
 if __name__ == "__main__":

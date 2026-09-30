@@ -23,6 +23,10 @@ from collections.abc import Callable, Iterable
 API_URL = "https://api.github.com/repos/Dudiebug/moonlightos/releases/latest"
 RELEASES_TEXT = "github.com/Dudiebug/moonlightos/releases"
 STATE = pathlib.Path("/var/lib/moonlightos/update-check.ini")
+ROUTE4 = pathlib.Path("/proc/net/route")
+ROUTE6 = pathlib.Path("/proc/net/ipv6_route")
+RTF_UP = 0x1
+RTF_REJECT = 0x200
 # /etc/moonlightos-version is installed from the overlay; the source tree's
 # VERSION file covers running the launcher from a checkout.
 VERSION_FILES = (
@@ -135,6 +139,38 @@ def save_state(state: State, path: pathlib.Path = STATE) -> None:
             pass
 
 
+def has_default_route(route4: pathlib.Path = ROUTE4, route6: pathlib.Path = ROUTE6) -> bool:
+    """True when this machine has a usable default route (IPv4 or IPv6).
+
+    The update check is skipped entirely without one, so a PC that is offline,
+    or only on a link-local network, never even tries. The stick moves between
+    machines, so this is read at run time on every attempt.
+    """
+    try:
+        for line in route4.read_text(encoding="ascii", errors="replace").splitlines()[1:]:
+            # Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+            fields = line.split()
+            if (
+                len(fields) >= 8 and fields[0] != "lo" and int(fields[1], 16) == 0 and int(fields[7], 16) == 0
+                and int(fields[3], 16) & RTF_UP and not int(fields[3], 16) & RTF_REJECT
+            ):
+                return True
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in route6.read_text(encoding="ascii", errors="replace").splitlines():
+            # dest plen src slen next_hop metric refcnt use flags iface
+            fields = line.split()
+            if (
+                len(fields) >= 10 and fields[-1] != "lo" and int(fields[0], 16) == 0 and int(fields[1], 16) == 0
+                and int(fields[8], 16) & RTF_UP and not int(fields[8], 16) & RTF_REJECT
+            ):
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
 def due(state: State, now: float) -> bool:
     if not state.enabled:
         return False
@@ -179,11 +215,13 @@ class Checker:
         state_path: pathlib.Path = STATE,
         fetch: Callable[[str], str] = fetch_latest,
         clock: Callable[[], float] = time.time,
+        online: Callable[[], bool] = has_default_route,
     ) -> None:
         self.current = installed_version() if current is None else current
         self.state_path = state_path
         self.fetch = fetch
         self.clock = clock
+        self.online = online
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._wake = threading.Event()
@@ -218,6 +256,10 @@ class Checker:
         with self._lock:
             if not due(self._state, now):
                 return
+        # Runs before anything is recorded: a boot without a network must not use
+        # up the day's check, so the next poll after the network comes up retries.
+        if not self.online():
+            return
         try:
             latest = self.fetch(self.current)
         except Exception:  # never let a network or parsing problem reach the launcher

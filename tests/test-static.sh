@@ -502,6 +502,9 @@ MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
 rg -q 'moonlightos_controllers.py' build/configure.sh
 rg -q '^import moonlightos_controllers as controllers' launcher/moonlightos-launcher.py
 rg -q '/sys/class/power_supply' launcher/moonlightos_controllers.py
+# Hardware gating: no bluetoothctl polling without an adapter; nothing shown without a reading.
+rg -q '/sys/class/bluetooth' launcher/moonlightos_controllers.py
+rg -q 'if not bluetooth_present' launcher/moonlightos_controllers.py
 
 # Easier everyday use: sound follows the TV (declarative WirePlumber 0.5 rule)
 rg -q 'cp -a "\$ROOT/overlay/\."' build/configure.sh
@@ -517,6 +520,12 @@ for needle in ('"~.*hdmi.*"', '"~.*HDMI.*"', '"~.*DisplayPort.*"', 'media.class 
 priority = int(re.search(r'priority\.session\s*=\s*(\d+)', body).group(1))
 # WirePlumber 0.5 scores ALSA analog sinks 1009 and Bluetooth sinks 1010.
 assert priority > 1010, priority
+# Hardware gating: the rule only re-ranks sinks that already exist, and sets nothing
+# that could activate a profile or route. WirePlumber itself skips profiles and
+# routes whose availability is "no", so an unplugged HDMI/DP port stays unused.
+props = re.findall(r'^\s*([A-Za-z][\w.-]*)\s*=', body, re.M)
+assert [p for p in props if p.startswith(('priority', 'device', 'api.', 'session', 'node.pause', 'node.always'))] == ['priority.session'], props
+assert body.count('media.class = "Audio/Sink"') == body.count('node.name =') + body.count('node.description ='), 'every match must be limited to sinks'
 PY
 
 # Easier everyday use: update-available notice
@@ -526,5 +535,8 @@ rg -q '"CHECK FOR UPDATES"' launcher/moonlightos-launcher.py
 rg -q 'https://api.github.com/repos/Dudiebug/moonlightos/releases/latest' launcher/moonlightos_update.py
 rg -q '/etc/moonlightos-version' launcher/moonlightos_update.py
 refute rg -n 'Authorization|Cookie|machine-id' launcher/moonlightos_update.py
+# Hardware gating: the check is skipped without a default route, before anything is recorded.
+rg -q '/proc/net/route' launcher/moonlightos_update.py
+rg -q 'if not self.online\(\)' launcher/moonlightos_update.py
 
 printf 'Static tests passed.\n'

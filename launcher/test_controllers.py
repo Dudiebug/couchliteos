@@ -68,6 +68,18 @@ class SysfsTest(unittest.TestCase):
         supply(self.root, "c", type="Battery", scope="Device")  # no capacity at all
         self.assertEqual(self.read(), [])
 
+    def test_zero_percent_that_the_driver_calls_unknown_is_not_a_reading(self):
+        # Some drivers publish capacity 0 before the first battery report arrives.
+        gamepad(self.root, "a", "Xbox Wireless Controller", 0, capacity_level="Unknown")
+        gamepad(self.root, "b", "DualSense Wireless Controller", 0, status="Unknown")
+        self.assertEqual(self.read(), [])
+
+    def test_a_genuinely_empty_battery_is_still_reported(self):
+        gamepad(self.root, "a", "Xbox Wireless Controller", 0, capacity_level="Critical", status="Discharging")
+        [item] = self.read()
+        self.assertEqual(item.percent, 0)
+        self.assertTrue(item.low)
+
     def test_keyboards_mice_and_headsets_are_not_controllers(self):
         gamepad(self.root, "hid-aa:bb:cc:dd:ee:01-battery", "Logitech Wireless Keyboard", 50)
         gamepad(self.root, "hid-aa:bb:cc:dd:ee:02-battery", "MX Master Mouse", 50)
@@ -162,6 +174,12 @@ class FormatTest(unittest.TestCase):
             "CONTROLLERS: XBOX HIGH  PS 9% CHARGING",
         )
 
+    def test_level_only_controller_shows_the_word_never_a_percentage(self):
+        for level in ("LOW", "CRITICAL", "NORMAL"):
+            line = controllers.format_line([controllers.Battery("XBOX", None, level)])
+            self.assertEqual(line, f"CONTROLLERS: XBOX {level}")
+            self.assertNotIn("%", line)
+
     def test_no_controllers_means_no_line(self):
         self.assertEqual(controllers.format_line([]), "")
 
@@ -180,11 +198,29 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual([item.name for item in monitor.low()], ["A"])
 
     def test_read_all_combines_sysfs_then_bluez_with_dedupe(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as bluetooth:
+            (pathlib.Path(bluetooth) / "hci0").mkdir()
             gamepad(directory, "hid-e8:47:3a:12:34:56-battery", "8BitDo Pro 2", 70)
             run = BluezTest.fake_run("Device E8:47:3A:12:34:56 8BitDo Pro 2\n", {"E8:47:3A:12:34:56": INFO})
-            items = controllers.read_all(root=pathlib.Path(directory), run=run)
+            items = controllers.read_all(root=pathlib.Path(directory), run=run, bluetooth_root=pathlib.Path(bluetooth))
         self.assertEqual([(item.percent, item.source) for item in items], [(70, "sysfs")])
+
+    def test_bluetoothctl_is_not_run_on_a_pc_without_a_bluetooth_adapter(self):
+        run = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as bluetooth:
+            self.assertFalse(controllers.bluetooth_present(pathlib.Path(bluetooth)))
+            self.assertEqual(controllers.read_all(pathlib.Path(directory), run, pathlib.Path(bluetooth)), [])
+        run.assert_not_called()
+        self.assertFalse(controllers.bluetooth_present(pathlib.Path("/nonexistent/bluetooth")))
+
+    def test_an_adapter_turns_the_bluez_lookup_on(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as bluetooth:
+            (pathlib.Path(bluetooth) / "hci0").mkdir()
+            (pathlib.Path(bluetooth) / "hci0:11").mkdir()  # a connection handle, not an adapter
+            self.assertTrue(controllers.bluetooth_present(pathlib.Path(bluetooth)))
+            run = BluezTest.fake_run("Device E8:47:3A:12:34:56 8BitDo Pro 2\n", {"E8:47:3A:12:34:56": INFO})
+            items = controllers.read_all(pathlib.Path(directory), run, pathlib.Path(bluetooth))
+        self.assertEqual([item.percent for item in items], [80])
 
 
 class LauncherFooterTest(unittest.TestCase):

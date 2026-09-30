@@ -687,7 +687,12 @@ class Settings:
     def toggle_updates(self) -> None:
         enabled = not self.launcher.updates.enabled
         self.launcher.updates.set_enabled(enabled)
-        self.status = "UPDATE CHECK ON: LOOKS FOR A NEWER RELEASE ONCE A DAY" if enabled else "UPDATE CHECK OFF: NOTHING IS SENT"
+        if not enabled:
+            self.status = "UPDATE CHECK OFF: NOTHING IS SENT"
+        elif not self.launcher.updates.online():
+            self.status = "UPDATE CHECK ON: WAITS UNTIL THIS PC IS ONLINE"
+        else:
+            self.status = "UPDATE CHECK ON: LOOKS FOR A NEWER RELEASE ONCE A DAY"
 
     def choose(self, title: str, choices: list[tuple[str, object]], current: object) -> object | None:
         if not choices:

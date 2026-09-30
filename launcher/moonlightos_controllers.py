@@ -18,6 +18,7 @@ import threading
 from collections.abc import Callable
 
 POWER_SUPPLY = pathlib.Path("/sys/class/power_supply")
+BLUETOOTH_ADAPTERS = pathlib.Path("/sys/class/bluetooth")
 LOW_PERCENT = 15
 REFRESH_SECONDS = 30.0
 BLUETOOTHCTL_TIMEOUT = 3
@@ -98,12 +99,15 @@ def read_sysfs(root: pathlib.Path = POWER_SUPPLY) -> list[Battery]:
         capacity = _read(entry / "capacity")
         percent = int(capacity) if capacity.isdigit() and int(capacity) <= 100 else None
         level = _read(entry / "capacity_level").upper()
+        status = _read(entry / "status").lower()
+        if percent == 0 and (level == "UNKNOWN" or status == "unknown"):
+            continue  # drivers publish 0 before the first real report arrives
         level = level if level in LEVEL_WORDS and percent is None else ""
         if percent is None and not level:
             continue
         found.append(Battery(
             short_name(model, entry.name), percent, level,
-            _read(entry / "status").lower() == "charging", "sysfs", entry.name.lower(),
+            status == "charging", "sysfs", entry.name.lower(),
         ))
     return _numbered(found)
 
@@ -166,11 +170,22 @@ def read_bluez(
     return found
 
 
+def bluetooth_present(root: pathlib.Path = BLUETOOTH_ADAPTERS) -> bool:
+    """True when this PC has a Bluetooth adapter (hci0, hci1, ...; not connection handles)."""
+    try:
+        return any(re.fullmatch(r"hci\d+", entry.name) for entry in root.iterdir())
+    except OSError:
+        return False
+
+
 def read_all(
     root: pathlib.Path = POWER_SUPPLY,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    bluetooth_root: pathlib.Path = BLUETOOTH_ADAPTERS,
 ) -> list[Battery]:
     items = read_sysfs(root)
+    if not bluetooth_present(bluetooth_root):
+        return items  # no adapter on this PC: do not start bluetoothctl every 30 seconds
     return _numbered(items + read_bluez(run, {item.ident for item in items}))
 
 
@@ -181,8 +196,8 @@ def format_line(items: list[Battery] | tuple[Battery, ...]) -> str:
         text = f"{item.name} {item.percent}%" if item.percent is not None else f"{item.name} {item.level}"
         if item.charging:
             text += " CHARGING"
-        elif item.low:
-            text += " LOW"
+        elif item.low and item.percent is not None:
+            text += " LOW"  # a level word (LOW, CRITICAL) already says it
         parts.append(text)
     return "CONTROLLERS: " + "  ".join(parts) if parts else ""
 
