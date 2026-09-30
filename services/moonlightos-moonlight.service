@@ -4,6 +4,7 @@ After=moonlightos-launcher.service
 ConditionFileIsExecutable=/opt/moonlightos/apps/moonlight/usr/bin/moonlight
 StartLimitIntervalSec=60
 StartLimitBurst=3
+OnFailure=moonlightos-path-rearm@moonlight.service
 
 [Service]
 Type=simple
@@ -21,6 +22,9 @@ Environment=QT_QPA_PLATFORM=xcb
 EnvironmentFile=-/run/moonlightos/session.env
 ExecStart=/usr/libexec/moonlightos-run-app moonlight
 Restart=on-failure
+# Restart directly: with the default mode OnFailure= fires on every retried
+# crash, which would reset the start limit and retry forever.
+RestartMode=direct
 RestartSec=2
 StandardOutput=journal+console
 StandardError=journal+console
