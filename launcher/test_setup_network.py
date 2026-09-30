@@ -5,6 +5,7 @@ fakes so the network tests do not depend on the other wizard test classes.
 """
 
 import pathlib
+import re
 import types
 import unittest
 from unittest import mock
@@ -268,6 +269,51 @@ class ActivateKeepsTheWorkingProfileTest(unittest.TestCase):
         nm = FakeNetworkManager(states=(2,))
         activate(nm, password="correct horse battery")
         self.assertEqual(nm.added["802-11-wireless-security"]["psk"], "correct horse battery")
+
+
+# --- finding 10: the polkit rule ----------------------------------------------
+
+RULE = pathlib.Path(__file__).resolve().parent.parent / "overlay/etc/polkit-1/rules.d/50-moonlightos-network.rules"
+
+
+class PolkitRuleTest(unittest.TestCase):
+    """The wizard joins Wi-Fi as the unprivileged launcher user, which NetworkManager
+    only allows through polkit. Its Wi-Fi join uses exactly these actions:
+    wifi.scan (nmcli rescan), settings.modify.system (add and delete profiles) and
+    network-control (activate the new profile). Nothing else may be granted."""
+
+    WANTED = {
+        "org.freedesktop.NetworkManager.network-control",
+        "org.freedesktop.NetworkManager.settings.modify.system",
+        "org.freedesktop.NetworkManager.wifi.scan",
+    }
+
+    def code(self):
+        lines = RULE.read_text(encoding="utf-8").splitlines()
+        return "\n".join(line for line in lines if not line.lstrip().startswith("//"))
+
+    def test_only_the_actions_the_wifi_join_uses_are_named(self):
+        named = set(re.findall(r'"(org\.freedesktop\.NetworkManager\.[A-Za-z0-9.-]+)"', self.code()))
+        self.assertEqual(named, self.WANTED)
+
+    def test_no_prefix_match_grants_every_networkmanager_action(self):
+        code = self.code()
+        self.assertNotRegex(code, r'indexOf\(\s*"org\.')
+        self.assertNotIn("global-dns", code)
+        self.assertNotIn("wifi.share", code)
+        self.assertNotIn("enable-disable", code)
+
+    def test_only_the_launcher_user_inside_the_launcher_service_is_granted(self):
+        code = self.code()
+        self.assertIn('subject.user == "moonlightos"', code)
+        # The launcher runs as a plain systemd service: it has no logind session, so
+        # polkit reports subject.local and subject.active as false for it and a rule
+        # that required them would refuse the wizard. The service's cgroup is what
+        # tells it apart from the browser and other apps running as the same user.
+        self.assertIn("/moonlightos-launcher.service", code)
+        self.assertIn("/proc/", code)
+        self.assertEqual(code.count("polkit.Result."), 1)
+        self.assertIn("polkit.Result.YES", code)
 
 
 if __name__ == "__main__":

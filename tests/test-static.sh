@@ -504,13 +504,17 @@ for module in $(rg -o --no-filename '^import (moonlightos_[a-z_]+)' -r '$1' laun
 done
 # Its Wi-Fi join talks to NetworkManager over D-Bus as the unprivileged launcher user, which
 # NetworkManager only allows through polkit: the image needs polkitd and a rule that grants only
-# NetworkManager actions, only to that user.
+# three NetworkManager actions, only to that user inside the launcher service.
 rg -q '^polkitd$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^python3-dbus$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^python3-evdev$' config/live-build/package-lists/moonlightos.list.chroot
 polkit_rule=overlay/etc/polkit-1/rules.d/50-moonlightos-network.rules
 rg -q 'subject\.user == "moonlightos"' "$polkit_rule"
-rg -q 'action\.id\.indexOf\("org\.freedesktop\.NetworkManager\."\) == 0' "$polkit_rule"
+rg -q 'moonlightos-launcher\.service' "$polkit_rule"
+# Only the three actions the Wi-Fi join uses, never a prefix match over every NetworkManager action.
+[[ $(rg -o 'org\.freedesktop\.NetworkManager\.[A-Za-z.-]+' "$polkit_rule" | sort | tr '\n' ' ') == \
+  'org.freedesktop.NetworkManager.network-control org.freedesktop.NetworkManager.settings.modify.system org.freedesktop.NetworkManager.wifi.scan ' ]]
+refute rg -q 'indexOf\("org\.' "$polkit_rule"
 [[ $(rg -c 'polkit\.Result' "$polkit_rule") == 1 ]]
 refute rg -q 'polkit\.Result\.(AUTH_ADMIN|NOT_HANDLED)' "$polkit_rule"
 # The wizard never puts a Wi-Fi password on a command line.
