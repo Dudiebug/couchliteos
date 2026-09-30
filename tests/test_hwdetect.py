@@ -1,3 +1,5 @@
+import importlib.machinery
+import importlib.util
 import json
 import os
 import pathlib
@@ -21,6 +23,7 @@ NVIDIA_MODULES = {
     for part in ("", "-drm", "-modeset", "-uvm", "-peermem")
 }
 BROADCOM_OPEN_MODULES = {"b43", "b43legacy", "b44", "bcma", "brcm80211", "brcmsmac", "ssb"}
+SECURE_BOOT_VARIABLE = "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
 # Stand-ins for modprobe and udevadm: record each call, and make "modprobe
 # nouveau" bind the NVIDIA GPU the way the real module would.
@@ -89,6 +92,22 @@ class HardwareDetectionTest(unittest.TestCase):
         dkms = self.modules / "updates" / "dkms"
         dkms.mkdir(parents=True, exist_ok=True)
         (dkms / "wl.ko.xz").write_bytes(b"")
+
+    def secure_boot(self, data):
+        """The firmware's SecureBoot variable: 4 attribute bytes, then the value."""
+        efivars = self.sysfs / "firmware" / "efi" / "efivars"
+        efivars.mkdir(parents=True, exist_ok=True)
+        (efivars / SECURE_BOOT_VARIABLE).write_bytes(data)
+
+    def module_loaded(self, name):
+        (self.sysfs / "module" / name).mkdir(parents=True)
+
+    def hwdetect_module(self):
+        loader = importlib.machinery.SourceFileLoader("hwdetect_under_test", str(HWDETECT))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        module.SYSFS = self.sysfs
+        return module
 
     def apple(self):
         dmi = self.sysfs / "class" / "dmi" / "id"
@@ -183,6 +202,7 @@ class HardwareDetectionTest(unittest.TestCase):
         # udev binds the proprietary driver after the early stage.
         (self.sysfs / "bus" / "pci" / "devices" / SUPPORTED_NVIDIA[0] / "driver").symlink_to(
             "../../../bus/pci/drivers/nvidia")
+        self.module_loaded("nvidia_drm")
         self.assertEqual(self.hwdetect("late").returncode, 0)
         env = self.hardware_env()
         self.assertEqual(env["MOONLIGHTOS_GPU_DRIVER"], "nvidia")
@@ -350,6 +370,152 @@ class HardwareDetectionTest(unittest.TestCase):
             self.state / "summary.txt",
         ):
             self.assertEqual(path.stat().st_mode & 0o777, 0o644, path)
+
+    def test_secure_boot_variable_is_read_from_the_efivar(self):
+        module = self.hwdetect_module()
+        self.assertFalse(module.secure_boot_enabled())  # no EFI: disabled
+        self.secure_boot(bytes([6, 0, 0, 0, 1]))
+        self.assertTrue(module.secure_boot_enabled())
+        self.secure_boot(bytes([7, 0, 0, 0, 0]))
+        self.assertFalse(module.secure_boot_enabled())
+        self.secure_boot(bytes([7, 0, 0, 0, 2]))
+        self.assertFalse(module.secure_boot_enabled())
+        self.secure_boot(bytes([7, 0, 0, 0]))  # attributes only: no value
+        self.assertFalse(module.secure_boot_enabled())
+        self.secure_boot(b"")
+        self.assertFalse(module.secure_boot_enabled())
+
+    def test_secure_boot_off_keeps_the_proprietary_driver(self):
+        self.nvidia_iso()
+        self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
+        self.secure_boot(bytes([6, 0, 0, 0, 0]))
+        state = self.early()
+        self.assertFalse(state["secure_boot"])
+        self.assertEqual(state["nvidia_mode"], "proprietary")
+        self.assertEqual(self.loaded(), ["nvidia-drm"])
+
+    def test_secure_boot_sends_a_supported_nvidia_gpu_to_nouveau(self):
+        self.nvidia_iso()
+        self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
+        self.secure_boot(bytes([6, 0, 0, 0, 1]))
+        state = self.early()
+        self.assertTrue(state["secure_boot"])
+        self.assertEqual(state["nvidia_mode"], "nouveau")
+        self.assertTrue(state["nouveau_fallback"])
+        self.assertEqual(self.blacklisted(), NVIDIA_MODULES)
+        self.assertEqual(self.loaded(), [])
+        self.assertIn("Secure Boot", " ".join(state["notes"]))
+        result = self.hwdetect("late")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("modprobe nouveau", self.calls())
+        env = self.hardware_env()
+        self.assertEqual(env["MOONLIGHTOS_GPU_DRIVER"], "nouveau")
+        self.assertEqual(env["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        summary = (self.state / "summary.txt").read_text()
+        self.assertIn("Secure Boot", summary)
+        self.assertEqual(self.hwdetect("report").stdout, summary)
+
+    def test_secure_boot_never_adds_nomodeset_or_blocks_nouveau(self):
+        self.nvidia_iso()
+        self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
+        self.secure_boot(bytes([6, 0, 0, 0, 1]))
+        self.early()
+        self.assertNotIn("nouveau", self.blacklisted())
+        self.assertNotIn("nomodeset", self.modprobe_config())
+
+    def test_secure_boot_does_not_change_the_general_iso(self):
+        self.add_device(*INTEL_GPU, boot_vga=True)
+        self.secure_boot(bytes([6, 0, 0, 0, 1]))
+        state = self.early()
+        self.assertEqual(state["nvidia_mode"], "none")
+        self.assertEqual(self.blacklisted(), set())
+        self.assertEqual(state["notes"], [])
+
+    def test_secure_boot_does_not_use_the_unsigned_wl_driver(self):
+        self.broadcom_sta()
+        self.add_device(*INTEL_GPU, boot_vga=True)
+        self.add_device(*BCM4360)
+        self.secure_boot(bytes([6, 0, 0, 0, 1]))
+        state = self.early()
+        self.assertEqual(state["broadcom"], "open")
+        self.assertEqual(self.blacklisted(), {"wl"})
+        self.assertIn("Secure Boot", " ".join(state["notes"]))
+
+    def test_secure_boot_off_still_uses_wl(self):
+        self.broadcom_sta()
+        self.add_device(*INTEL_GPU, boot_vga=True)
+        self.add_device(*BCM4360)
+        self.secure_boot(bytes([6, 0, 0, 0, 0]))
+        self.assertEqual(self.early()["broadcom"], "wl")
+
+    def test_kepler_stays_on_nouveau_under_secure_boot(self):
+        self.nvidia_iso()
+        self.add_device(*KEPLER_NVIDIA, boot_vga=True)
+        self.secure_boot(bytes([6, 0, 0, 0, 1]))
+        state = self.early()
+        self.assertEqual(state["nvidia_mode"], "nouveau")
+        self.assertEqual(self.loaded(), [])
+        self.hwdetect("late")
+        self.assertIn("modprobe nouveau", self.calls())
+
+    def test_late_loads_nouveau_when_the_proprietary_module_is_refused(self):
+        self.nvidia_iso()
+        self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
+        state = self.early()
+        self.assertEqual(state["nvidia_mode"], "proprietary")
+        # Nothing set nvidia_drm up: the kernel refused the module for some reason.
+        result = self.hwdetect("late")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("modprobe nouveau", self.calls())
+        self.assertIn("did not load", result.stdout)
+        env = self.hardware_env()
+        self.assertEqual(env["MOONLIGHTOS_GPU_DRIVER"], "nouveau")
+        self.assertEqual(env["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        self.assertEqual((self.state / "compositor.env").read_text(), "")
+        summary = (self.state / "summary.txt").read_text()
+        self.assertIn("did not load", summary)
+        self.assertNotIn("nomodeset", summary)
+
+    def test_late_keeps_the_proprietary_driver_when_either_drm_module_name_is_loaded(self):
+        for name in ("nvidia_drm", "nvidia_current_drm"):
+            with self.subTest(module=name):
+                self.tearDown()
+                self.setUp()
+                self.nvidia_iso()
+                self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
+                self.early()
+                (self.sysfs / "bus" / "pci" / "devices" / SUPPORTED_NVIDIA[0] / "driver").symlink_to(
+                    "../../../bus/pci/drivers/nvidia")
+                self.module_loaded(name)
+                self.assertEqual(self.hwdetect("late").returncode, 0)
+                self.assertNotIn("modprobe nouveau", self.calls())
+                self.assertEqual(self.hardware_env()["MOONLIGHTOS_GPU_DRIVER"], "nvidia")
+
+    def test_late_failed_nouveau_after_a_refused_proprietary_module_is_reported(self):
+        self.nvidia_iso()
+        self.add_device(*SUPPORTED_NVIDIA, boot_vga=True)
+        self.early()
+        result = self.hwdetect("late", {"FAKE_MODPROBE_FAIL": "1"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("modprobe nouveau failed", result.stderr)
+
+    def test_decode_hint_follows_the_machine_across_boots(self):
+        self.nvidia_iso()
+        self.add_device(*KEPLER_NVIDIA, boot_vga=True)
+        self.early()
+        self.hwdetect("late")
+        self.assertEqual(self.hardware_env()["MOONLIGHTOS_VIDEO_DECODE"], "software")
+        # The same stick, and the same /run contents, on an Intel machine.
+        pci = self.sysfs / "bus" / "pci" / "devices"
+        (pci / KEPLER_NVIDIA[0] / "driver").unlink()
+        for entry in list(pci.iterdir()):
+            for child in entry.iterdir():
+                child.unlink()
+            entry.rmdir()
+        self.add_device(*INTEL_GPU, boot_vga=True)
+        self.early()
+        self.hwdetect("late")
+        self.assertEqual(self.hardware_env()["MOONLIGHTOS_VIDEO_DECODE"], "auto")
 
 
 if __name__ == "__main__":
