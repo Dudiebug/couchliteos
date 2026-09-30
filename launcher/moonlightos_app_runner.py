@@ -204,8 +204,11 @@ def run(request_path: pathlib.Path = REQUEST) -> int:
         if not pathlib.Path(app.command).is_file() or not os.access(app.command, os.X_OK):
             raise FileNotFoundError("application executable is missing")
         vector = command_vector(app)
-        active.write_text(app.id + "\n", encoding="ascii")
-        os.chmod(active, 0o640)
+        if not app.terminal:
+            # app-active silences gamepad-nav, but a terminal app (nmtui, a
+            # "Press ENTER" prompt) is driven by the keys it forwards.
+            active.write_text(app.id + "\n", encoding="ascii")
+            os.chmod(active, 0o640)
         process = subprocess.Popen(
             vector,
             env=configured_environment(app),

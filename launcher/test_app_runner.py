@@ -67,6 +67,38 @@ class RunnerTest(unittest.TestCase):
             self.assertFalse((root / "app-active").exists())
             self.assertFalse((root / "demo-ready").exists())
 
+    def active_marker_while_running(self, **changes):
+        """Whether app-active exists while the application process is alive."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root / "demo.ini"
+            manifest.write_text(apps.serialize(self.app(**changes)), encoding="utf-8")
+            app = apps.read_manifest(manifest)
+            request = root / "launch-app.request"
+            request.write_text("demo\n", encoding="ascii")
+            process = mock.Mock(pid=55)
+            process.poll.return_value = 0
+            process.wait.return_value = 0
+            seen = []
+
+            def spawn(*_args, **_kwargs):
+                seen.append((root / "app-active").exists())
+                return process
+
+            with mock.patch.object(runner, "RUN", root), mock.patch.object(
+                runner, "READY_SECONDS", 0.0
+            ), mock.patch.object(
+                runner.apps, "load_applications", return_value=apps.LoadResult((app,), ())
+            ), mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                runner.run(request)
+            return seen
+
+    def test_terminal_apps_keep_the_controller_but_other_apps_take_it(self):
+        # A terminal app (nmtui, "Press ENTER to return") is driven by the controller
+        # through gamepad-nav's keyboard events; app-active would silence them.
+        self.assertEqual(self.active_marker_while_running(terminal=True), [False])
+        self.assertEqual(self.active_marker_while_running(terminal=False), [True])
+
     def test_missing_command_writes_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
