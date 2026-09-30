@@ -522,4 +522,21 @@ MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
 rg -q 'mkdtemp\(prefix="support-media-"' scripts/moonlightos-support-export
 refute rg -q 'RUN / "support-media"|LOCK\.open|os\.chmod\(temporary' scripts/moonlightos-support-export
 
+# Saved Wi-Fi (NetworkManager keyfiles) must survive a live boot with
+# persistence: the documented persistence.conf and the smoke test's backend both
+# persist the keyfile directory, and the image creates it root-only so the
+# persisted copy is never readable by the unprivileged moonlightos user.
+for f in docs/INSTALL.md tests/qemu-persistence-smoke.sh; do
+  rg -q '^/etc/NetworkManager/system-connections source=nm-connections$' "$f"
+done
+rg -q 'install -d -o root -g root -m 0700 /etc/NetworkManager/system-connections' \
+  config/live-build/hooks/live/0100-moonlightos.hook.chroot
+rg -q '/etc/NetworkManager/system-connections' scripts/moonlightos-qemu-smoke
+
+# The Bluetooth service (user moonlightos) unblocks a soft-blocked adapter with
+# rfkill, which needs write access to /dev/rfkill.
+rg -q '"rfkill", "unblock", "bluetooth"' scripts/moonlightos-bluetoothd
+rg -q '^KERNEL=="rfkill", SUBSYSTEM=="misc", GROUP="moonlightos", MODE="0660"$' \
+  overlay/etc/udev/rules.d/70-moonlightos-rfkill.rules
+
 printf 'Static tests passed.\n'
