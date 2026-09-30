@@ -11,9 +11,9 @@ what it chose.
 | Intel HD/UHD/Iris/Arc (Broadwell and newer) | general | `i915`/`xe`, Mesa | VA-API (`iHD`) |
 | Intel Gen4 to Haswell | general | `i915`, Mesa | VA-API (`i965`) |
 | AMD Radeon (GCN and newer; older via `radeon`) | general | `amdgpu`/`radeon`, Mesa | VA-API (`radeonsi`) |
-| NVIDIA GTX 900 to RTX 40 (Maxwell to Ada) | nvidia | proprietary 550, GBM | NVDEC through CUDA |
-| NVIDIA GTX 900 to RTX 40 | general | `nouveau` | software H.264 |
-| NVIDIA Kepler and older (GTX 600/700, iMac Late 2013) | general, or nvidia (falls back) | `nouveau` | software H.264 |
+| NVIDIA Maxwell to Ada: GTX 745/750/750 Ti, GTX 800M/900M, GTX 900, GTX 10, GTX 16, RTX 20/30/40 | nvidia | proprietary 550, GBM | NVDEC through CUDA |
+| NVIDIA Maxwell to Ada (same cards) | general | `nouveau` | software H.264 |
+| NVIDIA Kepler and older: GTX 600, GTX 760 to 780, mobile GT 750M/755M (iMac Late 2013) | general, or nvidia (falls back) | `nouveau` | software H.264 |
 | NVIDIA RTX 50 (Blackwell) | not supported | none (firmware framebuffer at best) | - |
 | Virtual machines (QEMU, Hyper-V, Proxmox) | general | `virtio-gpu`, `bochs`, `hyperv_drm` | software |
 
@@ -21,10 +21,19 @@ Decode columns describe the design. No row has a physical hardware result yet;
 [TESTING.md](TESTING.md) lists the checklist that must pass per GPU class.
 
 The NVIDIA ISO loads the proprietary driver only for GPUs on its supported
-list (`/usr/share/nvidia/nvidia.ids`). For any other NVIDIA GPU, and when the
+list (`/usr/share/nvidia/nvidia.ids`, from Debian's 550 driver, which starts at
+Maxwell). For any other NVIDIA GPU, and when the
 **Start MoonlightOS (Basic Graphics)** boot entry is chosen, it blocks the
 proprietary modules and loads nouveau. When the display driver is nouveau,
-Moonlight starts with software H.264 decoding.
+Moonlight starts with software H.264 decoding. The desktop GTX 750 is Maxwell
+but the mobile GT 750M is Kepler, so check the exact chip when a name is
+ambiguous; when in doubt, the NVIDIA ISO decides at boot from the GPU's PCI ID.
+
+NVIDIA's driver and Broadcom's `wl` are DKMS modules that are not signed, so
+they do not load with Secure Boot on.
+<!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
+If Secure Boot is on, MoonlightOS falls back to the open driver (lower
+performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
 
 Broadcom Wi-Fi chips supported by Broadcom's `wl` driver (for example the
 iMac's BCM4360) use `wl`, built by DKMS for the image kernel. Other Broadcom

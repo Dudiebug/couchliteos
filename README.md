@@ -10,9 +10,20 @@ Linux USB/IP server. It is not a general-purpose desktop.
 | Your graphics | Download |
 |---|---|
 | Intel or AMD graphics, or no NVIDIA card | `moonlightos-<version>-amd64.iso` (general) |
-| NVIDIA GeForce GTX 900 series to RTX 40 series | `moonlightos-<version>-nvidia-amd64.iso` |
-| Older NVIDIA (GTX 700 and earlier, including the iMac Late 2013) | general; the NVIDIA ISO also works and falls back to the same open driver |
+| NVIDIA Maxwell or newer: GeForce GTX 745, 750 and 750 Ti, GTX 800M/900M laptops, GTX 900, GTX 10, GTX 16, RTX 20, 30 and 40 series | `moonlightos-<version>-nvidia-amd64.iso` |
+| NVIDIA Kepler or older: GTX 600 series, GTX 760 to 780, and the mobile GT 750M/755M of the iMac Late 2013 | general; the NVIDIA ISO also works and falls back to the same open driver |
 | NVIDIA RTX 50 series | not supported yet (see [known limitations](docs/KNOWN_LIMITATIONS.md)) |
+
+Not sure about an NVIDIA card? Use the NVIDIA ISO: it loads NVIDIA's driver only
+for GPUs the driver supports and uses the open nouveau driver for any other.
+Names mislead: the desktop GTX 750 is Maxwell, the mobile GT 750M is Kepler.
+
+Secure Boot: NVIDIA's driver and Broadcom's `wl` Wi-Fi driver are not signed, so
+they do not load with Secure Boot on.
+<!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
+If Secure Boot is on, MoonlightOS falls back to the open driver (lower
+performance); turn Secure Boot off in firmware setup to use the NVIDIA driver.
+A Broadcom chip that needs `wl` has no Wi-Fi with Secure Boot on.
 
 Both ISOs detect the machine on every boot: the same USB stick moves between
 PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md).
@@ -69,9 +80,11 @@ PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md
 - systemd crash recovery for the launcher, streaming applications, Firefox, and Remote Desktop sessions
 - explicit USB/IP allowlist, hotplug reconciliation, and fail-closed TCP/3240
 - optional, unauthenticated-by-default Tailscale overlay and native Tailscale SSH
-- persistent settings and pairing data under `/var/lib/moonlightos`
+- settings and pairing data under `/var/lib/moonlightos` (kept on an installed
+  system or a persistence stick, forgotten by a plain live USB; see
+  [Live USB or installed?](#live-usb-or-installed))
 - logs and diagnostic snapshots under `/var/log/moonlightos`
-- Debian Installer integration for installation to an internal SSD
+- Debian Installer integration for installation to an internal disk
 
 ## Exact build command
 
@@ -79,11 +92,23 @@ On Debian 13 x86_64:
 
 ```bash
 sudo apt update
-sudo apt install --yes live-build curl ca-certificates xorriso squashfs-tools \
-  grub-pc-bin grub-efi-amd64-bin mtools dosfstools ripgrep
+sudo apt install --yes make git live-build curl ca-certificates xorriso \
+  squashfs-tools grub-pc-bin grub-efi-amd64-bin mtools dosfstools
 sudo make build                    # general ISO
 make configure PROFILE=nvidia && sudo make build PROFILE=nvidia   # NVIDIA ISO
 ```
+
+`make` runs the build, `curl` downloads the pinned application payloads,
+`squashfs-tools` (`unsquashfs`) extracts them, and `git` stamps the source
+commit into the image (the build falls back to `unknown` without it) and is
+needed by the release tools. The other make targets need more:
+
+- `make test`: `python3` and `ripgrep` (`rg`).
+- QEMU tests (`make qemu-smoke`, `qemu-persistence-smoke`, `qemu-install-smoke`):
+  `qemu-system-x86`, `ovmf`, and `python3`; the install test also needs
+  `qemu-utils` (`qemu-img`), and the persistence test needs `xorriso` (or
+  `bsdtar`) and `mke2fs` from `e2fsprogs`.
+- `tools/release-draft.sh`: the GitHub CLI (`gh`).
 
 Output:
 
@@ -110,28 +135,39 @@ application binary is committed to Git.
 
 ## First boot
 
-1. Connect DisplayPort/HDMI, wired Ethernet, and a controller or keyboard.
-2. Press `F12` on the Dell and select the UEFI USB device, or hold Option (⌥)
-   on the iMac and choose **EFI Boot**. Wait three seconds.
+1. Connect DisplayPort/HDMI, wired Ethernet, and a **keyboard**. The boot menu
+   and the installer cannot be used with a controller; once the launcher is
+   running, a controller is enough.
+2. Open the firmware boot menu and select the USB device: `F12` on the Dell
+   (the key differs by maker), or hold Option (⌥) on the iMac and choose **EFI
+   Boot**. The MoonlightOS menu starts the live system by itself after three
+   seconds; press an arrow key to stop the countdown and choose another entry
+   such as **Install MoonlightOS**.
 3. The launcher becomes ready even without network, then the first-boot Setup
    Wizard opens. Complete, skip, or exit it before choosing an application.
-4. Pair Sunshine once in Moonlight. Bluetooth devices are managed in Settings.
-   Tailscale setup, when wanted, uses an
-   on-screen QR code.
+4. Pair Sunshine in Moonlight. Bluetooth devices are managed in Settings.
+   Tailscale setup, when wanted, uses an on-screen QR code.
 
-That is the complete live-image setup. The same hybrid ISO offers persistent
-live boot, an explicit `No Persistence` recovery entry, and `Install
-MoonlightOS` for installation to another disk. For durable settings, select
-the installer entry and follow [INSTALL.md](docs/INSTALL.md). Installation keeps
-the disk-selection confirmation because silently erasing a disk is unsafe.
+The USB stick is written with `dd`, Rufus (DD Image mode) or balenaEtcher, and
+the download is checked against `SHA256SUMS`; the steps for Linux, Windows and
+macOS are in [INSTALL.md](docs/INSTALL.md).
+
+### Live USB or installed?
+
+A live USB starts from the image on every boot, so on its own it forgets your
+Moonlight pairing, Wi-Fi, Bluetooth pairings and Setup Wizard at power-off, and
+you pair again each time. To keep them, install MoonlightOS to a disk
+(recommended for daily use) or, for testing, add a persistence stick; both are
+in [INSTALL.md](docs/INSTALL.md), which also explains how to update to a new
+release without losing them.
 
 The installed system preserves application configuration normally. A live USB
-needs a separate persistence partition containing `persistence.conf` with
-distinct backing directories. A live USB must also persist
-`/var/lib/bluetooth` for Bluetooth pairings to survive reboot. UEFI installation
-and independent virtual-disk boot are automated; Rufus, Ventoy, physical NVMe,
-and second-USB installation remain physical validation items. Local LAN
-streaming and the launcher do not depend on Tailscale or Bluetooth.
+with persistence needs a separate stick holding `persistence.conf` with
+distinct backing directories, including `/var/lib/bluetooth` for Bluetooth
+pairings. UEFI installation and independent virtual-disk boot are automated;
+Rufus, Ventoy, physical NVMe, and second-USB installation remain physical
+validation items. Local LAN streaming and the launcher do not depend on
+Tailscale or Bluetooth.
 
 ## Target hardware
 

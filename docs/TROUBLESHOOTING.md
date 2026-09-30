@@ -1,11 +1,18 @@
 # Troubleshooting
 
-Run `moonlightos-diagnostics`. It prints and saves OS, kernel, CPU/GPU,
-Vulkan, VA-API, audio, network, USB/IP, Tailscale, USB, and display-mode data.
+Open SYSTEM DIAGNOSTICS in the launcher, or run `moonlightos-diagnostics`. It
+prints and saves OS, kernel, CPU/GPU, Vulkan, VA-API, audio, network, USB/IP,
+Tailscale, USB, and display-mode data.
+
+The commands on this page run in the launcher's TERMINAL application (in the
+live session `sudo` needs no password). They need a working display: no other
+console login is documented, so when the screen stays black use
+[the black-screen section](#the-screen-stays-black-or-the-launcher-never-appears)
+instead.
 
 | Symptom | Check |
 |---|---|
-| Launcher does not appear | `systemctl status moonlightos-launcher seatd`; inspect `/var/log/moonlightos/launcher.log` |
+| Launcher does not appear | See [the black-screen section](#the-screen-stays-black-or-the-launcher-never-appears) |
 | Moonlight returns immediately | `/var/log/moonlightos/moonlight.log`; verify XWayland and VA-API output |
 | chiaki-ng black screen | Try Vulkan then OpenGL; optionally set `gamescope = true`; keep HDR off |
 | No HDMI/DP audio | `wpctl status`, `aplay -l`; select the display sink in application settings |
@@ -24,14 +31,19 @@ internet.
 
 ## USB does not boot
 
-1. Write the ISO to the whole USB device with the `dd` command in `INSTALL.md`.
+1. Write the ISO to the whole USB device as a raw image (`dd`, Rufus in DD
+   Image mode, or balenaEtcher; see [INSTALL.md](INSTALL.md)), not as a file
+   copy. Check the download against `SHA256SUMS` first.
 2. Use the firmware boot menu (Dell: `F12`; Mac: hold Option) and choose the
-   `UEFI` USB entry. The image boots through Debian's signed shim, but the
-   DKMS drivers (NVIDIA, Broadcom `wl`) load only with Secure Boot off.
-3. Wait for the three-second GRUB timeout. The launcher is not allowed to wait
-   for DHCP, so unplugged Ethernet must not prevent it from appearing.
-4. If it still stops, capture the exact last message or a photo. Serial boot
-   output is available at 115200 8N1 for development builds.
+   `UEFI` USB entry. The image boots through Debian's signed shim; Secure Boot
+   only affects the NVIDIA and Broadcom `wl` drivers (see
+   [INSTALL.md](INSTALL.md#secure-boot)).
+3. Wait for the three-second boot-menu timeout, or press an arrow key to stop it
+   and choose an entry (a keyboard is required; the menu ignores controllers).
+   The launcher is not allowed to wait for DHCP, so unplugged Ethernet must not
+   prevent it from appearing.
+4. If it still stops, capture the exact last message or a photo. Every live ISO
+   also writes boot messages to the first serial port at 115200 8N1.
 
 IPv6 is intentionally unavailable. Use `ip -4 address` and `ip -4
 route` when troubleshooting networking.
@@ -39,31 +51,57 @@ route` when troubleshooting networking.
 Support export details and verification commands are in
 [SUPPORT.md](SUPPORT.md).
 
-## Black screen or garbled launcher on NVIDIA
+## The screen stays black or the launcher never appears
 
-Run `/usr/libexec/moonlightos-hwdetect report` (or read
-`/run/moonlightos-hardware/summary.txt` from another console) to see which
-driver was chosen and why.
+If the launcher does not start, the screen can stay on boot text or go black,
+and there is no shell to run commands in (the launcher's TERMINAL needs a
+working display; on the live image tty1 has no login prompt and the
+`moonlightos` account has no password). What you can do is reachable from the
+boot menu, which needs a keyboard (press an arrow key within three seconds of
+the menu appearing):
 
-- NVIDIA ISO: reboot and choose **Start MoonlightOS (Basic Graphics)**. It
-  blocks the proprietary driver and uses nouveau. On an installed system, press
-  `e` in GRUB and append `moonlightos.gpu=basic` to the `linux` line. If Basic
-  Graphics works and the normal entry does not, report the GPU model and the
-  output of `nvidia-smi` and `journalctl -b -k | grep -i nvidia`.
-- With Secure Boot on, the proprietary driver cannot load and nothing replaces
-  it on the normal entry. Turn Secure Boot off, or use Basic Graphics.
-- RTX 50 (Blackwell) cards are not supported by either ISO yet.
-- Never add `nomodeset`: Cage needs KMS.
+1. **NVIDIA ISO:** reboot and choose **Start MoonlightOS (Basic Graphics)**. It
+   blocks the proprietary driver and uses nouveau. On an installed system, press
+   `e` in GRUB, append `moonlightos.gpu=basic` to the line starting with
+   `linux`, and press `Ctrl+X`.
+2. **Secure Boot on:** NVIDIA's driver and Broadcom's `wl` do not load with it.
+   <!-- LEAD-CHECK secure-boot-fallback: assumes feat/bugfix4 (automatic nouveau fallback with Secure Boot on) is merged; see docs/INSTALL.md. -->
+   MoonlightOS falls back to the open driver (lower performance); turn Secure
+   Boot off in firmware setup to use the NVIDIA driver. On a UEFI PC the boot
+   menu's Utilities submenu has **UEFI Firmware Settings**.
+3. **Persistence or saved settings:** choose **Start MoonlightOS (No
+   Persistence)**. It ignores everything saved on a persistence stick, such as a
+   display mode your screen cannot show. An installed system has no such entry.
+4. Try another display cable or port.
+5. Never add `nomodeset`: Cage needs KMS.
+   <!-- LEAD-CHECK fail-safe-entry: cleanup of the stock boot-menu entries is deferred; update this line if it lands. -->
+   The stock `fail-safe mode` menu entry is not Basic Graphics: it does not
+   block the proprietary NVIDIA driver.
+6. If none of that works, photograph the screen and report the PC model and GPU
+   (read them from the machine's label or another operating system). The
+   launcher's Settings → Generate Support File helps only when the launcher
+   starts.
+
+If the launcher does start but is garbled, open TERMINAL and run
+`/usr/libexec/moonlightos-hwdetect report` to see which driver was chosen and
+why. On the NVIDIA ISO, reboot with Basic Graphics; if Basic Graphics works and
+the normal entry does not, report the GPU model (`lspci -nn | grep -i nvidia`)
+and the hwdetect report from the Basic Graphics boot.
+
+RTX 50 (Blackwell) cards are not supported by either ISO yet.
 
 ## iMac Late 2013 shows a black screen
 
 The general ISO drives the iMac's NVIDIA Kepler GPU with nouveau and needs KMS.
 Do not add `nomodeset`, and never install a proprietary NVIDIA driver (the last
-Kepler branch has no GBM, so Cage cannot start). Reboot with **Start
-MoonlightOS (No Persistence)**, then check `lsmod` for `nouveau` and the
-journal for `nouveau` or `cage` errors. Confirm the machine with
-`sudo moonlightos-hardware-report`; an `iMac14,1` has Intel graphics and is
-not the machine [IMAC-2013.md](IMAC-2013.md) describes.
+Kepler branch has no GBM, so Cage cannot start). Reboot and choose **Start
+MoonlightOS (No Persistence)**, which ignores anything saved on a persistence
+stick. If it is still black there is no console to inspect it (see the section
+above): photograph the screen and report the model. To tell the models apart
+without a shell, use About This Mac in macOS or the label: an `iMac14,1` has
+Intel graphics and is not the machine [IMAC-2013.md](IMAC-2013.md) describes.
+When the launcher does appear, `sudo moonlightos-hardware-report` in TERMINAL
+confirms the machine, and `lsmod | grep nouveau` shows the display driver.
 
 ## iMac Wi-Fi is missing
 
