@@ -70,7 +70,7 @@ SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view"
 SHORTCUT_TAGS = apps.SHORTCUTS  # one set of names on the main menu and in Settings
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
-TEXT_HINT = "X / TRIANGLE: KEYBOARD  ·  A / CROSS ACCEPTS  ·  B / CIRCLE CANCELS"
+TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / CIRCLE CANCEL"
 # Hints name controller buttons (A / CROSS is Enter, B / CIRCLE is Esc), never keyboard keys.
 LIST_HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
 BUTTONS_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE BACK"

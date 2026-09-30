@@ -509,6 +509,7 @@ class HintTextTest(unittest.TestCase):
             settings = module.RemoteDesktopSettings(screen, self.launcher(screen))
             self.check("reposition", self.hints(screen, lambda: settings.reposition("a")))
         self.assertIn("X", module.TEXT_HINT)
+        self.assertIn("Y / SQUARE", module.TEXT_HINT)  # gamepad-nav sends Delete for BTN_WEST; the hint says so
 
     def test_bluetooth_screens(self):
         import moonlightos_bluetooth as bluetooth

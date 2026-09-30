@@ -223,7 +223,7 @@ def draw(screen: curses.window, keyboard: Keyboard) -> None:
     for row_index, row in enumerate(keyboard.rows):
         cells = [f"[{key}]" if (row_index, column) != (keyboard.row, keyboard.column) else f">{key}<" for column, key in enumerate(row)]
         centered(first + row_index * gap, " ".join(cells))
-    footer = "ARROWS MOVE  ENTER/A SELECTS  ESC/B CANCELS"
+    footer = "A / CROSS SELECTS  -  Y / SQUARE DELETES  -  B / CIRCLE CANCELS"  # ASCII: no locale is set here
     centered(footer_row, footer)
     screen.refresh()
 

@@ -155,6 +155,7 @@ class LayoutTest(unittest.TestCase):
                     for label in osk.ACTIONS:
                         self.assertIn(label, shown, where)
                     self.assertIn("CANCELS", shown, where)  # the footer is not overwritten
+                    self.assertIn("Y / SQUARE DELETES", shown, where)  # the controller has a delete button
 
 
 class ControllerDeleteTest(unittest.TestCase):
