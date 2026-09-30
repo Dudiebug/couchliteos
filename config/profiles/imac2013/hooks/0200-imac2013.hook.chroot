@@ -5,7 +5,9 @@ set -Eeuo pipefail
 fail() { echo "imac2013 profile: $*" >&2; exit 1; }
 
 # Kepler must run on nouveau: the proprietary 470 branch has no GBM for Cage.
-if dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E '^(nvidia-|libnvidia-|xserver-xorg-video-nvidia|firmware-nvidia-gsp)'; then
+# NVIDIA's firmware packages serve newer GPUs or the proprietary driver stack;
+# Kepler on nouveau needs none of them.
+if dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -E '^(nvidia-|libnvidia-|xserver-xorg-video-nvidia|firmware-nvidia-)'; then
   fail 'proprietary NVIDIA packages must never be installed'
 fi
 

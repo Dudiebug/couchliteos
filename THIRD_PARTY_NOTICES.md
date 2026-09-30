@@ -32,13 +32,14 @@ its Debian copyright and source records remain in the image. Google Chrome is
 installed from Google's signed stable Debian repository. MoonlightOS does
 not bundle Sony, NVIDIA, Steam, or other proprietary game/service binaries,
 credentials, keys, firmware from unapproved sources, or user pairing material.
-Neither image contains a proprietary NVIDIA driver; the `imac2013` build fails
-if an NVIDIA driver package or module is present. Like earlier releases, both
-images include every redistributable firmware package from Debian's
-`non-free-firmware` area (live-build's default), which includes
-`firmware-nvidia-graphics`, the signed firmware nouveau uses on Maxwell and
-newer GPUs; Kepler does not load it. The DKMS module-signing key generated
-while building `wl.ko` is deleted before the image is sealed.
+Neither image contains a proprietary NVIDIA driver. The Intel image's live
+system includes every redistributable firmware package from Debian's
+`non-free-firmware` area (live-build's default), which includes NVIDIA GPU
+firmware. The `imac2013` image installs a curated firmware list instead and
+its build fails if any NVIDIA driver or firmware package is present. Neither
+ISO carries the separate firmware package copies for the text installer. The
+DKMS module-signing key generated while building `wl.ko` is deleted before
+the image is sealed.
 
 Names such as Moonlight, Firefox, Mozilla, Google Chrome, PlayStation, Sunshine,
 Intel, Dell, Apple, iMac, NVIDIA, Broadcom, FreeRDP, Microsoft, Windows, and

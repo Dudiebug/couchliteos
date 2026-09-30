@@ -1,6 +1,11 @@
 # Known limitations
 
 - No physical DCC36X3 test has been recorded in this repository yet.
+- To keep each ISO under GitHub's 2 GiB release-asset limit, v0.1.12 no
+  longer copies firmware packages into the ISO for the text installer. The
+  live system and the system it installs keep their firmware; only network
+  hardware that needs firmware is unavailable inside the installer itself,
+  which the live-copy installation does not require.
 - No physical iMac Late 2013 test has been recorded yet, including the section 0
   identification (model, serial, GPU, Wi-Fi). See [IMAC-2013.md](IMAC-2013.md).
 - The iMac profile decodes Moonlight video in software (H.264 only): Kepler has

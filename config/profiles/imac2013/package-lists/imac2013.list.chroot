@@ -1,8 +1,19 @@
 # Apple iMac Late 2013. Graphics use the base Mesa packages with the in-kernel
 # nouveau driver; no proprietary NVIDIA package is ever installed.
 
+# Curated firmware (live-build's firmware auto-install is off for this profile).
 # Broadcom BCM57766 Ethernet (tg3 firmware tigon/tg357766.bin) and other nonfree firmware
 firmware-misc-nonfree
+firmware-linux-free
+# Haswell CPU microcode
+intel-microcode
+# Bluetooth and common USB Wi-Fi/Ethernet/Bluetooth adapters
+bluez-firmware
+firmware-realtek
+firmware-atheros
+firmware-mediatek
+firmware-iwlwifi
+firmware-brcm80211
 
 # Broadcom BCM4360 Wi-Fi: wl.ko is built by DKMS against the image kernel headers
 linux-headers-amd64

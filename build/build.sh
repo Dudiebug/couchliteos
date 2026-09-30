@@ -16,6 +16,7 @@ command -v lb >/dev/null || { echo 'live-build is required (apt install live-bui
 # shellcheck source=config/profiles/intel/profile.conf
 source "$ROOT/config/profiles/$PROFILE/profile.conf"
 ISO="$OUT/moonlightos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"
+read -r -a profile_options <<< "${LB_EXTRA_CONFIG:-}"
 
 mkdir -p "$OUT"
 cd "$WORK"
@@ -37,7 +38,8 @@ lb config noauto \
   --iso-publisher 'MoonlightOS Project' \
   --iso-volume 'MOONLIGHTOS' \
   --apt-recommends false \
-  --memtest none
+  --memtest none \
+  "${profile_options[@]}"
 
 lb build
 built_iso=$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -print -quit)

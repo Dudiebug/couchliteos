@@ -130,6 +130,12 @@ rg -q 'decoder = software' config/profiles/imac2013/hooks/0200-imac2013.hook.chr
 rg -q 'updates/dkms/wl' config/profiles/imac2013/profile.conf
 rg -q 'unsquashfs -l -d / binary/live/filesystem.squashfs' build/build.sh
 rg -q 'PROFILE_DIR/package-lists' build/configure.sh
+rg -q 'read -r -a profile_options' build/build.sh
+rg -Fq '"${profile_options[@]}"' build/build.sh
+rg -q "^LB_EXTRA_CONFIG='--firmware-binary false'$" config/profiles/intel/profile.conf
+rg -q "^LB_EXTRA_CONFIG='--firmware-binary false --firmware-chroot false'$" config/profiles/imac2013/profile.conf
+rg -q '^intel-microcode$' config/profiles/imac2013/package-lists/imac2013.list.chroot
+rg -q 'firmware-nvidia-' config/profiles/imac2013/hooks/0200-imac2013.hook.chroot
 rg -q '/usr/share/moonlightos/profile.conf' build/configure.sh
 # Remote Desktop: FreeRDP 3 SDL3 client on Wayland, passwords only through stdin.
 rg -q '^freerdp3-sdl$' config/live-build/package-lists/moonlightos.list.chroot
