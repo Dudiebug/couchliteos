@@ -32,6 +32,7 @@ import moonlightos_controllers as controllers
 import moonlightos_pcstatus as pcstatus
 import moonlightos_update as update
 import moonlightos_errors as errors
+import moonlightos_netmenu as netmenu
 import moonlightos_confirm as confirmation
 import moonlightos_whatsnew as whatsnew
 import moonlightos_controls as controls
@@ -1459,12 +1460,18 @@ class Settings:
         self.launcher.launch_by_id(app_id)
         self.status = self.launcher.status
 
+    def run_network(self) -> None:
+        text = netmenu.open(self.screen, self.launcher.wizard_text,
+                            lambda: self.launch("network-setup"), network_summary)
+        if text:
+            self.status = text
+
     def activate(self) -> bool:
         actions = {
             "DISPLAY": self.run_display,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
-            "NETWORK": lambda: self.launch("network-setup"),
+            "NETWORK": self.run_network,
             "SLEEP & SCREEN": self.run_sleep_settings,
             "APPLICATIONS": self.run_applications,
             "REMOTE DESKTOP": self.run_remote_desktop,
