@@ -519,6 +519,7 @@ class Launcher:
     def active_applications(self) -> None:
         selected = 0
         status = f"A/ENTER RESUMES  ·  {CLOSE_BUTTON} CLOSES"
+        HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
         while True:
             running = self.running_applications()
             rows = [f"{app.name:<32} RUNNING" for app in running] + ["RETURN TO MAIN LAUNCHER"]
@@ -538,6 +539,9 @@ class Launcher:
             add_centered(self.screen, height - 3, status if running else "NO MANAGED APPLICATIONS ARE RUNNING")
             self.screen.refresh()
             key = read_key(self.screen)
+            if HOME_REQUEST.exists():  # Guide again while the menu is open closes it
+                HOME_REQUEST.unlink(missing_ok=True)
+                return
             selected = move_selection(selected, key, len(rows))
             if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(running)):
                 return

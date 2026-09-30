@@ -556,6 +556,39 @@ class LauncherTest(unittest.TestCase):
         set_escdelay.assert_called_once_with(25)
         launcher.assert_called_once_with(screen)
 
+    def test_guide_pressed_inside_active_applications_closes_it_and_leaves_no_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            request = run / "home.request"
+            request.touch()
+
+            class GuideScreen(Screen):
+                def getch(self):
+                    if self.keys and self.keys[0] == "guide":
+                        self.keys.pop(0)
+                        request.touch()  # Guide again, while the menu is open
+                        return 27
+                    return super().getch()
+
+            launcher = self.launcher()
+            launcher.screen = GuideScreen([-1, "guide", -1])
+            launcher.prepare_session = mock.Mock()
+            launcher.setup_wizard = mock.Mock()
+            launcher.running_applications = mock.Mock(return_value=[])
+            entered = []
+            real = launcher.active_applications
+            launcher.active_applications = lambda: (entered.append(1), real())[1]
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", request
+            ), mock.patch.object(self.module, "LAUNCHER_FOCUS", run / "launcher-focus", create=True), mock.patch.object(
+                self.module.display, "restore_saved_mode"
+            ), mock.patch.object(self.module.curses, "curs_set"), mock.patch.object(
+                self.module.curses, "use_default_colors"
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    launcher.run()
+        self.assertEqual(len(entered), 1)
+
     def test_a_restarted_launcher_forgets_a_stale_focus_marker(self):
         launcher = self.launcher()
         with tempfile.TemporaryDirectory() as directory:
