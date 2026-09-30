@@ -29,22 +29,26 @@ class FakeScreen:
     def __init__(self, keys=()):
         self.keys = list(keys)
         self.drawn = []
+        self.frame = []
+        self.frames = []  # what was on screen each time a key was read
         self.timeouts = []
 
     def getmaxyx(self):
         return 30, 100
 
     def erase(self):
-        pass
+        self.frame = []
 
     def border(self):
         pass
 
     def addstr(self, _row, _column, value):
         self.drawn.append(value)
+        self.frame.append(value)
 
     def addnstr(self, _row, _column, value, _length):
         self.drawn.append(value)
+        self.frame.append(value)
 
     def refresh(self):
         pass
@@ -53,6 +57,7 @@ class FakeScreen:
         self.timeouts.append(value)
 
     def getch(self):
+        self.frames.append(list(self.frame))
         return self.keys.pop(0) if self.keys else 27
 
 
@@ -191,6 +196,30 @@ class BluetoothMenuTest(unittest.TestCase):
         self.assertIn(
             ("agent_reply", {"prompt_id": "prompt-1", "accepted": False}), client.requests
         )
+
+    def test_display_passkey_stays_on_screen_while_the_device_waits_for_it(self):
+        prompt = {
+            "id": "prompt-1",
+            "kind": "display_passkey",
+            "passkey": "123456",
+            "operation_id": "op-1",
+        }
+        working = dict(
+            ADAPTER_ON,
+            operations=[{"id": "op-1", "type": "pair", "state": "working", "device": DEVICE["path"]}],
+        )
+        screen = FakeScreen([-1, -1, 27])
+        client = FakeClient([dict(working, prompt=prompt), dict(working, prompt=prompt), working])
+        success, _operation = bluetooth.BluetoothMenu(screen, client)._wait_operation(
+            "op-1", "PAIRING", cancellable_pairing=True
+        )
+        self.assertFalse(success)
+        self.assertEqual(len(screen.frames), 3)
+        for frame in screen.frames[:2]:
+            self.assertTrue(any("123456" in value for value in frame), frame)
+        self.assertFalse(any("123456" in value for value in screen.frames[2]))
+        self.assertTrue(any("PLEASE WAIT" in value for value in screen.frames[2]))
+        self.assertIn(("cancel_pairing", {"operation_id": "op-1"}), client.requests)
 
     def test_pair_timeout_is_reported(self):
         failed = dict(

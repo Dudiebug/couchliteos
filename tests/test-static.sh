@@ -517,4 +517,9 @@ MOONLIGHTOS_USBIP_ALLOWLIST="$tmp/allowlist" \
 MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
   bash usbip/moonlightos-usbip unbind-all
 
+# /run/moonlightos belongs to the unprivileged appliance user: the root exporter
+# must mount in its own private directory and never follow links there.
+rg -q 'mkdtemp\(prefix="support-media-"' scripts/moonlightos-support-export
+refute rg -q 'RUN / "support-media"|LOCK\.open|os\.chmod\(temporary' scripts/moonlightos-support-export
+
 printf 'Static tests passed.\n'

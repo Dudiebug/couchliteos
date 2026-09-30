@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -135,11 +136,23 @@ def add_command(bundle: pathlib.Path, name: str, command: list[str], **kwargs: o
     write_text(bundle / name, command_output(command, **kwargs))
 
 
+def read_regular_file(path: pathlib.Path, limit: int) -> bytes:
+    """Read at most `limit` bytes of a regular file.
+
+    /run/moonlightos belongs to an unprivileged user, so a symlink there must
+    not be followed (O_NOFOLLOW) and a FIFO there must not block this root
+    service (O_NONBLOCK, then require a regular file).
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        return stream.read(limit)
+
+
 def add_file(bundle: pathlib.Path, name: str, source: pathlib.Path, *, config: bool = False) -> None:
     try:
-        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        with os.fdopen(descriptor, "rb") as stream:
-            data = stream.read(MAX_LOG_SIZE + 1)
+        data = read_regular_file(source, MAX_LOG_SIZE + 1)
     except OSError as error:
         write_text(bundle / name, f"Unavailable: {error}\n")
         return
@@ -164,9 +177,9 @@ def session_environment() -> dict[str, str]:
         "XDG_RUNTIME_DIR": "/run/moonlightos",
     }
     try:
-        descriptor = os.open(RUN / "session.env", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as stream:
-            lines = stream.read(4096).splitlines()
+        lines = read_regular_file(RUN / "session.env", 4096).decode(
+            "utf-8", errors="replace"
+        ).splitlines()
     except OSError:
         lines = []
     for line in lines:
@@ -380,18 +393,17 @@ def collect(bundle: pathlib.Path) -> None:
     add_file(bundle, "firefox/eme-widevine-status.txt", RUN / "firefox-drm-status")
     add_file(bundle, "firefox/eme-policy.json", pathlib.Path("/etc/firefox/policies/policies.json"))
     managed = []
-    running_ids = [
-        path.name.removesuffix("-ready") for path in sorted(RUN.glob("*-ready"))
-        if (RUN / f"{path.name.removesuffix('-ready')}-status").is_file()
-    ]
-    for app_id in running_ids:
-        managed.append(f"{app_id}: running")
-        path = RUN / f"{app_id}-status"
+    for ready in sorted(RUN.glob("*-ready")):
+        app_id = ready.name.removesuffix("-ready")
         try:
-            value = path.read_text(encoding="utf-8", errors="replace").splitlines()[0][:160]
-        except (OSError, IndexError):
+            lines = read_regular_file(RUN / f"{app_id}-status", 4096).decode(
+                "utf-8", errors="replace"
+            ).splitlines()
+        except OSError:
             continue
-        managed.append(f"{app_id}: {value}")
+        managed.append(f"{app_id}: running")
+        if lines:
+            managed.append(f"{app_id}: {lines[0][:160]}")
     write_text(bundle / "session/managed-applications.txt", "\n".join(managed) + ("\n" if managed else "None running.\n"))
     add_command(
         bundle,
@@ -504,32 +516,46 @@ def mount_labeled_destination(destination: Destination) -> tuple[Destination, bo
         return destination, False
     if destination.label != "MOONLIGHTOS_SUPPORT" or not destination.device.startswith("/dev/"):
         raise RuntimeError("unmounted destination is not an explicitly labeled support partition")
-    mountpoint = RUN / "support-media"
-    mountpoint.mkdir(mode=0o700, exist_ok=True)
-    if os.path.ismount(mountpoint):
-        raise RuntimeError("temporary support mountpoint is already in use")
-    result = subprocess.run(
-        ["mount", "-o", "nosuid,nodev,noexec", "--", destination.device, str(mountpoint)],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=15,
-    )
-    if result.returncode:
-        raise RuntimeError((result.stderr or "could not mount support partition").strip())
+    # Never mount under /run/moonlightos: the unprivileged appliance user owns
+    # it and could pre-plant a symlink that mount(8) would follow (for example
+    # to /usr/libexec). A fresh root-only directory in the service's private
+    # /tmp cannot be pre-planted.
+    mountpoint = tempfile.mkdtemp(prefix="support-media-")
+    try:
+        result = subprocess.run(
+            ["mount", "-o", "nosuid,nodev,noexec", "--", destination.device, mountpoint],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode:
+            raise RuntimeError((result.stderr or "could not mount support partition").strip())
+    except Exception:
+        release_mountpoint(mountpoint)
+        raise
     mounted = Destination(
         destination.device,
-        str(mountpoint),
+        mountpoint,
         destination.label,
         destination.fstype,
         True,
         destination.majmin,
         destination.uuid,
     )
-    if not path_is_writable(str(mountpoint)):
-        subprocess.run(["umount", "--", str(mountpoint)], check=False)
+    if not path_is_writable(mountpoint):
+        subprocess.run(["umount", "--", mountpoint], check=False)
+        release_mountpoint(mountpoint)
         raise RuntimeError("support partition mounted read-only")
     return mounted, True
+
+
+def release_mountpoint(mountpoint: str) -> None:
+    """Remove the private mount directory; rmdir refuses while anything is mounted on it."""
+    try:
+        os.rmdir(mountpoint)
+    except OSError:
+        pass
 
 
 def read_request() -> dict[str, object]:
@@ -570,7 +596,7 @@ def write_status(request_id: str, state: str, message: str, destination: str = "
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644)
+            os.fchmod(stream.fileno(), 0o644)
         os.replace(temporary, STATUS)
     finally:
         try:
@@ -626,6 +652,7 @@ def finish_export(
 ) -> bool:
     if mounted_here:
         checked_unmount(destination.mountpoint)
+        release_mountpoint(destination.mountpoint)
         mounted_here = False
         shown = f"{destination.device}:/{final.name}"
         message = "Support file created; drive is safe to remove"
@@ -687,15 +714,26 @@ def archive_filename() -> str:
     return f"moonlightos-support-{timestamp}-{machine_id or 'unknown'}.tar.gz"
 
 
+def open_lock(path: pathlib.Path) -> int:
+    """Open (creating if needed) the lock without following a planted symlink."""
+    return os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+
+
 def run() -> int:
     RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
     request_id = "unknown"
     mounted_here = False
     destination: Destination | None = None
-    lock_stream = LOCK.open("a+")
     try:
-        fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd = open_lock(LOCK)
+    except OSError as error:
+        REQUEST.unlink(missing_ok=True)
+        journal_message(f"Support export refused an unsafe lock file: {error}", error=True)
+        return 1
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        os.close(lock_fd)
         return 75
     try:
         request = read_request()
@@ -763,7 +801,8 @@ def run() -> int:
                 check=False,
                 timeout=15,
             )
-        lock_stream.close()
+            release_mountpoint(destination.mountpoint)
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import moonlightos_display as display
@@ -35,6 +36,7 @@ SETTINGS_MENU = (
     "DISPLAY",
     "AUDIO",
     "BLUETOOTH",
+    "NETWORK",
     "APPLICATIONS",
     "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
@@ -45,6 +47,7 @@ SETTINGS_MENU = (
     "BACK",
 )
 SPINNER = "|/-\\"
+SAVE_FAILED = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
@@ -99,6 +102,8 @@ def rdp_log(message: str) -> None:
 
 def read_key(screen: curses.window) -> int:
     key = screen.getch()
+    if key != -1:
+        display.confirm_restore()
     if key == curses.KEY_F12:
         request_osk()
         return -1
@@ -138,8 +143,28 @@ def format_elapsed(seconds: float) -> str:
     return f"{minutes:02d}:{remaining:02d}"
 
 
-def get_ipv4(output: str) -> str:
-    """Return the first non-loopback IPv4 from normal or `ip -brief` output."""
+# Interfaces that are not the LAN: VPN, container and VM bridges.
+VIRTUAL_INTERFACES = ("tailscale", "docker", "virbr", "veth", "br-")
+OFFLINE = "OFFLINE - SETTINGS > NETWORK"
+
+
+def default_route_interfaces(output: str) -> list[str]:
+    """Interface names from `ip -4 route show default`, in route order."""
+    devices = []
+    for line in output.splitlines():
+        fields = line.split()
+        if fields[:1] == ["default"] and "dev" in fields[:-1]:
+            devices.append(fields[fields.index("dev") + 1])
+    return devices
+
+
+def get_ipv4(output: str, preferred: Sequence[str] = ()) -> str:
+    """Return the LAN IPv4 from normal or `ip -brief` output.
+
+    Loopback, link-local and virtual interfaces (VPN, Docker, libvirt) are
+    skipped; an address on an interface in `preferred` wins over the first.
+    """
+    found: list[tuple[str, str]] = []
     for line in output.splitlines():
         fields = line.split()
         if not fields:
@@ -149,34 +174,75 @@ def get_ipv4(output: str) -> str:
             index = fields.index("inet") + 1
             if index < len(fields):
                 candidates.append(fields[index])
+            interface = fields[-1]
         else:
             # `ip -brief -4 address` prints: IFACE STATE ADDRESS/PREFIX ...
             candidates.extend(fields[2:])
+            interface = fields[0]
+        if interface.startswith(VIRTUAL_INTERFACES):
+            continue
         for candidate in candidates:
             value = candidate.split("/", 1)[0]
             try:
                 address = ipaddress.ip_address(value)
             except ValueError:
                 continue
-            if isinstance(address, ipaddress.IPv4Address) and not address.is_loopback:
-                return str(address)
-    return "NO IPV4"
+            if isinstance(address, ipaddress.IPv4Address) and not (
+                address.is_loopback or address.is_link_local
+            ):
+                found.append((interface, str(address)))
+    for interface, address in found:
+        if interface in preferred:
+            return address
+    return found[0][1] if found else "NO IPV4"
 
 
 def network_summary() -> str:
+    def ip(*arguments: str) -> str:
+        return subprocess.run(
+            ["ip", *arguments], text=True, capture_output=True, check=False, timeout=3
+        ).stdout
+
+    try:
+        addresses = ip("-brief", "-4", "address", "show", "up")
+        routes = ip("-4", "route", "show", "default")
+    except (OSError, subprocess.SubprocessError):
+        return OFFLINE
+    address = get_ipv4(addresses, default_route_interfaces(routes))
+    return f"{address}  ONLINE" if address != "NO IPV4" else OFFLINE
+
+
+LIVE_DIR = pathlib.Path("/run/live")
+LIVE_WARNING = "LIVE MODE: SETTINGS WILL NOT BE SAVED"
+
+
+def state_is_persistent(findmnt_output: str) -> bool:
+    """Judge `findmnt -n -o SOURCE,FSTYPE,OPTIONS --target /var/lib/moonlightos`.
+
+    Saved settings survive only when that directory is a bind mount from a
+    real partition (live-boot persistence) or sits on an overlay whose upper
+    layer lives under /run/live/persistence. The plain live overlay, tmpfs and
+    the squashfs loop device do not count.
+    """
+    if "/run/live/persistence/" in findmnt_output:
+        return True
+    source = findmnt_output.split()[0] if findmnt_output.split() else ""
+    return source.startswith("/dev/") and not source.startswith(("/dev/loop", "/dev/ram", "/dev/zram"))
+
+
+def live_mode_warning(live_dir: pathlib.Path = LIVE_DIR) -> str:
+    """Return the banner text when booted live without working persistence."""
+    if not live_dir.exists():
+        return ""
     try:
         result = subprocess.run(
-            ["ip", "-brief", "-4", "address", "show", "up"],
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=3,
+            ["findmnt", "-n", "-o", "SOURCE,FSTYPE,OPTIONS", "--target", "/var/lib/moonlightos"],
+            text=True, capture_output=True, check=False, timeout=3,
         )
+        output = result.stdout
     except (OSError, subprocess.SubprocessError):
-        return "NO IPV4  OFFLINE"
-    address = get_ipv4(result.stdout)
-    state = "ONLINE" if address != "NO IPV4" else "OFFLINE"
-    return f"{address}  {state}"
+        output = ""
+    return "" if state_is_persistent(output) else LIVE_WARNING
 
 
 def bluetooth_summary() -> str:
@@ -269,6 +335,7 @@ class Launcher:
         self.screen = screen
         self.selected = 0
         self.status = network_summary()
+        self.live_warning = live_mode_warning()
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
@@ -331,7 +398,10 @@ class Launcher:
             except curses.error:
                 pass
 
-        add_centered(self.screen, max(row + 2, height - 4), self.status)
+        status_row = max(row + 2, height - 4)
+        add_centered(self.screen, status_row, self.status)
+        if self.live_warning:
+            add_centered(self.screen, status_row + 1, self.live_warning)
         self.screen.refresh()
 
     def draw_launching(self, label: str, frame: str) -> None:
@@ -607,7 +677,9 @@ class Launcher:
 
         self.draw()
         (RUN / "launcher-ready").touch()
-        display.restore_saved_mode()
+        if display.restore_saved_mode() is None:
+            self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
+            self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
         self.setup_wizard()
         while True:
@@ -844,6 +916,9 @@ class Settings:
             self.rollback(old_output, old_mode)
             self.refresh_outputs()
             return
+        self.finish_preview(old_output, old_mode, requested)
+
+    def finish_preview(self, old_output: display.Output, old_mode: display.Mode, requested: display.Mode) -> None:
         try:
             validated = display.valid_output_mode(old_output.name, old_output.identity, requested)
             if not validated or validated[0].current_mode is None:
@@ -855,7 +930,15 @@ class Settings:
                 requested.refresh_mhz,
             ):
                 raise RuntimeError("compositor did not retain the requested mode")
-            display.save_display(validated[0], requested)
+            try:
+                display.save_display(validated[0], requested)
+            except (OSError, RuntimeError) as error:
+                # The user confirmed a working mode: keep it for this session.
+                display.log(f"Confirmed {requested.argument} but could not save it: {error}")
+                self.refresh_outputs()
+                reason = getattr(error, "strerror", None) or str(error)
+                self.status = f"MODE APPLIED BUT NOT SAVED: {reason.upper()[:60]}"
+                return
             display.log(f"Confirmed and saved {requested.argument} on {old_output.name}")
             self.status = "DISPLAY MODE CONFIRMED AND SAVED"
             self.refresh_outputs()
@@ -952,18 +1035,24 @@ class Settings:
         finally:
             self.screen.timeout(1000)
 
+    def launch(self, app_id: str) -> None:
+        """Start an app and show the launcher's result (e.g. UNAVAILABLE) on this screen."""
+        self.launcher.launch_by_id(app_id)
+        self.status = self.launcher.status
+
     def activate(self) -> bool:
         actions = {
             "DISPLAY": self.run_display,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
+            "NETWORK": lambda: self.launch("network-setup"),
             "APPLICATIONS": self.run_applications,
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
-            "TAILSCALE": lambda: self.launcher.launch_by_id("tailscale"),
+            "TAILSCALE": lambda: self.launch("tailscale"),
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
-            "SYSTEM DIAGNOSTICS": lambda: self.launcher.launch_by_id("system-diagnostics"),
+            "SYSTEM DIAGNOSTICS": lambda: self.launch("system-diagnostics"),
         }
         action = actions.get(SETTINGS_MENU[self.selected])
         if action is None:
@@ -1011,11 +1100,23 @@ class Settings:
 
     def run_audio(self) -> None:
         selected = 0
+        result = ""  # outcome of the last change, shown on the redraw
         while True:
             try:
                 sinks = audio.query_sinks()
-                rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks] + ["BACK"]
-                self.status = "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
+                rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks]
+                if sinks:
+                    try:
+                        volume = audio.get_volume()
+                        filled = volume.percent * 20 // 100
+                        rows.append(f"VOLUME  [{'#' * filled}{'.' * (20 - filled)}]  {volume.percent}%")
+                        rows.append(f"MUTE  {'ON' if volume.muted else 'OFF'}")
+                    except (OSError, RuntimeError, subprocess.SubprocessError):
+                        rows += ["VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE"]
+                rows.append("BACK")
+                self.status = result or (
+                    "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
+                )
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 sinks = []
                 rows = ["BACK"]
@@ -1024,15 +1125,34 @@ class Settings:
             self.draw("AUDIO OUTPUT", rows, selected)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
-            if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(sinks)):
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
                 return
-            if key not in (curses.KEY_ENTER, 10, 13) or selected >= len(sinks):
+            if key not in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
+                continue
+            if selected < len(sinks):
+                if key not in ENTER_KEYS:
+                    continue
+                try:
+                    audio.set_default(sinks[selected].id)
+                    result = f"DEFAULT OUTPUT: {sinks[selected].name}"
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                    result = f"OUTPUT NOT CHANGED: {error}"
+                    continue
+                try:
+                    note = audio.ensure_audible(sinks[selected].id)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    note = "VOLUME NOT CHECKED"
+                if note:
+                    result += f" ({note})"
                 continue
             try:
-                audio.set_default(sinks[selected].id)
-                self.status = f"DEFAULT OUTPUT: {sinks[selected].name}"
+                if selected == len(sinks):
+                    step = -audio.VOLUME_STEP if key == curses.KEY_LEFT else audio.VOLUME_STEP
+                    result = f"VOLUME {audio.change_volume(step).percent}%"
+                else:
+                    result = "MUTED" if audio.toggle_mute().muted else "UNMUTED"
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                self.status = f"OUTPUT NOT CHANGED: {error}"
+                result = f"VOLUME NOT CHANGED: {error}"
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()
@@ -1471,6 +1591,15 @@ class RemoteDesktopSettings(ApplicationsSettings):
             else:
                 return
 
+    def upsert(self, connection: rdp.Connection) -> bool:
+        """Save a connection; a full or read-only disk is reported, not raised."""
+        try:
+            rdp.upsert_connection(connection)
+        except OSError:
+            self.status = SAVE_FAILED
+            return False
+        return True
+
     def save_connection(
         self, original: rdp.Connection | None, values: dict[str, object], new_password: str | None
     ) -> bool:
@@ -1496,7 +1625,8 @@ class RemoteDesktopSettings(ApplicationsSettings):
             ))
             if updated.save_password and new_password is not None:
                 rdp.validate_password(new_password)
-            rdp.upsert_connection(updated)
+            if not self.upsert(updated):
+                return False
         except (OSError, rdp.RdpError, apps.ManifestError) as error:
             self.status = f"NOT SAVED: {error}".upper()
             return False
@@ -1507,13 +1637,16 @@ class RemoteDesktopSettings(ApplicationsSettings):
         ):
             # A saved password belongs to one server and account; never reuse it.
             updated = dataclasses.replace(updated, save_password=False)
-            rdp.upsert_connection(updated)
+            if not self.upsert(updated):
+                return False
             message = "SAVED; SERVER OR ACCOUNT CHANGED, SO SAVE THE PASSWORD AGAIN"
         if updated.save_password and new_password is not None:
             ok, detail = self.password_request("set", updated.id, new_password)
             if not ok:
-                rdp.upsert_connection(dataclasses.replace(updated, save_password=False))
+                cleared = self.upsert(dataclasses.replace(updated, save_password=False))
                 self.password_request("delete", updated.id)
+                if not cleared:
+                    return False
                 message = f"SAVED; PASSWORD NOT STORED: {detail}".upper()
         elif original and original.save_password and not updated.save_password:
             ok, detail = self.password_request("delete", updated.id)
@@ -1630,7 +1763,10 @@ class RemoteDesktopSettings(ApplicationsSettings):
                 self.launcher.status = "CONNECTION CANCELLED"
                 return False
             connection = dataclasses.replace(connection, certificate=fingerprint)
-            rdp.upsert_connection(connection)
+            if not self.upsert(connection):
+                # Without the pin the session would trust whatever answers next time.
+                self.launcher.show_launch_failure(label, SAVE_FAILED)
+                return False
             rdp_log(f"certificate trusted on first use for {connection.id} {connection.host}:{connection.port} sha256={fingerprint}")
         elif connection.certificate != fingerprint:
             rdp_log(

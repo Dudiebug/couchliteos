@@ -121,6 +121,34 @@ class StorageTest(unittest.TestCase):
             rdp.upsert_connection(connection(), self.path)
         self.assertEqual(self.path.read_text(), "not ini")
 
+    def bulky(self, index):
+        # Within every per-field character limit, but two bytes per character on disk.
+        return connection(
+            id=f"rdp-bulky-{index:02d}", name="\u00e9" * 64, host="h" * 63 + ".example",
+            username="\u00e9" * 256, domain="\u00e9" * 255,
+        )
+
+    def test_store_larger_than_the_loader_accepts_is_refused_not_saved(self):
+        many = [self.bulky(index) for index in range(rdp.MAX_CONNECTIONS)]
+        self.assertGreater(len(rdp.serialize(many).encode("utf-8")), rdp.MAX_FILE)
+        with self.assertRaisesRegex(rdp.RdpError, "too large"):
+            rdp.write_connections(many, self.path)
+        self.assertFalse(self.path.exists())
+
+    def test_adding_past_the_size_limit_keeps_the_saved_connections_loadable(self):
+        for index in range(rdp.MAX_CONNECTIONS):
+            try:
+                rdp.upsert_connection(self.bulky(index), self.path)
+            except rdp.RdpError as error:
+                self.assertIn("too large", str(error))
+                break
+        else:
+            self.fail("a store larger than the loader limit was saved")
+        loaded, errors = rdp.load_connections(self.path)
+        self.assertEqual(errors, ())
+        self.assertEqual(len(loaded), index)
+        self.assertGreater(index, 0)
+
     def test_symlinked_store_is_refused(self):
         self.path.parent.mkdir(parents=True)
         target = self.root / "elsewhere.ini"

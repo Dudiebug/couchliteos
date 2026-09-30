@@ -58,3 +58,61 @@ def set_default(sink_id: int) -> None:
     )
     if result.returncode:
         raise RuntimeError((result.stderr or "wpctl set-default failed").strip())
+
+
+DEFAULT_SINK = "@DEFAULT_AUDIO_SINK@"
+VOLUME_STEP = 5  # percent
+SANE_VOLUME = 0.5
+VOLUME_RE = re.compile(r"Volume:\s*(\d+(?:\.\d+)?)(\s+\[MUTED\])?")
+
+
+@dataclasses.dataclass(frozen=True)
+class Volume:
+    percent: int
+    muted: bool
+
+
+def parse_volume(output: str) -> Volume:
+    """Parse `wpctl get-volume` output such as "Volume: 0.50 [MUTED]"."""
+    match = VOLUME_RE.search(output)
+    if not match:
+        raise RuntimeError("wpctl reported no volume")
+    return Volume(round(float(match.group(1)) * 100), bool(match.group(2)))
+
+
+def _wpctl(*arguments: str) -> str:
+    result = subprocess.run(
+        ["wpctl", *arguments], text=True, capture_output=True, check=False, timeout=5,
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or f"wpctl {arguments[0]} failed").strip())
+    return result.stdout
+
+
+def get_volume(target: str = DEFAULT_SINK) -> Volume:
+    return parse_volume(_wpctl("get-volume", target))
+
+
+def change_volume(step: int, target: str = DEFAULT_SINK) -> Volume:
+    """Raise or lower the volume by `step` percent, never above 100%."""
+    _wpctl("set-volume", "-l", "1.0", target, f"{abs(step)}%{'+' if step > 0 else '-'}")
+    return get_volume(target)
+
+
+def toggle_mute(target: str = DEFAULT_SINK) -> Volume:
+    _wpctl("set-mute", target, "toggle")
+    return get_volume(target)
+
+
+def ensure_audible(sink_id: int) -> str:
+    """Unmute a newly chosen output and lift it off 0%; return what was changed."""
+    target = str(sink_id)
+    volume = get_volume(target)
+    changes = []
+    if volume.muted:
+        _wpctl("set-mute", target, "0")
+        changes.append("UNMUTED")
+    if volume.percent == 0:
+        _wpctl("set-volume", target, str(SANE_VOLUME))
+        changes.append(f"VOLUME SET TO {round(SANE_VOLUME * 100)}%")
+    return ", ".join(changes)

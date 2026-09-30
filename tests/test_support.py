@@ -1,9 +1,13 @@
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
 import json
 import pathlib
+import os
 import re
+import signal
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -422,6 +426,156 @@ class ExporterTest(unittest.TestCase):
                     pathlib.Path(destination.mountpoint) / "support.tar.gz", True
                 )
         status.assert_not_called()
+
+
+class RunDirectoryTrustTest(unittest.TestCase):
+    """/run/moonlightos belongs to the unprivileged appliance user, so the
+    root exporter must never follow anything it finds there."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.run_dir = pathlib.Path(self.tmp.name) / "run"
+        self.run_dir.mkdir()
+        for name, value in (
+            ("RUN", self.run_dir),
+            ("LOCK", self.run_dir / "support-export.lock"),
+            ("REQUEST", self.run_dir / "support-export.request"),
+            ("STATUS", self.run_dir / "support-export.status"),
+        ):
+            patcher = mock.patch.object(exporter, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def labeled_destination(self):
+        return support.Destination(
+            "/dev/sdb1", "", "MOONLIGHTOS_SUPPORT", "vfat", False, "8:17", "uuid-one"
+        )
+
+    def mount_with_recorded_argv(self, returncode=0):
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, returncode, "", "mount failed")
+
+        with mock.patch.object(exporter.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            exporter, "path_is_writable", return_value=True
+        ):
+            try:
+                result = exporter.mount_labeled_destination(self.labeled_destination())
+            except RuntimeError:
+                result = None
+        mounts = [argv for argv in calls if argv[0] == "mount"]
+        self.assertEqual(len(mounts), 1)
+        self.addCleanup(
+            lambda: os.path.isdir(mounts[0][-1])
+            and not os.path.islink(mounts[0][-1])
+            and os.rmdir(mounts[0][-1])
+        )
+        return result, mounts[0][-1]
+
+    def test_symlinked_support_media_is_not_a_mount_target(self):
+        victim = pathlib.Path(self.tmp.name) / "usr-libexec"
+        victim.mkdir()
+        (self.run_dir / "support-media").symlink_to(victim)
+        result, target = self.mount_with_recorded_argv()
+        self.assertIsNotNone(result)
+        self.assertNotEqual(os.path.realpath(target), str(victim))
+        self.assertFalse(target.startswith(str(self.run_dir)), target)
+        self.assertFalse(os.path.islink(target))
+        self.assertEqual(result[0].mountpoint, target)
+
+    def test_private_mountpoint_is_removed_after_unmount(self):
+        (mounted, created), target = self.mount_with_recorded_argv()
+        self.assertTrue(created)
+        self.assertTrue(os.path.isdir(target))
+        with mock.patch.object(exporter, "checked_unmount"), mock.patch.object(
+            exporter, "write_status"
+        ), mock.patch.object(exporter, "journal_message"):
+            exporter.finish_export("request-id", mounted, pathlib.Path(target) / "x.tar.gz", True)
+        self.assertFalse(os.path.exists(target))
+
+    def test_failed_mount_removes_the_private_mountpoint(self):
+        result, target = self.mount_with_recorded_argv(returncode=32)
+        self.assertIsNone(result)
+        self.assertFalse(os.path.exists(target))
+
+    def collect_into(self, bundle: pathlib.Path) -> None:
+        with mock.patch.object(exporter, "command_output", return_value=""), mock.patch.dict(
+            exporter.os.environ,
+            {
+                "MOONLIGHTOS_SUPPORT_LOG_DIR": str(self.run_dir / "no-logs"),
+                "MOONLIGHTOS_SUPPORT_CONFIG": str(self.run_dir / "no-config"),
+            },
+        ):
+            exporter.collect(bundle)
+
+    def bundle_text(self, bundle: pathlib.Path) -> str:
+        return "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in sorted(bundle.rglob("*"))
+            if path.is_file()
+        )
+
+    def test_symlinked_status_file_is_not_collected(self):
+        secret = "SHADOWLINE-ROOT-HASH-31337"
+        target = pathlib.Path(self.tmp.name) / "shadow"
+        target.write_text(secret + "\n")
+        (self.run_dir / "x-ready").write_text("")
+        (self.run_dir / "x-status").symlink_to(target)
+        (self.run_dir / "y-ready").write_text("")
+        (self.run_dir / "y-status").write_text("Streaming Y\n")
+        bundle = pathlib.Path(self.tmp.name) / "bundle"
+        self.collect_into(bundle)
+        text = self.bundle_text(bundle)
+        self.assertNotIn(secret, text)
+        self.assertIn("y: Streaming Y", text)
+
+    def test_status_fifo_does_not_block_the_exporter(self):
+        (self.run_dir / "x-ready").write_text("")
+        os.mkfifo(self.run_dir / "x-status")
+        os.mkfifo(self.run_dir / "firefox-drm-status")
+
+        def timed_out(_signum, _frame):
+            raise AssertionError("exporter blocked opening a FIFO")
+
+        previous = signal.signal(signal.SIGALRM, timed_out)
+        signal.alarm(10)
+        try:
+            self.collect_into(pathlib.Path(self.tmp.name) / "bundle")
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_status_permissions_are_set_on_the_descriptor_not_a_swappable_path(self):
+        with mock.patch.object(exporter.os, "chmod", side_effect=AssertionError("chmod by path")):
+            exporter.write_status("a" * 24, "working", "Collecting")
+        self.assertEqual(os.stat(exporter.STATUS).st_mode & 0o777, 0o644)
+
+    def test_symlinked_lock_is_refused(self):
+        victim = pathlib.Path(self.tmp.name) / "victim"
+        exporter.LOCK.symlink_to(victim)
+        with mock.patch.object(exporter, "read_request") as read_request, mock.patch.object(
+            exporter, "write_status"
+        ), mock.patch.object(exporter, "journal_message"):
+            code = exporter.run()
+        self.assertNotEqual(code, 0)
+        self.assertFalse(victim.exists(), "root created a file through the symlinked lock")
+        read_request.assert_not_called()
+
+    def test_regular_lock_is_created_private_and_excludes_a_second_run(self):
+        with mock.patch.object(exporter, "read_request", side_effect=RuntimeError("stop")), mock.patch.object(
+            exporter, "write_status"
+        ), mock.patch.object(exporter, "journal_message"):
+            self.assertEqual(exporter.run(), 1)
+            self.assertEqual(os.stat(exporter.LOCK).st_mode & 0o777, 0o600)
+            held = exporter.open_lock(exporter.LOCK)
+            fcntl.flock(held, fcntl.LOCK_EX)
+            try:
+                self.assertEqual(exporter.run(), 75)
+            finally:
+                os.close(held)
 
 
 if __name__ == "__main__":

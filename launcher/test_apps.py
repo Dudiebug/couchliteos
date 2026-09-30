@@ -2,6 +2,7 @@ import dataclasses
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import moonlightos_apps as apps
 
@@ -99,6 +100,34 @@ class ApplicationsTest(unittest.TestCase):
         apps.write_state([app], self.state)
         self.assertEqual(path.stat().st_mode & 0o777, 0o640)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o640)
+
+    def test_validation_temp_file_is_not_a_loadable_manifest(self):
+        app = apps.Application(
+            id="custom", name="CUSTOM", kind="command", command="/bin/true",
+            status_id="custom",
+        )
+        visible_to_loader = []
+        real_read_manifest = apps.read_manifest
+
+        def spy(path, **kwargs):
+            if path.name.startswith(".validate-app."):
+                visible_to_loader.append(sorted(item.name for item in self.user.glob("*.ini")))
+            return real_read_manifest(path, **kwargs)
+
+        with mock.patch.object(apps, "read_manifest", side_effect=spy):
+            apps.write_user_application(app, system_dir=SYSTEM, user_dir=self.user)
+        self.assertEqual(visible_to_loader, [[]])
+
+    def test_leftover_validation_file_from_a_crash_is_not_loaded(self):
+        app = apps.Application(
+            id="ghost", name="GHOST", kind="command", command="/bin/true",
+            status_id="ghost",
+        )
+        self.user.mkdir()
+        (self.user / ".validate-app.abcd1234.ini").write_text(apps.serialize(app), encoding="utf-8")
+        result = self.load()
+        self.assertNotIn("ghost", {item.id for item in result.applications})
+        self.assertEqual(result.errors, ())
 
     def test_web_url_validation(self):
         self.assertEqual(apps.validate_web_url("https://example.com/a?q=1"), "https://example.com/a?q=1")

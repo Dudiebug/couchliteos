@@ -268,7 +268,11 @@ def write_connections(
         raise RdpError(f"at most {MAX_CONNECTIONS} connections can be saved")
     if len({item.id for item in connections}) != len(connections):
         raise RdpError("duplicate connection id")
-    apps.atomic_write(path, serialize(connections))
+    text = serialize(connections)
+    if len(text.encode("utf-8")) > MAX_FILE:
+        # load_connections rejects a bigger file, which would hide every connection.
+        raise RdpError("saved connections are too large; shorten or remove some connections")
+    apps.atomic_write(path, text)
 
 
 def get_connection(connection_id_value: str, path: pathlib.Path = CONNECTIONS) -> Connection | None:
