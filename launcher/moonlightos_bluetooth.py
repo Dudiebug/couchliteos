@@ -12,6 +12,8 @@ import socket
 import time
 from typing import Any
 
+import moonlightos_listview as listview
+
 
 SOCKET_PATH = pathlib.Path("/run/moonlightos-bluetooth/control.sock")
 START_OSK = pathlib.Path("/run/moonlightos/start-osk")
@@ -178,19 +180,9 @@ class BluetoothMenu:
 
         first_row = max(detail_row + len(details) + 2, height // 3)
         left = max(2, (width - max((len(row) for row in rows), default=1) - 3) // 2)
-        for index, label in enumerate(rows):
-            if first_row + index >= height - 4:
-                break
-            marker = ">" if index == selected else " "
-            try:
-                self.screen.addnstr(
-                    first_row + index,
-                    left,
-                    f"{marker}  {safe_text(label, 120)}",
-                    max(1, width - left - 1),
-                )
-            except curses.error:
-                pass
+        listview.draw_rows(
+            self.screen, [safe_text(label, 120) for label in rows], selected, first_row, height - 4, left
+        )
         centered(height - 3, footer or self.status)
         self.screen.refresh()
 

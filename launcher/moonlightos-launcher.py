@@ -20,6 +20,7 @@ import moonlightos_display as display
 import moonlightos_audio as audio
 import moonlightos_support as support
 import moonlightos_bluetooth as bluetooth
+import moonlightos_listview as listview
 import moonlightos_apps as apps
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
@@ -336,29 +337,19 @@ class Launcher:
         title_row = max(2, height // 8)
         add_centered(self.screen, title_row, "MOONLIGHTOS")
 
-        rows = []
-        row = max(title_row + 3, height // 3)
-        gap_before = {len(self.applications), len(self.applications) + 1}
-        for index, (label, _action) in enumerate(self.menu):
-            if index in gap_before:
-                row += 1
-            rows.append((row, label))
-            row += 1
-
-        menu_width = max(len(label) for _row, label in rows) + 3
-        menu_left = max(2, (width - menu_width) // 2)
-        for index, (menu_row, label) in enumerate(rows):
-            if menu_row >= height - 3:
-                break
-            marker = ">" if index == self.selected else " "
-            try:
-                self.screen.addnstr(
-                    menu_row, menu_left, f"{marker}  {label}", max(1, width - menu_left - 1)
-                )
-            except curses.error:
-                pass
-
-        add_centered(self.screen, max(row + 2, height - 4), self.status)
+        labels = [label for label, _action in self.menu]
+        selected = self.selected
+        first_row = max(title_row + 3, height // 3)
+        status_row = height - 4  # always on screen: it carries results and errors
+        gap_before = (len(self.applications), len(self.applications) + 1)
+        if len(labels) + len(gap_before) <= status_row - 1 - first_row:
+            # Everything fits: blank rows separate the apps, SETTINGS and the power buttons.
+            selected += sum(1 for at in gap_before if at <= self.selected)
+            for at in reversed(gap_before):
+                labels.insert(at, "")
+        menu_left = max(2, (width - max(len(label) for label in labels) - 3) // 2)
+        listview.draw_rows(self.screen, labels, selected, first_row, status_row - 1, menu_left)
+        add_centered(self.screen, status_row, self.status)
         self.screen.refresh()
 
     def draw_launching(self, label: str, frame: str) -> None:
@@ -723,16 +714,8 @@ class Settings:
         if rows is None:
             rows = list(SETTINGS_MENU)
             selected = self.selected
-        row = max(5, height // 3)
         left = max(2, (width - max((len(item) for item in rows), default=1) - 3) // 2)
-        for index, label in enumerate(rows):
-            marker = ">" if index == selected else " "
-            if row + index >= height - 4:
-                break
-            try:
-                self.screen.addnstr(row + index, left, f"{marker}  {label}", width - left - 1)
-            except curses.error:
-                pass
+        listview.draw_rows(self.screen, rows, selected, max(5, height // 3), height - 4, left)
         add_centered(self.screen, height - 3, self.status)
         self.screen.refresh()
 
@@ -1098,16 +1081,8 @@ class ApplicationsSettings:
         height, width = self.screen.getmaxyx()
         draw_border(self.screen)
         add_centered(self.screen, max(2, height // 8), title)
-        first = max(5, height // 4)
         left = max(2, (width - max((len(row) for row in rows), default=1) - 3) // 2)
-        count = max(1, height - first - 4)
-        offset = 0 if selected is None else min(max(0, selected - count + 1), max(0, len(rows) - count))
-        for index, row in enumerate(rows[offset:offset + count], start=offset):
-            marker = ">" if index == selected else " "
-            try:
-                self.screen.addnstr(first + index - offset, left, f"{marker}  {row}", max(1, width - left - 1))
-            except curses.error:
-                pass
+        listview.draw_rows(self.screen, rows, selected, max(5, height // 4), height - 4, left)
         add_centered(self.screen, height - 3, self.status or "LEFT/RIGHT MOVES  ·  ENTER EDITS  ·  F12 KEYBOARD")
         self.screen.refresh()
 

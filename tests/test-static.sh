@@ -522,4 +522,7 @@ MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
 rg -q 'mkdtemp\(prefix="support-media-"' scripts/moonlightos-support-export
 refute rg -q 'RUN / "support-media"|LOCK\.open|os\.chmod\(temporary' scripts/moonlightos-support-export
 
+# Scrolling menus (720p terminals show ~18 rows) need their helper in the image.
+rg -q 'moonlightos_listview.py' build/configure.sh
+
 printf 'Static tests passed.\n'
