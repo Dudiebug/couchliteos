@@ -498,4 +498,14 @@ MOONLIGHTOS_USBIP_ALLOWLIST="$tmp/allowlist" \
 MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
   bash usbip/moonlightos-usbip unbind-all
 
+# Boot speed: an installed system boots straight in (Shift/Esc shows the menu); the live
+# ISO keeps the menu its binary hook writes; the launcher never waits for the network.
+rg -q '^GRUB_TIMEOUT_STYLE=hidden$' overlay/etc/default/grub.d/20-moonlightos.cfg
+rg -q '^GRUB_TIMEOUT=1$' overlay/etc/default/grub.d/20-moonlightos.cfg
+refute rg -q 'hidden|GRUB_TIMEOUT' config/live-build/hooks/live/0100-autoboot.hook.binary
+refute rg -q 'network-online|wait-online|network-ready|tailscale|usbip|firewall' services/moonlightos-launcher.service
+rg -Fq 'systemd-analyze --no-pager critical-chain moonlightos-launcher.service' scripts/moonlightos-diagnostics
+rg -Fq 'systemd-analyze --no-pager blame 2>&1 | head -n 30' scripts/moonlightos-diagnostics
+rg -Fq '"systemd-analyze", "--no-pager", "critical-chain", "moonlightos-launcher.service"' scripts/moonlightos-support-export
+
 printf 'Static tests passed.\n'

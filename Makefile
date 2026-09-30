@@ -44,6 +44,7 @@ test:
 	python3 -m unittest -v tests/test_qemu_iso_boot.py
 	python3 -m unittest -v tests/test_rdp_secret.py
 	python3 -m unittest -v tests/test_hwdetect.py
+	python3 -m unittest -v tests/test_faster.py
 	$(MAKE) -C launcher test
 
 

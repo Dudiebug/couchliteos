@@ -95,6 +95,11 @@ report() {
   echo '== Remote Desktop connections (sanitized) =='
   /usr/bin/python3 /usr/libexec/moonlightos_rdp.py 2>&1 || true
   echo
+  echo '== Boot timing =='
+  systemd-analyze --no-pager 2>&1 || true
+  systemd-analyze --no-pager critical-chain moonlightos-launcher.service 2>&1 || true
+  systemd-analyze --no-pager blame 2>&1 | head -n 30 || true
+  echo
   echo '== Services =='
   systemctl --no-pager --plain --state=failed 2>&1 || true
 }
