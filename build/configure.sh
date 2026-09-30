@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORK="$ROOT/build/work"
 CHROOT="$WORK/config/includes.chroot"
-PROFILE=${PROFILE:-intel}
+PROFILE=${PROFILE:-general}
 PROFILE_DIR="$ROOT/config/profiles/$PROFILE"
 
 [[ $PROFILE =~ ^[a-z0-9][a-z0-9-]{0,31}$ && -f "$PROFILE_DIR/profile.conf" ]] || {
@@ -24,16 +24,34 @@ fi
 mkdir -p "$WORK/config" "$CHROOT"
 cp -a "$ROOT/config/live-build/." "$WORK/config/"
 cp -a "$ROOT/overlay/." "$CHROOT/"
-# The build profile adds hardware-specific packages, hooks, and files.
-if [[ -d "$PROFILE_DIR/package-lists" ]]; then
-  cp -a "$PROFILE_DIR/package-lists/." "$WORK/config/package-lists/"
+# The build profile adds hardware-specific packages, hooks, and files. A
+# profile with PROFILE_BASE gets its base profile's files first.
+PROFILE_BASE=$(source "$PROFILE_DIR/profile.conf"; printf '%s' "${PROFILE_BASE:-}")
+profile_dirs=()
+if [[ -n $PROFILE_BASE ]]; then
+  base_dir="$ROOT/config/profiles/$PROFILE_BASE"
+  [[ $PROFILE_BASE =~ ^[a-z0-9][a-z0-9-]{0,31}$ && $PROFILE_BASE != "$PROFILE" && -f "$base_dir/profile.conf" ]] || {
+    printf 'Profile %s: unknown PROFILE_BASE %s\n' "$PROFILE" "$PROFILE_BASE" >&2
+    exit 64
+  }
+  [[ -z $(source "$base_dir/profile.conf"; printf '%s' "${PROFILE_BASE:-}") ]] || {
+    printf 'Profile %s: base profile %s must not have a base itself\n' "$PROFILE" "$PROFILE_BASE" >&2
+    exit 64
+  }
+  profile_dirs+=("$base_dir")
 fi
-if [[ -d "$PROFILE_DIR/hooks" ]]; then
-  cp -a "$PROFILE_DIR/hooks/." "$WORK/config/hooks/live/"
-fi
-if [[ -d "$PROFILE_DIR/overlay" ]]; then
-  cp -a "$PROFILE_DIR/overlay/." "$CHROOT/"
-fi
+profile_dirs+=("$PROFILE_DIR")
+for profile_dir in "${profile_dirs[@]}"; do
+  if [[ -d "$profile_dir/package-lists" ]]; then
+    cp -a "$profile_dir/package-lists/." "$WORK/config/package-lists/"
+  fi
+  if [[ -d "$profile_dir/hooks" ]]; then
+    cp -a "$profile_dir/hooks/." "$WORK/config/hooks/live/"
+  fi
+  if [[ -d "$profile_dir/overlay" ]]; then
+    cp -a "$profile_dir/overlay/." "$CHROOT/"
+  fi
+done
 install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/moonlightos/profile.conf"
 printf '%s\n' "$PROFILE" > "$WORK/profile"
 install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \
@@ -66,6 +84,7 @@ install -D -m 0755 "$ROOT/scripts/moonlightos-qemu-smoke" "$CHROOT/usr/libexec/m
 install -D -m 0755 "$ROOT/scripts/moonlightos-support-export" "$CHROOT/usr/libexec/moonlightos-support-export"
 install -D -m 0755 "$ROOT/scripts/moonlightos-diagnostics" "$CHROOT/usr/bin/moonlightos-diagnostics"
 install -D -m 0755 "$ROOT/scripts/moonlightos-hardware-report" "$CHROOT/usr/bin/moonlightos-hardware-report"
+install -D -m 0755 "$ROOT/scripts/moonlightos-hwdetect" "$CHROOT/usr/libexec/moonlightos-hwdetect"
 install -D -m 0755 "$ROOT/scripts/moonlightos-network-ready" "$CHROOT/usr/libexec/moonlightos-network-ready"
 install -D -m 0755 "$ROOT/scripts/moonlightos-firewall" "$CHROOT/usr/libexec/moonlightos-firewall"
 install -D -m 0755 "$ROOT/scripts/moonlightos-audio" "$CHROOT/usr/libexec/moonlightos-audio"
@@ -122,4 +141,4 @@ while IFS='|' read -r name _version _url filename; do
   trap - EXIT
 done < "$ROOT/build/applications.lock"
 
-printf 'Prepared %s for build profile %s\n' "$WORK" "$PROFILE"
+printf 'Prepared %s for build profile %s%s\n' "$WORK" "$PROFILE" "${PROFILE_BASE:+ (base: $PROFILE_BASE)}"

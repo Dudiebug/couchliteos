@@ -1,8 +1,8 @@
 [Unit]
 Description=MoonlightOS controller-friendly launcher
 Requires=seatd.service
-Wants=moonlightos-audio.service moonlightos-bluetooth.service
-After=seatd.service moonlightos-audio.service moonlightos-bluetooth.service systemd-user-sessions.service
+Wants=moonlightos-audio.service moonlightos-bluetooth.service moonlightos-hwdetect.service
+After=seatd.service moonlightos-audio.service moonlightos-bluetooth.service moonlightos-hwdetect.service systemd-user-sessions.service
 Conflicts=getty@tty1.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -19,6 +19,8 @@ Environment=XDG_CACHE_HOME=/var/lib/moonlightos/home/.cache
 Environment=XDG_RUNTIME_DIR=/run/moonlightos
 Environment=LIBSEAT_BACKEND=seatd
 Environment=QT_QPA_PLATFORM=wayland
+# GPU-specific compositor settings written at boot by moonlightos-hwdetect.
+EnvironmentFile=-/run/moonlightos-hardware/compositor.env
 StateDirectory=moonlightos
 LogsDirectory=moonlightos
 ExecStartPre=/usr/bin/rm -f /run/moonlightos/launcher-ready /run/moonlightos/session.env

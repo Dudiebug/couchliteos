@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORK="$ROOT/build/work"
 OUT="$ROOT/build/out"
-PROFILE=${PROFILE:-intel}
+PROFILE=${PROFILE:-general}
 VERSION=$(< "$ROOT/VERSION")
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Run with sudo: sudo make build' >&2; exit 1; }
@@ -13,7 +13,7 @@ command -v lb >/dev/null || { echo 'live-build is required (apt install live-bui
   echo "build/work was not prepared for profile $PROFILE; run: make configure PROFILE=$PROFILE" >&2
   exit 1
 }
-# shellcheck source=config/profiles/intel/profile.conf
+# shellcheck source=config/profiles/general/profile.conf
 source "$ROOT/config/profiles/$PROFILE/profile.conf"
 ISO="$OUT/moonlightos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"
 read -r -a profile_options <<< "${LB_EXTRA_CONFIG:-}"
@@ -64,7 +64,7 @@ for pattern in ${FORBIDDEN_IMAGE_PATHS:-}; do
     exit 1
   fi
 done
-grep -E 'updates/dkms/wl\.ko' "$listing" || true
+grep -E 'updates/dkms/(wl|nvidia-current)[^/]*\.ko' "$listing" || true
 
 install -m 0644 "$built_iso" "$ISO"
 printf 'ISO: %s\n' "$ISO"

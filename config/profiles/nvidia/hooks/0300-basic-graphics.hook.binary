@@ -1,0 +1,53 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# NVIDIA ISO: add "Start MoonlightOS (Basic Graphics)" after the entries from
+# 0100-autoboot. moonlightos.gpu=basic makes moonlightos-hwdetect block the
+# proprietary driver and use nouveau. KMS stays on (Cage needs it).
+# Plain POSIX awk only: binary hooks run on the build host, where awk is mawk.
+while IFS= read -r -d '' cfg; do
+  grep -Fq 'menuentry "Start MoonlightOS (Basic Graphics)"' "$cfg" && continue
+  output=$(mktemp "${cfg}.XXXXXX")
+  awk '
+    /^menuentry "Start MoonlightOS"/ && !have { capture=1 }
+    capture {
+      line=$0
+      if (line ~ /^menuentry /) sub(/"Start MoonlightOS"[^\{]*/, "\"Start MoonlightOS (Basic Graphics)\" ", line)
+      if (line ~ /^[[:space:]]*linux[[:space:]]/) line=line " moonlightos.gpu=basic"
+      basic=basic line ORS
+      if ($0 ~ /^}/) { capture=0; have=1 }
+    }
+    { print }
+    /^menuentry "Start MoonlightOS \(No Persistence\)"/ { in_nopersistence=1 }
+    in_nopersistence && /^}/ { printf "%s", basic; in_nopersistence=0; added=1 }
+    END { if (!added) exit 1 }
+  ' "$cfg" > "$output"
+  chmod --reference="$cfg" "$output"
+  mv "$output" "$cfg"
+done < <(find . -type f -path '*/boot/grub/grub.cfg' -print0)
+
+while IFS= read -r -d '' cfg; do
+  grep -Fq 'menu label Start MoonlightOS (Basic Graphics)' "$cfg" && continue
+  output=$(mktemp "${cfg}.XXXXXX")
+  awk 'BEGIN { RS=""; ORS="\n\n" }
+    $1 == "label" && $2 == "live-amd64" { basic=$0 }
+    { print }
+    $1 == "label" && $2 == "live-amd64-nopersistence" {
+      n=split(basic, lines, "\n")
+      entry=""
+      for (i=1; i<=n; i++) {
+        line=lines[i]
+        if (line ~ /^[[:space:]]*menu default/) continue
+        sub(/^label live-amd64$/, "label live-amd64-basic", line)
+        sub(/menu label \^Start MoonlightOS$/, "menu label Start MoonlightOS (Basic Graphics)", line)
+        if (line ~ /^[[:space:]]*append[[:space:]]/) line=line " moonlightos.gpu=basic"
+        entry=entry (entry == "" ? "" : "\n") line
+      }
+      print entry
+      added=1
+    }
+    END { if (!added) exit 1 }
+  ' "$cfg" > "$output"
+  chmod --reference="$cfg" "$output"
+  mv "$output" "$cfg"
+done < <(find . -type f -path '*/isolinux/live.cfg' -print0)

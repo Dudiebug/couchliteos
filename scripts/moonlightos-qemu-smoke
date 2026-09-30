@@ -38,7 +38,10 @@ assert ok, message
 "
   [[ $(stat -c '%U:%G:%a' /var/lib/moonlightos/rdp-secrets) == root:root:700 ]]
   [[ $(stat -c '%U:%G:%a' /var/lib/moonlightos/rdp-secrets/rdp-qemu) == root:root:600 ]]
-  ! runuser -u moonlightos -- cat /var/lib/moonlightos/rdp-secrets/rdp-qemu >/dev/null 2>&1
+  if runuser -u moonlightos -- cat /var/lib/moonlightos/rdp-secrets/rdp-qemu >/dev/null 2>&1; then
+    echo 'The appliance user can read a saved Remote Desktop password.' >&2
+    exit 1
+  fi
   echo MOONLIGHTOS_SMOKE_RDP_STATE_WRITTEN
 }
 verify_rdp_state() {
@@ -117,7 +120,10 @@ case $mode in
     exit 0
     ;;
   live-persistence-absent)
-    ! grep -Fxq 'live_persistence = verified' /var/lib/moonlightos/config.ini
+    if grep -Fxq 'live_persistence = verified' /var/lib/moonlightos/config.ini; then
+      echo 'No Persistence boot still sees the persistent configuration.' >&2
+      exit 1
+    fi
     test ! -e /var/lib/moonlightos/home/.config/moonlight-qemu/state
     test ! -e /var/lib/moonlightos/home/.config/chiaki-qemu/state
     test ! -e /var/lib/tailscale/qemu-state
@@ -130,6 +136,28 @@ case $mode in
   apps) ;;
   *) exit 0 ;;
 esac
+
+# Boot-time hardware detection ran before the launcher and wrote its hints.
+systemctl is-active --quiet moonlightos-hwdetect-early.service
+systemctl is-active --quiet moonlightos-hwdetect.service
+if systemctl is-failed --quiet systemd-modules-load.service; then
+  systemctl --no-pager --full status systemd-modules-load.service >&2 || true
+  echo 'systemd-modules-load failed (a module listed for every boot does not load here).' >&2
+  exit 1
+fi
+test -f /run/modprobe.d/moonlightos-hardware.conf
+grep -q '^MOONLIGHTOS_GPU_DRIVER=' /run/moonlightos-hardware/hardware.env
+grep -q '^MOONLIGHTOS_VIDEO_DECODE=' /run/moonlightos-hardware/hardware.env
+if grep -qx 'NVIDIA_DRIVER=proprietary' /usr/share/moonlightos/profile.conf; then
+  # QEMU has no NVIDIA GPU: the proprietary driver must stay blocked and unloaded.
+  grep -qx 'blacklist nvidia-current' /run/modprobe.d/moonlightos-hardware.conf
+  if [[ -e /sys/module/nvidia ]]; then
+    echo 'The proprietary NVIDIA module loaded on a machine without an NVIDIA GPU.' >&2
+    exit 1
+  fi
+fi
+/usr/libexec/moonlightos-hwdetect report
+echo MOONLIGHTOS_SMOKE_HWDETECT_READY
 
 test -x /usr/libexec/moonlightos-run-configured-app
 test -x /usr/libexec/moonlightos-osk
@@ -313,8 +341,14 @@ wait_for_file /run/moonlightos/rdp-hold-ready 'second Remote Desktop session'
 pgrep -u moonlightos -f '^/usr/bin/sdl-freerdp3 /v:127.0.0.1 /port:33891' >/dev/null
 systemctl stop moonlightos-rdp.service
 systemctl show --property=Result,ExecMainStatus moonlightos-rdp.service
-! systemctl is-failed --quiet moonlightos-rdp.service
-! pgrep -u moonlightos -f '^/usr/bin/sdl-freerdp3' >/dev/null
+if systemctl is-failed --quiet moonlightos-rdp.service; then
+  echo 'Stopping a Remote Desktop session marked the unit failed.' >&2
+  exit 1
+fi
+if pgrep -u moonlightos -f '^/usr/bin/sdl-freerdp3' >/dev/null; then
+  echo 'The Remote Desktop client outlived its stopped unit.' >&2
+  exit 1
+fi
 test ! -e /run/moonlightos/rdp-session
 test ! -e /run/moonlightos/rdp-session.secret
 grep -qx 'exited: stopped' /run/moonlightos/rdp-hold-status

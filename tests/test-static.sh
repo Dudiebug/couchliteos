@@ -9,6 +9,24 @@ command -v rg >/dev/null || {
   exit 127
 }
 
+# A negated command (`! cmd`) never trips `set -e`, so negative checks use
+# refute: it fails on a match (status 0) and on an error (status > 1).
+refute() {
+  local status=0
+  "$@" || status=$?
+  case $status in
+    0) printf 'static test: unexpected match: %s\n' "$*" >&2; exit 1 ;;
+    1) ;;
+    *) printf 'static test: %s failed with status %s\n' "$*" "$status" >&2; exit "$status" ;;
+  esac
+}
+refute_control=$(mktemp)
+printf 'needle\n' > "$refute_control"
+(refute rg -q needle "$refute_control") && { echo 'refute accepted a match' >&2; exit 1; }
+(refute rg -q needle "$refute_control.missing" 2>/dev/null) && { echo 'refute accepted an error' >&2; exit 1; }
+refute rg -q haystack "$refute_control"
+rm -f -- "$refute_control"
+
 while IFS= read -r file; do
   bash -n "$file"
 done < <(rg -l -g '!build/work/**' -g '!build/out/**' '^#!/bin/bash' \
@@ -44,12 +62,12 @@ rg -q "submenu 'Advanced install options \.\.\.'" "$boot_test/binary/boot/grub/g
 rg -q "submenu 'Utilities\.\.\.'" "$boot_test/binary/boot/grub/grub.cfg"
 rg -q '^set color_normal=white/black$' "$boot_test/binary/boot/grub/theme.cfg"
 rg -q '^set color_highlight=black/white$' "$boot_test/binary/boot/grub/theme.cfg"
-! rg -q '^set theme=' "$boot_test/binary/boot/grub/theme.cfg"
+refute rg -q '^set theme=' "$boot_test/binary/boot/grub/theme.cfg"
 [[ $(stat -c %a "$boot_test/binary/boot/grub/grub.cfg") == "$grub_mode" ]]
 rg -q 'chmod 0555 "\$output"' "$ROOT/config/live-build/hooks/live/0100-autoboot.hook.binary"
 [[ $(stat -c %a "$boot_test/binary/isolinux/live.cfg") == "$isolinux_mode" ]]
 rg -q '^timeout 30$' "$boot_test/binary/isolinux/isolinux.cfg"
-! rg -q '^timeout 0$' "$boot_test/binary/isolinux/isolinux.cfg"
+refute rg -q '^timeout 0$' "$boot_test/binary/isolinux/isolinux.cfg"
 rg -q 'menu label \^Start MoonlightOS$' "$boot_test/binary/isolinux/live.cfg"
 rg -q 'menu label Start MoonlightOS \(No Persistence\)$' "$boot_test/binary/isolinux/live.cfg"
 [[ $(rg -c 'menu label Start MoonlightOS \(No Persistence\)$' "$boot_test/binary/isolinux/live.cfg") == 1 ]]
@@ -58,33 +76,49 @@ rg -q 'menu label \^Install MoonlightOS$' "$boot_test/binary/isolinux/install.cf
 rg -q 'append vga=788 theme=dark ipv6.disable=1 --- quiet' "$boot_test/binary/isolinux/install.cfg"
 rg -q 'rescue/enable=true vga=788 theme=dark ipv6.disable=1' "$boot_test/binary/isolinux/install.cfg"
 [[ $(sed 's/ theme=dark//' <<< "$(rg '^[[:space:]]+append ' "$boot_test/binary/isolinux/install.cfg")") == "$isolinux_installer_args" ]]
-! rg -q '^menu background ' "$boot_test/binary/isolinux/stdmenu.cfg"
+refute rg -q '^menu background ' "$boot_test/binary/isolinux/stdmenu.cfg"
 rg -q '^menu color sel[[:space:]]+\* #ff000000 #ffffffff \*$' "$boot_test/binary/isolinux/stdmenu.cfg"
+# NVIDIA ISO: one Basic Graphics entry (nouveau, KMS on) after No Persistence.
+(cd "$boot_test" && bash "$ROOT/config/profiles/nvidia/hooks/0300-basic-graphics.hook.binary")
+(cd "$boot_test" && bash "$ROOT/config/profiles/nvidia/hooks/0300-basic-graphics.hook.binary")
+grub_cfg=$boot_test/binary/boot/grub/grub.cfg
+live_cfg=$boot_test/binary/isolinux/live.cfg
+[[ $(rg -c '^menuentry "Start MoonlightOS \(Basic Graphics\)" \{$' "$grub_cfg") == 1 ]]
+[[ $(rg -c 'moonlightos\.gpu=basic' "$grub_cfg") == 1 ]]
+rg -q '^ linux /live/vmlinuz boot=live components persistence ipv6.disable=1 moonlightos\.gpu=basic$' "$grub_cfg"
+[[ $(rg '^menuentry ' "$grub_cfg" | cut -d'"' -f2 | paste -sd '|') == 'Start MoonlightOS|Start MoonlightOS (No Persistence)|Start MoonlightOS (Basic Graphics)' ]]
+[[ $(stat -c %a "$grub_cfg") == 555 ]]
+[[ $(rg -c '^label live-amd64-basic$' "$live_cfg") == 1 ]]
+[[ $(rg -c 'moonlightos\.gpu=basic' "$live_cfg") == 1 ]]
+rg -q '^ append boot=live components persistence ipv6.disable=1 moonlightos\.gpu=basic$' "$live_cfg"
+[[ $(rg -c 'menu default' "$live_cfg") == 1 ]]
+[[ $(rg '^label ' "$live_cfg" | paste -sd '|') == 'label live-amd64|label live-amd64-nopersistence|label live-amd64-basic' ]]
+refute rg -q 'nomodeset' "$grub_cfg" "$live_cfg"
 find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.1.12 ]]
+[[ "$(< VERSION)" == 0.1.13 ]]
 cmp -s VERSION overlay/etc/moonlightos-version
-rg -q 'moonlightos-0\.1\.12-amd64\.iso' .github/workflows/build.yml
+rg -q 'moonlightos-0\.1\.13-amd64\.iso' .github/workflows/build.yml
 rg -Fq 'ISO ?= build/out/moonlightos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso' Makefile
 rg -Fq 'ISO="$OUT/moonlightos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"' build/build.sh
-rg -q '^PROFILE \?= intel$' Makefile
-! rg -qi 'sha-?256|sha256|\.sha256' .github/workflows/build.yml .github/workflows/release-v0.1.11.yml
+rg -q '^PROFILE \?= general$' Makefile
+refute rg -qi 'sha-?256|sha256|\.sha256' .github/workflows/build.yml .github/workflows/release-v0.1.11.yml
 rg -q 'sudo chown -R .*build/out' .github/workflows/build.yml
 rg -q '^  actions: read$' .github/workflows/release-v0.1.11.yml
 rg -q 'git/refs/tags/0\.1\.11' .github/workflows/release-v0.1.11.yml
 rg -q 'docs/releases/v0\.1\.11\.md' .github/workflows/release-v0.1.11.yml
 rg -q 'release delete 0\.1\.11.*--yes' .github/workflows/release-v0.1.11.yml
-! rg -q 'git/ref/tags/v1\.1' .github/workflows/release-v0.1.11.yml
+refute rg -q 'git/ref/tags/v1\.1' .github/workflows/release-v0.1.11.yml
 rg -q '^ipv6.method=disabled$' overlay/etc/NetworkManager/conf.d/10-moonlightos.conf
 rg -q '^net.ipv6.conf.all.disable_ipv6=1$' overlay/etc/sysctl.d/90-moonlightos.conf
-! rg -q 'moonlightos-network-ready.service' services/moonlightos-launcher.service
-! rg -q 'Before=.*moonlightos-launcher.service' services/moonlightos-network-ready.service
-! rg -q 'moonlightos-network-ready.service' services/moonlightos-{moonlight,chiaki,firefox}.service
+refute rg -q 'moonlightos-network-ready.service' services/moonlightos-launcher.service
+refute rg -q 'Before=.*moonlightos-launcher.service' services/moonlightos-network-ready.service
+refute rg -q 'moonlightos-network-ready.service' services/moonlightos-{moonlight,chiaki,firefox}.service
 rg -q 'MOONLIGHTOS_LAUNCHER_READY' services/moonlightos-launcher.service tests/qemu-smoke.sh
 rg -q 'StandardOutput=journal\+console' services/moonlightos-launcher.service
-! rg -q '^Environment=WAYLAND_DISPLAY=' services/moonlightos-launcher.service
+refute rg -q '^Environment=WAYLAND_DISPLAY=' services/moonlightos-launcher.service
 rg -q '/usr/bin/cage -s -- /usr/bin/foot --fullscreen' services/moonlightos-launcher.service
 rg -q '^Environment=QT_QPA_PLATFORM=xcb$' services/moonlightos-moonlight.service
 rg -q '^Environment=QT_QPA_PLATFORM=wayland$' services/moonlightos-chiaki.service
@@ -100,24 +134,76 @@ rg -q 'write_status starting' scripts/moonlightos-run-app
 rg -q 'failed: exited before the application became ready' scripts/moonlightos-run-app
 rg -q 'unsquashfs -quiet -offset' build/configure.sh
 removed_units='moonlightos-escape''-guard|moonlightos-stop''-active-app'
-! rg -q "$removed_units" build/configure.sh
+refute rg -q "$removed_units" build/configure.sh
 rg -q '^firefox-esr$' config/live-build/package-lists/moonlightos.list.chroot
 # Build profiles: shared base plus hardware-specific packages, hooks, and files.
-for profile in intel imac2013; do
+# general and nvidia are the release ISOs; intel and imac2013 are legacy.
+for profile in general nvidia intel imac2013; do
   test -s "config/profiles/$profile/profile.conf"
   (source "config/profiles/$profile/profile.conf"; [[ $PROFILE_NAME == "$profile" ]])
 done
-[[ -z $(source config/profiles/intel/profile.conf; printf '%s' "$ISO_SUFFIX") ]]
-[[ $(source config/profiles/imac2013/profile.conf; printf '%s' "$ISO_SUFFIX") == imac2013 ]]
-! rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
+profile_value() { (source "config/profiles/$1/profile.conf"; printf '%s' "${!2:-}"); }
+[[ -z $(profile_value general ISO_SUFFIX) && $(profile_value general RELEASE) == 1 ]]
+[[ $(profile_value general NVIDIA_DRIVER) == none && -z $(profile_value general PROFILE_BASE) ]]
+[[ $(profile_value nvidia ISO_SUFFIX) == nvidia && $(profile_value nvidia RELEASE) == 1 ]]
+[[ $(profile_value nvidia NVIDIA_DRIVER) == proprietary && $(profile_value nvidia PROFILE_BASE) == general ]]
+[[ $(profile_value intel ISO_SUFFIX) == intel && $(profile_value intel RELEASE) == 0 ]]
+[[ $(profile_value imac2013 ISO_SUFFIX) == imac2013 && $(profile_value imac2013 RELEASE) == 0 ]]
+# Every profile names a distinct ISO.
+[[ -z $(for p in config/profiles/*/; do p=${p%/}; printf 'iso-%s\n' "$(profile_value "${p##*/}" ISO_SUFFIX)"; done | sort | uniq -d) ]]
+rg -q 'release_profiles' tools/release-assets.sh
+rg -Fq 'RELEASE:-0' tools/release-assets.sh
+rg -q 'PROFILE_BASE' build/configure.sh
+rg -q 'must not have a base itself' build/configure.sh
+# general: open drivers for Intel/AMD/NVIDIA, Broadcom wl per machine, curated firmware.
+for package in firmware-intel-graphics firmware-amd-graphics firmware-nvidia-graphics firmware-sof-signed \
+  firmware-iwlwifi firmware-brcm80211 intel-microcode amd64-microcode intel-media-va-driver i965-va-driver \
+  mesa-va-drivers broadcom-sta-dkms linux-headers-amd64 dkms dmidecode; do
+  rg -q "^$package\$" config/profiles/general/package-lists/general.list.chroot
+done
+rg -q '^options hid_apple fnmode=2$' config/profiles/general/overlay/etc/modprobe.d/moonlightos-input.conf
+rg -q 'dpkg-divert --local --rename --divert "\$sta_blacklist.moonlightos-disabled"' config/profiles/general/hooks/0200-general.hook.chroot
+rg -q 'NVIDIA_DRIVER:-none\} != proprietary' config/profiles/general/hooks/0200-general.hook.chroot
+rg -q 'rm -f /var/lib/dkms/mok.key' config/profiles/general/hooks/0200-general.hook.chroot
+rg -q 'systemctl is-enabled --quiet moonlightos-hwdetect-early.service' config/profiles/general/hooks/0200-general.hook.chroot
+refute rg -q '^blacklist ' config/profiles/general/overlay
+rg -q 'usr/lib/firmware/nvidia/\[0-9.\]\+/gsp' config/profiles/general/profile.conf
+rg -q "^LB_EXTRA_CONFIG='--firmware-binary false --firmware-chroot false'$" config/profiles/general/profile.conf config/profiles/nvidia/profile.conf
+# nvidia: proprietary 550 driver loaded only where moonlightos-hwdetect allows it.
+for package in nvidia-kernel-dkms firmware-nvidia-gsp nvidia-driver-libs libnvidia-egl-gbm1 nvidia-vaapi-driver nvidia-detect; do
+  rg -q "^$package\$" config/profiles/nvidia/package-lists/nvidia.list.chroot
+done
+rg -q '^options nvidia-current-drm modeset=1 fbdev=1$' config/profiles/nvidia/overlay/etc/modprobe.d/moonlightos-nvidia.conf
+rg -q 'dkms install "nvidia-current/' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
+rg -q 'dpkg-divert --local --rename --divert "\$load_conf.moonlightos-disabled"' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
+rg -q 'rm -f /var/lib/dkms/mok.key' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
+rg -q 'options nouveau' config/profiles/nvidia/hooks/0300-nvidia.hook.chroot
+refute rg -q 'gensub' config/profiles/nvidia/hooks/0300-basic-graphics.hook.binary
+# Boot-time hardware detection runs on every profile's image.
+rg -q 'moonlightos-hwdetect' build/configure.sh
+rg -q 'systemctl enable moonlightos-hwdetect-early.service moonlightos-hwdetect.service' config/live-build/hooks/live/0100-moonlightos.hook.chroot
+rg -q '^DefaultDependencies=no$' services/moonlightos-hwdetect-early.service
+rg -q '^Before=systemd-udevd.service systemd-udev-trigger.service systemd-modules-load.service sysinit.target$' services/moonlightos-hwdetect-early.service
+rg -q '^WantedBy=sysinit.target$' services/moonlightos-hwdetect-early.service
+rg -q '^ExecStart=/usr/libexec/moonlightos-hwdetect early$' services/moonlightos-hwdetect-early.service
+rg -q '^ExecStart=/usr/libexec/moonlightos-hwdetect late$' services/moonlightos-hwdetect.service
+rg -q '^Before=moonlightos-launcher.service$' services/moonlightos-hwdetect.service
+rg -q '^Wants=.*moonlightos-hwdetect.service' services/moonlightos-launcher.service
+rg -q '^EnvironmentFile=-/run/moonlightos-hardware/compositor.env$' services/moonlightos-launcher.service
+rg -q 'MOONLIGHTOS_VIDEO_DECODE' scripts/moonlightos-run-app
+rg -q 'moonlightos-hwdetect report' scripts/moonlightos-diagnostics scripts/moonlightos-hardware-report
+[[ $(head -1 scripts/moonlightos-hwdetect) == '#!/usr/bin/python3 -I' ]]
+refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
 rg -q '^intel-media-va-driver$' config/profiles/intel/package-lists/intel-graphics.list.chroot
-! rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools|i965-va-driver)$' config/profiles/imac2013
+refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools|i965-va-driver)$' config/profiles/imac2013
 for package in broadcom-sta-dkms linux-headers-amd64 dkms firmware-misc-nonfree lm-sensors; do
   rg -q "^$package\$" config/profiles/imac2013/package-lists/imac2013.list.chroot
 done
-# Kepler must never get a proprietary NVIDIA driver (no GBM for Cage past the 470 branch).
-! rg -q '^[^#]*nvidia' config/live-build/package-lists config/profiles/*/package-lists
-! rg -q 'nomodeset' config overlay build
+# Only the nvidia profile installs the proprietary NVIDIA driver. Kepler (the
+# iMac Late 2013) never gets it: no GBM for Cage past the 470 branch.
+refute rg -q '^[^#]*nvidia' config/live-build/package-lists config/profiles/intel/package-lists config/profiles/imac2013/package-lists
+[[ $(rg --no-filename '^[^#]*nvidia' config/profiles/general/package-lists) == firmware-nvidia-graphics ]]
+refute rg -q 'nomodeset' config overlay build
 for module in b43 bcma ssb brcmsmac; do
   rg -q "^blacklist $module\$" config/profiles/imac2013/overlay/etc/modprobe.d/moonlightos-imac2013.conf
 done
@@ -129,7 +215,7 @@ rg -q 'rm -f /var/lib/dkms/mok.key' config/profiles/imac2013/hooks/0200-imac2013
 rg -q 'decoder = software' config/profiles/imac2013/hooks/0200-imac2013.hook.chroot
 rg -q 'updates/dkms/wl' config/profiles/imac2013/profile.conf
 rg -q 'unsquashfs -l -d / binary/live/filesystem.squashfs' build/build.sh
-rg -q 'PROFILE_DIR/package-lists' build/configure.sh
+rg -q 'profile_dir/package-lists' build/configure.sh
 rg -q 'read -r -a profile_options' build/build.sh
 rg -Fq '"${profile_options[@]}"' build/build.sh
 rg -q "^LB_EXTRA_CONFIG='--firmware-binary false'$" config/profiles/intel/profile.conf
@@ -139,20 +225,20 @@ rg -q 'firmware-nvidia-' config/profiles/imac2013/hooks/0200-imac2013.hook.chroo
 rg -q '/usr/share/moonlightos/profile.conf' build/configure.sh
 # Remote Desktop: FreeRDP 3 SDL3 client on Wayland, passwords only through stdin.
 rg -q '^freerdp3-sdl$' config/live-build/package-lists/moonlightos.list.chroot
-! rg -qi 'remmina|freerdp2|xfreerdp' config/live-build/package-lists config/profiles
+refute rg -qi 'remmina|freerdp2|xfreerdp' config/live-build/package-lists config/profiles
 rg -q '"/from-stdin:force"' launcher/moonlightos_rdp.py
 rg -q 'cert:deny,fingerprint:sha256:' launcher/moonlightos_rdp.py
 rg -q '"SDL_VIDEO_DRIVER": "wayland"' launcher/moonlightos_rdp.py
-! rg -n '"/p:|/p:\{|--password' launcher/moonlightos_rdp.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py
+refute rg -n '"/p:|/p:\{|--password' launcher/moonlightos_rdp.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py
 rg -q 'stdin=subprocess.PIPE' launcher/moonlightos_app_runner.py
 # The session unit runs with the appliance user's environment: nothing in it may run as root.
-! rg -q '^Exec[A-Za-z]*=[-@:!]*\+' services/moonlightos-rdp.service
-! rg -q '^ExecStartPre=' services/moonlightos-rdp.service
+refute rg -q '^Exec[A-Za-z]*=[-@:!]*\+' services/moonlightos-rdp.service
+refute rg -q '^ExecStartPre=' services/moonlightos-rdp.service
 rg -q '^SuccessExitStatus=130 143$' services/moonlightos-rdp.service
 rg -q '^RestartMode=direct$' services/moonlightos-rdp.service
 rg -q '^ExecStartPost=\+/usr/bin/systemctl reset-failed moonlightos-rdp.service moonlightos-rdp.path$' services/moonlightos-rdp-cleanup.service
 rg -q '^ExecStartPost=\+/usr/bin/systemctl restart moonlightos-rdp.path$' services/moonlightos-rdp-cleanup.service
-! rg -q '^EnvironmentFile=' services/moonlightos-rdp-cleanup.service services/moonlightos-rdp-secret.service
+refute rg -q '^EnvironmentFile=' services/moonlightos-rdp-cleanup.service services/moonlightos-rdp-secret.service
 [[ $(head -1 scripts/moonlightos-rdp-secret) == '#!/usr/bin/python3 -I' ]]
 rg -q '^ExecStart=/usr/libexec/moonlightos-run-configured-app --rdp$' services/moonlightos-rdp.service
 rg -q '^Restart=on-failure$' services/moonlightos-rdp.service
@@ -174,7 +260,7 @@ rg -q 'FREERDP_SECRET_ARGUMENT' scripts/moonlightos-support-export
 rg -q 'BTN_NORTH: ecodes.KEY_F12' launcher/gamepad-nav.py
 rg -q '"REMOTE DESKTOP"' launcher/moonlightos-launcher.py
 rg -q '^google-chrome-stable$' config/live-build/package-lists/moonlightos.list.chroot
-! rg -q '^chromium' config/live-build/package-lists/moonlightos.list.chroot
+refute rg -q '^chromium' config/live-build/package-lists/moonlightos.list.chroot
 rg -q 'https://dl.google.com/linux/chrome/deb/ stable main' config/live-build/archives/google-chrome.list.chroot
 rg -q 'linux_signing_key.pub' build/sources.lock
 rg -q '^command = /usr/bin/google-chrome-stable$' config/apps.d/35-google-chrome.ini
@@ -187,8 +273,8 @@ rg -q '^wpasupplicant$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^qrencode$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^bluez$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^steam-devices$' config/live-build/package-lists/moonlightos.list.chroot
-! rg -q '^steam(-installer)?$|i386|multilib' config/live-build/package-lists/moonlightos.list.chroot build
-! rg -q '\bwvkbd\b' config build launcher scripts services
+refute rg -q '^steam(-installer)?$|i386|multilib' config/live-build/package-lists/moonlightos.list.chroot build
+refute rg -q '\bwvkbd\b' config build launcher scripts services
 rg -q '^libspa-0\.2-bluetooth$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^python3-dbus$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^python3-gi$' config/live-build/package-lists/moonlightos.list.chroot
@@ -196,7 +282,7 @@ rg -q '^rfkill$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q '^wlr-randr$' config/live-build/package-lists/moonlightos.list.chroot
 rg -q 'qrencode -t ANSIUTF8' scripts/moonlightos-tailscale-enrollment
 rg -q "trap 'rm -f --.*URL_FILE.*' EXIT" scripts/moonlightos-tailscale
-! rg -q 'gir1.2-gtk|libfuse' config/live-build/package-lists/moonlightos.list.chroot
+refute rg -q 'gir1.2-gtk|libfuse' config/live-build/package-lists/moonlightos.list.chroot
 rg -q 'OVMF_VARS_4M.fd' tests/qemu-smoke.sh
 rg -q 'unit=1,file=' tests/qemu-smoke.sh
 rg -q 'screendump' tests/qemu-smoke.sh
@@ -220,11 +306,11 @@ rg -q 'moonlightos-firefox.path' config/live-build/hooks/live/0100-moonlightos.h
 rg -q 'moonlightos-support-export.path' config/live-build/hooks/live/0100-moonlightos.hook.chroot
 rg -q 'moonlightos-configured-app.path moonlightos-osk.path' config/live-build/hooks/live/0100-moonlightos.hook.chroot
 rg -q 'bluetooth.service moonlightos-bluetooth.service' config/live-build/hooks/live/0100-moonlightos.hook.chroot
-! rg -q "$removed_units" config/live-build/hooks/live/0100-moonlightos.hook.chroot
+refute rg -q "$removed_units" config/live-build/hooks/live/0100-moonlightos.hook.chroot
 rg -q '^PathExists=/run/moonlightos/support-export.request$' services/moonlightos-support-export.path
 rg -q '^ExecStart=/usr/libexec/moonlightos-support-export$' services/moonlightos-support-export.service
 removed_feature='TRIPLE[- ]?TAP|triple[- ]?tap|escape''-guard|stop''-active-app'
-! rg -q -g '!build/work/**' -g '!build/out/**' -g '!tests/test-static.sh' \
+refute rg -q -g '!build/work/**' -g '!build/out/**' -g '!tests/test-static.sh' \
   "$removed_feature" launcher scripts services build config docs tests
 rg -q 'ACTIVE APPLICATIONS' launcher/moonlightos-launcher.py
 rg -Fq 'close-{app.status_id}' launcher/moonlightos-launcher.py
@@ -243,7 +329,7 @@ for unit in audio bluetooth moonlight chiaki firefox; do
   rg -q '^Environment=PIPEWIRE_RUNTIME_DIR=/run/moonlightos$' "services/moonlightos-$unit.service"
 done
 rg -q '^d /run/moonlightos 0700 moonlightos moonlightos -$' overlay/etc/tmpfiles.d/moonlightos.conf
-! rg -q '^RuntimeDirectory=' services/moonlightos-launcher.service
+refute rg -q '^RuntimeDirectory=' services/moonlightos-launcher.service
 rg -q '^/usr/bin/wireplumber --profile main-systemwide ' scripts/moonlightos-audio
 rg -q '^PIPEWIRE_DAEMON=true PIPEWIRE_CORE=pipewire-0 /usr/bin/pipewire ' scripts/moonlightos-audio
 rg -q 'moonlightos_bluetooth.py' build/configure.sh
@@ -251,22 +337,23 @@ rg -q 'moonlightos-bluetoothd' build/configure.sh
 rg -q 'moonlightos-run-configured-app' build/configure.sh
 rg -q 'moonlightos-osk-session' build/configure.sh
 rg -q 'usr/share/moonlightos/apps.d' build/configure.sh
-! rg -q 'terminal_command|curses\.endwin' launcher/moonlightos-launcher.py
-! rg -q 'shell=True|\beval\b' launcher/moonlightos_apps.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py launcher/moonlightos_osk.py launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret
+refute rg -q 'terminal_command|curses\.endwin' launcher/moonlightos-launcher.py
+refute rg -q 'shell=True|\beval\b' launcher/moonlightos_apps.py launcher/moonlightos_app_runner.py launcher/moonlightos-launcher.py launcher/moonlightos_osk.py launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret
 for forbidden in 'bluetooth''ctl' 'curses\.endwin' 'terminal_''command' 'SIG''INT' 'kill\(' 'shell=True'; do
-  ! rg -n "$forbidden" launcher/moonlightos_bluetooth.py scripts/moonlightos-bluetoothd
+  refute rg -n "$forbidden" launcher/moonlightos_bluetooth.py scripts/moonlightos-bluetoothd
 done
-! rg -q '\bsudo\b' launcher scripts/moonlightos-support-export services/moonlightos-support-export.service
+refute rg -q '\bsudo\b' launcher scripts/moonlightos-support-export services/moonlightos-support-export.service
 rg -q '\["wlr-randr", "--output"' launcher/moonlightos_display.py
 rg -q 'append\("--dryrun"\)' launcher/moonlightos_display.py
 rg -q 'support-export.request' launcher/moonlightos_support.py
-! rg -q '\brunuser\b|\bresolvectl\b' scripts/moonlightos-support-export
+refute rg -q '\brunuser\b|\bresolvectl\b' scripts/moonlightos-support-export
 rg -q '/usr/bin/setpriv' scripts/moonlightos-support-export tests/test_support.py
 rg -q '^ExecStart=/usr/sbin/usbipd --ipv4$' services/moonlightos-usbipd.service
-! rg -q -- '--foreground' services/moonlightos-usbipd.service
+refute rg -q -- '--foreground' services/moonlightos-usbipd.service
 rg -q 'MOONLIGHTOS_SMOKE_USBIP_READY' scripts/moonlightos-qemu-smoke tests/qemu-smoke.sh
+rg -q 'MOONLIGHTOS_SMOKE_HWDETECT_READY' scripts/moonlightos-qemu-smoke tests/qemu-smoke.sh
 rg -q 'MOONLIGHTOS_SMOKE_BLUETOOTH_READY' scripts/moonlightos-qemu-smoke tests/qemu-smoke.sh
-! rg -q -- '-kernel|-initrd' tests/qemu-install-smoke.sh
+refute rg -q -- '-kernel|-initrd' tests/qemu-install-smoke.sh
 rg -q 'qemu_iso_boot.py' tests/qemu-install-smoke.sh
 rg -q '32G' tests/qemu-install-smoke.sh
 rg -q 'blank_disk=true' tests/qemu-install-smoke.sh
@@ -274,7 +361,7 @@ rg -q 'MOONLIGHTOS_SMOKE_INSTALLED_DISK_READY' scripts/moonlightos-qemu-smoke te
 rg -q 'MOONLIGHTOS_QEMU_INSTALLER_SCREENSHOT' tests/qemu-install-smoke.sh .github/workflows/build.yml
 rg -q 'MOONLIGHTOS_QEMU_INSTALLED_SCREENSHOT' tests/qemu-install-smoke.sh .github/workflows/build.yml
 rg -q 'Screenshot evidence missing' tests/qemu-install-smoke.sh
-! rg -q 'install -d.*dirname.*screenshot' tests/qemu-install-smoke.sh
+refute rg -q 'install -d.*dirname.*screenshot' tests/qemu-install-smoke.sh
 rg -q 'findmnt -n -o FSTYPE /' scripts/moonlightos-qemu-smoke
 rg -q 'lsblk --fs' scripts/moonlightos-qemu-smoke
 rg -q '^[[:space:]]*blkid$' scripts/moonlightos-qemu-smoke
@@ -306,7 +393,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
   launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
-  scripts/moonlightos-bluetoothd
+  scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 
 python3 - <<'PY'
 import configparser, pathlib, re, subprocess
@@ -360,6 +447,8 @@ fi
 
 for required in \
   services/moonlightos-launcher.service \
+  services/moonlightos-hwdetect-early.service \
+  services/moonlightos-hwdetect.service \
   services/moonlightos-bluetooth.service \
   services/moonlightos-moonlight.service \
   services/moonlightos-chiaki.service \

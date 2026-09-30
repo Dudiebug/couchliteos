@@ -82,6 +82,7 @@ systemctl enable moonlightos-audio.service moonlightos-launcher.service \
   moonlightos-gamepad-nav.service
 systemctl enable bluetooth.service moonlightos-bluetooth.service
 systemctl enable moonlightos-qemu-smoke.service
+systemctl enable moonlightos-hwdetect-early.service moonlightos-hwdetect.service
 systemctl enable tailscaled.service moonlightos-tailscale-enroll.path moonlightos-tailscale-ssh.path
 
 # The standard kernel supplies these modules; load them on the applicable side.

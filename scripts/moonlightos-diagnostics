@@ -23,7 +23,12 @@ report() {
   echo '== GPU / driver =='
   lspci -nnk 2>/dev/null | grep -A3 -Ei 'VGA|Display|3D controller' || true
   lsmod 2>/dev/null | grep -E '^(i915|nouveau|nvidia[a-z_]*|amdgpu|radeon) ' || echo 'no GPU kernel module shown'
-  lsmod 2>/dev/null | grep -q '^nvidia' && echo 'WARNING: a proprietary NVIDIA module is loaded'
+  if lsmod 2>/dev/null | grep -q '^nvidia'; then
+    printf 'NVIDIA driver: '; cat /sys/module/nvidia/version 2>/dev/null || echo 'proprietary module loaded'
+  fi
+  echo
+  echo '== Hardware detection =='
+  /usr/libexec/moonlightos-hwdetect report 2>&1 || true
   echo
   echo '== Vulkan =='
   vulkaninfo --summary 2>&1 | sed -n '1,80p' || true

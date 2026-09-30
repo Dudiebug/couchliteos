@@ -71,13 +71,13 @@ jobs:
       - name: Upload ISO
         uses: actions/upload-artifact@v7
         with:
-          name: moonlightos-0.1.12-amd64
-          path: build/out/moonlightos-0.1.12-amd64.iso
+          name: moonlightos-0.1.13-amd64
+          path: build/out/moonlightos-0.1.13-amd64.iso
           if-no-files-found: error
       - name: Upload release evidence
         uses: actions/upload-artifact@v7
         with:
-          name: moonlightos-0.1.12-evidence
+          name: moonlightos-0.1.13-evidence
           path: |
             /tmp/moonlightos-qemu-smoke.log
             /tmp/moonlightos-qemu-smoke.ppm

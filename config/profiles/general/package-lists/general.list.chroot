@@ -1,0 +1,41 @@
+# General release profile: open graphics drivers for Intel, AMD, and NVIDIA
+# (nouveau), plus the firmware for common PC and Intel Mac hardware.
+
+# Curated firmware (live-build's firmware auto-install is off for this profile)
+firmware-linux-free
+firmware-misc-nonfree
+# GPUs: Intel (i915/xe GuC/HuC/DMC), AMD (amdgpu/radeon), NVIDIA (nouveau)
+firmware-intel-graphics
+firmware-amd-graphics
+firmware-nvidia-graphics
+# Sound: Intel SOF DSPs (most laptops since 2019), Intel and Cirrus codecs
+firmware-sof-signed
+firmware-intel-sound
+firmware-cirrus
+# Wi-Fi, Bluetooth, and Ethernet
+firmware-intel-misc
+firmware-iwlwifi
+firmware-realtek
+firmware-atheros
+firmware-mediatek
+firmware-brcm80211
+bluez-firmware
+# CPU microcode
+intel-microcode
+amd64-microcode
+
+# VA-API video decode: Intel Broadwell+ (iHD), Intel Gen4-Haswell (i965),
+# AMD (radeonsi/r600 through Mesa)
+intel-media-va-driver
+i965-va-driver
+mesa-va-drivers
+
+# Broadcom STA Wi-Fi (for example the iMac's BCM4360): wl.ko is built by DKMS
+# against the image kernel; moonlightos-hwdetect enables it per machine.
+linux-headers-amd64
+dkms
+broadcom-sta-dkms
+
+# Sensors and machine identification for diagnostics and hardware reports
+lm-sensors
+dmidecode

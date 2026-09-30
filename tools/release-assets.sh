@@ -9,8 +9,12 @@ VERSION=$(< "$ROOT/VERSION")
 LIMIT=$((2 * 1024 * 1024 * 1024))
 
 cd "$OUT"
+# Only release profiles (RELEASE=1) are assets; legacy profiles are not.
 isos=()
+release_profiles=0
 for profile_conf in "$ROOT"/config/profiles/*/profile.conf; do
+  [[ $(source "$profile_conf"; printf '%s' "${RELEASE:-0}") == 1 ]] || continue
+  release_profiles=$((release_profiles + 1))
   suffix=$(source "$profile_conf"; printf '%s' "${ISO_SUFFIX:-}")
   iso="moonlightos-$VERSION-${suffix:+$suffix-}amd64.iso"
   if [[ -f $iso ]]; then
@@ -20,9 +24,8 @@ for profile_conf in "$ROOT"/config/profiles/*/profile.conf; do
   fi
 done
 ((${#isos[@]})) || { echo "No MoonlightOS $VERSION ISOs in $OUT" >&2; exit 66; }
-[[ ${MOONLIGHTOS_ALLOW_PARTIAL_RELEASE:-0} == 1 ]] || \
-  (( ${#isos[@]} == $(find "$ROOT/config/profiles" -mindepth 1 -maxdepth 1 -type d | wc -l) )) || {
-  echo 'Not every build profile has an ISO; set MOONLIGHTOS_ALLOW_PARTIAL_RELEASE=1 to continue.' >&2
+[[ ${MOONLIGHTOS_ALLOW_PARTIAL_RELEASE:-0} == 1 ]] || (( ${#isos[@]} == release_profiles )) || {
+  echo 'Not every release profile has an ISO; set MOONLIGHTOS_ALLOW_PARTIAL_RELEASE=1 to continue.' >&2
   exit 1
 }
 

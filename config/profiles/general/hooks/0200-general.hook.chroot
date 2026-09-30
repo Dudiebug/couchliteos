@@ -1,0 +1,68 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# General profile build checks. The nvidia profile builds on this one
+# (PROFILE_BASE=general), so this hook runs there too.
+fail() { echo "general profile: $*" >&2; exit 1; }
+# shellcheck source=config/profiles/general/profile.conf
+source /usr/share/moonlightos/profile.conf
+
+# The general ISO uses the open NVIDIA driver (nouveau) only.
+# firmware-nvidia-graphics is the open driver's firmware and stays.
+if [[ ${NVIDIA_DRIVER:-none} != proprietary ]]; then
+  if dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null | awk '$1 == "ii" { print $2 }' |
+    grep -E '^(nvidia-|libnvidia-|xserver-xorg-video-nvidia|firmware-nvidia-gsp)'; then
+    fail 'proprietary NVIDIA packages must not be installed in this profile'
+  fi
+fi
+
+# broadcom-sta-dkms normally builds wl.ko when its package or the headers are
+# configured. Build explicitly for every image kernel and prove the result.
+kernels=()
+for directory in /lib/modules/*; do
+  [[ -d "$directory/kernel" ]] && kernels+=("${directory##*/}")
+done
+((${#kernels[@]} > 0)) || fail 'no image kernel found'
+sta_version=$(dpkg-query -W -f='${Version}' broadcom-sta-dkms | sed 's/-[^-]*$//')
+for kernel in "${kernels[@]}"; do
+  [[ -d "/usr/src/linux-headers-$kernel" ]] || fail "linux headers do not match image kernel $kernel"
+  if ! find "/lib/modules/$kernel/updates/dkms" -name 'wl.ko*' 2>/dev/null | grep -q .; then
+    dkms install "broadcom-sta/$sta_version" -k "$kernel"
+  fi
+  module=$(find "/lib/modules/$kernel/updates/dkms" -name 'wl.ko*' -print -quit 2>/dev/null)
+  [[ -n "$module" ]] || fail "wl.ko was not built for $kernel"
+  depmod "$kernel"
+  modinfo -k "$kernel" -F vermagic wl | grep -q "^$kernel " || fail "wl.ko vermagic does not match $kernel"
+  printf 'general profile: %s built for %s\n' "$module" "$kernel"
+done
+# DKMS may generate a module-signing key while building; never ship a private
+# key in a public image. Installed systems generate their own on rebuild.
+rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
+
+# broadcom-sta-dkms blacklists the open Broadcom drivers (b43, bcma, ssb,
+# brcmsmac, ...) for every machine. moonlightos-hwdetect applies that list at
+# boot only when a chip that wl supports is present, so move the global file
+# aside. The diversion keeps it aside across package upgrades.
+sta_blacklist=/etc/modprobe.d/broadcom-sta-dkms.conf
+if [[ $(dpkg-divert --truename "$sta_blacklist") == "$sta_blacklist" ]]; then
+  dpkg-divert --local --rename --divert "$sta_blacklist.moonlightos-disabled" --add "$sta_blacklist"
+fi
+[[ ! -e $sta_blacklist ]] || fail "$sta_blacklist still blacklists the open Broadcom drivers globally"
+test -s /usr/share/broadcom-sta/broadcom-sta.ids || fail 'broadcom-sta.ids is missing (moonlightos-hwdetect needs it)'
+for module in b43 bcma ssb brcmsmac; do
+  ! grep -Rqs "^blacklist $module\$" /etc/modprobe.d /usr/lib/modprobe.d || fail "$module is blacklisted for every machine"
+done
+
+grep -qs '^options hid_apple fnmode=2$' /etc/modprobe.d/moonlightos-input.conf || fail 'hid_apple fnmode is not set'
+test -f /usr/lib/firmware/tigon/tg357766.bin || fail 'BCM57766 (tg3) firmware is missing'
+for driver in iHD i965 radeonsi; do
+  test -e "/usr/lib/x86_64-linux-gnu/dri/${driver}_drv_video.so" || fail "VA-API driver $driver is missing"
+done
+test -x /usr/libexec/moonlightos-hwdetect || fail 'moonlightos-hwdetect is missing'
+systemctl is-enabled --quiet moonlightos-hwdetect-early.service || fail 'moonlightos-hwdetect-early.service is not enabled'
+systemctl is-enabled --quiet moonlightos-hwdetect.service || fail 'moonlightos-hwdetect.service is not enabled'
+
+# Moonlight stays on automatic codec and decoder; moonlightos-hwdetect switches
+# a machine without a usable decoder (nouveau) to software H.264 at boot.
+grep -qx 'codec = auto' /var/lib/moonlightos/config.ini || fail 'Moonlight codec default must be auto'
+grep -qx 'decoder = auto' /var/lib/moonlightos/config.ini || fail 'Moonlight decoder default must be auto'

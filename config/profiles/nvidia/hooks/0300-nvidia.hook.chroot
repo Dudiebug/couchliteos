@@ -1,0 +1,61 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# NVIDIA profile: prove the proprietary driver is built for the image kernel
+# and loads only where moonlightos-hwdetect allows it.
+fail() { echo "nvidia profile: $*" >&2; exit 1; }
+
+# Build explicitly for every image kernel (as for wl.ko) and prove the result.
+kernels=()
+for directory in /lib/modules/*; do
+  [[ -d "$directory/kernel" ]] && kernels+=("${directory##*/}")
+done
+((${#kernels[@]} > 0)) || fail 'no image kernel found'
+driver_version=$(dpkg-query -W -f='${Version}' nvidia-kernel-dkms | sed 's/-[^-]*$//')
+[[ $driver_version =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || fail "unexpected nvidia-kernel-dkms version $driver_version"
+for kernel in "${kernels[@]}"; do
+  [[ -d "/usr/src/linux-headers-$kernel" ]] || fail "linux headers do not match image kernel $kernel"
+  if ! find "/lib/modules/$kernel/updates/dkms" -name 'nvidia-current.ko*' 2>/dev/null | grep -q .; then
+    dkms install "nvidia-current/$driver_version" -k "$kernel"
+  fi
+  depmod "$kernel"
+  for module in nvidia-current nvidia-current-modeset nvidia-current-drm nvidia-current-uvm; do
+    find "/lib/modules/$kernel/updates/dkms" -name "$module.ko*" | grep -q . || fail "$module.ko was not built for $kernel"
+    modinfo -k "$kernel" -F vermagic "$module" | grep -q "^$kernel " || fail "$module vermagic does not match $kernel"
+  done
+  printf 'nvidia profile: NVIDIA %s modules built for %s\n' "$driver_version" "$kernel"
+done
+rm -f /var/lib/dkms/mok.key /var/lib/dkms/mok.pub
+
+# Debian loads nvidia-drm on every boot: /etc/modules-load.d/nvidia.conf is an
+# alternatives link to nvidia-kernel-support's conffile. On a machine without
+# a supported NVIDIA GPU that load fails, so the conffile is diverted aside and
+# moonlightos-hwdetect writes /run/modules-load.d per machine instead.
+load_conf=/etc/nvidia/current/nvidia-load.conf
+[[ $(readlink -f /etc/modules-load.d/nvidia.conf) == "$load_conf" ]] ||
+  fail "/etc/modules-load.d/nvidia.conf does not resolve to $load_conf; the nvidia-kernel-support layout changed"
+if [[ $(dpkg-divert --truename "$load_conf") == "$load_conf" ]]; then
+  dpkg-divert --local --rename --divert "$load_conf.moonlightos-disabled" --add "$load_conf"
+fi
+printf '%s\n' '# MoonlightOS: moonlightos-hwdetect loads nvidia-drm at boot only for a' \
+  '# supported NVIDIA GPU (/run/modules-load.d/moonlightos-hardware.conf).' > "$load_conf"
+! grep -Rhs '^[^#]*nvidia' /etc/modules-load.d /usr/lib/modules-load.d || fail 'an NVIDIA module is still loaded on every boot'
+
+# nouveau stays blacklisted (also in the initramfs) so it never grabs a GPU
+# the proprietary driver supports; moonlightos-hwdetect loads it by name for
+# unsupported cards and for Basic Graphics.
+grep -Rqs '^blacklist nouveau$' /etc/modprobe.d || fail 'nouveau is not blacklisted'
+grep -qs '^options nvidia-current-drm modeset=1 fbdev=1$' /etc/modprobe.d/moonlightos-nvidia.conf || fail 'nvidia-drm modesetting is not enabled'
+# Captured first: grep -q closing the pipe early would fail a pipefail pipeline.
+modprobe_config=$(modprobe --showconfig)
+grep -q '^options nvidia_current_drm .*modeset=1' <<< "$modprobe_config" || fail 'modprobe does not see the nvidia-drm options'
+# nouveau is the fallback for older cards and Basic Graphics; Cage needs its KMS.
+! grep -Eq '^options nouveau .*modeset=0' <<< "$modprobe_config" || fail 'nouveau modesetting is disabled'
+
+gbm=/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so
+test -e "$(readlink -f "$gbm")" || fail "GBM backend $gbm is missing (Cage cannot run without it)"
+test -s /usr/share/glvnd/egl_vendor.d/10_nvidia.json || fail 'NVIDIA EGL vendor file is missing'
+test -s /usr/share/nvidia/nvidia.ids || fail 'supported-GPU list /usr/share/nvidia/nvidia.ids is missing'
+grep -qx '10DE2684' /usr/share/nvidia/nvidia.ids || fail 'nvidia.ids does not list the RTX 4090 (unexpected format)'
+! grep -qx '10DE0FE9' /usr/share/nvidia/nvidia.ids || fail 'nvidia.ids lists a Kepler GPU (unexpected driver branch)'
+find /usr/lib/firmware/nvidia -path "*/$driver_version/gsp_*.bin" | grep -q . || fail "GSP firmware for $driver_version is missing"

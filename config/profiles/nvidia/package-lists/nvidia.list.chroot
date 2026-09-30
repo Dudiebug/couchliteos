@@ -1,0 +1,20 @@
+# NVIDIA proprietary driver 550 (Debian 13 non-free): Maxwell (GTX 900) to Ada
+# (RTX 40). The kernel module is built by DKMS against the image kernel
+# (linux-headers-amd64 and dkms come from the general profile).
+nvidia-kernel-dkms
+firmware-nvidia-gsp
+# OpenGL/EGL through glvnd, GBM for Cage/wlroots, EGL for Xwayland and Wayland clients
+nvidia-driver-libs
+libegl-nvidia0
+libnvidia-egl-gbm1
+libnvidia-egl-wayland1
+libnvidia-allocator1
+# Vulkan
+nvidia-vulkan-icd
+# Video decode: NVDEC through CUDA, and VA-API for browsers
+libcuda1
+libnvcuvid1
+nvidia-vaapi-driver
+# Diagnostics and the supported-GPU list moonlightos-hwdetect reads
+nvidia-smi
+nvidia-detect

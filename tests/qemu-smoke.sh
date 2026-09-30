@@ -156,6 +156,7 @@ fail() {
 
 wait_for_marker 'MOONLIGHTOS_LAUNCHER_READY' 180 || fail 'Launcher did not become ready.'
 capture_screen
+wait_for_marker 'MOONLIGHTOS_SMOKE_HWDETECT_READY' 30 || fail 'Hardware detection did not run, or a module failed to load.'
 wait_for_marker 'MOONLIGHTOS_SMOKE_CONFIGURED_PLATFORM_READY' 30 || fail 'Configured applications, OSK, or setup-ready ordering failed.'
 wait_for_marker 'MOONLIGHTOS_SMOKE_USBIP_READY' 30 || fail 'USB/IP daemon did not remain active.'
 wait_for_marker 'MOONLIGHTOS_SMOKE_BLUETOOTH_READY' 30 || fail 'Bluetooth control service or launcher-survival check failed.'

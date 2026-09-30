@@ -1,7 +1,7 @@
 #!/bin/bash
-# Identify the machine and record the hardware facts the MoonlightOS build
-# profiles depend on (docs/IMAC-2013.md, section 0). Read-only: it changes no
-# settings. Run it as root (sudo) so dmidecode can read the serial number.
+# Identify the machine and record the hardware facts MoonlightOS depends on,
+# with the iMac Late 2013 checks from docs/IMAC-2013.md (section 0). Read-only:
+# it changes no settings. Run it as root (sudo) so dmidecode can read the serial.
 set -uo pipefail
 
 EXPECTED_SERIAL=${MOONLIGHTOS_EXPECTED_SERIAL:-DCPM5026FQPG}
@@ -35,8 +35,8 @@ report() {
   case $product in
     iMac14,2) echo "MODEL OK: $product (27-inch, 2560x1440, NVIDIA GT 755M / GTX 775M / GTX 780M)" ;;
     iMac14,3) echo "MODEL OK: $product (21.5-inch, 1920x1080, NVIDIA GT 750M)" ;;
-    iMac14,1) echo "MODEL MISMATCH: $product is the 21.5-inch Intel Iris Pro model with no NVIDIA GPU; stop and review the build profile" ;;
-    *) echo "MODEL MISMATCH: '${product:-unknown}' is not an iMac Late 2013 NVIDIA model; stop and review the build profile" ;;
+    iMac14,1) echo "MODEL: $product is the 21.5-inch Intel Iris Pro iMac with no NVIDIA GPU; the iMac NVIDIA checks do not apply" ;;
+    *) echo "MODEL: '${product:-unknown}' is not an iMac Late 2013 NVIDIA model; the iMac checks do not apply" ;;
   esac
   if [[ -z $serial ]]; then
     echo 'SERIAL UNKNOWN: run as root'
@@ -54,11 +54,19 @@ report() {
   run lspci -nnk
   printf 'Loaded GPU/network/SMC/keyboard modules:\n'
   lsmod 2>/dev/null | grep -E '^(nouveau|nvidia[a-z_]*|i915|wl|b43|bcma|ssb|brcmsmac|tg3|applesmc|hid_apple|snd_hda_codec_cirrus|btusb) ' || true
-  lsmod 2>/dev/null | grep -q '^nvidia' && echo 'FAIL: a proprietary NVIDIA module is loaded'
+  if lsmod 2>/dev/null | grep -q '^nvidia'; then
+    case $product in
+      iMac14,[23]) echo 'FAIL: a proprietary NVIDIA module is loaded on the Kepler GPU (it must use nouveau)' ;;
+      *) echo 'nvidia: proprietary driver loaded' ;;
+    esac
+  fi
   lsmod 2>/dev/null | grep -q '^nouveau ' && echo 'nouveau: loaded'
   printf 'hid_apple fnmode: %s\n' "$(cat /sys/module/hid_apple/parameters/fnmode 2>/dev/null || echo 'module not loaded')"
   modinfo wl 2>/dev/null | grep -E '^(filename|version|vermagic):' || echo 'wl: module not found'
   grep -hE '^blacklist (b43|bcma|ssb|brcmsmac)$' /etc/modprobe.d/*.conf 2>/dev/null | sort -u
+
+  section 'Hardware detection'
+  /usr/libexec/moonlightos-hwdetect report 2>&1 || true
 
   section 'Boot'
   if [[ -d /sys/firmware/efi ]]; then

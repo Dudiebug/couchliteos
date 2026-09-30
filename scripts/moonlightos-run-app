@@ -121,12 +121,21 @@ print(setting('decoder', 'auto', r'auto|software|hardware'))
 PY
 )
   profile_app=${moonlight_settings[0]:-}
+  # moonlightos-hwdetect marks GPU drivers without a usable decoder (nouveau).
+  # Automatic settings then start with software H.264 instead of failing.
+  hardware_env=${MOONLIGHTOS_HARDWARE_ENV:-/run/moonlightos-hardware/hardware.env}
+  decode_hint=$(sed -n 's/^MOONLIGHTOS_VIDEO_DECODE=//p' "$hardware_env" 2>/dev/null | tail -n 1 || true)
+  if [[ $decode_hint == software && ${moonlight_settings[3]:-auto} == auto && ${moonlight_settings[4]:-auto} == auto ]]; then
+    moonlight_settings[3]=H.264
+    moonlight_settings[4]=software
+    echo "GPU driver $(sed -n 's/^MOONLIGHTOS_GPU_DRIVER=//p' "$hardware_env" | tail -n 1) has no usable video decoder; using software H.264"
+  fi
   video_options=()
   [[ ${moonlight_settings[3]:-auto} != auto ]] && video_options+=(--video-codec "${moonlight_settings[3]}")
   [[ ${moonlight_settings[4]:-auto} != auto ]] && video_options+=(--video-decoder "${moonlight_settings[4]}")
   preferences="$DATA_DIR/home/.config/Moonlight Game Streaming Project/Moonlight.conf"
   if ((${#video_options[@]})) && [[ ! -e "$preferences" ]]; then
-    # A profile that forces the codec or decoder (imac2013: software H.264)
+    # A forced codec or decoder (configured, or software H.264 on nouveau)
     # seeds Moonlight's own settings once; later changes in Moonlight persist.
     declare -A codec_values=([auto]=0 [H.264]=1 [HEVC]=2 [AV1]=4)
     declare -A decoder_values=([auto]=0 [hardware]=1 [software]=2)

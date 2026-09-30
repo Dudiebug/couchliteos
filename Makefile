@@ -1,8 +1,9 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-# Build profile: intel (Dell OptiPlex DCC36X3, default) or imac2013 (iMac Late 2013).
-PROFILE ?= intel
+# Build profile: general (default) and nvidia are the release ISOs; intel and
+# imac2013 are legacy single-machine profiles.
+PROFILE ?= general
 export PROFILE
 VERSION := $(shell cat VERSION)
 ISO_SUFFIX := $(shell . config/profiles/$(PROFILE)/profile.conf 2>/dev/null && printf '%s' "$$ISO_SUFFIX")
@@ -14,7 +15,7 @@ help:
 	@printf '%s\n' \
 	  'make fetch-apps  Download pinned application images' \
 	  'make configure   Prepare the live-build work tree' \
-	  'sudo make build  Build the Debian 13 hybrid ISO (PROFILE=intel|imac2013)' \
+	  'sudo make build  Build the Debian 13 hybrid ISO (PROFILE=general|nvidia|intel|imac2013)' \
 	  'make test         Run source/static tests' \
 	  'make qemu-smoke   Boot the ISO and wait for the appliance marker' \
 	  'make qemu-persistence-smoke  Verify live persistence and recovery boot' \
@@ -42,6 +43,7 @@ test:
 	python3 -m unittest -v tests/test_bluetooth_service.py
 	python3 -m unittest -v tests/test_qemu_iso_boot.py
 	python3 -m unittest -v tests/test_rdp_secret.py
+	python3 -m unittest -v tests/test_hwdetect.py
 	$(MAKE) -C launcher test
 
 
