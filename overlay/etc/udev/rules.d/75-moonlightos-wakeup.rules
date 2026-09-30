@@ -1,0 +1,15 @@
+# Let Bluetooth adapters and USB keyboards wake the box from sleep, so a paired
+# controller or keyboard can turn it back on (where the firmware allows it).
+# The kernel leaves USB wakeup disabled by default.
+
+# USB Bluetooth adapters: wireless controller class e0, or e0 on an interface.
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{bDeviceClass}=="e0", TEST=="power/wakeup", ATTR{power/wakeup}="enabled"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceClass}=="e0", TEST=="../power/wakeup", RUN+="/bin/sh -c 'echo enabled > /sys%p/../power/wakeup'"
+
+# USB HID keyboards (boot-protocol keyboard interface); wakeup lives on the parent device.
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceClass}=="03", ATTR{bInterfaceProtocol}=="01", TEST=="../power/wakeup", RUN+="/bin/sh -c 'echo enabled > /sys%p/../power/wakeup'"
+
+# Which wired adapters can wake on a magic packet? Reading that needs CAP_NET_ADMIN, which the
+# launcher does not have, so ask as root when an adapter appears and leave one small answer file
+# per MAC in /run/moonlightos-hardware/wake-on-lan (Wi-Fi and virtual adapters are skipped).
+ACTION=="add|move", SUBSYSTEM=="net", SUBSYSTEMS=="pci|usb", RUN+="/usr/bin/python3 /usr/libexec/moonlightos_power.py wake-on-lan"

@@ -18,3 +18,6 @@ nvidia-vaapi-driver
 # Diagnostics and the supported-GPU list moonlightos-hwdetect reads
 nvidia-smi
 nvidia-detect
+# Sleep and wake: nvidia-suspend.service / nvidia-resume.service (not pulled in
+# by the packages above; it is only a Recommends of the nvidia-driver metapackage).
+nvidia-suspend-common

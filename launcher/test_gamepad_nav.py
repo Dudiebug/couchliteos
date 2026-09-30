@@ -284,6 +284,85 @@ class GamepadMappingTest(unittest.TestCase):
             dev.ungrab.assert_called_once_with()
         self.assertEqual(pads.grabbed, set())
 
+    def event(self, code, value):
+        return SimpleNamespace(type=Codes.EV_KEY, value=value, code=code)
+
+    def hold(self):
+        return self.module.HomeHold()
+
+    def test_holding_home_for_three_seconds_requests_sleep_exactly_once(self):
+        hold = self.hold()
+        hold.feed(self.event(Codes.BTN_MODE, 1), 100.0)
+        self.assertFalse(hold.due(102.9))
+        self.assertTrue(hold.due(103.0))
+        self.assertFalse(hold.due(103.5))
+        hold.feed(self.event(Codes.BTN_MODE, 0), 104.0)
+        self.assertFalse(hold.due(110.0))
+
+    def test_the_homepage_key_counts_as_home_for_the_hold_too(self):
+        hold = self.hold()
+        hold.feed(self.event(Codes.KEY_HOMEPAGE, 1), 40.0)
+        self.assertFalse(hold.due(42.9))
+        self.assertTrue(hold.due(43.0))
+        hold.feed(self.event(Codes.KEY_HOMEPAGE, 1), 50.0)
+        hold.feed(self.event(Codes.KEY_HOMEPAGE, 0), 51.0)
+        self.assertFalse(hold.due(60.0))
+
+    def test_a_short_press_never_requests_sleep(self):
+        hold = self.hold()
+        hold.feed(self.event(Codes.KEY_HOME, 1), 10.0)
+        hold.feed(self.event(Codes.KEY_HOME, 0), 11.5)
+        self.assertFalse(hold.due(20.0))
+
+    def test_keyboard_autorepeat_does_not_restart_or_shorten_the_hold(self):
+        hold = self.hold()
+        hold.feed(self.event(Codes.KEY_HOME, 1), 50.0)
+        for tick in range(1, 25):
+            hold.feed(self.event(Codes.KEY_HOME, 2), 50.0 + tick * 0.1)
+        self.assertFalse(hold.due(52.9))
+        self.assertTrue(hold.due(53.0))
+
+    def test_other_buttons_and_a_second_press_are_independent(self):
+        hold = self.hold()
+        hold.feed(self.event(Codes.BTN_SOUTH, 1), 0.0)
+        self.assertFalse(hold.due(10.0))
+        hold.feed(self.event(Codes.BTN_MODE, 1), 20.0)
+        hold.feed(self.event(Codes.BTN_MODE, 0), 21.0)
+        hold.feed(self.event(Codes.BTN_MODE, 1), 30.0)
+        self.assertFalse(hold.due(32.0))
+        self.assertTrue(hold.due(33.0))
+
+    def test_timeout_shrinks_to_the_remaining_hold_and_reset_clears_it(self):
+        hold = self.hold()
+        self.assertEqual(hold.timeout(5.0), 1.0)
+        hold.feed(self.event(Codes.BTN_MODE, 1), 5.0)
+        self.assertAlmostEqual(hold.timeout(6.5), 1.0)
+        self.assertAlmostEqual(hold.timeout(7.5), 0.5)
+        self.assertEqual(hold.timeout(9.0), 0.0)
+        hold.reset()
+        self.assertEqual(hold.timeout(9.0), 1.0)
+        self.assertFalse(hold.due(99.0))
+
+    def request_sleep_with(self, can_suspend):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / 'suspend'
+            old, self.module.SLEEP_REQUEST = self.module.SLEEP_REQUEST, request
+            try:
+                with mock.patch.object(self.module.power, "can_suspend", return_value=can_suspend) as check:
+                    self.module.request_sleep()
+            finally:
+                self.module.SLEEP_REQUEST = old
+            check.assert_called_once_with()
+            return request.exists()
+
+    def test_request_sleep_touches_the_suspend_request(self):
+        self.assertTrue(self.request_sleep_with(True))
+
+    def test_long_press_does_not_request_sleep_on_hardware_that_cannot_suspend(self):
+        self.assertFalse(self.request_sleep_with(False))
+
 
 if __name__ == "__main__":
     unittest.main()

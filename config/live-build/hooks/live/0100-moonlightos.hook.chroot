@@ -78,6 +78,7 @@ systemctl enable moonlightos-firewall.service moonlightos-usbipd.service
 systemctl enable moonlightos-usbip-reconcile.path
 systemctl enable moonlightos-moonlight.path moonlightos-chiaki.path moonlightos-firefox.path
 systemctl enable moonlightos-reboot.path moonlightos-poweroff.path
+systemctl enable moonlightos-suspend.path moonlightos-resume.service
 systemctl enable moonlightos-support-export.path
 systemctl enable moonlightos-configured-app.path moonlightos-osk.path
 systemctl enable moonlightos-rdp.path moonlightos-rdp-secret.path

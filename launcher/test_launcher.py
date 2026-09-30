@@ -47,6 +47,12 @@ class LauncherTest(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
+    def setUp(self):
+        # Whether this machine can suspend is decided per test, not by the machine running them.
+        patcher = mock.patch.object(self.module.power, "can_suspend", return_value=True)
+        self.can_suspend = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def launcher(self):
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
             return self.module.Launcher(Screen())
@@ -60,7 +66,7 @@ class LauncherTest(unittest.TestCase):
         launcher = self.launcher()
         self.assertEqual(
             [label for label, _action in launcher.menu],
-            ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "SETTINGS", "REBOOT", "SHUTDOWN"],
+            ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "SETTINGS", "SLEEP", "REBOOT", "SHUTDOWN"],
         )
 
     def test_custom_order_and_disabled_visibility(self):
@@ -78,7 +84,7 @@ class LauncherTest(unittest.TestCase):
             launcher = self.module.Launcher(Screen())
         self.assertEqual(launcher.menu[0], ("CUSTOM", "custom"))
         self.assertNotIn("DISABLED", [label for label, _action in launcher.menu])
-        self.assertEqual(launcher.menu[-3:], list(self.module.FIXED_CONTROLS))
+        self.assertEqual(launcher.menu[-len(self.module.FIXED_CONTROLS):], list(self.module.FIXED_CONTROLS))
 
     def test_invalid_manifests_do_not_crash_startup(self):
         result = self.module.apps.LoadResult((), ("bad.ini: invalid",))
@@ -627,6 +633,220 @@ class LauncherTest(unittest.TestCase):
     def test_audio_output_success_is_shown(self):
         statuses = self.audio_statuses(lambda _sink_id: None)
         self.assertIn("DEFAULT OUTPUT: HDMI OUTPUT", statuses[-1])
+
+    def test_sleep_control_sits_between_settings_and_the_other_power_controls(self):
+        self.assertEqual(
+            [action for _label, action in self.module.FIXED_CONTROLS],
+            ["settings", "suspend", "reboot", "poweroff"],
+        )
+
+    def test_choosing_sleep_asks_systemd_to_suspend_through_the_request_file(self):
+        launcher = self.launcher()
+        launcher.selected = [action for _label, action in launcher.menu].index("suspend")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            launcher.activate()
+            self.assertTrue((pathlib.Path(directory) / "suspend").exists())
+        self.assertIn("SLEEP", launcher.status)
+
+    def test_on_resume_drops_stale_requests_refocuses_the_launcher_and_reports(self):
+        launcher = self.launcher()
+        home = pathlib.Path(tempfile.mkdtemp()) / "home.request"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", home), mock.patch.object(
+            self.module, "focus_launcher"
+        ) as focus:
+            (pathlib.Path(directory) / "suspend").touch()
+            home.touch()  # the long press that put the box to sleep also asked for Home
+            launcher.on_resume()
+            self.assertFalse((pathlib.Path(directory) / "suspend").exists())
+            self.assertFalse(home.exists())
+        focus.assert_called_once_with()
+        self.assertIn("RESUMED", launcher.status)
+
+    def test_resume_marker_is_consumed_once_and_calls_on_resume(self):
+        launcher = self.launcher()
+        launcher.on_resume = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            self.assertFalse(launcher.check_resume())
+            (pathlib.Path(directory) / "resumed").touch()
+            self.assertTrue(launcher.check_resume())
+            self.assertFalse(launcher.check_resume())
+            self.assertFalse((pathlib.Path(directory) / "resumed").exists())
+        launcher.on_resume.assert_called_once_with()
+
+    def test_idle_protection_is_on_normally_and_off_during_the_qemu_smoke_test(self):
+        launcher = self.launcher()
+        self.assertTrue(launcher.idle.enabled())
+        with mock.patch.object(self.module.power, "smoke_test_active", return_value=True):
+            self.assertFalse(launcher.idle.enabled())
+
+    def test_idle_guard_asks_the_launcher_whether_an_application_is_running(self):
+        launcher = self.launcher()
+        launcher.running_applications = mock.Mock(return_value=[object()])
+        self.assertTrue(launcher.idle.apps_running())
+        launcher.running_applications.return_value = []
+        self.assertFalse(launcher.idle.apps_running())
+
+    def test_a_failing_application_check_counts_as_running_so_the_box_never_sleeps_on_it(self):
+        launcher = self.launcher()
+        launcher.running_applications = mock.Mock(side_effect=ValueError("broken manifest"))
+        self.assertTrue(launcher.apps_running())
+
+    def test_unwritable_request_directory_reports_instead_of_crashing(self):
+        launcher = self.launcher()
+        with mock.patch.object(self.module, "RUN", pathlib.Path("/nonexistent-moonlightos-run")):
+            launcher.request_sleep()
+        self.assertIn("COULD NOT REQUEST SLEEP", launcher.status)
+
+    def test_read_key_goes_through_the_idle_guard(self):
+        guard = mock.Mock()
+        guard.filter.return_value = -1
+        with mock.patch.object(self.module, "IDLE_GUARD", guard):
+            self.assertEqual(self.module.read_key(Screen([10])), -1)
+        guard.filter.assert_called_once()
+        self.assertEqual(guard.filter.call_args.args[1], 10)
+
+    def test_settings_contains_sleep_and_screen_and_dispatches_to_it(self):
+        self.assertIn("SLEEP & SCREEN", self.module.SETTINGS_MENU)
+        settings = self.module.Settings(Screen(), self.launcher())
+        settings.selected = self.module.SETTINGS_MENU.index("SLEEP & SCREEN")
+        with mock.patch.object(self.module.Settings, "run_sleep_settings") as sleep_settings:
+            self.assertTrue(settings.activate())
+        sleep_settings.assert_called_once_with()
+
+    def test_sleep_and_screen_settings_are_saved_and_applied_to_the_guard(self):
+        keys = self.module.curses
+        launcher = self.launcher()
+        launcher.idle = mock.Mock()
+        settings = self.module.Settings(Screen([10, keys.KEY_DOWN, 10, 27]), launcher)
+        settings.choose = mock.Mock(side_effect=[15, 60])
+        power = self.module.power
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(5, 30)), mock.patch.object(
+            power, "save_settings"
+        ) as save:
+            settings.run_sleep_settings()
+        self.assertEqual(
+            [call.args[0] for call in save.call_args_list], [power.Settings(15, 30), power.Settings(15, 60)]
+        )
+        self.assertEqual(launcher.idle.apply.call_args_list[-1].args[0], power.Settings(15, 60))
+        self.assertEqual(settings.choose.call_args_list[0].args[1][0], ("OFF", 0))
+        self.assertEqual(settings.choose.call_args_list[1].args[1][-1], ("2 HOURS", 120))
+
+    def sleep_settings_rows(self, keys=(27,), *, saved=None, wol=("none", None), wake=()):
+        """Open SLEEP & SCREEN with the given keys; returns (settings screen, first drawn rows, save mock)."""
+        power = self.module.power
+        launcher = self.launcher()
+        launcher.idle = mock.Mock()
+        settings = self.module.Settings(Screen(list(keys)), launcher)
+        settings.draw = mock.Mock()
+        settings.choose = mock.Mock(return_value=15)
+        saved = saved or power.Settings(5, 60)
+        with mock.patch.object(power, "load_settings", return_value=saved), mock.patch.object(
+            power, "save_settings"
+        ) as save, mock.patch.object(power, "wake_on_lan", return_value=wol), mock.patch.object(
+            power, "wake_sources", return_value=list(wake)
+        ):
+            settings.run_sleep_settings()
+        return settings, settings.draw.call_args_list[0].args[1], save
+
+    def test_unsupported_hardware_shows_sleep_disabled_and_selecting_it_does_nothing(self):
+        self.can_suspend.return_value = False
+        launcher = self.launcher()
+        labels = [label for label, _action in launcher.menu]
+        self.assertEqual(labels[-4:], ["SETTINGS", "SLEEP: NOT SUPPORTED ON THIS PC", "REBOOT", "SHUTDOWN"])
+        launcher.selected = labels.index("SLEEP: NOT SUPPORTED ON THIS PC")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            launcher.activate()
+            self.assertEqual(list(pathlib.Path(directory).iterdir()), [])
+        self.assertIn("NOT SUPPORTED", launcher.status)
+        self.assertNotIn("GOING TO SLEEP", launcher.status)
+
+    def test_a_sleep_request_from_the_idle_guard_is_refused_on_unsupported_hardware(self):
+        self.can_suspend.return_value = False
+        launcher = self.launcher()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ):
+            launcher.request_sleep()
+            self.assertEqual(list(pathlib.Path(directory).iterdir()), [])
+
+    def test_supported_hardware_keeps_the_plain_sleep_control(self):
+        launcher = self.launcher()
+        self.assertEqual([label for label, _action in launcher.menu][-4:], ["SETTINGS", "SLEEP", "REBOOT", "SHUTDOWN"])
+
+    def test_unsupported_hardware_ignores_the_saved_automatic_sleep_but_keeps_blanking(self):
+        power = self.module.power
+        self.can_suspend.return_value = False
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(10, 60)):
+            launcher = self.launcher()
+        self.assertEqual(launcher.idle.timer.settings, power.Settings(10, 0))
+
+    def test_resume_checks_sleep_support_again_and_the_menu_and_timers_follow(self):
+        power = self.module.power
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(5, 60)), tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), mock.patch.object(
+            self.module, "focus_launcher"
+        ):
+            launcher = self.launcher()
+            self.assertEqual(launcher.idle.timer.settings, power.Settings(5, 60))
+            self.can_suspend.return_value = False
+            launcher.on_resume()
+            self.assertEqual(launcher.menu[-3], ("SLEEP: NOT SUPPORTED ON THIS PC", "suspend"))
+            self.assertEqual(launcher.idle.timer.settings, power.Settings(5, 0))
+            self.can_suspend.return_value = True
+            launcher.on_resume()
+            self.assertEqual(launcher.menu[-3], ("SLEEP", "suspend"))
+            self.assertEqual(launcher.idle.timer.settings, power.Settings(5, 60))
+
+    def test_sleep_after_row_says_not_supported_and_cannot_be_changed(self):
+        keys = self.module.curses
+        self.can_suspend.return_value = False
+        settings, rows, save = self.sleep_settings_rows([keys.KEY_DOWN, 10, 27])
+        self.assertEqual(rows[1], "SLEEP AFTER  NOT SUPPORTED ON THIS PC")
+        self.assertEqual(rows[0], "BLANK SCREEN AFTER  5 MIN")  # blanking needs no special hardware
+        settings.choose.assert_not_called()
+        save.assert_not_called()
+        self.assertIn("NOT SUPPORTED", settings.status)
+
+    def test_changing_blanking_on_unsupported_hardware_keeps_the_sleep_value_saved_elsewhere(self):
+        power = self.module.power
+        self.can_suspend.return_value = False
+        settings, _rows, save = self.sleep_settings_rows([10, 27])
+        self.assertEqual([call.args[0] for call in save.call_args_list], [power.Settings(15, 60)])
+        self.assertEqual(settings.launcher.idle.apply.call_args.args[0], power.Settings(15, 0))
+
+    def test_wake_on_lan_row_shows_the_mac_only_when_the_adapter_can_wake_on_magic_packet(self):
+        for wol, expected in (
+            (("supported", "D8:BB:C1:01:02:03"), "WAKE-ON-LAN  MAC D8:BB:C1:01:02:03"),
+            (("unsupported", None), "WAKE-ON-LAN  NOT SUPPORTED BY THIS NETWORK ADAPTER"),
+            (("none", None), "WAKE-ON-LAN  NO WIRED NETWORK ADAPTER"),
+            (("unknown", None), "WAKE-ON-LAN  ADAPTER NOT CHECKED"),
+        ):
+            _settings, rows, _save = self.sleep_settings_rows(wol=wol)
+            self.assertEqual(rows[2], expected)
+
+    def test_wake_sources_row_lists_what_can_wake_the_pc(self):
+        _settings, rows, _save = self.sleep_settings_rows(wake=["BLUETOOTH ADAPTER", "USB KEYBOARD"])
+        self.assertEqual(rows[3], "WAKE FROM  BLUETOOTH ADAPTER, USB KEYBOARD")
+        _settings, rows, _save = self.sleep_settings_rows()
+        self.assertEqual(rows[3], "WAKE FROM  NO USB BLUETOOTH ADAPTER OR KEYBOARD FOUND")
+
+    def test_information_rows_do_nothing_and_back_leaves_the_screen(self):
+        keys = self.module.curses
+        down = keys.KEY_DOWN
+        settings, rows, save = self.sleep_settings_rows([down, down, 10, down, 10, down, 10])
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(rows[-1], "BACK")
+        save.assert_not_called()
+        settings.choose.assert_not_called()
 
     def test_progress_helpers(self):
         self.assertEqual(len(self.module.indeterminate_progress_bar(24, 0)), 24)

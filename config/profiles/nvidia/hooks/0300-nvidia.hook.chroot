@@ -68,3 +68,13 @@ test -s /usr/share/nvidia/nvidia.ids || fail 'supported-GPU list /usr/share/nvid
 grep -qx '10DE2684' /usr/share/nvidia/nvidia.ids || fail 'nvidia.ids does not list the RTX 4090 (unexpected format)'
 ! grep -qx '10DE0FE9' /usr/share/nvidia/nvidia.ids || fail 'nvidia.ids lists a Kepler GPU (unexpected driver branch)'
 find /usr/lib/firmware/nvidia -path "*/$driver_version/gsp_*.bin" | grep -q . || fail "GSP firmware for $driver_version is missing"
+
+# Sleep and wake: nvidia-suspend-common's services save and restore video memory
+# around suspend (its postinst enables them; make sure), with the options above.
+for unit in nvidia-suspend.service nvidia-resume.service; do
+  [[ -s /usr/lib/systemd/system/$unit ]] || fail "$unit is missing (nvidia-suspend-common is not installed)"
+  systemctl enable "$unit"
+  [[ $(systemctl is-enabled "$unit") == enabled ]] || fail "$unit is not enabled"
+done
+grep -q '^options nvidia_current NVreg_PreserveVideoMemoryAllocations=1 .*NVreg_TemporaryFilePath=/var/tmp' <<< "$modprobe_config" ||
+  fail 'modprobe does not see the NVIDIA video-memory preservation options'
