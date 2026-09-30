@@ -43,18 +43,29 @@ def confirm(stdscr: "curses.window", question: str) -> bool:
     NO is preselected, B/Esc answers NO, and presses queued before the question
     was on screen are discarded so a double-tapped A can never answer it.
     """
-    selected = 0
-    _draw(stdscr, question, selected)
     try:
-        curses.flushinp()
+        cursor = curses.curs_set(0)  # a text field's cursor must not blink on the answers
     except curses.error:
-        pass
-    while True:
-        key = stdscr.getch()
-        if key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, ord("j"), ord("k")):
-            selected = 1 - selected
-        elif key in ENTER_KEYS:
-            return selected == 1
-        elif key == 27:
-            return False
+        cursor = None
+    selected = 0
+    try:
         _draw(stdscr, question, selected)
+        try:
+            curses.flushinp()
+        except curses.error:
+            pass
+        while True:
+            key = stdscr.getch()
+            if key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, ord("j"), ord("k")):
+                selected = 1 - selected
+            elif key in ENTER_KEYS:
+                return selected == 1
+            elif key == 27:
+                return False
+            _draw(stdscr, question, selected)
+    finally:
+        if cursor is not None:
+            try:
+                curses.curs_set(cursor)
+            except curses.error:
+                pass

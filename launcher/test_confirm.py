@@ -77,6 +77,13 @@ class ConfirmTest(unittest.TestCase):
         self.assertEqual(events[0], "flush")
         self.assertLess(events.index("flush"), events.index("getch"))
 
+    def test_the_text_cursor_is_hidden_while_asking_and_restored_after(self):
+        # Asked from inside a text field, the blinking cursor must not sit on the answers.
+        calls = []
+        with mock.patch.object(confirm.curses, "curs_set", side_effect=lambda visible: (calls.append(visible), 1)[1]):
+            ask([ENTER])
+        self.assertEqual(calls, [0, 1])
+
     def test_the_question_and_both_answers_are_shown_with_no_selected(self):
         _answer, screen, _events = ask([ENTER])
         shown = screen.text(screen.frames[0])

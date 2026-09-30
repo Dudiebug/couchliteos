@@ -640,6 +640,66 @@ class LauncherTest(unittest.TestCase):
         with mock.patch.object(self.module.curses, "curs_set"):
             self.assertEqual(settings.text_input("PORT", "PORT", 5, initial="3389"), "339")
 
+    def form_screen(self, keys):
+        """A screen whose getch and get_wch read one queue and that remembers every frame."""
+        class FormScreen(Screen):
+            def __init__(self, keys):
+                super().__init__(keys)
+                self.text, self.frames = [], []
+
+            def erase(self):
+                self.text = []
+
+            def addstr(self, _row, _column, text, *_args):
+                self.text.append(text)
+
+            addnstr = addstr
+
+            def get_wch(self):
+                self.frames.append(" ".join(self.text))
+                return self.keys.pop(0)
+
+            getch = get_wch
+
+        return FormScreen(keys)
+
+    def test_b_on_a_changed_connection_form_asks_before_discarding_it(self):
+        up, down, enter, back = self.module.curses.KEY_UP, self.module.curses.KEY_DOWN, 10, "\x1b"
+        # Unchanged: B closes at once (a further key would raise "stop").
+        screen = self.form_screen([27])
+        self.module.RemoteDesktopSettings(screen, self.launcher()).edit_connection(None)
+        self.assertNotIn("DISCARD", " ".join(screen.frames))
+        # Changed: a stray A answers NO and the typed name is still there; YES discards.
+        screen = self.form_screen([enter, "w", "\n", 27, enter, 27, down, enter])
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.module.RemoteDesktopSettings(screen, self.launcher()).edit_connection(None)
+        asked = [index for index, frame in enumerate(screen.frames) if "DISCARD CHANGES?" in frame]
+        self.assertTrue(asked)
+        self.assertIn("DISPLAY NAME   w", screen.frames[asked[0] + 1])
+        # The CANCEL button at the end of the form asks too (Up from the top wraps onto it).
+        screen = self.form_screen([enter, "w", "\n", up, enter, enter, 27, down, enter])
+        with mock.patch.object(self.module.curses, "curs_set"):
+            self.module.RemoteDesktopSettings(screen, self.launcher()).edit_connection(None)
+        self.assertIn("DISCARD CHANGES?", " ".join(screen.frames))
+
+    def test_b_in_the_add_flows_asks_once_something_was_typed(self):
+        down, enter = self.module.curses.KEY_DOWN, 10
+        for flow in ("add_web", "add_command"):
+            # The first field has nothing to lose.
+            screen = self.form_screen(["\x1b"])
+            getattr(self.module.ApplicationsSettings(screen, self.launcher()), flow)()
+            self.assertNotIn("DISCARD", " ".join(screen.frames))
+            # A later field asks; NO keeps the half-typed text, YES abandons the whole flow.
+            screen = self.form_screen(["a", "\n", "/", "\x1b", enter, "x", "\x1b", down, enter])
+            settings = self.module.ApplicationsSettings(screen, self.launcher())
+            settings._write_user = mock.Mock()
+            with mock.patch.object(self.module.curses, "curs_set"):
+                getattr(settings, flow)()
+            settings._write_user.assert_not_called()
+            asked = [frame for frame in screen.frames if "DISCARD CHANGES?" in frame]
+            self.assertTrue(asked, flow)
+            self.assertFalse(screen.keys, flow)
+
     def power_request(self, action, keys, running=()):
         """Press A on REBOOT/SHUTDOWN, then `keys` on the question; return (files created, text drawn)."""
         class Recording(Screen):

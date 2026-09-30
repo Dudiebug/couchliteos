@@ -1093,9 +1093,15 @@ class ApplicationsSettings:
         add_centered(self.screen, height - 3, self.status or "LEFT/RIGHT MOVES  ·  ENTER EDITS  ·  F12 KEYBOARD")
         self.screen.refresh()
 
+    def discard_changes(self) -> bool:
+        """B was pressed on work in progress: YES throws it away, NO (the default) keeps editing."""
+        return confirmation.confirm(self.screen, "DISCARD CHANGES?")
+
     def text_input(
-        self, title: str, prompt: str, limit: int, *, initial: str = "", masked: bool = False
+        self, title: str, prompt: str, limit: int, *, initial: str = "", masked: bool = False,
+        unsaved: bool = False,
     ) -> str | None:
+        """`unsaved`: earlier answers of the same form are lost if this is cancelled, so ask first."""
         value = initial[:limit]
         previous_status, self.status = self.status, TEXT_HINT
         self.screen.timeout(-1)
@@ -1112,8 +1118,9 @@ class ApplicationsSettings:
                     if key in {"\n", "\r"}:
                         return value
                     if key == "\x1b":
-                        return None
-                    if key in {"\b", "\x7f"}:
+                        if not unsaved or self.discard_changes():
+                            return None
+                    elif key in {"\b", "\x7f"}:
                         value = value[:-1]
                     elif key.isprintable() and key not in "\r\n" and len(value) < limit:
                         value += key
@@ -1129,7 +1136,7 @@ class ApplicationsSettings:
             except curses.error:
                 pass
 
-    def yes_no(self, title: str, prompt: str) -> bool | None:
+    def yes_no(self, title: str, prompt: str, *, unsaved: bool = False) -> bool | None:
         selected = 0
         while True:
             rows = [prompt, "YES", "NO"]
@@ -1138,7 +1145,7 @@ class ApplicationsSettings:
             selected = move_selection(selected, key, 2)
             if key in (curses.KEY_ENTER, 10, 13):
                 return selected == 0
-            if key == 27:
+            if key == 27 and (not unsaved or self.discard_changes()):
                 return None
 
     def _write_user(self, app: apps.Application) -> None:
@@ -1149,17 +1156,19 @@ class ApplicationsSettings:
         name = self.text_input("ADD COMMAND APPLICATION", "NAME", apps.MAX_NAME)
         if not name:
             return
-        command = self.text_input("ADD COMMAND APPLICATION", "ABSOLUTE COMMAND", apps.MAX_COMMAND)
+        command = self.text_input("ADD COMMAND APPLICATION", "ABSOLUTE COMMAND", apps.MAX_COMMAND, unsaved=True)
         if command is None:
             return
-        arguments = self.text_input("ADD COMMAND APPLICATION", "ARGUMENTS (OPTIONAL)", apps.MAX_ARGUMENTS)
+        arguments = self.text_input(
+            "ADD COMMAND APPLICATION", "ARGUMENTS (OPTIONAL)", apps.MAX_ARGUMENTS, unsaved=True
+        )
         if arguments is None:
             return
-        terminal = self.yes_no("ADD COMMAND APPLICATION", "RUN IN TERMINAL?")
+        terminal = self.yes_no("ADD COMMAND APPLICATION", "RUN IN TERMINAL?", unsaved=True)
         if terminal is None:
             return
         environment_text = self.text_input(
-            "ADD COMMAND APPLICATION", "ENVIRONMENT KEY=value;OTHER=value (OPTIONAL)", 2048
+            "ADD COMMAND APPLICATION", "ENVIRONMENT KEY=value;OTHER=value (OPTIONAL)", 2048, unsaved=True
         )
         if environment_text is None:
             return
@@ -1182,7 +1191,7 @@ class ApplicationsSettings:
         name = self.text_input("ADD WEB APPLICATION", "NAME", apps.MAX_NAME)
         if not name:
             return
-        url = self.text_input("ADD WEB APPLICATION", "HTTP:// OR HTTPS:// URL", 2048)
+        url = self.text_input("ADD WEB APPLICATION", "HTTP:// OR HTTPS:// URL", 2048, unsaved=True)
         if url is None:
             return
         try:
@@ -1415,6 +1424,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
         )
         values["port"] = str(values["port"])
         new_password: str | None = None
+        saved_values = dict(values)
         selected = 0
         on_off = {True: "ON", False: "OFF"}
         while True:
@@ -1437,7 +1447,10 @@ class RemoteDesktopSettings(ApplicationsSettings):
             self.draw(title, rows, selected)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
+            changed = values != saved_values or new_password is not None
             if key == 27:
+                if changed and not self.discard_changes():
+                    continue
                 return
             toggles = {6: "fullscreen", 7: "audio", 8: "clipboard"}
             if selected in toggles and key in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
@@ -1479,7 +1492,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
             elif selected == 10:
                 if self.save_connection(connection, values, new_password):
                     return
-            else:
+            elif not changed or self.discard_changes():
                 return
 
     def save_connection(
