@@ -459,6 +459,10 @@ def paired_hosts(text: str) -> list[str]:
     return [names[index] for index in sorted(paired) if names.get(index)]
 
 
+def new_hosts(before: Sequence[str], after: Sequence[str]) -> list[str]:
+    return [host for host in after if host not in before]
+
+
 # --- hardware gates: each one answers "can this PC do it, and if not why" --
 
 NO_BLUETOOTH_HINT = "PLUG IN A CONTROLLER BY USB"
@@ -1121,11 +1125,15 @@ class SetupWizard:
             "MOONLIGHT TALKS TO SUNSHINE ON YOUR GAMING PC. BOTH MUST BE ON THE SAME NETWORK.",
             "PAIRING NEEDS A 4 DIGIT PIN TYPED INTO SUNSHINE'S WEB PAGE ON THE PC.",
         ]
+        already = self.system.paired_hosts()
+        keep = "KEEP THE PC ALREADY PAIRED"
+        if already:
+            lines.append(bluetooth.safe_text("ALREADY PAIRED: " + ", ".join(already), 70))
+        choices = ["FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"] + ([keep] if already else []) + [SKIP]
         while True:
-            choice = self.pick(
-                "STREAMING PC", lines,
-                ["FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE", SKIP],
-            )
+            choice = self.pick("STREAMING PC", lines, choices)
+            if choice == keep:
+                return DONE
             if choice not in ("FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"):
                 return SKIPPED
             paired = self.pair_in_moonlight() if choice.startswith("FIND") else self.pair_with_pin()
@@ -1133,7 +1141,7 @@ class SetupWizard:
                 continue
             if paired:
                 return DONE
-            again = self.pick("NOT PAIRED YET", ["NO PAIRED GAMING PC WAS FOUND."], ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
+            again = self.pick("NOT PAIRED YET", ["NO NEW GAMING PC WAS PAIRED."], ["TRY AGAIN", "CONTINUE WITHOUT PAIRING"])
             if again != "TRY AGAIN":
                 return FAILED
 
@@ -1150,8 +1158,9 @@ class SetupWizard:
         )
         if choice != "OPEN MOONLIGHT":
             return None
+        before = list(self.system.paired_hosts())
         self.actions["launch"]("moonlight")
-        return bool(self.system.paired_hosts())
+        return bool(new_hosts(before, self.system.paired_hosts()))
 
     def pair_with_pin(self) -> bool | None:
         while True:
@@ -1175,9 +1184,11 @@ class SetupWizard:
         if choice != "START PAIRING":
             return None
         # The launcher reports a failed start when moonlight exits before it counts as ready,
-        # which is also what a quickly typed PIN looks like. Only the saved pairing is trusted.
+        # which is also what a quickly typed PIN looks like. Only a pairing saved by this
+        # attempt is trusted: an older one says nothing about the PC tried now.
+        before = list(self.system.paired_hosts())
         self.actions["pair_moonlight"](host, pin)
-        return bool(self.system.paired_hosts())
+        return bool(new_hosts(before, self.system.paired_hosts()))
 
     # 5. optional steps
     def open_step(self, step: str, intro: str, label: str, action: Callable[[], Any]) -> str:

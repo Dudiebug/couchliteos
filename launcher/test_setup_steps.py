@@ -216,5 +216,74 @@ class RedoTest(base.WizardTestCase):
         self.assertEqual(self.ran, ["controller", "tailscale", "tailscale"])
 
 
+class PairedPcTest(base.WizardTestCase):
+    """A gaming PC counts as paired only if it is new since the pairing was started."""
+
+    def pairing(self, system, *hosts, result=True):
+        """Actions that save `hosts` as paired, the way Moonlight does when the PIN is accepted."""
+        def launch(app_id):
+            self.calls.append(("launch", app_id))
+            system.hosts += hosts
+            return True
+
+        def pair(host, pin):
+            self.calls.append(("pair", host, pin))
+            system.hosts += hosts
+            return result
+
+        return {"launch": launch, "pair_moonlight": pair}
+
+    def test_the_new_host_helper_ignores_hosts_that_were_already_paired(self):
+        self.assertEqual(setup.new_hosts(["A", "B"], ["A", "B", "C"]), ["C"])
+        self.assertEqual(setup.new_hosts(["A"], ["A"]), [])
+        self.assertEqual(setup.new_hosts([], ["A"]), ["A"])
+        self.assertEqual(setup.new_hosts(["A"], []), [])
+
+    def test_an_old_pairing_does_not_make_the_moonlight_route_done(self):
+        system = base.FakeSystem(hosts=["OLD-PC"])
+        ui = base.FakeUI("FIND MY GAMING PC", "OPEN MOONLIGHT", "CONTINUE WITHOUT")
+        self.assertEqual(self.wizard(ui, system).step_streaming(), "failed")
+        self.assertIn("NO NEW GAMING PC", ui.text())
+
+    def test_an_old_pairing_does_not_make_the_pin_route_done(self):
+        self.texts = ["192.168.1.20"]
+        system = base.FakeSystem(hosts=["OLD-PC"])
+        ui = base.FakeUI("PAIR WITH A PIN", "START PAIRING", "CONTINUE WITHOUT")
+        self.assertEqual(self.wizard(ui, system).step_streaming(), "failed")
+
+    def test_a_new_pc_next_to_an_old_one_is_done_on_both_routes(self):
+        system = base.FakeSystem(hosts=["OLD-PC"])
+        ui = base.FakeUI("FIND MY GAMING PC", "OPEN MOONLIGHT")
+        wizard = self.wizard(ui, system, **self.pairing(system, "NEW-PC"))
+        self.assertEqual(wizard.step_streaming(), "done")
+        self.texts = ["192.168.1.21"]
+        system = base.FakeSystem(hosts=["OLD-PC"])
+        ui = base.FakeUI("PAIR WITH A PIN", "START PAIRING")
+        wizard = self.wizard(ui, system, **self.pairing(system, "NEW-PC"))
+        self.assertEqual(wizard.step_streaming(), "done")
+
+    def test_a_pc_that_is_already_paired_can_be_kept_without_pairing_again(self):
+        system = base.FakeSystem(hosts=["OLD-PC", "DEN-PC"])
+        ui = base.FakeUI("KEEP THE PC ALREADY PAIRED")
+        self.assertEqual(self.wizard(ui, system).step_streaming(), "done")
+        self.assertIn("ALREADY PAIRED: OLD-PC, DEN-PC", ui.text())
+        self.assertEqual([call for call in self.calls if call[0] in ("launch", "pair")], [])
+
+    def test_nothing_is_offered_to_keep_when_no_pc_was_ever_paired(self):
+        ui = base.FakeUI(None)
+        self.wizard(ui, base.FakeSystem()).step_streaming()
+        self.assertNotIn("ALREADY PAIRED", ui.text())
+        self.assertNotIn("KEEP THE PC", ui.text())
+
+    def test_the_list_of_paired_pcs_fits_the_screen_and_is_clean_text(self):
+        system = base.FakeSystem(hosts=["PC-" + "X" * 100, "ODD[31mNAME"])
+        ui = base.FakeUI(None)
+        self.wizard(ui, system).step_streaming()
+        shown = [line for line in ui.screens[0]["lines"] if line.startswith("ALREADY PAIRED")]
+        self.assertEqual(len(shown), 1)
+        self.assertLessEqual(len(shown[0]), MAX_COLUMNS)
+        self.assertNotIn("", shown[0])
+
+
 if __name__ == "__main__":
     unittest.main()
