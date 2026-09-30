@@ -503,4 +503,20 @@ rg -q 'moonlightos_controllers.py' build/configure.sh
 rg -q '^import moonlightos_controllers as controllers' launcher/moonlightos-launcher.py
 rg -q '/sys/class/power_supply' launcher/moonlightos_controllers.py
 
+# Easier everyday use: sound follows the TV (declarative WirePlumber 0.5 rule)
+rg -q 'cp -a "\$ROOT/overlay/\."' build/configure.sh
+rg -q -- '--profile main-systemwide' scripts/moonlightos-audio
+python3 - <<'PY'
+import pathlib, re
+conf = pathlib.Path('overlay/etc/wireplumber/wireplumber.conf.d/50-moonlightos-hdmi-default.conf').read_text()
+body = '\n'.join(line for line in conf.splitlines() if not line.lstrip().startswith('#'))
+assert body.count('[') == body.count(']') and body.count('{') == body.count('}'), 'unbalanced brackets'
+assert body.lstrip().startswith('monitor.alsa.rules = ['), 'must extend monitor.alsa.rules'
+for needle in ('"~.*hdmi.*"', '"~.*HDMI.*"', '"~.*DisplayPort.*"', 'media.class = "Audio/Sink"', 'update-props'):
+    assert needle in body, needle
+priority = int(re.search(r'priority\.session\s*=\s*(\d+)', body).group(1))
+# WirePlumber 0.5 scores ALSA analog sinks 1009 and Bluetooth sinks 1010.
+assert priority > 1010, priority
+PY
+
 printf 'Static tests passed.\n'
