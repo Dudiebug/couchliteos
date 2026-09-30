@@ -398,7 +398,7 @@ python3 -m py_compile launcher/moonlightos-launcher.py launcher/moonlightos_apps
   launcher/moonlightos_app_runner.py launcher/moonlightos_setup.py launcher/moonlightos_osk.py \
   launcher/moonlightos_display.py launcher/moonlightos_support.py \
   launcher/moonlightos_bluetooth.py launcher/moonlightos_audio.py launcher/gamepad-nav.py \
-  launcher/moonlightos_rdp.py scripts/moonlightos-rdp-secret \
+  launcher/moonlightos_rdp.py launcher/moonlightos_stream.py scripts/moonlightos-rdp-secret \
   scripts/moonlightos-host-address scripts/moonlightos-support-export \
   scripts/moonlightos-bluetoothd scripts/moonlightos-hwdetect
 
@@ -497,5 +497,21 @@ MOONLIGHTOS_SYSFS_ROOT="$tmp/sys" \
 MOONLIGHTOS_USBIP_ALLOWLIST="$tmp/allowlist" \
 MOONLIGHTOS_USBIP_LOG="$tmp/log/usbip.log" \
   bash usbip/moonlightos-usbip unbind-all
+
+# Couch to game: the stream module ships in the image, is reachable from Settings,
+# and run-app only ever receives a host and app name that the module validated.
+rg -q 'moonlightos_stream.py' build/configure.sh
+rg -q '^    "STREAMING",$' launcher/moonlightos-launcher.py
+rg -q 'def autostream' launcher/moonlightos-launcher.py
+rg -q 'moonlightos_stream.py take-request' scripts/moonlightos-run-app
+refute rg -q 'shell=True|\beval\b|os\.system' launcher/moonlightos_stream.py
+printf 'pc.lan\nSteam Big Picture\n' > "$tmp/stream.request"
+mapfile -t stream_request < <(python3 launcher/moonlightos_stream.py take-request "$tmp/stream.request")
+[[ ${#stream_request[@]} == 2 && ${stream_request[0]} == pc.lan && ${stream_request[1]} == 'Steam Big Picture' ]]
+test ! -e "$tmp/stream.request"
+printf -- '--evil\nDesktop\n' > "$tmp/stream.request"
+stream_status=0
+python3 launcher/moonlightos_stream.py take-request "$tmp/stream.request" > "$tmp/stream.out" || stream_status=$?
+[[ $stream_status == 1 && ! -s "$tmp/stream.out" && ! -e "$tmp/stream.request" ]]
 
 printf 'Static tests passed.\n'

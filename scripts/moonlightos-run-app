@@ -150,6 +150,14 @@ PY
   if [[ -n "$host" ]]; then
     echo "Selected Sunshine address: $host ($(moonlightos-host-address 2>/dev/null || true))"
   fi
+  # Auto-stream: the launcher leaves a host and app name in moonlight-stream.request;
+  # the module validates them, so they reach Moonlight as plain arguments (no shell).
+  mapfile -t stream_request < <(python3 /usr/libexec/moonlightos_stream.py take-request 2>/dev/null || true)
+  if ((${#stream_request[@]} == 2)); then
+    host=${stream_request[0]}
+    profile_app=${stream_request[1]}
+    echo "Auto-stream requested: $host ($profile_app)"
+  fi
   if [[ -n "$host" && -n "$profile_app" ]]; then
     run_client env QT_QPA_PLATFORM=xcb "$binary" stream "$host" "$profile_app" "${video_options[@]}"
   else
