@@ -29,6 +29,8 @@ AGENT_MANAGER = "org.bluez.AgentManager1"
 AGENT_PATH = "/org/moonlightos/BluetoothAgent"
 SOCKET_PATH = pathlib.Path("/run/moonlightos-bluetooth/control.sock")
 PREFERENCE = pathlib.Path("/var/lib/moonlightos/bluetooth-enabled")
+SYSFS_BLUETOOTH = pathlib.Path("/sys/class/bluetooth")
+ERROR_SECONDS = 30
 MAX_MESSAGE = 8192
 MAX_DEVICES = 64
 DEVICE_PATH_RE = re.compile(
@@ -125,6 +127,52 @@ def bluez_error_name(error: object) -> str:
     return str(getter()) if callable(getter) else ""
 
 
+BLOCKED_TEXT = "BLUETOOTH IS BLOCKED (RFKILL)"
+PAIRING_HINT = (
+    "PUT THE CONTROLLER IN PAIRING MODE AND TRY AGAIN. "
+    "IF IT WAS PAIRED WITH A CONSOLE, PAIR IT HERE AGAIN."
+)
+BLUEZ_ERRORS = {
+    "Failed": "BLUETOOTH COULD NOT COMPLETE THE REQUEST",
+    "AuthenticationFailed": "AUTHENTICATION FAILED",
+    "AuthenticationCanceled": "PAIRING WAS CANCELLED",
+    "AuthenticationRejected": "THE DEVICE REJECTED PAIRING",
+    "AuthenticationTimeout": "THE DEVICE DID NOT ANSWER IN TIME",
+    "ConnectionAttemptFailed": "COULD NOT CONNECT TO THE DEVICE",
+    "AlreadyExists": "THE DEVICE IS ALREADY PAIRED",
+    "AlreadyConnected": "THE DEVICE IS ALREADY CONNECTED",
+    "InProgress": "ANOTHER BLUETOOTH ACTION IS IN PROGRESS",
+    "NotReady": "BLUETOOTH IS NOT READY YET",
+    "Blocked": BLOCKED_TEXT,
+    "NotAvailable": "THE DEVICE IS NOT AVAILABLE",
+    "NotSupported": "THE DEVICE DOES NOT SUPPORT THIS",
+    "DoesNotExist": "THE DEVICE IS NO LONGER KNOWN",
+    "NotConnected": "THE DEVICE IS NOT CONNECTED",
+    "Rejected": "THE REQUEST WAS REJECTED",
+    "NoReply": "THE DEVICE DID NOT ANSWER IN TIME",
+}
+# Errors that a fresh pairing usually cures.
+PAIRING_HINT_ERRORS = {
+    "Failed",
+    "AuthenticationFailed",
+    "AuthenticationRejected",
+    "AuthenticationTimeout",
+    "ConnectionAttemptFailed",
+    "NoReply",
+}
+
+
+def describe_error(error: object, *, hint: bool = False) -> str:
+    """Plain-English text for a BlueZ/D-Bus error; unknown errors keep their text."""
+    name = bluez_error_name(error).rsplit(".", 1)[-1]
+    text = BLUEZ_ERRORS.get(name)
+    if text is None:
+        return safe_text(error, 120)
+    if hint and name in PAIRING_HINT_ERRORS:
+        return f"{text}. {PAIRING_HINT}"
+    return text
+
+
 class BluetoothController:
     """Asynchronous BlueZ state and fixed-command dispatcher."""
 
@@ -136,17 +184,22 @@ class BluetoothController:
         *,
         preference_path: pathlib.Path = PREFERENCE,
         process_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        sysfs_bluetooth: pathlib.Path = SYSFS_BLUETOOTH,
     ) -> None:
         self.bus = bus
         self.dbus = dbus_module
         self.glib = glib
         self.preference_path = preference_path
         self.process_runner = process_runner
+        self.sysfs_bluetooth = sysfs_bluetooth
         self.objects: dict[str, dict[str, dict[str, object]]] = {}
         self.agent: Any = None
         self.agent_registered = False
         self.bluez_available = False
         self.last_error = ""
+        # Set only for one-off failures, which expire; states such as a
+        # stopped BlueZ stay until the state changes.
+        self.last_error_at: float | None = None
         self.prompt: dict[str, object] | None = None
         self.prompt_callbacks: tuple[Callable[..., None], Callable[[object], None]] | None = None
         self.operation_number = 0
@@ -179,16 +232,25 @@ class BluetoothController:
         self.bus.watch_name_owner(BLUEZ, self.owner_changed)
 
     def owner_changed(self, owner: str) -> None:
+        # An empty owner while BlueZ was never seen running (the report at
+        # startup) means it is not running (Debian starts it only when an
+        # adapter exists), not that it restarted.
+        was_running = self.bluez_available
         self.bluez_available = bool(owner)
         self.agent_registered = False
         if not owner:
             self.objects.clear()
+            self.last_error_at = None
+            if not was_running:
+                self.last_error = "BLUETOOTH SERVICE IS NOT RUNNING"
+                return
             self.last_error = "BLUEZ SERVICE RESTARTING"
             self._reject_prompt("BLUETOOTH SERVICE RESTARTED")
             for operation_id in list(self.active_by_device.values()):
                 self._finish(operation_id, "failed", "BLUETOOTH SERVICE RESTARTED")
             return
         self.last_error = ""
+        self.last_error_at = None
         self.refresh_objects()
         self.register_agent()
 
@@ -206,6 +268,7 @@ class BluetoothController:
     def _replace_objects(self, objects: object) -> None:
         converted = plain(objects)
         self.objects = converted if isinstance(converted, dict) else {}
+        self._clear_error()
         self._apply_saved_power()
 
     def interfaces_added(self, path: object, interfaces: object) -> None:
@@ -259,9 +322,36 @@ class BluetoothController:
             self._begin_discovery(path_text)
 
     def _record_error(self, prefix: str, error: object) -> None:
-        detail = safe_text(error, 120)
-        self.last_error = f"{prefix}: {detail}" if detail else prefix
+        if bluez_error_name(error).endswith("Blocked"):
+            self.last_error = BLOCKED_TEXT
+        else:
+            detail = describe_error(error)
+            self.last_error = f"{prefix}: {detail}" if detail else prefix
+        self.last_error_at = time.monotonic()
         print(self.last_error, file=sys.stderr)
+
+    def _clear_error(self) -> None:
+        """A successful BlueZ call ends the last one-off failure."""
+        if self.last_error_at is not None:
+            self.last_error = ""
+            self.last_error_at = None
+
+    def _adapter_hardware_present(self) -> bool:
+        try:
+            return any(self.sysfs_bluetooth.iterdir())
+        except OSError:
+            return False
+
+    def current_error(self, adapter_found: bool) -> str:
+        if (
+            self.last_error_at is not None
+            and time.monotonic() - self.last_error_at > ERROR_SECONDS
+        ):
+            self._clear_error()
+        # Without an adapter the launcher shows only that state.
+        if not adapter_found and not self._adapter_hardware_present():
+            return ""
+        return self.last_error
 
     def adapter(self) -> tuple[str, dict[str, object]] | None:
         adapters = [
@@ -314,7 +404,7 @@ class BluetoothController:
             "devices": devices,
             "prompt": dict(self.prompt) if self.prompt else None,
             "operations": [dict(operation) for operation in self.operations.values()],
-            "error": self.last_error,
+            "error": self.current_error(adapter is not None),
         }
 
     def _interface(self, path: str, interface: str) -> Any:
@@ -330,11 +420,15 @@ class BluetoothController:
         failure: Callable[[object], None],
         timeout: int,
     ) -> None:
+        def succeeded(*values: object) -> None:
+            self._clear_error()
+            success(*values)
+
         try:
             function = getattr(self._interface(path, interface), method)
             function(
                 *arguments,
-                reply_handler=success,
+                reply_handler=succeeded,
                 error_handler=failure,
                 timeout=timeout,
             )
@@ -357,14 +451,46 @@ class BluetoothController:
         adapter = self.adapter()
         if saved is None or not adapter or bool(adapter[1].get("Powered")) == saved:
             return
+        self._set_powered(adapter[0], saved, lambda: None, "COULD NOT RESTORE BLUETOOTH POWER")
+
+    def _set_powered(
+        self,
+        path: str,
+        powered: bool,
+        success: Callable[[], None],
+        prefix: str,
+        *,
+        retry: bool = True,
+    ) -> None:
+        """Set Powered; a soft-blocked adapter is unblocked with rfkill and retried once."""
+
+        def failed(error: object) -> None:
+            if (
+                powered
+                and retry
+                and bluez_error_name(error).endswith("Blocked")
+                and self._unblock_radio()
+            ):
+                self._set_powered(path, powered, success, prefix, retry=False)
+                return
+            self._record_error(prefix, error)
+
         self._set_property(
-            adapter[0],
-            ADAPTER,
-            "Powered",
-            self.dbus.Boolean(saved),
-            lambda: None,
-            lambda error: self._record_error("COULD NOT RESTORE BLUETOOTH POWER", error),
+            path, ADAPTER, "Powered", self.dbus.Boolean(powered), success, failed
         )
+
+    def _unblock_radio(self) -> bool:
+        try:
+            result = self.process_runner(
+                ["rfkill", "unblock", "bluetooth"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
 
     def register_agent(self) -> None:
         if not self.agent or not self.bluez_available:
@@ -446,14 +572,7 @@ class BluetoothController:
             if not powered:
                 self.stop_scan()
 
-        self._set_property(
-            path,
-            ADAPTER,
-            "Powered",
-            self.dbus.Boolean(powered),
-            success,
-            lambda error: self._record_error("COULD NOT CHANGE BLUETOOTH POWER", error),
-        )
+        self._set_powered(path, powered, success, "COULD NOT CHANGE BLUETOOTH POWER")
         return {"ok": True, "accepted": True}
 
     def _begin_discovery(self, adapter_path: str) -> None:
@@ -505,13 +624,11 @@ class BluetoothController:
         if bool(properties.get("Powered")) and not bool(properties.get("Discovering")):
             self._begin_discovery(adapter_path)
         elif not bool(properties.get("Powered")):
-            self._set_property(
+            self._set_powered(
                 adapter_path,
-                ADAPTER,
-                "Powered",
-                self.dbus.Boolean(True),
+                True,
                 lambda: self._begin_discovery(adapter_path),
-                lambda error: self._record_error("COULD NOT POWER BLUETOOTH FOR SCAN", error),
+                "COULD NOT POWER BLUETOOTH FOR SCAN",
             )
         return {"ok": True, "accepted": True}
 
@@ -545,7 +662,7 @@ class BluetoothController:
                 self.dbus.Boolean(True),
                 lambda: self._connect_after_pair(operation_id, path),
                 lambda error: self._finish(
-                    operation_id, "failed", f"PAIRED BUT COULD NOT TRUST DEVICE: {safe_text(error)}"
+                    operation_id, "failed", f"PAIRED BUT COULD NOT TRUST DEVICE: {describe_error(error)}"
                 ),
             )
 
@@ -554,7 +671,9 @@ class BluetoothController:
             if name.endswith("AlreadyExists") or bool(properties.get("Paired")):
                 pair_success()
             else:
-                self._finish(operation_id, "failed", f"PAIRING FAILED: {safe_text(error)}")
+                self._finish(
+                    operation_id, "failed", f"PAIRING FAILED: {describe_error(error, hint=True)}"
+                )
 
         if bool(properties.get("Paired")):
             pair_success()
@@ -616,7 +735,9 @@ class BluetoothController:
                 (),
                 lambda: self._finish(operation_id, "completed"),
                 lambda error: self._finish(
-                    operation_id, "failed", f"{kind.upper()} FAILED: {safe_text(error)}"
+                    operation_id,
+                    "failed",
+                    f"{kind.upper()} FAILED: {describe_error(error, hint=kind == 'connect')}",
                 ),
                 15,
             )
@@ -634,7 +755,7 @@ class BluetoothController:
             (self.dbus.ObjectPath(path),),
             lambda: self._finish(operation_id, "completed"),
             lambda error: self._finish(
-                operation_id, "failed", f"FORGET DEVICE FAILED: {safe_text(error)}"
+                operation_id, "failed", f"FORGET DEVICE FAILED: {describe_error(error)}"
             ),
             10,
         )

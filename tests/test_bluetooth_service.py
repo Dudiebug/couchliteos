@@ -332,6 +332,189 @@ class ControllerTest(unittest.TestCase):
         self.assertIn("NO AUDIO OUTPUT", controller._select_audio_sink("Headphones", "AA:BB:CC:DD:EE:FF"))
 
 
+class ErrorReportingTest(unittest.TestCase):
+    def controller(self, adapters=("hci0",)):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = pathlib.Path(directory.name)
+        self.sysfs = self.directory / "bluetooth"
+        self.sysfs.mkdir()
+        for name in adapters:
+            (self.sysfs / name).mkdir()
+        self.runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout="", stderr=""))
+        controller = bluetoothd.BluetoothController(
+            mock.Mock(),
+            FakeDBus,
+            FakeGLib(),
+            preference_path=self.directory / "bluetooth-enabled-test",
+            process_runner=self.runner,
+            sysfs_bluetooth=self.sysfs,
+        )
+        controller.objects = managed_objects()
+        controller.bluez_available = True
+        return controller
+
+    def blocked(self):
+        error = FakeDBusException("Blocked through rfkill")
+        error._dbus_error_name = "org.bluez.Error.Blocked"
+        return error
+
+    def test_error_is_cleared_by_the_next_successful_operation(self):
+        controller = self.controller()
+        controller._record_error("COULD NOT CHANGE BLUETOOTH POWER", FakeDBusException("x"))
+        self.assertTrue(controller.snapshot()["error"])
+        controller.bus.get_object.return_value.Set.side_effect = (
+            lambda *_args, reply_handler, **_kwargs: reply_handler()
+        )
+        controller._set_property(
+            ADAPTER_PATH, bluetoothd.ADAPTER, "Powered", True, lambda: None, mock.Mock()
+        )
+        self.assertEqual(controller.snapshot()["error"], "")
+
+    def test_failed_operation_does_not_clear_an_error(self):
+        controller = self.controller()
+        controller._record_error("COULD NOT CHANGE BLUETOOTH POWER", FakeDBusException("x"))
+        controller.bus.get_object.return_value.Set.side_effect = (
+            lambda *_args, error_handler, **_kwargs: error_handler(FakeDBusException("y"))
+        )
+        controller._set_property(
+            ADAPTER_PATH, bluetoothd.ADAPTER, "Powered", True, lambda: None, lambda _error: None
+        )
+        self.assertTrue(controller.snapshot()["error"])
+
+    def test_error_expires_after_thirty_seconds(self):
+        controller = self.controller()
+        controller._record_error("COULD NOT CHANGE BLUETOOTH POWER", FakeDBusException("x"))
+        controller.last_error_at -= 25
+        self.assertTrue(controller.snapshot()["error"])
+        controller.last_error_at -= 10
+        self.assertEqual(controller.snapshot()["error"], "")
+        self.assertEqual(controller.last_error, "")
+
+    def test_initial_empty_owner_is_not_a_restart(self):
+        controller = self.controller()
+        controller.bluez_available = False  # as at startup
+        controller.owner_changed("")
+        self.assertFalse(controller.bluez_available)
+        self.assertEqual(controller.snapshot()["error"], "BLUETOOTH SERVICE IS NOT RUNNING")
+        controller.refresh_objects = mock.Mock()
+        controller.register_agent = mock.Mock()
+        controller.owner_changed(":1.5")
+        controller.owner_changed("")
+        self.assertEqual(controller.snapshot()["error"], "BLUEZ SERVICE RESTARTING")
+
+    def test_no_adapter_hardware_shows_only_the_no_adapter_state(self):
+        controller = self.controller(adapters=())
+        controller.refresh_objects = mock.Mock()
+        controller.register_agent = mock.Mock()
+        controller.owner_changed(":1.5")
+        controller.owner_changed("")
+        snapshot = controller.snapshot()
+        self.assertIsNone(snapshot["adapter"])
+        self.assertEqual(snapshot["error"], "")
+
+    def test_blocked_adapter_is_unblocked_with_rfkill_and_retried_once(self):
+        controller = self.controller()
+        attempts = []
+
+        def set_property(_path, _interface, _name, value, success, failure):
+            attempts.append(value)
+            if len(attempts) == 1:
+                failure(self.blocked())
+            else:
+                success()
+
+        controller._set_property = set_property
+        controller.set_power(True)
+        self.assertEqual(attempts, [True, True])
+        self.assertEqual(self.runner.call_args.args[0], ["rfkill", "unblock", "bluetooth"])
+        self.assertEqual(controller.snapshot()["error"], "")
+        self.assertEqual((self.directory / "bluetooth-enabled-test").read_text(), "1\n")
+
+    def test_still_blocked_after_retry_says_rfkill(self):
+        controller = self.controller()
+        attempts = []
+
+        def set_property(_path, _interface, _name, value, _success, failure):
+            attempts.append(value)
+            failure(self.blocked())
+
+        controller._set_property = set_property
+        controller.set_power(True)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(self.runner.call_count, 1)
+        self.assertEqual(controller.snapshot()["error"], "BLUETOOTH IS BLOCKED (RFKILL)")
+
+    def test_unavailable_rfkill_command_is_reported_as_blocked(self):
+        controller = self.controller()
+        self.runner.side_effect = FileNotFoundError("rfkill")
+        controller._set_property = lambda _p, _i, _n, _v, _s, failure: failure(self.blocked())
+        controller.set_power(True)
+        self.assertEqual(controller.snapshot()["error"], "BLUETOOTH IS BLOCKED (RFKILL)")
+
+    def test_turning_bluetooth_off_never_runs_rfkill(self):
+        controller = self.controller()
+        controller._set_property = lambda _p, _i, _n, _v, _s, failure: failure(self.blocked())
+        controller.set_power(False)
+        self.runner.assert_not_called()
+
+    def test_scan_power_on_unblocks_too(self):
+        controller = self.controller()
+        controller.objects = managed_objects(powered=False)
+        attempts = []
+
+        def set_property(_path, _interface, _name, _value, success, failure):
+            attempts.append(1)
+            if len(attempts) == 1:
+                failure(self.blocked())
+            else:
+                success()
+
+        controller._set_property = set_property
+        controller._begin_discovery = mock.Mock()
+        controller.start_scan()
+        self.assertEqual(self.runner.call_args.args[0], ["rfkill", "unblock", "bluetooth"])
+        controller._begin_discovery.assert_called_once_with(ADAPTER_PATH)
+
+    def failing_pair(self, name):
+        controller = self.controller()
+        controller.objects = managed_objects(paired=False)
+        error = FakeDBusException("raw bluez text")
+        error._dbus_error_name = f"org.bluez.Error.{name}"
+        controller._call = (
+            lambda _path, _interface, _method, _args, _success, failure, _timeout: failure(error)
+        )
+        operation = controller.operations[controller.pair(DEVICE_PATH)["operation_id"]]
+        return operation["error"]
+
+    def test_common_bluez_errors_are_plain_english_with_a_pairing_hint(self):
+        for name in ("Failed", "AuthenticationFailed", "ConnectionAttemptFailed", "AuthenticationTimeout"):
+            with self.subTest(name):
+                message = self.failing_pair(name)
+                self.assertNotIn("org.bluez", message)
+                self.assertNotIn("raw bluez text", message)
+                self.assertIn("PAIRING MODE", message)
+                self.assertIn("PAIR IT HERE AGAIN", message)
+                self.assertLessEqual(len(message), 240)
+        self.assertIn("CANCELLED", self.failing_pair("AuthenticationCanceled"))
+        self.assertIn("IN PROGRESS", self.failing_pair("InProgress"))
+        self.assertIn("NOT READY", self.failing_pair("NotReady"))
+        self.assertIn("BLOCKED", self.failing_pair("Blocked"))
+
+    def test_unknown_error_keeps_its_text(self):
+        self.assertIn("something odd", bluetoothd.describe_error(RuntimeError("something odd")))
+
+    def test_connect_failure_uses_plain_english(self):
+        controller = self.controller()
+        error = FakeDBusException("raw")
+        error._dbus_error_name = "org.bluez.Error.ConnectionAttemptFailed"
+        controller._call = lambda _p, _i, _m, _a, _s, failure, _t: failure(error)
+        response = controller._device_action("connect", DEVICE_PATH)
+        operation = controller.operations[response["operation_id"]]
+        self.assertIn("PAIRING MODE", operation["error"])
+        self.assertNotIn("org.bluez", operation["error"])
+
+
 class AgentTest(unittest.TestCase):
     def setUp(self):
         self.controller = bluetoothd.BluetoothController(mock.Mock(), FakeDBus, FakeGLib())
