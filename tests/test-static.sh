@@ -755,5 +755,11 @@ rg -q '^import moonlightos_pcstatus as pcstatus' launcher/moonlightos-launcher.p
 rg -q 'self\.pcstatus\.line\(\)' launcher/moonlightos-launcher.py
 rg -q 'probe: Callable\[\[stream\.Host\], str\] = stream\.probe' launcher/moonlightos_pcstatus.py
 rg -q 'threading\.Thread' launcher/moonlightos_pcstatus.py
+# Easier everyday use: NO CONTROLLER FOUND banner (reads only the kernel's device list)
+rg -q 'moonlightos_padcheck.py' build/configure.sh
+rg -q 'moonlightos_padcheck.py' launcher/Makefile
+rg -q '^import moonlightos_padcheck as padcheck' launcher/moonlightos-launcher.py
+rg -q '/proc/bus/input/devices' launcher/moonlightos_padcheck.py
+refute rg -q 'evdev|/dev/input' launcher/moonlightos_padcheck.py
 
 printf 'Static tests passed.\n'

@@ -35,6 +35,7 @@ import moonlightos_errors as errors
 import moonlightos_confirm as confirmation
 import moonlightos_whatsnew as whatsnew
 import moonlightos_controls as controls
+import moonlightos_padcheck as padcheck
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -403,6 +404,7 @@ class Launcher:
         self.can_sleep = power.can_suspend()
         self.controllers = controllers.Monitor()
         self.pcstatus = pcstatus.Monitor()
+        self.padcheck = padcheck.Monitor()
         self.updates = update.Checker()
         # Buttons on error screens (moonlightos_errors). A handler is called with the
         # application that failed (or None); it returns True to ask for another try.
@@ -568,6 +570,7 @@ class Launcher:
         battery = self.controllers.line()
         if battery:
             lines.append((battery, curses.A_REVERSE if self.controllers.low() else curses.A_NORMAL))
+        lines += [] if battery else self.padcheck.footer(curses.A_BOLD)  # NO CONTROLLER FOUND
         return lines
 
     def draw_launching(self, label: str, frame: str) -> None:

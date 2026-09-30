@@ -75,6 +75,7 @@ install -D -m 0644 "$ROOT/launcher/moonlightos_pcstatus.py" "$CHROOT/usr/libexec
 install -D -m 0644 "$ROOT/launcher/moonlightos_update.py" "$CHROOT/usr/libexec/moonlightos_update.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_errors.py" "$CHROOT/usr/libexec/moonlightos_errors.py"
 install -D -m 0644 "$ROOT/launcher/moonlightos_whatsnew.py" "$CHROOT/usr/libexec/moonlightos_whatsnew.py"
+install -D -m 0644 "$ROOT/launcher/moonlightos_padcheck.py" "$CHROOT/usr/libexec/moonlightos_padcheck.py"
 install -D -m 0755 "$ROOT/scripts/moonlightos-rdp-secret" "$CHROOT/usr/libexec/moonlightos-rdp-secret"
 install -D -m 0755 "$ROOT/launcher/moonlightos_app_runner.py" "$CHROOT/usr/libexec/moonlightos-run-configured-app"
 install -D -m 0644 "$ROOT/launcher/moonlightos_setup.py" "$CHROOT/usr/libexec/moonlightos_setup.py"
