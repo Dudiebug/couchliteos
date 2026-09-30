@@ -363,6 +363,73 @@ class GamepadMappingTest(unittest.TestCase):
     def test_long_press_does_not_request_sleep_on_hardware_that_cannot_suspend(self):
         self.assertFalse(self.request_sleep_with(False))
 
+    # HomeHold is wired into watch_home(), the thread that reads every device with a Home/Guide key.
+    # Pads.pump() must not feed a second hold, or one long press would ask for sleep twice and the
+    # second request could suspend the PC again the moment it wakes.
+
+    def drive_watch_home(self, rounds):
+        """Run watch_home() over one fake Guide-button device.
+
+        rounds[i] = (clock reading after select i, events select i delivers). Returns the mocks
+        standing in for request_home() and request_sleep()."""
+        module = self.module
+        state = {"round": 0, "now": 100.0}
+
+        class Device:
+            def capabilities(self):
+                return {Codes.EV_KEY: [Codes.BTN_MODE]}
+
+            def read(self):
+                return [SimpleNamespace(type=Codes.EV_KEY, value=value, code=Codes.BTN_MODE) for value in events]
+
+            def close(self):
+                pass
+
+        device = Device()
+        events = ()
+
+        def fake_select(devices, _writable, _errors, _timeout):
+            nonlocal events
+            if state["round"] >= len(rounds):
+                raise Stop
+            state["now"], events = rounds[state["round"]]
+            state["round"] += 1
+            return ([device] if events else []), [], []
+
+        with mock.patch.object(module.glob, "glob", return_value=["/dev/input/event9"]), mock.patch.object(
+            module, "InputDevice", return_value=device
+        ), mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
+            module.time, "monotonic", side_effect=lambda: state["now"]
+        ), mock.patch.object(module, "request_home") as home, mock.patch.object(
+            module, "request_sleep"
+        ) as sleep:
+            with self.assertRaises(Stop):
+                module.watch_home()
+        return home, sleep
+
+    def test_holding_guide_for_three_seconds_goes_home_then_asks_for_sleep_once(self):
+        home, sleep = self.drive_watch_home([(100.0, (1,)), (101.5, ()), (103.2, ()), (110.0, ())])
+        home.assert_called_once_with()
+        sleep.assert_called_once_with()
+
+    def test_a_short_guide_press_goes_home_and_never_asks_for_sleep(self):
+        home, sleep = self.drive_watch_home([(100.0, (1,)), (100.4, (0,)), (110.0, ())])
+        home.assert_called_once_with()
+        sleep.assert_not_called()
+
+    def test_the_pad_loop_does_not_run_a_second_hold(self):
+        pad = FakePad(Codes.BTN_MODE)
+        pads = self.module.Pads()
+        pads.devices = {"/dev/input/event3": pad}
+        with mock.patch.object(self.module.select, "select", return_value=([pad], [], [])), mock.patch.object(
+            self.module.time, "monotonic", return_value=500.0
+        ), mock.patch.object(self.module, "request_sleep") as sleep, mock.patch.object(
+            self.module, "OSK_ACTIVE", pathlib.Path("/nonexistent/osk")
+        ):
+            pads.pump(mock.Mock())
+            pads.pump(mock.Mock())
+        sleep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
