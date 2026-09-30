@@ -24,6 +24,7 @@ import moonlightos_apps as apps
 import moonlightos_rdp as rdp
 import moonlightos_setup as setup
 import moonlightos_confirm as confirmation
+import moonlightos_controls as controls
 
 
 RUN = pathlib.Path("/run/moonlightos")
@@ -40,6 +41,7 @@ SETTINGS_MENU = (
     "REMOTE DESKTOP",
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
+    "CONTROLLER BUTTONS",
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
@@ -619,6 +621,7 @@ class Launcher:
         display.restore_saved_mode()
         self.draw()
         self.setup_wizard()
+        controls.show_once(self.screen)
         while True:
             key = read_key(self.screen)
             if HOME_REQUEST.exists() or key == curses.KEY_HOME:
@@ -971,6 +974,7 @@ class Settings:
             "REMOTE DESKTOP": self.run_remote_desktop,
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
             "TAILSCALE": lambda: self.launcher.launch_by_id("tailscale"),
+            "CONTROLLER BUTTONS": lambda: controls.show(self.screen),
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launcher.launch_by_id("system-diagnostics"),

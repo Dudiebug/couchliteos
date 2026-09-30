@@ -524,5 +524,7 @@ refute rg -q 'RUN / "support-media"|LOCK\.open|os\.chmod\(temporary' scripts/moo
 
 rg -q 'moonlightos_confirm.py' build/configure.sh
 rg -q 'import moonlightos_confirm' launcher/moonlightos_bluetooth.py launcher/moonlightos-launcher.py
+rg -q 'moonlightos_controls.py' build/configure.sh
+rg -q 'import moonlightos_controls' launcher/moonlightos-launcher.py
 
 printf 'Static tests passed.\n'
