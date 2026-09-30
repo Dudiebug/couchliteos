@@ -119,7 +119,7 @@ refute rg -q 'moonlightos-network-ready.service' services/moonlightos-{moonlight
 rg -q 'MOONLIGHTOS_LAUNCHER_READY' services/moonlightos-launcher.service tests/qemu-smoke.sh
 rg -q 'StandardOutput=journal\+console' services/moonlightos-launcher.service
 refute rg -q '^Environment=WAYLAND_DISPLAY=' services/moonlightos-launcher.service
-rg -q '/usr/bin/cage -s -- /usr/bin/foot --fullscreen' services/moonlightos-launcher.service
+rg -q '/usr/bin/cage -s -- /usr/libexec/moonlightos-foot --fullscreen' services/moonlightos-launcher.service
 rg -q '^Environment=QT_QPA_PLATFORM=xcb$' services/moonlightos-moonlight.service
 rg -q '^Environment=QT_QPA_PLATFORM=wayland$' services/moonlightos-chiaki.service
 rg -q '^Environment=MOZ_ENABLE_WAYLAND=1$' services/moonlightos-firefox.service
@@ -725,5 +725,14 @@ rg -q '^install -D -m 0755 "\$ROOT/scripts/moonlightos-display-failed" "\$CHROOT
 
 rg -q 'moonlightos_confirm.py' build/configure.sh
 rg -q 'import moonlightos_confirm' launcher/moonlightos_bluetooth.py launcher/moonlightos-launcher.py
+
+# Scrolling menus (720p terminals show ~18 rows) need their helper in the image.
+rg -q 'moonlightos_listview.py' build/configure.sh
+
+# foot starts through a wrapper that sizes the font for the screen (720p to 4K).
+rg -qF 'moonlightos_foot.py" "$CHROOT/usr/libexec/moonlightos-foot"' build/configure.sh
+rg -q '/usr/libexec/moonlightos-foot --fullscreen' scripts/moonlightos-osk-session
+rg -q '^FOOT = "/usr/libexec/moonlightos-foot"' launcher/moonlightos_app_runner.py
+refute rg -q '/usr/bin/foot' services/moonlightos-launcher.service scripts/moonlightos-osk-session launcher/moonlightos_app_runner.py
 
 printf 'Static tests passed.\n'

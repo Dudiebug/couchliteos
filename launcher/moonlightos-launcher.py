@@ -21,6 +21,7 @@ import moonlightos_display as display
 import moonlightos_audio as audio
 import moonlightos_support as support
 import moonlightos_bluetooth as bluetooth
+import moonlightos_listview as listview
 import moonlightos_apps as apps
 import moonlightos_power as power
 import moonlightos_rdp as rdp
@@ -66,13 +67,20 @@ SAVE_FAILED = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
-SHORTCUT_TAGS = {"lb": "LB", "rb": "RB", "view": "VIEW", "menu": "MENU"}
+SHORTCUT_TAGS = apps.SHORTCUTS  # one set of names on the main menu and in Settings
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
-TEXT_HINT = "KEYBOARD: X (XBOX) / TRIANGLE (PS) / F12  ·  A/ENTER ACCEPTS  ·  B/ESC CANCELS"
+TEXT_HINT = "X / TRIANGLE: KEYBOARD  ·  A / CROSS ACCEPTS  ·  B / CIRCLE CANCELS"
+# Hints name controller buttons (A / CROSS is Enter, B / CIRCLE is Esc), never keyboard keys.
+LIST_HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
+BUTTONS_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE BACK"
+FORM_HINT = "A / CROSS EDITS  ·  LEFT/RIGHT TOGGLES  ·  B / CIRCLE BACK"
+DONE_HINT = "A / CROSS OR B / CIRCLE"
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
+# A result or error stays on the main screen this long unless a button is pressed first.
+STATUS_HOLD_SECONDS = 15.0
 
 
 def application_result() -> apps.LoadResult:
@@ -141,6 +149,14 @@ def read_key(screen: curses.window) -> int:
         request_osk()
         return -1
     return key
+
+
+def flush_input() -> None:
+    """Drop presses queued while the screen was frozen by a slow call."""
+    try:
+        curses.flushinp()
+    except curses.error:  # no terminal (unit tests)
+        pass
 
 
 def move_selection(selected: int, key: int, count: int) -> int:
@@ -372,8 +388,10 @@ class Launcher:
     def __init__(self, screen: curses.window) -> None:
         self.screen = screen
         self.selected = 0
-        self.status = network_summary()
         self.live_warning = live_mode_warning()
+        self.summary = network_summary()
+        self._status = self.summary
+        self.message_since: float | None = None
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
@@ -403,6 +421,29 @@ class Launcher:
             enabled=lambda: not power.smoke_test_active(),
             passive_keys=(-1, curses.KEY_RESIZE),
         )
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @status.setter
+    def status(self, value: str) -> None:
+        # Whatever sets the status is reporting a result or an error. run() keeps it
+        # on screen until a button press or STATUS_HOLD_SECONDS (refresh_status).
+        self._status = value
+        self.message_since = time.monotonic()
+
+    def release_status(self) -> None:
+        if self.message_since is not None:
+            self._status, self.message_since = self.summary, None
+
+    def refresh_status(self) -> None:
+        now = time.monotonic()
+        if self.message_since is not None and now - self.message_since >= STATUS_HOLD_SECONDS:
+            self.release_status()
+        if self.message_since is None and now - self.last_status_update >= 5:
+            self.summary = self._status = network_summary()
+            self.last_status_update = now
 
     def reload_applications(self) -> None:
         result = application_result()
@@ -490,32 +531,20 @@ class Launcher:
         title_row = max(2, height // 8)
         add_centered(self.screen, title_row, "MOONLIGHTOS")
 
-        rows = []
-        row = max(title_row + 3, height // 3)
-        gap_before = {len(self.applications), len(self.applications) + 1}
-        for index, (label, _action) in enumerate(self.menu):
-            if index in gap_before:
-                row += 1
-            rows.append((row, label))
-            row += 1
-
-        menu_width = max(len(label) for _row, label in rows) + 3
-        menu_left = max(2, (width - menu_width) // 2)
-        for index, (menu_row, label) in enumerate(rows):
-            if menu_row >= height - 3:
-                break
-            marker = ">" if index == self.selected else " "
-            disabled = label == SLEEP_UNSUPPORTED
-            try:
-                self.screen.addnstr(
-                    menu_row, menu_left, f"{marker}  {label}", max(1, width - menu_left - 1),
-                    curses.A_DIM if disabled else curses.A_NORMAL,
-                )
-            except curses.error:
-                pass
-
+        labels = [label for label, _action in self.menu]
+        selected = self.selected
+        first_row = max(title_row + 3, height // 3)
+        status_row = height - 4  # always on screen: it carries results and errors
+        gap_before = (len(self.applications), len(self.applications) + 1)
+        if len(labels) + len(gap_before) <= status_row - 1 - first_row:
+            # Everything fits: blank rows separate the apps, SETTINGS and the power buttons.
+            selected += sum(1 for at in gap_before if at <= self.selected)
+            for at in reversed(gap_before):
+                labels.insert(at, "")
+        menu_left = max(2, (width - max(len(label) for label in labels) - 3) // 2)
+        listview.draw_rows(self.screen, labels, selected, first_row, status_row - 1, menu_left)
+        add_centered(self.screen, status_row, self.status)
         footer = self.footer_lines()
-        add_centered(self.screen, max(row + 2, height - 4 - len(footer)), self.status)
         for offset, (text, attr) in enumerate(reversed(footer)):
             add_centered(self.screen, height - 3 - offset, text, attr)
         self.screen.refresh()
@@ -541,7 +570,7 @@ class Launcher:
         center = max(6, height // 2 - 1)
         add_centered(self.screen, center, f"STARTING {label}  {frame}")
         add_centered(self.screen, center + 2, "PLEASE WAIT")
-        add_centered(self.screen, height - 3, "EXIT THE APP TO RETURN")
+        add_centered(self.screen, height - 3, "PRESS GUIDE / PS TO COME BACK TO THE LAUNCHER")
         self.screen.refresh()
 
     def wake_from_failure(self, _app: apps.Application | None = None) -> bool:
@@ -858,7 +887,7 @@ class Launcher:
 
     def active_applications(self) -> None:
         selected = 0
-        status = f"A/ENTER RESUMES  ·  {CLOSE_BUTTON} CLOSES"
+        status = f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK"
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
         while True:
             running = self.running_applications()
@@ -1039,6 +1068,8 @@ class Launcher:
         self.draw()
         while True:
             key = read_key(self.screen)
+            if key not in (-1, curses.KEY_RESIZE):
+                self.release_status()  # a press dismisses the message that was being held
             if HOME_REQUEST.exists() or key == curses.KEY_HOME:
                 HOME_REQUEST.unlink(missing_ok=True)
                 set_launcher_focus(True)  # gamepad-nav forwards keys while an app runs
@@ -1058,10 +1089,7 @@ class Launcher:
             elif key == curses.KEY_RESIZE:
                 pass
 
-            now = time.monotonic()
-            if now - self.last_status_update >= 5:
-                self.status = network_summary()
-                self.last_status_update = now
+            self.refresh_status()
             self.draw()
 
 
@@ -1125,16 +1153,8 @@ class Settings:
         if rows is None:
             rows = [self.menu_label(item) for item in SETTINGS_MENU]
             selected = self.selected
-        row = max(5, height // 3)
         left = max(2, (width - max((len(item) for item in rows), default=1) - 3) // 2)
-        for index, label in enumerate(rows):
-            marker = ">" if index == selected else " "
-            if row + index >= height - 4:
-                break
-            try:
-                self.screen.addnstr(row + index, left, f"{marker}  {label}", width - left - 1)
-            except curses.error:
-                pass
+        listview.draw_rows(self.screen, rows, selected, max(5, height // 3), height - 4, left)
         add_centered(self.screen, height - 3, self.status)
         self.screen.refresh()
 
@@ -1171,7 +1191,7 @@ class Settings:
         while True:
             _height, width = self.screen.getmaxyx()
             rows = textwrap.wrap(message, width=max(8, width - 8)) or [""]
-            self.status = "ENTER OR ESC RETURNS TO SETTINGS"
+            self.status = f"{DONE_HINT} RETURNS TO SETTINGS"
             self.draw(title, rows, None)
             if read_key(self.screen) in (curses.KEY_ENTER, 10, 13, 27):
                 return
@@ -1677,22 +1697,16 @@ class ApplicationsSettings:
     def result(self) -> apps.LoadResult:
         return application_result()
 
-    def draw(self, title: str, rows: list[str], selected: int | None = None) -> None:
+    hint = BUTTONS_HINT  # the footer when no message is showing; subclasses and callers may replace it
+
+    def draw(self, title: str, rows: list[str], selected: int | None = None, hint: str = "") -> None:
         self.screen.erase()
         height, width = self.screen.getmaxyx()
         draw_border(self.screen)
         add_centered(self.screen, max(2, height // 8), title)
-        first = max(5, height // 4)
         left = max(2, (width - max((len(row) for row in rows), default=1) - 3) // 2)
-        count = max(1, height - first - 4)
-        offset = 0 if selected is None else min(max(0, selected - count + 1), max(0, len(rows) - count))
-        for index, row in enumerate(rows[offset:offset + count], start=offset):
-            marker = ">" if index == selected else " "
-            try:
-                self.screen.addnstr(first + index - offset, left, f"{marker}  {row}", max(1, width - left - 1))
-            except curses.error:
-                pass
-        add_centered(self.screen, height - 3, self.status or "LEFT/RIGHT MOVES  ·  ENTER EDITS  ·  F12 KEYBOARD")
+        listview.draw_rows(self.screen, rows, selected, max(5, height // 4), height - 4, left)
+        add_centered(self.screen, height - 3, self.status or hint or self.hint)
         self.screen.refresh()
 
     def discard_changes(self) -> bool:
@@ -1901,6 +1915,8 @@ class ApplicationsSettings:
 class RemoteDesktopSettings(ApplicationsSettings):
     """Saved RDP connections, their launcher buttons, and the connect flow."""
 
+    hint = LIST_HINT  # its lists have no LEFT/RIGHT action
+
     def menu(self, title: str, rows: list[str], selected: int = 0, first: int = 0) -> int | None:
         """Return the chosen row index; rows before `first` are information only."""
         selected = max(first, min(selected, len(rows) - 1))
@@ -1948,8 +1964,15 @@ class RemoteDesktopSettings(ApplicationsSettings):
             else:
                 self.edit_connection(None)
 
+    @staticmethod
+    def row_action(row: str) -> str:
+        """Name of a menu row, the same before and after it changes (PIN/UNPIN, labels)."""
+        action = row.split("  ", 1)[0]
+        return "PIN TO LAUNCHER" if action == "UNPIN FROM LAUNCHER" else action
+
     def connection_menu(self, connection_id: str) -> None:
         selected = 0
+        last = ""
         while True:
             connection = rdp.get_connection(connection_id)
             if connection is None:
@@ -1964,10 +1987,15 @@ class RemoteDesktopSettings(ApplicationsSettings):
             if connection.certificate:
                 rows.append("FORGET CERTIFICATE")
             rows += ["DELETE CONNECTION", "BACK"]
+            # The rows change after an action. Keep the cursor on the row it was on; if
+            # that row is gone (FORGET ...), step up rather than onto the row that slid in.
+            names = [self.row_action(row) for row in rows]
+            selected = names.index(last) if last in names else max(0, min(selected - bool(last), len(rows) - 1))
             choice = self.menu(connection.name.upper(), rows, selected)
             if choice is None or rows[choice] == "BACK":
                 return
             selected = choice
+            last = names[choice]
             action = rows[choice].split("  ", 1)[0]
             try:
                 if action == "CONNECT":
@@ -2046,7 +2074,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
                 "SAVE CONNECTION",
                 "CANCEL",
             ]
-            self.draw(title, rows, selected)
+            self.draw(title, rows, selected, FORM_HINT)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
             changed = values != saved_values or new_password is not None
@@ -2166,6 +2194,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
         request = RUN / rdp.SECRET_REQUEST.name
         request_id = rdp.submit_secret_request(operation, connection_id, password, request)
         ok, detail = rdp.wait_secret_status(request_id, path=RUN / rdp.SECRET_STATUS.name)
+        flush_input()  # up to 10 s of frozen screen: drop the presses made meanwhile
         if not ok:
             request.unlink(missing_ok=True)  # never leave a password waiting in /run
         return ok, detail
@@ -2201,13 +2230,13 @@ class RemoteDesktopSettings(ApplicationsSettings):
     def choose_shortcut(self, options: list[tuple[str, str]], current: str) -> str | None:
         rows = [label for label, _value in options]
         index = next((number for number, (_label, value) in enumerate(options) if value == current), 0)
-        self.status = "PRESS THE BUTTON ON THE MAIN LAUNCHER SCREEN (KEYBOARD: F5-F8)"
+        self.status = "A / CROSS PICKS  ·  THEN PRESS THAT BUTTON ON THE MAIN SCREEN"
         choice = self.menu("CONTROLLER SHORTCUT", rows, index)
         self.status = ""
         return None if choice is None else options[choice][1]
 
     def reposition(self, app_id: str) -> None:
-        self.status = "UP/DOWN MOVES THE BUTTON  ·  ENTER OR ESC FINISHES"
+        self.status = f"UP/DOWN MOVES THE BUTTON  ·  {DONE_HINT} WHEN DONE"
         while True:
             visible = [item for item in application_result().applications if item.visible]
             index = next((number for number, item in enumerate(visible) if item.id == app_id), None)
@@ -2223,7 +2252,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
             if direction and 0 <= target < len(visible):
                 self.selected = index
                 self.move(visible, direction)
-                self.status = "UP/DOWN MOVES THE BUTTON  ·  ENTER OR ESC FINISHES"
+                self.status = f"UP/DOWN MOVES THE BUTTON  ·  {DONE_HINT} WHEN DONE"
 
     def delete(self, connection: rdp.Connection, app: apps.Application | None) -> bool:
         if not self.yes_no("DELETE CONNECTION", f"DELETE {connection.name.upper()}?"):
@@ -2259,17 +2288,20 @@ class RemoteDesktopSettings(ApplicationsSettings):
             ) == "retry":
                 return self.prepare_launch(app)
             return False
-        self.status = "PLEASE WAIT"
-        self.draw(label, [f"CHECKING {connection.host}:{connection.port}"], None)
+        self.status = "CONNECTING...  CAN TAKE 15 SECONDS IF THE PC IS ASLEEP"
+        self.draw(label, [f"CONNECTING TO {connection.host}:{connection.port}"], None)
         try:
-            fingerprint = rdp.probe_certificate(connection.host, connection.port)
+            try:
+                fingerprint = rdp.probe_certificate(connection.host, connection.port)
+            finally:
+                self.status = ""
+                # The screen was frozen meanwhile: presses made then are not answers to what comes next.
+                flush_input()
         except (OSError, ssl.SSLError, ValueError) as error:
             unreachable = f"COULD NOT REACH {connection.host}:{connection.port}: {error}"
             if self.launcher.show_launch_failure(label, unreachable, app=app) == "retry":
                 return self.prepare_launch(app)
             return False
-        finally:
-            self.status = ""
         if not connection.certificate:
             if not self.confirm_certificate(connection, fingerprint):
                 self.launcher.status = "CONNECTION CANCELLED"

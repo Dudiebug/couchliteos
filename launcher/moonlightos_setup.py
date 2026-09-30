@@ -1187,7 +1187,7 @@ class SetupWizard:
 
 SPINNER = "|/-\\"
 ENTER = (curses.KEY_ENTER, 10, 13)
-MENU_FOOTER = "A / ENTER: SELECT   ·   B / ESC: SKIP OR BACK"
+MENU_FOOTER = "A / CROSS: SELECT   ·   B / CIRCLE: SKIP OR BACK"
 
 
 def big_lines(text: str, width: int) -> list[str]:
@@ -1276,7 +1276,7 @@ class CursesUI:
             while not done():
                 if time.monotonic() >= deadline:
                     return False
-                self.draw(title, lines + [f"{SPINNER[frame % len(SPINNER)]}  PLEASE WAIT"], [], None, big, "B / ESC: CANCEL")
+                self.draw(title, lines + [f"{SPINNER[frame % len(SPINNER)]}  PLEASE WAIT"], [], None, big, "B / CIRCLE: CANCEL")
                 frame += 1
                 if self.screen.getch() == 27:
                     return None

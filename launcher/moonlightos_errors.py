@@ -238,7 +238,7 @@ def draw(screen: "curses.window", failure: Failure, menu: ActionMenu) -> None:
             screen.addnstr(row, left, f"{marker}  {action.label}", max(1, width - left - 1))
         except curses.error:
             pass
-    _centered(screen, height - 3, "UP/DOWN CHOOSES  -  A/ENTER SELECTS  -  B/ESC GOES BACK")
+    _centered(screen, height - 3, "UP/DOWN CHOOSES  -  A / CROSS SELECTS  -  B / CIRCLE GOES BACK")
     screen.refresh()
 
 
