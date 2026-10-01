@@ -777,7 +777,8 @@ class System:
 
 SKIP = "SKIP THIS STEP"
 OK = "OK"
-FIND_PCS = "FIND GAMING PCS"
+FIND_PCS = "FIND GAMING PCS"  # the title of its screens
+SEARCH_NETWORK = "SEARCH THE NETWORK (RECOMMENDED)"  # its choice: FIND MY GAMING PC IN MOONLIGHT reads too alike
 SEARCH_AGAIN = "SEARCH AGAIN"
 ENTER_MANUALLY = "ENTER ADDRESS MANUALLY"
 WAKE_PC = "WAKE PC"
@@ -816,6 +817,7 @@ class SetupWizard:
         self.state: dict[str, str] = {}
         self.save_failed = False
         self.pairing_host = ""
+        self.found_pcs: list[discover.FoundPC] = []  # the list the PC being paired was picked from
 
     # small helpers
     def pick(self, title: str, lines: list[str], choices: list[str], *, big: str | None = None) -> str | None:
@@ -1293,7 +1295,7 @@ class SetupWizard:
         keep = "KEEP THE PC ALREADY PAIRED"
         if already:
             lines.append(bluetooth.safe_text("ALREADY PAIRED: " + ", ".join(already), 70))
-        choices = [FIND_PCS, "FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"] + ([keep] if already else []) + [SKIP]
+        choices = [SEARCH_NETWORK, "FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"] + ([keep] if already else []) + [SKIP]
         while True:
             choice = self.pick("STREAMING PC", lines, choices)
             if choice == keep:
@@ -1301,7 +1303,7 @@ class SetupWizard:
             if choice not in choices[:3]:
                 return SKIPPED
             self.pairing_host = ""
-            if choice == FIND_PCS:
+            if choice == SEARCH_NETWORK:
                 paired = self.pair_found_pc()
             else:
                 paired = self.pair_in_moonlight() if choice.startswith("FIND") else self.pair_with_pin()
@@ -1332,35 +1334,41 @@ class SetupWizard:
 
     def pair_found_pc(self) -> bool | None:
         """FIND GAMING PCS, then the PIN pairing for the PC picked; None when backed out."""
-        picked = self.find_gaming_pc()
-        if picked is None:
-            return None
-        if isinstance(picked, str):  # ENTER ADDRESS MANUALLY
-            return self.pair_with_pin()
-        if picked.name.casefold() in (host.casefold() for host in self.system.paired_hosts()):
-            # No "pair again" here: the pairing check below only trusts a PC that is new to this system,
-            # so a repeat pairing would be reported as a failure even when it worked.
-            choice = self.pick(
-                "ALREADY PAIRED",
-                [
-                    f"{bluetooth.safe_text(picked.name, 28).upper()} IS ALREADY PAIRED WITH THIS SYSTEM.",
-                    "TO PAIR IT AGAIN, DELETE IT IN MOONLIGHT FIRST.",
-                ],
-                ["USE IT", BACK],
-            )
-            return True if choice == "USE IT" else None
-        return self.pair_with_pin(picked)
+        cached = None  # B on a PIN screen comes back to the list already found, not a new search
+        while True:
+            picked = self.find_gaming_pc(cached)
+            if picked is None:
+                return None
+            if isinstance(picked, str):  # ENTER ADDRESS MANUALLY
+                return self.pair_with_pin()
+            if picked.name.casefold() in (host.casefold() for host in self.system.paired_hosts()):
+                # No "pair again" here: the pairing check below only trusts a PC that is new to this system,
+                # so a repeat pairing would be reported as a failure even when it worked.
+                choice = self.pick(
+                    "ALREADY PAIRED",
+                    [
+                        f"{bluetooth.safe_text(picked.name, 28).upper()} IS ALREADY PAIRED WITH THIS SYSTEM.",
+                        "TO PAIR IT AGAIN, DELETE IT IN MOONLIGHT FIRST.",
+                    ],
+                    ["USE IT", BACK],
+                )
+                return True if choice == "USE IT" else None
+            paired = self.pair_with_pin(picked)
+            if paired is not None:
+                return paired
+            cached = self.found_pcs
 
-    def find_gaming_pc(self) -> discover.FoundPC | str | None:
-        """Search the network for gaming PCs until one is picked.
+    def find_gaming_pc(self, cached: list[discover.FoundPC] | None = None) -> discover.FoundPC | str | None:
+        """Search the network for gaming PCs until one is picked (`cached`: show that list first, no search).
 
         Returns the PC picked, ENTER_MANUALLY to type an address instead, or None for B / BACK."""
         while True:
             problem = ""
             try:
-                found = self.search_network()
+                found = cached if cached is not None else self.search_network()
             except discover.DiscoveryError as error:
                 found, problem = [], str(error)
+            cached = None
             if found is None:
                 return None
             if found:
@@ -1373,19 +1381,21 @@ class SetupWizard:
                 if index is None or index == len(labels) + 2:
                     return None
                 if index < len(labels):
+                    self.found_pcs = found
                     return found[index]
                 if index == len(labels) + 1:
                     return ENTER_MANUALLY
                 continue
             wakeable = [] if problem or not callable(self.actions.get("wake_pc")) else self.system.wakeable_pcs()
-            choice = self.pick(
-                FIND_PCS, not_found_lines(problem), ([WAKE_PC] if wakeable else []) + [SEARCH_AGAIN, ENTER_MANUALLY, BACK]
-            )
-            if choice == WAKE_PC:
-                self.wake_known_pc(wakeable)  # then search again: that is what waking it was for
-            elif choice == ENTER_MANUALLY:
+            while True:
+                choice = self.pick(
+                    FIND_PCS, not_found_lines(problem), ([WAKE_PC] if wakeable else []) + [SEARCH_AGAIN, ENTER_MANUALLY, BACK]
+                )
+                if choice != WAKE_PC or self.wake_known_pc(wakeable):
+                    break  # B on WAKE WHICH PC comes back to this screen, without a new search
+            if choice == ENTER_MANUALLY:
                 return ENTER_MANUALLY
-            elif choice != SEARCH_AGAIN:
+            if choice not in (WAKE_PC, SEARCH_AGAIN):  # WAKE PC then searches again: that is what waking it was for
                 return None
 
     def search_network(self) -> list[discover.FoundPC] | None:
@@ -1400,15 +1410,18 @@ class SetupWizard:
         finally:
             search.close()
 
-    def wake_known_pc(self, wakeable: list[streaming.Host]) -> None:
-        """WAKE PC from the not-found screen: the one paired PC with a known address, else ask which."""
+    def wake_known_pc(self, wakeable: list[streaming.Host]) -> bool:
+        """WAKE PC from the not-found screen: the one paired PC with a known address, else ask which.
+
+        False when B / BACK left it unasked."""
         host = wakeable[0]
         if len(wakeable) > 1:
             index = self.ui.menu("WAKE WHICH PC?", [], [pc.label for pc in wakeable] + [BACK])
             if index is None or index >= len(wakeable):
-                return
+                return False
             host = wakeable[index]
         self.notice(WAKE_PC, [self.actions["wake_pc"](host)])
+        return True
 
     def pair_with_pin(self, found: discover.FoundPC | None = None) -> bool | None:
         if found is not None:

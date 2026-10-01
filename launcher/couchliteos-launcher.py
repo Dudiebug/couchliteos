@@ -2867,10 +2867,11 @@ class StreamingSettings(RemoteDesktopSettings):
             "pair_moonlight": self.launcher.pair_moonlight,
             "wake_pc": self.launcher.wake_message,
         }
-        setup.SetupWizard(setup.CursesUI(self.screen), actions, setup.System()).step_streaming()
+        step = setup.SetupWizard(setup.CursesUI(self.screen), actions, setup.System()).step_streaming()
         after = {self.ident(host) for host in stream.load_hosts()}
         if not after - before:
-            self.message(title, "NO NEW GAMING PC WAS PAIRED. NOTHING WAS CHANGED.")
+            if step != setup.DONE:  # DONE with nothing new: an already paired PC was picked (USE IT)
+                self.message(title, "NO NEW GAMING PC WAS PAIRED. NOTHING WAS CHANGED.")
             return
         count = f"{len(after)} GAMING PC{'S' if len(after) != 1 else ''}"
         self.message(

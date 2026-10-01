@@ -275,9 +275,16 @@ class ContentTest(unittest.TestCase):
         self.assertIsInstance(whatsnew.FEATURES, tuple)
         self.assertTrue(all(isinstance(line, str) and line == line.upper() for line in whatsnew.FEATURES))
 
+    def test_find_gaming_pcs_is_placed_where_it_really_is(self):
+        # FIND GAMING PCS is inside STREAMING > PAIR A GAMING PC, not a row of its own.
+        line = next(line for line in whatsnew.FEATURES if "FIND GAMING PCS" in line)
+        self.assertIn("SETTINGS > STREAMING", line)
+        self.assertIn("PAIR A / ANOTHER GAMING PC", line)  # the row says ANOTHER once a PC is paired
+        self.assertLessEqual(len(line), 74)
+
     def test_every_new_feature_is_listed(self):
         text = "\n".join(whatsnew.FEATURES)
-        for needle in ("SETUP WIZARD", "HOLD THE GUIDE", "TV REMOTE", "GAMING PC WAKES", "FIND GAMING PCS", "SCREEN EDGES"):
+        for needle in ("SETUP WIZARD", "HOLD THE GUIDE", "TV REMOTE", "GAMING PC WAKES", "FIND GAMING PCS", "STREAM CHECK", "SCREEN EDGES"):
             self.assertIn(needle, text)
 
     def test_markers_live_with_the_other_state(self):

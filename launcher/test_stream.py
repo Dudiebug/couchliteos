@@ -2031,7 +2031,7 @@ class StreamingSettingsTest(LauncherTestCase):
                     settings.run()
                 opened.assert_called_once_with()
 
-    def pair(self, settings, before, after, link=True, running=False):
+    def pair(self, settings, before, after, link=True, running=False, step=None):
         with tempfile.TemporaryDirectory() as directory:
             run = pathlib.Path(directory)
             if running:
@@ -2043,6 +2043,7 @@ class StreamingSettingsTest(LauncherTestCase):
             ), mock.patch.object(self.module.setup, "System"), mock.patch.object(
                 self.module.stream, "save_settings"
             ) as save:
+                wizard.return_value.step_streaming.return_value = step
                 settings.pair_pc()
         save.assert_not_called()  # the PC used for auto-stream and wake is only changed in the PC row
         return wizard
@@ -2068,6 +2069,17 @@ class StreamingSettingsTest(LauncherTestCase):
                 self.assertEqual(
                     settings.message.call_args.args[1], "NO NEW GAMING PC WAS PAIRED. NOTHING WAS CHANGED."
                 )
+
+    def test_pair_pc_does_not_claim_nothing_was_paired_after_using_a_pc_already_paired(self):
+        # USE IT on an (ALREADY PAIRED) PC ends the step as done with no new PC: that is not a failure.
+        _launcher, settings = self.streaming()
+        settings.message.reset_mock()
+        self.pair(settings, [self.HOST], [self.HOST], step=self.module.setup.DONE)
+        settings.message.assert_not_called()
+        for step in (self.module.setup.SKIPPED, self.module.setup.FAILED):
+            with self.subTest(step=step):
+                self.pair(settings, [self.HOST], [self.HOST], step=step)
+                self.assertIn("NO NEW GAMING PC WAS PAIRED", settings.message.call_args.args[1])
 
     def test_pair_pc_counts_a_first_pc_in_the_singular(self):
         _launcher, settings = self.streaming()
