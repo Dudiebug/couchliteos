@@ -166,6 +166,19 @@ qemu-system-x86_64 -enable-kvm -m 4096 -cpu host \
 After reboot, verify launcher/app exit/crash recovery and confirm the saved
 `/var/lib/couchliteos/config.ini` values remain unchanged.
 
+After the persistence check, the same test boots the installed disk with the
+release ISO attached as a CD-ROM and runs the in-place updater against it
+(`couchliteos-updater apply-iso /dev/sr0 --force --no-reboot`, mode
+`update-apply`; the installed version already equals the ISO's, so `--force`
+is needed). It then cold-boots the updated disk (mode `update-check`) and
+requires the updater's log to end `done`, the installer's GRUB and shim
+packages to still be installed, `dpkg --audit` to be clean, the `installer-test`
+account to survive, the Remote Desktop state to be unchanged, and
+`COUCHLITEOS_SMOKE_UPDATE_READY`. The update step is slow under software
+emulation (it unpacks the whole image); its limit is 1800 s times `SCALE`.
+This covers the root-side update; the download and the launcher screen are
+covered by unit tests only.
+
 The automated install test proves the public UEFI ISO/menu installation path,
 an independent installed boot, and configuration persistence across a cold
 reboot. It does not prove
@@ -407,6 +420,21 @@ Bluetooth (record every unperformed item as untested):
 - [ ] Launch and exit Moonlight after Bluetooth configuration
 - [ ] Launch and exit chiaki-ng after Bluetooth configuration
 - [ ] Launch and exit Firefox after Bluetooth configuration
+
+Software update (an installed system on the previous release, with a newer
+release published as a draft or served from a lab mirror):
+
+- [ ] Settings > SOFTWARE UPDATE shows the installed version and profile; CHECK FOR UPDATES with no network says it could not reach GitHub
+- [ ] CHECK FOR UPDATES finds the newer release; INSTALL UPDATE with an app running refuses until the app is closed
+- [ ] Cancel (B) while downloading, then install again and confirm the download resumes instead of restarting
+- [ ] Complete an update over Wi-Fi; the box restarts by itself and shows the "what's new" screen
+- [ ] Afterwards pairings, Wi-Fi, Bluetooth devices, the Remote Desktop connection, Tailscale, and settings are all still there
+- [ ] Afterwards the boot menu, a cold boot, and a second restart work, and GRUB still boots with Secure Boot on
+- [ ] Update from a boot that has a USB stick attached, to confirm the updater does not touch other disks
+- [ ] Run SOFTWARE UPDATE on a live USB; it explains that a live USB cannot update itself
+- [ ] Update an NVIDIA ISO install; it is offered the NVIDIA ISO, not the general one
+- [ ] Pull the network during the download; the screen shows a failure with PRESS A, and a later retry succeeds
+- [ ] Record the time the update takes and how long the screen shows INSTALLING
 
 Installed systems retain BlueZ state under `/var/lib/bluetooth`. Live USB
 persistence must include that directory for pairings to survive reboot. Never

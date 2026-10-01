@@ -8,6 +8,8 @@ mode=$(tr -d '\0' < "$flag")
 scale=$(tr -d '\0' < /sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.timeout-scale/raw 2>/dev/null || echo 1)
 [[ $scale =~ ^[1-9][0-9]?$ ]] || scale=1
 scaled() { echo $(($1 * scale)); }
+# Packages the installer added (GRUB, shim), recorded before an update and checked after it.
+extras_file=/var/lib/couchliteos-smoke-extras
 
 wait_for_file() {
   local path=$1 label=$2
@@ -69,6 +71,10 @@ rdp_state_absent() {
   ! grep -qs '^\[rdp-qemu\]$' /var/lib/couchliteos/rdp/connections.ini
 }
 
+case $mode in
+  # Lets tests/qemu-install-smoke.sh stop waiting as soon as an update mode fails.
+  update-*) trap 'status=$?; [[ $status == 0 ]] || echo COUCHLITEOS_SMOKE_UPDATE_FAILED' EXIT ;;
+esac
 wait_for_file /run/couchliteos/launcher-ready launcher
 case $mode in
   persistence-write)
@@ -94,6 +100,41 @@ case $mode in
     grep -Fxq 'cold_boot = verified' /var/lib/couchliteos/config.ini
     verify_rdp_state
     echo COUCHLITEOS_SMOKE_PERSISTENCE_READY
+    exit 0
+    ;;
+  update-apply)
+    # Boot 1 of the update proof: install the ISO attached as a CD-ROM over this installed system.
+    # Whatever the installer added (GRUB, shim) is recorded first; update-check proves it survived.
+    dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}\n' 'grub*' 'shim*' 2>/dev/null \
+      | awk '$1 == "ii" { print $2 }' > "$extras_file" || true
+    if [[ ! -s $extras_file ]]; then
+      echo 'No installed grub or shim packages found to record: the update proof would prove nothing.' >&2
+      exit 1
+    fi
+    if ! /usr/libexec/couchliteos-updater apply-iso /dev/sr0 --force --no-reboot; then
+      echo 'The update did not apply. Status and log follow.' >&2
+      cat /run/couchliteos/update-status.json >&2 || true
+      tail -n 80 /var/log/couchliteos/update.log >&2 || true
+      exit 1
+    fi
+    sync
+    echo COUCHLITEOS_SMOKE_UPDATE_APPLIED
+    exit 0
+    ;;
+  update-check)
+    # Boot 2: the updated system started, kept the owner's state and everything the installer added.
+    grep -Fxq 'cold_boot = verified' /var/lib/couchliteos/config.ini
+    verify_rdp_state
+    grep -q ' done$' /var/log/couchliteos/update.log
+    test -s "$extras_file"
+    while read -r package; do
+      dpkg -s "$package" | grep -Fxq 'Status: install ok installed' \
+        || { echo "Installer package $package is gone after the update." >&2; exit 1; }
+    done < "$extras_file"
+    [[ -z $(dpkg --audit) ]] || { echo 'dpkg --audit is not clean after the update.' >&2; dpkg --audit >&2; exit 1; }
+    id installer-test >/dev/null
+    id -nG installer-test | tr ' ' '\n' | grep -Fxq sudo
+    echo COUCHLITEOS_SMOKE_UPDATE_READY
     exit 0
     ;;
   live-persistence-write)

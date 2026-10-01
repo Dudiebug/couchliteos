@@ -146,20 +146,28 @@ grep -q 'Requesting system reboot' "$INSTALL_LOG" || {
 install -D -m 0644 /dev/null "$BOOT_LOG"
 boot_and_wait() {
   local mode=$1 marker=$2
-  local monitor=(-monitor none)
+  local monitor=(-monitor none) extra=() limit=240
   if [[ $mode == persistence-write ]]; then
     find "$work/installed-monitor.sock" -delete 2>/dev/null || true
     monitor=(-monitor "$installed_monitor_option")
   fi
+  if [[ $mode == update-* ]]; then
+    # The update boots have the release ISO as a CD-ROM (/dev/sr0) but still start from the disk.
+    extra=(-boot order=c -drive "file=$ISO,media=cdrom,readonly=on")
+  fi
+  # Copying a whole system and rebuilding the initramfs takes far longer than a boot.
+  [[ $mode != update-apply ]] || limit=1800
   printf '\n=== installed boot: %s ===\n' "$mode" >> "$BOOT_LOG"
   qemu-system-x86_64 \
-    "${common[@]}" "${monitor[@]}" \
+    "${common[@]}" "${monitor[@]}" "${extra[@]}" \
     -netdev user,id=net0 -device e1000,netdev=net0 \
     -fw_cfg "name=opt/couchliteos.smoke,string=$mode" \
     -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE" \
     -serial stdio >> "$BOOT_LOG" 2>&1 &
   pid=$!
-  for _ in $(seq 1 $((240 * SCALE))); do
+  for _ in $(seq 1 $((limit * SCALE))); do
+    # The smoke script says so when an update mode fails; no need to wait out the timeout.
+    ! grep -q COUCHLITEOS_SMOKE_UPDATE_FAILED "$BOOT_LOG" || break
     if grep -q "$marker" "$BOOT_LOG"; then
       if [[ $mode == persistence-write ]]; then
         python3 - "$ROOT" "$installed_monitor" "$INSTALLED_SCREENSHOT" <<'PY'
@@ -195,7 +203,11 @@ grep -q COUCHLITEOS_SMOKE_INSTALLED_DISK_READY "$BOOT_LOG" || {
   exit 1
 }
 boot_and_wait persistence-read COUCHLITEOS_SMOKE_PERSISTENCE_READY
+# Update the installed system from the same ISO (forced, no reboot), then boot the result: the
+# installer's GRUB and shim, the maintenance user and the owner's saved state must all survive.
+boot_and_wait update-apply COUCHLITEOS_SMOKE_UPDATE_APPLIED
+boot_and_wait update-check COUCHLITEOS_SMOKE_UPDATE_READY
 for screenshot in "$MENU_SCREENSHOT" "$EDITOR_SCREENSHOT" "$INSTALLER_SCREENSHOT" "$INSTALLED_SCREENSHOT"; do
   [[ -s $screenshot ]] || { echo "Screenshot evidence missing: $screenshot" >&2; exit 1; }
 done
-echo 'QEMU install smoke test passed: firmware and ISO menu install, independent disk boot, launcher readiness, and configuration persistence across a cold reboot.'
+echo 'QEMU install smoke test passed: firmware and ISO menu install, independent disk boot, launcher readiness, configuration persistence across a cold reboot, and an in-place update that boots with everything kept.'

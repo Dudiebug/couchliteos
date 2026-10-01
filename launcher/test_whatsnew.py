@@ -284,7 +284,8 @@ class ContentTest(unittest.TestCase):
 
     def test_every_new_feature_is_listed(self):
         text = "\n".join(whatsnew.FEATURES)
-        for needle in ("SETUP WIZARD", "HOLD THE GUIDE", "TV REMOTE", "GAMING PC WAKES", "FIND GAMING PCS", "STREAM CHECK", "SCREEN EDGES"):
+        for needle in ("SETUP WIZARD", "HOLD THE GUIDE", "TV REMOTE", "GAMING PC WAKES", "FIND GAMING PCS", "STREAM CHECK", "SCREEN EDGES",
+                       "SOFTWARE UPDATE: SETTINGS > SOFTWARE UPDATE"):
             self.assertIn(needle, text)
 
     def test_markers_live_with_the_other_state(self):

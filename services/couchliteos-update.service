@@ -1,0 +1,18 @@
+[Unit]
+Description=Install a CouchLiteOS update requested by the launcher
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Drop the request first, or this path unit would start another update the moment this one ends.
+ExecStartPre=/usr/bin/rm -f /run/couchliteos/update-install
+# Sleep and idle are blocked while files are being replaced; a half-installed system must not suspend.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Installing a CouchLiteOS update" /usr/libexec/couchliteos-updater run
+# A download and an install on a slow disk take as long as they take.
+TimeoutStartSec=infinity
+# The updater mounts the new image, replaces system files and runs update-grub, so it is not
+# sandboxed like the other helpers; it only ever works on this box's own disk.
+Nice=10
+StandardOutput=journal
+StandardError=journal
