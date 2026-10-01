@@ -57,8 +57,10 @@ If the launcher does not start, the screen can stay on boot text or go black,
 and there is no shell to run commands in (the launcher's TERMINAL needs a
 working display; on the live image tty1 has no login prompt and the
 `couchliteos` account has no password). What you can do is reachable from the
-boot menu, which needs a keyboard (press an arrow key within three seconds of
-the menu appearing):
+boot menu, which needs a keyboard. On the live USB, press an arrow key within
+three seconds of the menu appearing. An installed system hides the menu while
+boots succeed: hold Shift (BIOS) or press Esc (UEFI) while it starts. After a
+failed or interrupted boot, it shows the menu for 5 s by itself.
 
 1. **NVIDIA ISO:** reboot and choose **Start CouchLiteOS (Basic Graphics)**. It
    blocks the proprietary driver and uses nouveau. On an installed system, press

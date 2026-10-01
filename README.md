@@ -1,4 +1,4 @@
-# CouchLiteOS v0.1.13
+# CouchLiteOS v0.2.1
 
 CouchLiteOS (formerly MoonlightOS)
 
@@ -31,11 +31,11 @@ Both ISOs detect the machine on every boot: the same USB stick moves between
 PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md).
 
 > Testing status: source/static and QEMU application tests are automated. No
-> physical machine has run v0.1.13 yet; the hardware checklists in
+> physical machine has run v0.2.1 yet; the hardware checklists in
 > [TESTING.md](docs/TESTING.md) must pass before calling either ISO a
 > production image.
 
-## What v0.1.13 contains
+## What v0.2.1 contains
 
 - Debian standard kernel, systemd, NetworkManager, nftables, PipeWire, ALSA
 - IPv4-only networking; IPv6 is disabled
@@ -71,6 +71,11 @@ PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md
 - controller-friendly Bluetooth management inside Settings, backed by BlueZ
 - continuous Bluetooth discovery while its settings screen is open
 - a first-boot Setup Wizard that can be rerun from Settings
+- couch use from the controller or the TV remote: sleep (hold Guide / PS for
+  5 s, never during a game), waking the gaming PC (Wake-on-LAN), auto-stream to
+  a chosen PC at start, FIND GAMING PCS on the network, SMOOTHER STREAM,
+  HDMI-CEC TV control, and SCREEN EDGES / TEXT SIZE for TVs that cut off the
+  picture
 - manifest-driven system, custom command, and custom web applications
 - isolated full-screen Terminal, Tailscale, network, and diagnostics processes
 - a full-screen buffered keyboard for launcher text fields (X on Xbox pads, Triangle on PlayStation pads, or F12)
@@ -115,8 +120,8 @@ needed by the release tools. The other make targets need more:
 Output:
 
 ```text
-build/out/couchliteos-0.1.13-amd64.iso
-build/out/couchliteos-0.1.13-nvidia-amd64.iso
+build/out/couchliteos-0.2.1-amd64.iso
+build/out/couchliteos-0.2.1-nvidia-amd64.iso
 ```
 
 The legacy single-machine profiles `intel` (Dell OptiPlex DCC36X3) and
