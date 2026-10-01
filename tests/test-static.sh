@@ -839,4 +839,15 @@ rg -q '^WantedBy=multi-user.target$' services/couchliteos-boot-success.service
 refute rg -q 'boot-success' services/couchliteos-launcher.service
 rg -q '^systemctl enable couchliteos-boot-success.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 
+# Screen edges and text size: the launcher saves them, the foot wrapper (boot path) reads them.
+rg -qF 'couchliteos_screenfit.py" "$CHROOT/usr/libexec/couchliteos_screenfit.py"' build/configure.sh
+rg -q '^import couchliteos_screenfit as screenfit' launcher/couchliteos-launcher.py
+rg -q 'couchliteos_screenfit.py .*gamepad-nav.py' launcher/Makefile
+rg -q 'test_screenfit.py' launcher/Makefile
+# The wrapper must start foot even if the module or the setting is broken.
+rg -q '^    import couchliteos_screenfit as screenfit' launcher/couchliteos_foot.py
+rg -q '^    screenfit = None' launcher/couchliteos_foot.py
+rg -qF '"main.pad=' launcher/couchliteos_foot.py
+refute rg -q 'systemctl|nomodeset' launcher/couchliteos_screenfit.py
+
 printf 'Static tests passed.\n'

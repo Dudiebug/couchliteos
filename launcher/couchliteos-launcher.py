@@ -37,6 +37,7 @@ import couchliteos_confirm as confirmation
 import couchliteos_whatsnew as whatsnew
 import couchliteos_controls as controls
 import couchliteos_padcheck as padcheck
+import couchliteos_screenfit as screenfit
 
 
 RUN = pathlib.Path("/run/couchliteos")
@@ -85,6 +86,12 @@ LIST_HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
 BUTTONS_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE BACK"
 FORM_HINT = "A / CROSS EDITS  ·  LEFT/RIGHT TOGGLES  ·  B / CIRCLE BACK"
 DONE_HINT = "A / CROSS OR B / CIRCLE"
+# Settings > DISPLAY > SCREEN EDGES / TEXT SIZE (saved in screen.json, read by the foot wrapper at start).
+SCREEN_EDGES_HELP = "PICK THE SMALLEST EDGE WHERE YOU CAN SEE THE WHOLE BORDER."
+TEXT_SIZE_HELP = "SMALLER FITS MORE ON THE SCREEN  ·  LARGER IS EASIER TO READ"
+SCREEN_CHOICE_HINT = "A / CROSS PICKS  ·  B / CIRCLE GOES BACK"
+SCREEN_RESTART_MESSAGE = "RESTARTING THE LAUNCHER TO APPLY. THIS TAKES A FEW SECONDS."
+SCREEN_NEXT_START_MESSAGE = "SAVED. IT APPLIES THE NEXT TIME COUCHLITEOS STARTS."
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
@@ -903,6 +910,14 @@ class Launcher:
                 return True
         return False
 
+    @staticmethod
+    def any_app_running() -> bool:
+        """True when any app or stream shows a sign of life in /run/couchliteos, or when that cannot be told."""
+        try:
+            return any(item.name != "launcher-ready" for item in RUN.glob("*-ready"))
+        except Exception:
+            return True  # not knowing means do not restart
+
     def running_applications(self) -> list[apps.Application]:
         running = [
             app for app in application_result().applications
@@ -1510,13 +1525,21 @@ class Settings:
     def run_display(self) -> None:
         self.refresh_outputs()
         selected = 0
+        notice = ""  # what the last screen-edge or text-size change did, shown until the next press
         while True:
             refresh = f"{self.refresh_mhz / 1000:g} HZ" if self.refresh_mhz else "UNAVAILABLE"
-            rows = [f"RESOLUTION  {self.resolution or 'UNAVAILABLE'}", f"REFRESH RATE  {refresh}", "APPLY DISPLAY MODE", "BACK"]
+            screen_settings = screenfit.load()
+            rows = [
+                f"RESOLUTION  {self.resolution or 'UNAVAILABLE'}", f"REFRESH RATE  {refresh}", "APPLY DISPLAY MODE",
+                f"SCREEN EDGES  {screen_settings.edges}%", f"TEXT SIZE  {screen_settings.text.upper()}", "BACK",
+            ]
+            status = self.status
+            self.status = notice or {3: SCREEN_EDGES_HELP, 4: TEXT_SIZE_HELP}.get(selected) or status
             self.draw("DISPLAY SETTINGS", rows, selected)
+            self.status, notice = status, ""
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
-            if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == 3):
+            if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(rows) - 1):
                 return
             if key not in (curses.KEY_ENTER, 10, 13):
                 continue
@@ -1542,8 +1565,46 @@ class Settings:
                 )
                 if isinstance(chosen, int):
                     self.refresh_mhz = chosen
-            else:
+            elif selected == 2:
                 self.apply_preview()
+            elif selected == 3:
+                self.status = SCREEN_CHOICE_HINT
+                chosen = self.choose(
+                    "SCREEN EDGES", [(f"{value}%", value) for value in screenfit.EDGE_CHOICES], screen_settings.edges
+                )
+                self.status = status
+                if isinstance(chosen, int):
+                    notice = self.change_screen_setting("edges", chosen, rows, selected)
+            else:
+                self.status = SCREEN_CHOICE_HINT
+                chosen = self.choose(
+                    "TEXT SIZE", [(value.upper(), value) for value in screenfit.TEXT_CHOICES], screen_settings.text
+                )
+                self.status = status
+                if isinstance(chosen, str):
+                    notice = self.change_screen_setting("text", chosen, rows, selected)
+
+    def change_screen_setting(self, field: str, value: object, rows: list[str], selected: int) -> str:
+        """Save a screen-edge or text-size choice and apply it; returns what to tell the user.
+
+        foot reads the setting as it starts, so applying means a restart: exit and let
+        systemd bring cage, foot and the launcher back (Restart=always). That would
+        kill any running app or stream, so then it only applies the next time.
+        """
+        current = screenfit.load()
+        changed = dataclasses.replace(current, **{field: value})
+        if changed == current:
+            return ""
+        try:
+            screenfit.save(changed)
+        except (OSError, ValueError) as error:
+            return f"NOT SAVED: {error}".upper()
+        if self.launcher.any_app_running():
+            return SCREEN_NEXT_START_MESSAGE
+        self.status = SCREEN_RESTART_MESSAGE
+        self.draw("DISPLAY SETTINGS", rows, selected)
+        time.sleep(1)  # long enough to read before the screen goes dark
+        sys.exit(0)
 
     def run_audio(self) -> None:
         selected = 0

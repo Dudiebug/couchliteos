@@ -19,26 +19,35 @@ import time
 
 import couchliteos_display as display
 
+try:
+    import couchliteos_screenfit as screenfit
+except Exception:  # boot path: without the module (or with a broken one) foot starts as before
+    screenfit = None
+
 FOOT = "/usr/bin/foot"
 MIN_SIZE = 8
 MAX_SIZE = 96
 ROW_TARGET = 28
 MIN_COLUMNS = 80
-PAD = 24  # foot.ini has pad=12x12
+BASE_PAD = 12  # foot.ini has pad=12x12
+PAD = 2 * BASE_PAD
 # DejaVu Sans Mono at foot's 96 dpi: a cell is about 0.80 x 1.55 px per point of font size.
 CELL_WIDTH = 0.80
 CELL_HEIGHT = 1.55
 
 
-def grid(width: int, height: int, size: int) -> tuple[int, int]:
-    """Estimated terminal columns and rows of a full-screen foot window."""
-    return int((width - PAD) / (CELL_WIDTH * size)), int((height - PAD) / (CELL_HEIGHT * size))
+def grid(width: int, height: int, size: int, extra: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    """Estimated terminal columns and rows of a full-screen foot window; `extra` is the screen-edge padding per side."""
+    return (
+        int((width - PAD - 2 * extra[0]) / (CELL_WIDTH * size)),
+        int((height - PAD - 2 * extra[1]) / (CELL_HEIGHT * size)),
+    )
 
 
-def font_size(width: int, height: int) -> int:
+def font_size(width: int, height: int, extra: tuple[int, int] = (0, 0)) -> int:
     """Font size in points that gives about ROW_TARGET rows and at least MIN_COLUMNS columns."""
-    by_rows = (height - PAD) / (ROW_TARGET * CELL_HEIGHT)
-    by_columns = (width - PAD) / (MIN_COLUMNS * CELL_WIDTH)
+    by_rows = (height - PAD - 2 * extra[1]) / (ROW_TARGET * CELL_HEIGHT)
+    by_columns = (width - PAD - 2 * extra[0]) / (MIN_COLUMNS * CELL_WIDTH)
     return max(MIN_SIZE, min(MAX_SIZE, int(min(by_rows, by_columns))))
 
 
@@ -62,14 +71,32 @@ def target_resolution(outputs: list[display.Output], saved: dict[str, str]) -> t
     return output.current_mode.width, output.current_mode.height
 
 
-def choose_size(
-    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep
-) -> int | None:
-    """The font size to use, or None to leave foot's configured font alone."""
-    forced = environ.get("COUCHLITEOS_FONT_SIZE", "")
-    if re.fullmatch(r"\d{1,2}", forced) and MIN_SIZE <= int(forced) <= MAX_SIZE:
-        return int(forced)
-    saved = display.load_saved_display() if saved is None else saved
+def load_settings():
+    """The user's screen-edge and text-size settings, or None (today's behaviour) when they cannot be had."""
+    try:
+        return screenfit.load()
+    except Exception:
+        return None
+
+
+def edge_padding(resolution: tuple[int, int], settings) -> tuple[int, int]:
+    """Extra padding per side for the screen edges; (0, 0) for zero edges or on any problem."""
+    try:
+        x, y = screenfit.pad_pixels(*resolution, settings.edges)
+        return (x, y) if type(x) is int and type(y) is int and x >= 0 and y >= 0 else (0, 0)
+    except Exception:
+        return 0, 0
+
+
+def scaled(size: int, settings) -> int:
+    """The automatic font size changed by the text-size choice, kept within foot's limits."""
+    try:
+        return max(MIN_SIZE, min(MAX_SIZE, round(size * screenfit.text_scale(settings.text))))
+    except Exception:
+        return size
+
+
+def detect_resolution(run, saved: dict[str, str], sleep) -> tuple[int, int] | None:
     for attempt in range(2):
         if attempt:
             sleep(0.3)  # the compositor may still be bringing the screen up
@@ -79,20 +106,73 @@ def choose_size(
         except (OSError, ValueError, subprocess.SubprocessError):
             resolution = None
         if resolution:
-            size = font_size(*resolution)
-            print(f"couchliteos-foot: {resolution[0]}x{resolution[1]} -> font size {size}", file=sys.stderr)
-            return size
-    print("couchliteos-foot: screen size unknown, using the configured font", file=sys.stderr)
+            return resolution
     return None
 
 
-def command(size: int | None, arguments: list[str]) -> list[str]:
-    return [FOOT, *(["--font", f"monospace:size={size}"] if size else []), *arguments]
+def choose(
+    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep, settings=None
+) -> tuple[int | None, tuple[int, int] | None]:
+    """The font size (None: keep foot's configured font) and pad (None: keep foot.ini's) to use.
+
+    `settings` are the user's screen edges and text size; None is exactly the old behaviour.
+    """
+    forced = environ.get("COUCHLITEOS_FONT_SIZE", "")
+    size = int(forced) if re.fullmatch(r"\d{1,2}", forced) and MIN_SIZE <= int(forced) <= MAX_SIZE else None
+    if size is not None and not getattr(settings, "edges", 0):
+        return size, None
+    saved = display.load_saved_display() if saved is None else saved
+    resolution = detect_resolution(run, saved, sleep)
+    if resolution is None:
+        print("couchliteos-foot: screen size unknown, using the configured font", file=sys.stderr)
+        return size, None
+    extra = edge_padding(resolution, settings) if settings else (0, 0)
+    pad = (BASE_PAD + extra[0], BASE_PAD + extra[1]) if any(extra) else None
+    if size is None:
+        size = font_size(*resolution, extra)
+        if settings:
+            size = scaled(size, settings)
+        print(f"couchliteos-foot: {resolution[0]}x{resolution[1]} -> font size {size}", file=sys.stderr)
+    if pad:
+        print(f"couchliteos-foot: screen edges -> pad {pad[0]}x{pad[1]}", file=sys.stderr)
+    return size, pad
+
+
+def choose_size(
+    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep
+) -> int | None:
+    """The font size to use, or None to leave foot's configured font alone."""
+    return choose(environ, run=run, saved=saved, sleep=sleep)[0]
+
+
+def command(size: int | None, arguments: list[str], pad: tuple[int, int] | None = None) -> list[str]:
+    return [
+        FOOT,
+        *(["--font", f"monospace:size={size}"] if size else []),
+        *(["-o", f"main.pad={pad[0]}x{pad[1]}"] if pad else []),
+        *arguments,
+    ]
+
+
+def plan(environ: dict[str, str]) -> tuple[int | None, tuple[int, int] | None]:
+    """Font size and pad for this start.
+
+    With no screen settings chosen (the default) this is exactly the old code path, and
+    any failure in the new one falls back to it too.
+    """
+    try:
+        settings = load_settings()
+        if settings is not None and (settings.edges or settings.text != "auto"):
+            return choose(environ, settings=settings)
+    except Exception:
+        pass
+    return choose_size(environ), None
 
 
 def main(arguments: list[str] | None = None) -> None:
     arguments = sys.argv[1:] if arguments is None else arguments
-    os.execv(FOOT, command(choose_size(dict(os.environ)), arguments))
+    size, pad = plan(dict(os.environ))
+    os.execv(FOOT, command(size, arguments, pad))
 
 
 if __name__ == "__main__":
