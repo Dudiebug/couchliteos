@@ -706,8 +706,11 @@ refute rg -n 'show_message\("SUPPORT EXPORT' launcher/couchliteos-launcher.py
 
 # Boot speed: an installed system boots straight in (Shift/Esc shows the menu); the live
 # ISO keeps the menu its binary hook writes; the launcher never waits for the network.
+# Boot speed: an installed system boots straight in (3 s hidden window; Shift/Esc shows the
+# menu); the live ISO keeps the menu its binary hook writes; the launcher never waits for the
+# network.
 rg -q '^GRUB_TIMEOUT_STYLE=hidden$' overlay/etc/default/grub.d/20-couchliteos.cfg
-rg -q '^GRUB_TIMEOUT=1$' overlay/etc/default/grub.d/20-couchliteos.cfg
+rg -q '^GRUB_TIMEOUT=3$' overlay/etc/default/grub.d/20-couchliteos.cfg
 refute rg -q 'hidden|GRUB_TIMEOUT' config/live-build/hooks/live/0100-autoboot.hook.binary
 refute rg -q 'network-online|wait-online|network-ready|tailscale|usbip|firewall' services/couchliteos-launcher.service
 rg -Fq 'systemd-analyze --no-pager critical-chain couchliteos-launcher.service' scripts/couchliteos-diagnostics
@@ -809,5 +812,28 @@ rg -q '"NETWORK": self.run_network,' launcher/couchliteos-launcher.py
 rg -Fq 'self.launch("network-setup")' launcher/couchliteos-launcher.py
 rg -q 'test_netmenu.py' launcher/Makefile
 refute rg -q 'subprocess|nmcli|os\.environ|logging' launcher/couchliteos_netmenu.py
+# Recoverable boots: the hidden menu applies only when the previous boot reached the launcher.
+# GRUB clears boot_success in grubenv every boot (01_couchliteos_bootcheck runs after 00_header
+# sets the hidden timeout) and shows the menu for 5 s unless it was 1; a oneshot sets it again
+# once the launcher is ready and does nothing on the live ISO (no grubenv there).
+rg -q '^install -D -m 0755 "\$ROOT/scripts/couchliteos-grub-bootcheck" "\$CHROOT/etc/grub.d/01_couchliteos_bootcheck"$' build/configure.sh
+bootcheck=$(sh scripts/couchliteos-grub-bootcheck)
+rg -q '^  load_env boot_success$' <<< "$bootcheck"
+rg -q '^  set boot_success=0$' <<< "$bootcheck"
+rg -q '^  if save_env boot_success; then$' <<< "$bootcheck"
+rg -q '^  set timeout_style=menu$' <<< "$bootcheck"
+rg -q '^  set timeout=5$' <<< "$bootcheck"
+refute rg -q 'nomodeset' scripts/couchliteos-grub-bootcheck services/couchliteos-boot-success.service
+if command -v grub-script-check >/dev/null; then
+  printf '%s\n' "$bootcheck" > "$tmp/bootcheck.cfg"
+  grub-script-check "$tmp/bootcheck.cfg"
+fi
+rg -q '^ConditionPathExists=/boot/grub/grubenv$' services/couchliteos-boot-success.service
+rg -q '^ConditionPathExists=/run/couchliteos/launcher-ready$' services/couchliteos-boot-success.service
+rg -q '^After=couchliteos-launcher.service$' services/couchliteos-boot-success.service
+rg -q '^ExecStart=-/usr/bin/grub-editenv /boot/grub/grubenv set boot_success=1$' services/couchliteos-boot-success.service
+rg -q '^WantedBy=multi-user.target$' services/couchliteos-boot-success.service
+refute rg -q 'boot-success' services/couchliteos-launcher.service
+rg -q '^systemctl enable couchliteos-boot-success.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 
 printf 'Static tests passed.\n'

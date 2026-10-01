@@ -88,6 +88,8 @@ systemctl enable couchliteos-audio.service couchliteos-launcher.service \
   couchliteos-gamepad-nav.service
 systemctl enable bluetooth.service couchliteos-bluetooth.service
 systemctl enable couchliteos-qemu-smoke.service
+# Sets GRUB's boot_success flag once the launcher is up; inert on the live ISO (no grubenv).
+systemctl enable couchliteos-boot-success.service
 systemctl enable couchliteos-hwdetect-early.service couchliteos-hwdetect.service
 systemctl enable tailscaled.service couchliteos-tailscale-enroll.path couchliteos-tailscale-ssh.path
 # HDMI-CEC: the daemon is started by udev (75-couchliteos-cec.rules) only when a CEC adapter exists.

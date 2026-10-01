@@ -1,0 +1,25 @@
+#!/bin/sh
+# Installed as /etc/grub.d/01_couchliteos_bootcheck: grub-mkconfig runs it right after
+# 00_header, so what it prints overrides the hidden timeout that
+# /etc/default/grub.d/20-couchliteos.cfg asks for.
+#
+# Keep the menu hidden only when the previous boot reached the launcher. GRUB clears
+# boot_success in /boot/grub/grubenv at every boot; couchliteos-boot-success.service sets it
+# again once the launcher is ready. The first boot after install, a failed or interrupted
+# boot, and a grubenv GRUB cannot write (it could never clear the flag) all show the menu
+# for 5 s, so the fail-safe entries stay reachable on a TV that is slow to show a picture.
+cat << 'EOF'
+set couchliteos_boot_ok=
+if [ -s "${prefix}/grubenv" ]; then
+  load_env boot_success
+  set couchliteos_last_boot_ok="${boot_success}"
+  set boot_success=0
+  if save_env boot_success; then
+    set couchliteos_boot_ok="${couchliteos_last_boot_ok}"
+  fi
+fi
+if [ "${couchliteos_boot_ok}" != 1 ]; then
+  set timeout_style=menu
+  set timeout=5
+fi
+EOF

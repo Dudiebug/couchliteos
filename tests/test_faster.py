@@ -4,6 +4,8 @@ import collections
 import importlib.machinery
 import importlib.util
 import pathlib
+import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -24,14 +26,14 @@ def load_script(name, path):
 class InstalledGrubMenuTest(unittest.TestCase):
     """Installed systems boot straight in; the live ISO keeps its own menu."""
 
-    def test_installed_grub_menu_is_hidden_with_a_one_second_timeout(self):
+    def test_installed_grub_menu_is_hidden_with_a_three_second_timeout(self):
         cfg = ROOT / "overlay/etc/default/grub.d/20-couchliteos.cfg"
         # grub-mkconfig sources the file with sh, so evaluate it the same way.
         result = subprocess.run(
             ["sh", "-c", '. "$1"; printf "%s|%s|%s" "$GRUB_TIMEOUT_STYLE" "$GRUB_TIMEOUT" "$GRUB_CMDLINE_LINUX_DEFAULT"', "sh", str(cfg)],
             capture_output=True, text=True, check=True,
         )
-        self.assertEqual(result.stdout, "hidden|1|quiet ipv6.disable=1")
+        self.assertEqual(result.stdout, "hidden|3|quiet ipv6.disable=1")
 
     def test_live_iso_menu_is_not_changed_by_the_installed_grub_settings(self):
         hook = (ROOT / "config/live-build/hooks/live/0100-autoboot.hook.binary").read_text()
@@ -57,6 +59,96 @@ class InstalledGrubMenuTest(unittest.TestCase):
         # The installed boot is judged by serial markers, not by a menu screenshot.
         self.assertIn("COUCHLITEOS_SMOKE_PERSISTENCE_WRITTEN", smoke)
         self.assertIn("COUCHLITEOS_SMOKE_PERSISTENCE_READY", smoke)
+
+
+BOOTCHECK = ROOT / "scripts/couchliteos-grub-bootcheck"
+BOOT_SUCCESS_UNIT = ROOT / "services/couchliteos-boot-success.service"
+
+
+class GrubBootCheckTest(unittest.TestCase):
+    """The menu stays hidden only when the previous boot reached the launcher."""
+
+    @staticmethod
+    def fragment():
+        """The GRUB script grub-mkconfig writes into grub.cfg for this helper."""
+        return subprocess.run(["sh", str(BOOTCHECK)], capture_output=True, text=True, check=True).stdout
+
+    def test_fragment_is_valid_grub_script(self):
+        fragment = self.fragment()
+        self.assertIn("load_env boot_success", fragment)
+        if not shutil.which("grub-script-check"):
+            self.skipTest("grub-script-check is not installed")
+        with tempfile.NamedTemporaryFile("w", suffix=".cfg") as cfg:
+            cfg.write(fragment)
+            cfg.flush()
+            subprocess.run(["grub-script-check", cfg.name], check=True)
+
+    def test_flag_is_read_then_cleared_then_the_menu_decision_is_made(self):
+        fragment = self.fragment()
+        order = [fragment.index(step) for step in (
+            "load_env boot_success",
+            "set boot_success=0",
+            "save_env boot_success",
+            "set timeout_style=menu",
+            "set timeout=5",
+        )]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(fragment.count("save_env"), 1)
+
+    def test_menu_shows_for_at_least_five_seconds_unless_the_last_boot_succeeded(self):
+        fragment = self.fragment()
+        # Only a flag GRUB read as 1 AND then cleared successfully keeps the menu hidden.
+        self.assertRegex(fragment, r'(?s)if save_env boot_success; then\s+set \w+="\$\{\w+\}"\s+fi')
+        self.assertRegex(fragment, r'if \[ "\$\{\w+\}" != 1 \]; then\s+set timeout_style=menu\s+set timeout=5\s+fi')
+        # No grubenv (or an unwritable one) leaves the variable empty, so the menu shows.
+        self.assertRegex(fragment, r'(?m)^set (\w+)=$')
+        self.assertIn('if [ -s "${prefix}/grubenv" ]; then', fragment)
+
+    def test_helper_is_installed_as_an_executable_grub_script_after_the_header(self):
+        install = 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"'
+        self.assertIn(install, (ROOT / "build/configure.sh").read_text().splitlines())
+        # 00_header sets the timeout; the helper must run after it to override it.
+        self.assertGreater("01_couchliteos_bootcheck", "00_header")
+        self.assertLess("01_couchliteos_bootcheck", "10_linux")
+        self.assertTrue(BOOTCHECK.read_text().startswith("#!/bin/sh\n"))
+
+    def unit(self):
+        return BOOT_SUCCESS_UNIT.read_text()
+
+    def test_unit_sets_the_flag_only_on_installed_systems_after_the_launcher_is_ready(self):
+        unit = self.unit()
+        self.assertRegex(unit, r"(?m)^ConditionPathExists=/boot/grub/grubenv$")
+        self.assertRegex(unit, r"(?m)^ConditionPathExists=/run/couchliteos/launcher-ready$")
+        self.assertRegex(unit, r"(?m)^After=couchliteos-launcher\.service$")
+        self.assertRegex(unit, r"(?m)^Wants=couchliteos-launcher\.service$")
+        self.assertRegex(unit, r"(?m)^Type=oneshot$")
+        self.assertRegex(unit, r"(?m)^WantedBy=multi-user\.target$")
+
+    def test_unit_can_never_fail_the_boot(self):
+        unit = self.unit()
+        # The "-" prefix makes a non-zero exit (a read-only /boot, a missing tool) count as success.
+        self.assertRegex(unit, r"(?m)^ExecStart=-/usr/bin/grub-editenv /boot/grub/grubenv set boot_success=1$")
+        self.assertRegex(unit, r"(?m)^TimeoutStartSec=\d+$")
+        # Nothing may wait for it: the launcher must not depend on it.
+        self.assertNotIn("couchliteos-boot-success", (ROOT / "services/couchliteos-launcher.service").read_text())
+        self.assertNotRegex(unit, r"(?m)^(Before|Requires|RequiredBy)=")
+
+    def test_unit_is_enabled_in_the_image(self):
+        hook = (ROOT / "config/live-build/hooks/live/0100-couchliteos.hook.chroot").read_text()
+        self.assertRegex(hook, r"(?m)^systemctl enable couchliteos-boot-success\.service$")
+
+    def test_unit_command_sets_the_flag_grub_reads(self):
+        if not shutil.which("grub-editenv"):
+            self.skipTest("grub-editenv is not installed")
+        command = re.search(r"(?m)^ExecStart=-(.+)$", self.unit()).group(1).split()
+        with tempfile.TemporaryDirectory() as directory:
+            env = pathlib.Path(directory) / "grubenv"
+            subprocess.run(["grub-editenv", str(env), "create"], check=True)
+            subprocess.run(["grub-editenv", str(env), "set", "next_entry=keep"], check=True)
+            command[command.index("/boot/grub/grubenv")] = str(env)
+            subprocess.run(command, check=True)
+            listing = subprocess.run(["grub-editenv", str(env), "list"], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(sorted(listing.split()), ["boot_success=1", "next_entry=keep"])
 
 
 ORDERING_KEYS = {"After", "Before", "Requires", "Wants", "Requisite", "BindsTo"}

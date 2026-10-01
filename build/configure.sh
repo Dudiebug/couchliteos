@@ -103,6 +103,7 @@ install -D -m 0755 "$ROOT/scripts/couchliteos-firefox-drm-check" "$CHROOT/usr/li
 install -D -m 0755 "$ROOT/scripts/couchliteos-qemu-smoke" "$CHROOT/usr/libexec/couchliteos-qemu-smoke"
 install -D -m 0755 "$ROOT/scripts/couchliteos-support-export" "$CHROOT/usr/libexec/couchliteos-support-export"
 install -D -m 0755 "$ROOT/scripts/couchliteos-diagnostics" "$CHROOT/usr/bin/couchliteos-diagnostics"
+install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/couchliteos-hardware-report"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
 install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"

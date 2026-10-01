@@ -1,0 +1,19 @@
+[Unit]
+Description=CouchLiteOS: tell GRUB this boot reached the launcher
+After=couchliteos-launcher.service
+Wants=couchliteos-launcher.service
+# Installed systems only (the live ISO has no GRUB environment block), and only once the
+# launcher is really up: a boot that never gets there leaves the flag clear, so GRUB shows
+# its menu next time.
+ConditionPathExists=/boot/grub/grubenv
+ConditionPathExists=/run/couchliteos/launcher-ready
+
+[Service]
+Type=oneshot
+# The "-" makes a non-zero exit (read-only /boot, missing tool) count as success: this unit
+# must never fail the boot.
+ExecStart=-/usr/bin/grub-editenv /boot/grub/grubenv set boot_success=1
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target
