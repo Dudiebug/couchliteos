@@ -396,10 +396,10 @@ class LauncherPairingTest(unittest.TestCase):
         launcher.app_by_id = mock.Mock(return_value=self.pairing_app())
         launcher.launch_app = mock.Mock(return_value=False)
         self.assertFalse(launcher.launch_and_wait("moonlight-pair", quiet=True))
-        launcher.launch_app.assert_called_once_with(self.pairing_app(), quiet=True)
+        launcher.launch_app.assert_called_once_with(self.pairing_app(), quiet=True, wake=False)
         launcher.launch_app.reset_mock()
         launcher.launch_and_wait("moonlight-pair")
-        launcher.launch_app.assert_called_once_with(self.pairing_app())
+        launcher.launch_app.assert_called_once_with(self.pairing_app(), wake=False)
 
     def test_moonlight_pairing_asks_for_a_quiet_launch(self):
         launcher = self.launcher()

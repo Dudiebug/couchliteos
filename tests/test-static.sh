@@ -788,7 +788,7 @@ rg -q '^import couchliteos_whatsnew as whatsnew' launcher/couchliteos-launcher.p
 rg -q 'couchliteos_whatsnew.py' launcher/Makefile
 rg -q 'test_whatsnew.py' launcher/Makefile
 # It comes BEFORE the setup wizard: afterwards a new user who just finished setup would look like an upgrader.
-rg -Uq 'whatsnew\.show_once\(self\.screen, read_key\)[^\n]*\n\s+self\.setup_wizard\(\)' launcher/couchliteos-launcher.py
+rg -Uq 'whatsnew\.show_once\(self\.screen, lambda: read_key\(self\.screen\)\)[^\n]*\n\s+self\.setup_wizard\(\)' launcher/couchliteos-launcher.py
 # Its version and state come from the same places as the update check and the setup marker.
 rg -q 'update\.VERSION_FILES' launcher/couchliteos_whatsnew.py
 rg -q 'setup\.MARKER\.parent / "whatsnew-seen"' launcher/couchliteos_whatsnew.py
