@@ -2,7 +2,7 @@
 Description=CouchLiteOS: adopt live-USB persistence made for the old name
 DefaultDependencies=no
 After=local-fs.target
-Before=sysinit.target systemd-tmpfiles-setup.service couchliteos-hwdetect-early.service couchliteos-launcher.service
+Before=sysinit.target systemd-tmpfiles-setup.service couchliteos-launcher.service
 # Only a stick whose persistence.conf still maps the old directories needs this.
 # rename:keep-begin
 ConditionPathIsMountPoint=|/var/lib/moonlightos
