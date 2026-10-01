@@ -718,7 +718,10 @@ class Launcher:
             self.status = "AUTO-STREAM CANCELLED"
             return False
         if result in ("timeout", "awake"):
-            self.show_launch_failure(app.name, StreamingSettings.WAKE_RESULTS[result].format(host.label), wake=self.offer_wake(app))
+            # A Moonlight failure screen carries WAKE PC (register_failure_actions); TRY AGAIN waits again.
+            message = StreamingSettings.WAKE_RESULTS[result].format(host.label)
+            if self.show_launch_failure(app.name, message, app=app) == "retry":
+                return self.wake_before_moonlight(app, auto)
             return False
         return True
 

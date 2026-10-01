@@ -1045,7 +1045,8 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
             args, kwargs = launcher.show_launch_failure.call_args
             self.assertIn(reason, args[1])
             self.assertIn("GAMING-PC", args[1])
-            self.assertTrue(kwargs.get("wake"), "the dialog offers WAKE PC again")
+            # WAKE PC is on every Moonlight failure screen (register_failure_actions).
+            self.assertEqual(kwargs.get("app").id, "moonlight", "the dialog offers WAKE PC again")
 
     def test_moonlight_starts_when_the_pc_is_up_or_the_wait_was_skipped(self):
         for result in ("up", "woke", "noaddr", "sent", "cancelled", "nomac", "nonetwork"):

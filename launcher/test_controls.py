@@ -212,8 +212,8 @@ class RowsTest(unittest.TestCase):
             with self.subTest(family=family):
                 self.assertTrue(any("SLEEP" in row for row in controls.rows(family, True)))
                 self.assertFalse(any("SLEEP" in row for row in controls.rows(family, False)))
-        self.assertIn("HOLD GUIDE 3 S", "\n".join(controls.rows("xbox", True)))
-        self.assertIn("HOLD PS BUTTON 3 S", "\n".join(controls.rows("playstation", True)))
+        self.assertIn("HOLD GUIDE 5 S", "\n".join(controls.rows("xbox", True)))
+        self.assertIn("HOLD PS BUTTON 5 S", "\n".join(controls.rows("playstation", True)))
 
     def test_every_row_fits_76_columns(self):
         for family in ("xbox", "playstation", "nintendo", "generic"):

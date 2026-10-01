@@ -17,7 +17,7 @@ PROC_INPUT = pathlib.Path("/proc/bus/input/devices")
 SHOWN = setup.MARKER.parent / "controls-shown"
 TITLE = "CONTROLLER BUTTONS"
 WIDTH = 76  # the widest line; the screen also fits 80x24
-SLEEP_HOLD_SECONDS = 3  # how long Guide is held to sleep (gamepad-nav)
+SLEEP_HOLD_SECONDS = 5  # how long Guide is held to sleep (gamepad-nav)
 BTN_SOUTH = 0x130  # evdev code of the A / Cross button: what makes an input device a gamepad
 CLOSE_KEYS = (10, 13, curses.KEY_ENTER, 27)  # gamepad-nav sends A as Enter and B as Esc
 
