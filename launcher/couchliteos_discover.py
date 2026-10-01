@@ -236,7 +236,12 @@ def parse_response(data: bytes, source: str = "") -> list[FoundPC]:
     for key, labels in instances.items():
         port, host = services.get(key, (DEFAULT_PORT, ()))
         port = port if 0 < port < 65536 else DEFAULT_PORT
-        candidates = addresses.get(_folded(host), []) or ([source] if usable_address(source) else [])
+        candidates = addresses.get(_folded(host), [])
+        if source in candidates:  # a PC announces every adapter; the one that answered is on this LAN
+            candidates = [source]
+        else:  # otherwise a 169.254 fallback is never the one to use, unless it is all there is
+            candidates = [item for item in candidates if not ipaddress.IPv4Address(item).is_link_local] or candidates
+        candidates = candidates or ([source] if usable_address(source) else [])
         name = ".".join(labels[:-len(SERVICE)]).strip()
         found.extend(FoundPC(name or address, address, port) for address in candidates)
     return found

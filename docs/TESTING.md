@@ -360,7 +360,7 @@ Applications and acceleration:
 
 Couch features (v0.2.x):
 
-- [ ] FIND GAMING PCS lists a Sunshine PC on Ethernet and on Wi-Fi, and PIN pairing from the list works
+- [ ] FIND GAMING PCS (SEARCH THE NETWORK) lists a Sunshine PC once on Ethernet and on Wi-Fi (a Windows PC with Hyper-V/WSL/VPN adapters is still one row), and PIN pairing from the list works
 - [ ] FIND GAMING PCS with the PC asleep explains it and WAKE PC wakes it
 - [ ] STREAM CHECK gives a plausible verdict on Ethernet and on Wi-Fi, and B cancels it
 - [ ] STREAM CHECK against a Windows PC that drops ping still measures (Sunshine port)

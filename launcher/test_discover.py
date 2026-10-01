@@ -208,6 +208,25 @@ class ParseResponseTest(unittest.TestCase):
             [item.address for item in discover.parse_response(packet)], ["192.168.1.20", "192.168.1.21"]
         )
 
+    def several_addresses(self, *addresses, source=""):
+        instance = ("PC", *SERVICE)
+        packet = Dns().ptr(ANSWER, SERVICE, instance).srv(ADDITIONAL, instance, ("pc", "local"))
+        for address in addresses:
+            packet.a(ADDITIONAL, ("pc", "local"), address)
+        return [item.address for item in discover.parse_response(packet.pack(), source)]
+
+    def test_a_pc_is_listed_at_the_address_it_answered_from_only(self):
+        # A Windows PC announces every adapter: the LAN, Hyper-V/WSL, a VPN and a 169.254 fallback.
+        addresses = ("172.20.0.1", "192.168.1.20", "10.8.0.2", "169.254.8.8")
+        self.assertEqual(self.several_addresses(*addresses, source="192.168.1.20"), ["192.168.1.20"])
+
+    def test_link_local_addresses_are_dropped_when_it_cannot_be_told_which_one_answered(self):
+        self.assertEqual(self.several_addresses("169.254.8.8", "192.168.1.20"), ["192.168.1.20"])
+        self.assertEqual(self.several_addresses("169.254.8.8", "192.168.1.20", source="192.168.1.99"), ["192.168.1.20"])
+
+    def test_a_pc_that_only_has_a_link_local_address_is_still_listed(self):
+        self.assertEqual(self.several_addresses("169.254.8.8", "169.254.9.9"), ["169.254.8.8", "169.254.9.9"])
+
     def test_another_service_is_ignored(self):
         other = ("_http", "_tcp", "local")
         packet = Dns().ptr(ANSWER, other, ("Printer", *other)).srv(ADDITIONAL, ("Printer", *other), ("p", "local")) \
@@ -731,12 +750,12 @@ class FindFlowTest(base.WizardTestCase):
     def test_find_gaming_pcs_is_the_first_choice_of_the_streaming_step(self):
         ui = SearchUI(None)
         self.run_step(ui, DiscoverSystem())
-        self.assertEqual(ui.screens[0]["choices"][0], "FIND GAMING PCS")
+        self.assertEqual(ui.screens[0]["choices"][0], "SEARCH THE NETWORK (RECOMMENDED)")
         self.assertIn("FIND MY GAMING PC IN MOONLIGHT", ui.screens[0]["choices"])
         self.assertIn("PAIR WITH A PIN SHOWN HERE", ui.screens[0]["choices"])
 
     def test_picking_a_found_pc_fills_in_the_address_and_goes_on_to_the_pin(self):
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "START PAIRING")
         system = DiscoverSystem(DESKTOP)
         self.assertEqual(self.run_step(ui, system), "done")
         self.assertEqual(self.pairs(), [("192.168.1.20", "0427")])
@@ -744,7 +763,7 @@ class FindFlowTest(base.WizardTestCase):
         self.assertTrue(all(sock.closed for sock in system.sockets))
 
     def test_the_search_is_announced_and_the_list_names_each_pc(self):
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP", None, None)
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP", None, None, None)  # B on the PIN screen, B on the list, B on the streaming choices
         self.run_step(ui, DiscoverSystem(DESKTOP))
         searching = [screen for screen in ui.screens if screen["title"] == "FIND GAMING PCS" and screen["lines"] == ["SEARCHING...  (B CANCELS)"]]
         self.assertTrue(searching)
@@ -754,7 +773,7 @@ class FindFlowTest(base.WizardTestCase):
         self.assertIn("FOUND 1 GAMING PC.", listing["lines"][0])
 
     def test_the_pin_screen_shows_the_name_and_the_web_address_of_the_pc_picked(self):
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "START PAIRING")
         self.run_step(ui, DiscoverSystem(DESKTOP))
         screen = next(screen for screen in ui.screens if screen["big"] == "0427")
         self.assertEqual(screen["title"], "PAIR WITH DESKTOP-ABC (192.168.1.20)")
@@ -762,7 +781,7 @@ class FindFlowTest(base.WizardTestCase):
 
     def test_several_pcs_are_listed_by_name(self):
         replies = [from_pc(0.1, "192.168.1.30", name="zeta"), from_pc(0.2, "192.168.1.20", name="Alpha")]
-        ui = SearchUI("FIND GAMING PCS", "ZETA", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "ZETA", "START PAIRING")
         system = DiscoverSystem((replies, {}))
         self.run_step(ui, system)
         listing = next(screen for screen in ui.screens if screen["title"] == "FIND GAMING PCS" and screen["choices"])
@@ -770,7 +789,7 @@ class FindFlowTest(base.WizardTestCase):
         self.assertEqual(self.pairs(), [("192.168.1.30", "0427")])
 
     def test_a_pc_on_another_port_is_paired_with_that_port(self):
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "START PAIRING")
         self.run_step(ui, DiscoverSystem(([from_pc(0.2, port=48000)], {})))
         self.assertEqual(self.pairs(), [("192.168.1.20:48000", "0427")])
         screen = next(screen for screen in ui.screens if screen["big"] == "0427")
@@ -779,25 +798,25 @@ class FindFlowTest(base.WizardTestCase):
 
     def test_a_pc_that_is_already_paired_says_so_and_can_just_be_used(self):
         system = DiscoverSystem(DESKTOP, hosts=["DESKTOP-ABC"])
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "USE IT")
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "USE IT")
         self.assertEqual(self.run_step(ui, system), "done")
         self.assertIn("(ALREADY PAIRED)", ui.text())
         self.assertEqual(self.pairs(), [])
 
     def test_an_already_paired_pc_can_be_backed_out_of_and_says_how_to_pair_it_again(self):
         system = DiscoverSystem(DESKTOP, hosts=["DESKTOP-ABC"])
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "BACK", "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "BACK", "SKIP")
         self.assertEqual(self.run_step(ui, system), "skipped")
         self.assertIn("DELETE IT IN MOONLIGHT FIRST", ui.text())
         self.assertEqual(self.pairs(), [])
 
     def test_a_pairing_that_saved_nothing_gets_the_usual_help(self):
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "START PAIRING", "CONTINUE WITHOUT")
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "START PAIRING", "CONTINUE WITHOUT")
         self.assertEqual(self.run_step(ui, DiscoverSystem(DESKTOP), pairing=False), "failed")
         self.assertIn("THE ADDRESS IS RIGHT: 192.168.1.20", ui.text())
 
     def test_search_again_asks_the_network_again(self):
-        ui = SearchUI("FIND GAMING PCS", "SEARCH AGAIN", "DESKTOP-ABC", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "SEARCH AGAIN", "DESKTOP-ABC", "START PAIRING")
         system = DiscoverSystem(DESKTOP, DESKTOP)
         self.assertEqual(self.run_step(ui, system), "done")
         self.assertEqual(system.started, 2)
@@ -808,7 +827,7 @@ class FindFlowTest(base.WizardTestCase):
         return next(screen for screen in ui.screens if screen["lines"][:1] == ["NO GAMING PC ANSWERED. THE USUAL REASONS:"])
 
     def test_nothing_found_explains_the_usual_reasons_in_plain_words(self):
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.assertEqual(self.run_step(ui, DiscoverSystem(NOTHING)), "skipped")
         screen = self.not_found(ui)
         text = " ".join(screen["lines"])
@@ -820,13 +839,13 @@ class FindFlowTest(base.WizardTestCase):
     def test_wake_pc_is_offered_only_when_a_paired_pc_has_a_known_address(self):
         woken = []
         wake = lambda host: woken.append(host) or f"{host.label} IS AWAKE."
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.run_step(ui, DiscoverSystem(NOTHING), wake_pc=wake)
         self.assertNotIn("WAKE PC", self.not_found(ui)["choices"])  # none paired: nothing to wake
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.run_step(ui, DiscoverSystem(NOTHING, wakeable=[GAMING_PC]))  # no wake action wired
         self.assertNotIn("WAKE PC", self.not_found(ui)["choices"])
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.run_step(ui, DiscoverSystem(NOTHING, wakeable=[GAMING_PC]), wake_pc=wake)
         self.assertEqual(self.not_found(ui)["choices"][0], "WAKE PC")
         self.assertEqual(woken, [])
@@ -835,7 +854,7 @@ class FindFlowTest(base.WizardTestCase):
         woken = []
         wake = lambda host: woken.append(host) or f"{host.label} IS AWAKE."
         system = DiscoverSystem(NOTHING, DESKTOP, wakeable=[GAMING_PC])
-        ui = SearchUI("FIND GAMING PCS", "WAKE PC", "OK", "DESKTOP-ABC", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "WAKE PC", "OK", "DESKTOP-ABC", "START PAIRING")
         self.assertEqual(self.run_step(ui, system, wake_pc=wake), "done")
         self.assertEqual(woken, [GAMING_PC])
         self.assertIn("GAMING-PC IS AWAKE.", ui.text())
@@ -845,7 +864,7 @@ class FindFlowTest(base.WizardTestCase):
         woken = []
         wake = lambda host: woken.append(host) or "OK DONE"
         system = DiscoverSystem(NOTHING, NOTHING, wakeable=[GAMING_PC, DEN_PC])
-        ui = SearchUI("FIND GAMING PCS", "WAKE PC", "DEN-PC", "OK", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", "WAKE PC", "DEN-PC", "OK", None, "SKIP")
         self.run_step(ui, system, wake_pc=wake)
         self.assertEqual(woken, [DEN_PC])
         self.assertEqual(ui.screens[[s["title"] for s in ui.screens].index("WAKE WHICH PC?")]["choices"], ["GAMING-PC", "DEN-PC", "BACK"])
@@ -853,72 +872,94 @@ class FindFlowTest(base.WizardTestCase):
     def test_backing_out_of_which_pc_wakes_nothing(self):
         woken = []
         system = DiscoverSystem(NOTHING, NOTHING, wakeable=[GAMING_PC, DEN_PC])
-        ui = SearchUI("FIND GAMING PCS", "WAKE PC", None, None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", "WAKE PC", None, None, "SKIP")
         self.run_step(ui, system, wake_pc=lambda host: woken.append(host) or "x")
         self.assertEqual(woken, [])
 
+    def test_backing_out_of_which_pc_returns_to_the_not_found_screen_without_searching(self):
+        system = DiscoverSystem(NOTHING, NOTHING, wakeable=[GAMING_PC, DEN_PC])
+        ui = SearchUI("SEARCH THE NETWORK", "WAKE PC", None, "BACK", "SKIP")
+        self.run_step(ui, system, wake_pc=lambda host: "x")
+        self.assertEqual(system.started, 1)
+        titles = ui.titles()
+        after = ui.screens[titles.index("WAKE WHICH PC?") + 1]
+        self.assertEqual(after["lines"][:1], ["NO GAMING PC ANSWERED. THE USUAL REASONS:"])
+        self.assertEqual(after["choices"][0], "WAKE PC")
+
     def test_enter_address_manually_from_nothing_found_goes_to_the_typed_address(self):
         self.texts = ["192.168.1.77"]
-        ui = SearchUI("FIND GAMING PCS", "ENTER ADDRESS", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "ENTER ADDRESS", "START PAIRING")
         self.assertEqual(self.run_step(ui, DiscoverSystem(NOTHING)), "done")
         self.assertEqual(self.pairs(), [("192.168.1.77", "0427")])
         self.assertEqual([call[0] for call in self.calls if call[0] == "text"], ["text"])
 
     def test_enter_address_manually_is_also_in_the_list_of_found_pcs(self):
         self.texts = ["gaming-pc"]
-        ui = SearchUI("FIND GAMING PCS", "ENTER ADDRESS", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "ENTER ADDRESS", "START PAIRING")
         self.run_step(ui, DiscoverSystem(DESKTOP))
         self.assertEqual(self.pairs(), [("gaming-pc", "0427")])
 
     def test_a_bad_typed_address_is_refused_after_the_search_too(self):
         self.texts = ["bad host;rm", "gaming-pc"]
-        ui = SearchUI("FIND GAMING PCS", "ENTER ADDRESS", "OK", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "ENTER ADDRESS", "OK", "START PAIRING")
         self.run_step(ui, DiscoverSystem(NOTHING))
         self.assertEqual(self.pairs(), [("gaming-pc", "0427")])
 
     # backing out
 
     def test_b_on_the_nothing_found_screen_goes_back_to_the_streaming_choices(self):
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.assertEqual(self.run_step(ui, DiscoverSystem(NOTHING)), "skipped")
         self.assertEqual(ui.titles()[-1], "STREAMING PC")
         self.assertEqual(self.pairs(), [])
 
     def test_the_back_choice_does_the_same(self):
-        ui = SearchUI("FIND GAMING PCS", "BACK", "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", "BACK", "SKIP")
         self.assertEqual(self.run_step(ui, DiscoverSystem(NOTHING)), "skipped")
         self.assertEqual(ui.titles()[-1], "STREAMING PC")
 
     def test_b_on_the_list_of_found_pcs_goes_back(self):
         for answer in (None, "BACK"):
             with self.subTest(answer=answer):
-                ui = SearchUI("FIND GAMING PCS", answer, "SKIP")
+                ui = SearchUI("SEARCH THE NETWORK", answer, "SKIP")
                 self.assertEqual(self.run_step(ui, DiscoverSystem(DESKTOP)), "skipped")
                 self.assertEqual(self.pairs(), [])
 
     def test_b_while_searching_cancels_the_search_at_once(self):
-        ui = SearchUI("FIND GAMING PCS", "SKIP", cancel=[True])
+        ui = SearchUI("SEARCH THE NETWORK", "SKIP", cancel=[True])
         system = DiscoverSystem(DESKTOP)
         self.assertEqual(self.run_step(ui, system), "skipped")
         self.assertEqual(ui.titles().count("STREAMING PC"), 2)
         self.assertTrue(system.sockets[0].closed)
         self.assertEqual(self.pairs(), [])
 
-    def test_b_on_the_pin_screen_goes_back_to_the_streaming_choices(self):
-        ui = SearchUI("FIND GAMING PCS", "DESKTOP-ABC", "BACK", "SKIP")
-        self.assertEqual(self.run_step(ui, DiscoverSystem(DESKTOP)), "skipped")
+    def list_screens(self, ui):
+        return [screen for screen in ui.screens if screen["lines"][:1] == ["FOUND 1 GAMING PC. PICK YOURS."]]
+
+    def test_b_on_the_pin_screen_goes_back_to_the_list_of_found_pcs(self):
+        # Used to drop to the streaming choices and lose the list; B on the list then goes on back.
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "BACK", None, "SKIP")
+        system = DiscoverSystem(DESKTOP)
+        self.assertEqual(self.run_step(ui, system), "skipped")
         self.assertEqual(self.pairs(), [])
+        self.assertEqual(len(self.list_screens(ui)), 2)
+        self.assertEqual(system.started, 1)  # the same list, not a new search
+
+    def test_another_pc_can_be_picked_after_backing_out_of_a_pin_screen(self):
+        ui = SearchUI("SEARCH THE NETWORK", "DESKTOP-ABC", "BACK", "DESKTOP-ABC", "START PAIRING")
+        self.assertEqual(self.run_step(ui, DiscoverSystem(DESKTOP)), "done")
+        self.assertEqual(self.pairs(), [("192.168.1.20", "0427")])
 
     def test_b_at_the_typed_address_after_the_search_goes_back(self):
         self.texts = []  # the typing screen is dismissed
-        ui = SearchUI("FIND GAMING PCS", "ENTER ADDRESS", "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", "ENTER ADDRESS", "SKIP")
         self.assertEqual(self.run_step(ui, DiscoverSystem(NOTHING)), "skipped")
 
     # no network
 
     def test_no_network_is_said_plainly_and_offers_manual_entry(self):
         system = DiscoverSystem(([], {"fail_all_sends": True}), wakeable=[GAMING_PC])
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.assertEqual(self.run_step(ui, system, wake_pc=lambda host: "x"), "skipped")
         screen = next(s for s in ui.screens if s["lines"] and s["lines"][0].startswith("NO NETWORK."))
         self.assertIn("SETTINGS > NETWORK", screen["lines"][0])
@@ -931,20 +972,20 @@ class FindFlowTest(base.WizardTestCase):
                 self.started += 1
                 raise discover.DiscoveryError("COULD NOT OPEN A NETWORK CONNECTION: TOO MANY OPEN FILES")
 
-        ui = SearchUI("FIND GAMING PCS", "ENTER ADDRESS", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "ENTER ADDRESS", "START PAIRING")
         self.texts = ["192.168.1.9"]
         self.assertEqual(self.run_step(ui, Refusing()), "done")
         self.assertIn("TOO MANY OPEN FILES", ui.text())
 
     def test_retrying_after_no_network_searches_again(self):
         system = DiscoverSystem(([], {"fail_all_sends": True}), DESKTOP)
-        ui = SearchUI("FIND GAMING PCS", "SEARCH AGAIN", "DESKTOP-ABC", "START PAIRING")
+        ui = SearchUI("SEARCH THE NETWORK", "SEARCH AGAIN", "DESKTOP-ABC", "START PAIRING")
         self.assertEqual(self.run_step(ui, system), "done")
 
     # text on the screens
 
     def test_every_line_is_all_caps_and_short(self):
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.run_step(ui, DiscoverSystem(NOTHING, wakeable=[GAMING_PC]), wake_pc=lambda host: "x")
         for screen in ui.screens:
             for line in screen["lines"] + screen["choices"]:
@@ -954,7 +995,7 @@ class FindFlowTest(base.WizardTestCase):
 
     def test_a_hostile_name_is_made_safe_to_draw(self):
         packet = reply("Evil\x1b[31mPC" + "X" * 40)
-        ui = SearchUI("FIND GAMING PCS", None, "SKIP")
+        ui = SearchUI("SEARCH THE NETWORK", None, "SKIP")
         self.run_step(ui, DiscoverSystem(([(0.1, packet, ("192.168.1.20", 5353))], {})))
         listing = next(s for s in ui.screens if s["choices"] and "192.168.1.20" in s["choices"][0])
         self.assertNotIn("\x1b", listing["choices"][0])
@@ -1060,7 +1101,7 @@ class LauncherWiringTest(base_stream.LauncherTestCase):
         ui = base.FakeUI(None)
         wizard = setup.SetupWizard(ui, {}, base.FakeSystem(), marker=pathlib.Path("/nonexistent/marker"))
         self.assertEqual(wizard.step_streaming(), "skipped")
-        self.assertEqual(ui.screens[0]["choices"][0], "FIND GAMING PCS")
+        self.assertEqual(ui.screens[0]["choices"][0], "SEARCH THE NETWORK (RECOMMENDED)")
 
 
 if __name__ == "__main__":
