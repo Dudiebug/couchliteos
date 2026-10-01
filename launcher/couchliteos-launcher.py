@@ -48,6 +48,7 @@ FIXED_CONTROLS = (
     ("SETTINGS", "settings"), ("SLEEP", "suspend"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"),
 )
 WAKE_PC = errors.Action("WAKE PC", "wake-pc")
+SMOOTHER_ROW = "SMOOTHER STREAM (LOWER QUALITY ONE STEP)"
 SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
 SETTINGS_MENU = (
     "DISPLAY",
@@ -2423,6 +2424,8 @@ class StreamingSettings(RemoteDesktopSettings):
             f"APPLICATION  {config.app}",
             wake,
             "OPTIMIZE STREAM SETTINGS",
+            "PAIR ANOTHER GAMING PC" if hosts else "PAIR A GAMING PC",
+            SMOOTHER_ROW,
             "BACK",
         ]
 
@@ -2444,8 +2447,12 @@ class StreamingSettings(RemoteDesktopSettings):
                 self.choose_app(config, stream.autostream_host(hosts, config))
             elif choice == 3:
                 self.wake_pc()
-            else:
+            elif choice == 4:
                 self.optimize()
+            elif choice == 5:
+                self.pair_pc()
+            else:
+                self.smoother()
 
     def save(self, config: stream.StreamSettings) -> bool:
         try:
@@ -2543,6 +2550,51 @@ class StreamingSettings(RemoteDesktopSettings):
             self.message(title, f"NOT CHANGED: {error}".upper())
             return
         self.message("STREAM SETTINGS APPLIED", "\n".join(stream.summary_lines(mode.argument, plan, network)))
+
+    def pair_pc(self) -> None:
+        """The wizard's own pairing step; which PC auto-stream and WAKE PC use stays in the PC row."""
+        title = "PAIR A GAMING PC"
+        if not stream.link_up():
+            self.message(title, "NO NETWORK. CONNECT ETHERNET OR WI-FI FIRST: SETTINGS > NETWORK.")
+            return
+        if stream.moonlight_running(RUN):
+            self.message(title, "CLOSE MOONLIGHT FIRST: PRESS GUIDE, THEN CLOSE IT IN ACTIVE APPLICATIONS.")
+            return
+        before = {self.ident(host) for host in stream.load_hosts()}
+        actions = {
+            "text": self.launcher.wizard_text,
+            "launch": self.launcher.launch_and_wait,
+            "pair_moonlight": self.launcher.pair_moonlight,
+        }
+        setup.SetupWizard(setup.CursesUI(self.screen), actions, setup.System()).step_streaming()
+        after = {self.ident(host) for host in stream.load_hosts()}
+        if not after - before:
+            self.message(title, "NO NEW GAMING PC WAS PAIRED. NOTHING WAS CHANGED.")
+            return
+        count = f"{len(after)} GAMING PC{'S' if len(after) != 1 else ''}"
+        self.message(
+            title, f"PAIRED. THIS SYSTEM NOW KNOWS {count}.\n"
+            'CHOOSE THE ONE FOR AUTO-STREAM AND WAKE PC IN THE "PC" ROW.'
+        )
+
+    def smoother(self) -> None:
+        title = "SMOOTHER STREAM"
+        try:
+            old, new = stream.lower_bitrate(run_dir=RUN)
+        except (OSError, stream.StreamError) as error:
+            self.message(title, f"NOT CHANGED: {error}".upper())
+            return
+        if new is None:
+            self.message(
+                title, f"ALREADY AT THE LOWEST USEFUL QUALITY ({old / 1000:g} MBPS). NOTHING WAS CHANGED.\n"
+                "TRY A NETWORK CABLE, OR 5 GHZ WI-FI CLOSER TO THE ROUTER."
+            )
+            return
+        self.message(
+            title, f"STREAM QUALITY LOWERED: {old / 1000:g} MBPS -> {new / 1000:g} MBPS.\n"
+            "STILL STUTTERING? PICK SMOOTHER STREAM AGAIN, OR USE A NETWORK CABLE.\n"
+            "TO UNDO, PICK OPTIMIZE STREAM SETTINGS."
+        )
 
 
 def register_failure_actions(launcher: Launcher) -> None:

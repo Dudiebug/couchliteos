@@ -567,6 +567,78 @@ class ConfRewriteTest(unittest.TestCase):
             self.assertEqual([path.name for path in root.iterdir()], ["Moonlight.conf"])
 
 
+class SmootherTest(unittest.TestCase):
+    def conf(self, directory, text=None):
+        conf = pathlib.Path(directory) / "Moonlight.conf"
+        if text is not None:
+            conf.write_bytes(text.encode("latin-1"))
+        return conf
+
+    def test_each_step_is_a_quarter_less_rounded_down_to_half_a_megabit(self):
+        self.assertEqual(stream.step_down(20000), 15000)
+        self.assertEqual(stream.step_down(9000), 6500)
+        self.assertEqual(stream.step_down(150000), 112500)
+
+    def test_steps_stop_at_five_megabits(self):
+        self.assertEqual(stream.step_down(5500), 5000)
+        self.assertEqual(stream.step_down(6000), 5000)
+        self.assertIsNone(stream.step_down(5000))
+        self.assertIsNone(stream.step_down(3000))
+
+    def test_the_current_bitrate_is_the_saved_one(self):
+        self.assertEqual(stream.current_bitrate(stream.general_values(SAMPLE)), 20000)
+
+    def test_without_a_usable_saved_bitrate_it_is_moonlights_default_for_the_saved_mode(self):
+        uhd = "[General]\nwidth=3840\nheight=2160\nfps=60\n"
+        for extra in ("", "bitrate=abc\n", "bitrate=100\n", "bitrate=900000\n"):
+            with self.subTest(extra=extra):
+                values = stream.general_values(uhd + extra)
+                self.assertEqual(stream.current_bitrate(values), stream.default_bitrate(3840, 2160, 60))
+        self.assertEqual(stream.current_bitrate(stream.general_values("")), stream.default_bitrate(1920, 1080, 60))
+        self.assertEqual(
+            stream.current_bitrate(stream.general_values("[General]\nfps=0\nwidth=x\n")),
+            stream.default_bitrate(1920, 1080, 60),
+        )
+
+    def test_only_general_section_values_count(self):
+        self.assertEqual(stream.general_values("[Other]\nbitrate=9\n[General]\nfps=30\n"), {"fps": "30"})
+
+    def test_lowering_changes_only_the_bitrate_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = self.conf(directory, SAMPLE)
+            self.assertEqual(stream.lower_bitrate(conf, pathlib.Path(directory)), (20000, 15000))
+            text = conf.read_bytes().decode("latin-1")
+            self.assertEqual(
+                [(a, b) for a, b in zip(SAMPLE.splitlines(), text.splitlines()) if a != b],
+                [("bitrate=20000", "bitrate=15000")],
+            )
+            self.assertEqual(len(text.splitlines()), len(SAMPLE.splitlines()))
+            self.assertEqual([path.name for path in pathlib.Path(directory).iterdir()], ["Moonlight.conf"])
+
+    def test_lowering_without_a_moonlight_conf_starts_from_moonlights_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = self.conf(directory)
+            self.assertEqual(stream.lower_bitrate(conf, pathlib.Path(directory)), (20000, 15000))
+            self.assertEqual(conf.read_text(), "[General]\nbitrate=15000\n")
+
+    def test_at_the_floor_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            text = SAMPLE.replace("bitrate=20000", "bitrate=5000")
+            conf = self.conf(directory, text)
+            self.assertEqual(stream.lower_bitrate(conf, pathlib.Path(directory)), (5000, None))
+            self.assertEqual(conf.read_bytes().decode("latin-1"), text)
+
+    def test_lowering_refuses_while_moonlight_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            conf = self.conf(directory, SAMPLE)
+            run = pathlib.Path(directory) / "run"
+            run.mkdir()
+            (run / "app-active").write_text("moonlight\n")
+            with self.assertRaises(stream.StreamError):
+                stream.lower_bitrate(conf, run)
+            self.assertEqual(conf.read_bytes().decode("latin-1"), SAMPLE)
+
+
 class RequestTest(unittest.TestCase):
     """couchliteos-run-app reads the stream request through take_request; it never sees a shell."""
 
@@ -1338,6 +1410,101 @@ class StreamingSettingsTest(LauncherTestCase):
         ):
             settings.optimize()
         self.assertIn("NOT CHANGED", settings.message.call_args.args[1])
+
+    def test_pairing_and_a_smoother_stream_sit_between_optimize_and_back(self):
+        _launcher, settings = self.streaming()
+        rows = settings.rows([], stream.StreamSettings())
+        self.assertEqual(rows[4:], ["OPTIMIZE STREAM SETTINGS", "PAIR A GAMING PC", self.module.SMOOTHER_ROW, "BACK"])
+        self.assertEqual(settings.rows([self.HOST], self.ON)[5], "PAIR ANOTHER GAMING PC")
+        self.assertLessEqual(len(self.module.SMOOTHER_ROW), 76)
+
+    def test_the_new_rows_open_their_screens(self):
+        for index, method in ((5, "pair_pc"), (6, "smoother")):
+            with self.subTest(method=method):
+                _launcher, settings = self.streaming()
+                settings.menu.side_effect = [index, None]
+                with self.world(pathlib.Path("/nonexistent")), mock.patch.object(settings, method) as opened:
+                    settings.run()
+                opened.assert_called_once_with()
+
+    def pair(self, settings, before, after, link=True, running=False):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            if running:
+                (run / "moonlight-ready").touch()
+            with self.world(run, link=link), mock.patch.object(
+                self.module.stream, "load_hosts", side_effect=[list(before), list(after)]
+            ), mock.patch.object(self.module.setup, "SetupWizard") as wizard, mock.patch.object(
+                self.module.setup, "CursesUI"
+            ), mock.patch.object(self.module.setup, "System"), mock.patch.object(
+                self.module.stream, "save_settings"
+            ) as save:
+                settings.pair_pc()
+        save.assert_not_called()  # the PC used for auto-stream and wake is only changed in the PC row
+        return wizard
+
+    def test_pair_pc_runs_the_wizards_pairing_step_and_counts_the_new_pc(self):
+        launcher, settings = self.streaming()
+        other = changed(self.HOST, name="Other", uuid="UUID-2")
+        wizard = self.pair(settings, [self.HOST], [self.HOST, other])
+        wizard.return_value.step_streaming.assert_called_once_with()
+        actions = wizard.call_args.args[1]
+        self.assertEqual(actions["launch"], launcher.launch_and_wait)
+        self.assertEqual(actions["pair_moonlight"], launcher.pair_moonlight)
+        self.assertEqual(actions["text"], launcher.wizard_text)
+        text = settings.message.call_args.args[1]
+        self.assertIn("PAIRED. THIS SYSTEM NOW KNOWS 2 GAMING PCS", text)
+        self.assertIn('"PC" ROW', text)
+
+    def test_pair_pc_says_so_when_no_new_pc_was_paired(self):
+        _launcher, settings = self.streaming()
+        for before, after in (([self.HOST], [self.HOST]), ([], []), ([self.HOST], [])):
+            with self.subTest(before=before, after=after):
+                self.pair(settings, before, after)
+                self.assertEqual(
+                    settings.message.call_args.args[1], "NO NEW GAMING PC WAS PAIRED. NOTHING WAS CHANGED."
+                )
+
+    def test_pair_pc_counts_a_first_pc_in_the_singular(self):
+        _launcher, settings = self.streaming()
+        self.pair(settings, [], [self.HOST])
+        self.assertIn("NOW KNOWS 1 GAMING PC.", settings.message.call_args.args[1])
+
+    def test_pair_pc_needs_a_network_and_moonlight_closed(self):
+        _launcher, settings = self.streaming()
+        wizard = self.pair(settings, [self.HOST], [self.HOST], link=False)
+        wizard.assert_not_called()
+        self.assertIn("NO NETWORK", settings.message.call_args.args[1])
+        wizard = self.pair(settings, [self.HOST], [self.HOST], running=True)
+        wizard.assert_not_called()
+        self.assertIn("CLOSE MOONLIGHT FIRST", settings.message.call_args.args[1])
+
+    def test_smoother_reports_the_old_and_new_bitrate(self):
+        _launcher, settings = self.streaming()
+        with mock.patch.object(self.module.stream, "lower_bitrate", return_value=(20000, 15000)) as lower:
+            settings.smoother()
+        self.assertEqual(lower.call_args.kwargs["run_dir"], self.module.RUN)
+        text = settings.message.call_args.args[1]
+        self.assertIn("20 MBPS -> 15 MBPS", text)
+        self.assertIn("OPTIMIZE STREAM SETTINGS", text)  # how to undo it
+        with mock.patch.object(self.module.stream, "lower_bitrate", return_value=(9000, 6500)):
+            settings.smoother()
+        self.assertIn("9 MBPS -> 6.5 MBPS", settings.message.call_args.args[1])
+
+    def test_smoother_at_the_floor_changes_nothing_and_suggests_a_cable(self):
+        _launcher, settings = self.streaming()
+        with mock.patch.object(self.module.stream, "lower_bitrate", return_value=(5000, None)):
+            settings.smoother()
+        text = settings.message.call_args.args[1]
+        self.assertIn("LOWEST USEFUL QUALITY (5 MBPS)", text)
+        self.assertIn("NETWORK CABLE", text)
+
+    def test_smoother_reports_a_refusal_or_write_failure(self):
+        _launcher, settings = self.streaming()
+        for error in (stream.StreamError("close moonlight first"), PermissionError("denied")):
+            with self.subTest(error=error), mock.patch.object(self.module.stream, "lower_bitrate", side_effect=error):
+                settings.smoother()
+            self.assertIn("NOT CHANGED: ", settings.message.call_args.args[1])
 
 
 if __name__ == "__main__":

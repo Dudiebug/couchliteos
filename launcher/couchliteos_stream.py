@@ -785,6 +785,60 @@ def apply_plan(plan: Plan, conf: pathlib.Path = MOONLIGHT_CONF, run_dir: pathlib
         _atomic_write(conf, updated.encode("latin-1"), 0o644)
 
 
+SMOOTHER_FLOOR = 5000  # kbps; below this the picture gets worse than the stutter it cures
+
+
+def general_values(text: str) -> dict[str, str]:
+    """key=value pairs of Moonlight.conf's [General] section."""
+    values: dict[str, str] = {}
+    in_general = False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_general = line[1:-1].strip() == "General"
+        elif in_general and "=" in line:
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def current_bitrate(values: dict[str, str]) -> int:
+    """The bitrate Moonlight streams at: the saved one, else its default for the saved mode."""
+    def number(key: str, default: int) -> int:
+        try:
+            value = int(values.get(key, ""))
+        except ValueError:
+            return default
+        return value if value > 0 else default
+
+    bitrate = number("bitrate", 0)
+    if MIN_BITRATE <= bitrate <= MAX_BITRATE:
+        return bitrate
+    return default_bitrate(number("width", 1920), number("height", 1080), number("fps", 60))
+
+
+def step_down(kbps: int) -> int | None:
+    """A quarter less, rounded down to 0.5 Mbps, never below the floor; None when already there."""
+    if kbps <= SMOOTHER_FLOOR:
+        return None
+    return max(SMOOTHER_FLOOR, kbps * 3 // 4 // 500 * 500)
+
+
+def lower_bitrate(conf: pathlib.Path = MOONLIGHT_CONF, run_dir: pathlib.Path = RUN) -> tuple[int, int | None]:
+    """Lower only Moonlight's bitrate one step: (old, new), new None when already at the floor."""
+    if moonlight_running(run_dir):
+        raise StreamError("CLOSE MOONLIGHT FIRST; IT WOULD OVERWRITE THE NEW SETTINGS WHEN IT EXITS")
+    try:
+        original = conf.read_bytes().decode("latin-1")
+    except FileNotFoundError:
+        original = ""
+    old = current_bitrate(general_values(original))
+    new = step_down(old)
+    if new is not None:
+        _atomic_write(conf, rewrite_conf(original, {"bitrate": str(new)}).encode("latin-1"), 0o644)
+    return old, new
+
+
 def main(argv: list[str]) -> int:
     """`take-request [PATH]`: print the validated host and app for couchliteos-run-app."""
     if argv[:1] != ["take-request"] or len(argv) > 2:
