@@ -358,6 +358,21 @@ Applications and acceleration:
 - [ ] TYPE and TYPE + ENTER inject expected text after focus returns
 - [ ] Record `vainfo`, `vulkaninfo --summary`, `wpctl status`, and `aplay -l`
 
+Couch features (v0.2.x):
+
+- [ ] FIND GAMING PCS lists a Sunshine PC on Ethernet and on Wi-Fi, and PIN pairing from the list works
+- [ ] FIND GAMING PCS with the PC asleep explains it and WAKE PC wakes it
+- [ ] STREAM CHECK gives a plausible verdict on Ethernet and on Wi-Fi, and B cancels it
+- [ ] STREAM CHECK against a Windows PC that drops ping still measures (Sunshine port)
+- [ ] Opening Moonlight wakes a sleeping PC; Home during the wait returns to the launcher
+- [ ] Auto-stream after boot and after resume (15 s countdown) reaches the chosen PC
+- [ ] Hold Guide / PS 5 s sleeps from the launcher and does nothing mid-game; a controller or keyboard wakes it
+- [ ] SLEEP on a PC with no wake source shows the power-button warning
+- [ ] HDMI-CEC: the TV remote drives the launcher and a running app; sleep puts the TV in standby only when CouchLiteOS is the active input
+- [ ] SCREEN EDGES 2-6 % shows the whole border on a TV that crops; TEXT SIZE LARGER stays readable at 720p
+- [ ] Changing SCREEN EDGES four times in a minute: the launcher always comes back
+- [ ] An installed system hides the boot menu after a good boot and shows it for 5 s after a failed one
+
 Support export:
 
 - [ ] Export to a second writable removable USB and verify exactly one readable archive
