@@ -667,6 +667,13 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(self.power_request("suspend", [27])[0], [])
         self.assertEqual(self.power_request("suspend", [down, 10])[0], ["suspend"])
 
+    def test_sleep_warns_when_nothing_connected_can_wake_the_pc(self):
+        for sources, warned in ((["USB KEYBOARD"], False), ([], True)):
+            self.wake_sources.return_value = sources
+            with mock.patch.object(self.module.confirmation, "confirm", return_value=False) as ask:
+                self.power_request("suspend", [])
+            self.assertEqual("POWER BUTTON" in ask.call_args.args[1], warned, sources)
+
     def test_sleep_on_a_pc_that_cannot_sleep_explains_instead_of_asking(self):
         self.can_suspend.return_value = False
         with mock.patch.object(self.module.confirmation, "confirm") as ask:
@@ -825,6 +832,15 @@ class LauncherTest(unittest.TestCase):
             self.assertFalse(home.exists())
         focus.assert_called_once_with()
         self.assertIn("RESUMED", launcher.status)
+
+    def test_on_resume_gives_the_tv_and_pad_time_before_auto_streaming(self):
+        launcher = self.launcher()
+        launcher.autostream = mock.Mock(return_value=False)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "focus_launcher"):
+            launcher.on_resume()
+        launcher.autostream.assert_called_once_with(countdown=15)
 
     def test_on_resume_puts_the_cursor_on_the_first_menu_item_not_on_sleep(self):
         launcher = self.launcher()
@@ -1240,7 +1256,7 @@ class LauncherTest(unittest.TestCase):
             ):
                 self.assertTrue(launcher.launch_and_wait("tailscale"))
         self.assertEqual(len(polls), 3)
-        launcher.launch_app.assert_called_once_with(app)
+        launcher.launch_app.assert_called_once_with(app, wake=False)
 
     def test_launch_and_wait_reports_an_unknown_or_failed_application(self):
         launcher = self.launcher()

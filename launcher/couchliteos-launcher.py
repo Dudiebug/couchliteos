@@ -92,6 +92,9 @@ TEXT_SIZE_HELP = "SMALLER FITS MORE ON THE SCREEN  ·  LARGER IS EASIER TO READ"
 SCREEN_CHOICE_HINT = "A / CROSS PICKS  ·  B / CIRCLE GOES BACK"
 SCREEN_RESTART_MESSAGE = "RESTARTING THE LAUNCHER TO APPLY. THIS TAKES A FEW SECONDS."
 SCREEN_NEXT_START_MESSAGE = "SAVED. IT APPLIES THE NEXT TIME COUCHLITEOS STARTS."
+# systemd gives up on the launcher after 5 starts a minute (StartLimitBurst), so screen-setting
+# restarts stop at 3 a minute; the marker sends the restarted launcher back to DISPLAY.
+SCREEN_RESTARTS_PER_MINUTE = 3
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
@@ -411,6 +414,7 @@ class Launcher:
         self.last_status_update = time.monotonic()
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
+        self.pending_stream: tuple[str, str] | None = None  # (target, app) while an auto-stream starts
         # Checked on every start (the USB stick moves between PCs) and again after a resume.
         self.can_sleep = power.can_suspend()
         self.controllers = controllers.Monitor()
@@ -545,7 +549,7 @@ class Launcher:
         self.status = "RESUMED FROM SLEEP"
         self.last_status_update = time.monotonic()
         focus_launcher()
-        self.autostream()  # the chosen PC streams again after a wake-up; no-op unless Settings > STREAMING asks
+        self.autostream(countdown=15)  # the chosen PC streams again after a wake-up; no-op unless Settings > STREAMING asks
 
     def draw(self) -> None:
         self.screen.erase()
@@ -682,23 +686,27 @@ class Launcher:
             key = self.screen.getch()
             if HOME_REQUEST.exists():  # the Guide/Home button leaves a file instead of a key
                 HOME_REQUEST.unlink(missing_ok=True)
+                went_home.append(True)
                 return True
             return self.pressed(key)
 
+        went_home: list[bool] = []
         self.screen.timeout(100)
         try:
-            return stream.wake_and_wait(host, force=force, tick=tick)
+            result = stream.wake_and_wait(host, force=force, tick=tick)
         finally:
             self.screen.timeout(1000)
+        return "home" if went_home and result == "cancelled" else result
 
     def wake_before_moonlight(self, app: apps.Application, auto: bool = False) -> bool:
         """Wake the gaming PC if it is asleep; False when Moonlight must not start.
 
         A button during the wait starts Moonlight at once, except for an auto-stream (`auto`),
         where it cancels and leaves the user in the launcher.
-        A failure to wake never blocks the launch. But a PC that stayed silent for the whole
-        wait, or that is on while Sunshine is not answering, would only make Moonlight fail
-        (or stream to the wrong place), so that is explained and offered WAKE PC instead."""
+        The Home button always cancels. A failure to wake never blocks a launch by hand: Moonlight
+        opens with the reason on the status line. An auto-stream to a PC that stayed silent for
+        the whole wait, or that is on while Sunshine is not answering, would only fail, so that
+        is explained and offered WAKE PC instead."""
         try:
             host = stream.default_host(stream.load_hosts(), stream.load_settings())
             if host is None or not host.mac:
@@ -714,9 +722,16 @@ class Launcher:
                 self.screen.timeout(1000)
         except (OSError, ValueError, curses.error, subprocess.SubprocessError):
             return True
-        if auto and result == "cancelled":
-            self.status = "AUTO-STREAM CANCELLED"
+        if result == "home" or (auto and result == "cancelled"):
+            self.status = "AUTO-STREAM CANCELLED" if auto else "MOONLIGHT NOT STARTED"
             return False
+        if result in ("timeout", "awake") and not auto:
+            # Opened by hand: Moonlight still lists the PC and can wake it or pick another one.
+            self.draw_wait(StreamingSettings.WAKE_RESULTS[result].format(host.label), "STARTING MOONLIGHT ANYWAY", "")
+            self.screen.timeout(2000)
+            self.screen.getch()
+            self.screen.timeout(1000)
+            return True
         if result in ("timeout", "awake"):
             # A Moonlight failure screen carries WAKE PC (register_failure_actions); TRY AGAIN waits again.
             message = StreamingSettings.WAKE_RESULTS[result].format(host.label)
@@ -780,6 +795,7 @@ class Launcher:
             self.status = "MOONLIGHT IS UNAVAILABLE"
             return False
         request = RUN / stream.STREAM_REQUEST.name
+        self.pending_stream = (host.target, config.app)
         try:
             stream.write_stream_request(host.target, config.app, request)
         except (OSError, ValueError) as error:
@@ -788,6 +804,7 @@ class Launcher:
         try:
             return self.launch_app(app, auto=True)
         finally:
+            self.pending_stream = None
             request.unlink(missing_ok=True)
 
     @staticmethod
@@ -801,9 +818,10 @@ class Launcher:
             return ""
         return lines[0][:240] if lines else ""
 
-    def launch_app(self, app: apps.Application, *, quiet: bool = False, auto: bool = False) -> bool:
+    def launch_app(self, app: apps.Application, *, quiet: bool = False, auto: bool = False, wake: bool = True) -> bool:
         """Start an application. `quiet` skips the failure dialog for a hidden one-off
-        application whose caller explains a failed start in its own words."""
+        application whose caller explains a failed start in its own words. `auto` marks an
+        auto-stream; `wake=False` skips waking the default PC (pairing may be for another one)."""
         label, app_id = app.name, app.status_id
         ready = RUN / f"{app_id}-ready"
         if ready.exists():
@@ -827,8 +845,16 @@ class Launcher:
         state = RUN / f"{app_id}-status"
         if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
             return False
-        if app.id == "moonlight" and not self.wake_before_moonlight(app, auto):
+        if app.id == "moonlight" and wake and not self.wake_before_moonlight(app, auto):
             return False
+        if auto and self.pending_stream is not None:
+            # Written again after the wake wait (it can outlast REQUEST_MAX_AGE) and before each
+            # TRY AGAIN: the Moonlight start consumes the request.
+            try:
+                stream.write_stream_request(*self.pending_stream, RUN / stream.STREAM_REQUEST.name)
+            except (OSError, ValueError) as error:
+                self.status = f"AUTO-STREAM NOT STARTED: {error}".upper()
+                return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
         set_launcher_focus(False)  # the starting app takes the controller
@@ -864,7 +890,7 @@ class Launcher:
                     # longer than that means retries have not recovered startup.
                     if now - failure_since >= 2.75:
                         if not quiet and self.show_launch_failure(label, app_state.removeprefix("failed:").strip(), app=app) == "retry":
-                            return self.launch_app(app)
+                            return self.launch_app(app, quiet=quiet, auto=auto, wake=wake)
                         self.status = f"{label} FAILED TO START"
                         return False
                 else:
@@ -890,7 +916,7 @@ class Launcher:
             else "THE APPLICATION DID NOT BECOME READY BEFORE THE STARTUP TIMEOUT"
         )
         if not quiet and self.show_launch_failure(label, message, app=app) == "retry":
-            return self.launch_app(app)
+            return self.launch_app(app, quiet=quiet, auto=auto, wake=wake)
         self.status = f"{label} START TIMED OUT"
         return False
 
@@ -1017,7 +1043,9 @@ class Launcher:
                 self.request(action)
         elif action == "suspend":
             # A PC that cannot sleep gets the explanation from request_sleep, not a question.
-            if not self.can_sleep or confirmation.confirm(self.screen, "SLEEP NOW?"):
+            # Without a wake source (Settings > SLEEP lists them) only the power button wakes it.
+            question = "SLEEP NOW?" if self.can_wake else "SLEEP NOW? NOTHING CONNECTED CAN WAKE THIS PC: USE ITS POWER BUTTON TO WAKE IT."
+            if not self.can_sleep or confirmation.confirm(self.screen, question):
                 self.request_sleep()
 
     def setup_wizard(self, *, force: bool = False) -> None:
@@ -1068,7 +1096,8 @@ class Launcher:
         for one-off commands that have no window of their own to close.
         """
         app = self.app_by_id(app_id)
-        options = {"quiet": True} if quiet else {}
+        # Setup and pairing: never wake the default PC first, the one being paired may be another.
+        options = {"quiet": True, "wake": False} if quiet else {"wake": False}
         if app is None or not self.launch_app(app, **options):
             return False
         ready = RUN / f"{app.status_id}-ready"
@@ -1138,10 +1167,14 @@ class Launcher:
             self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
             self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
-        whatsnew.show_once(self.screen, read_key)  # before the wizard: only upgraders see it
+        whatsnew.show_once(self.screen, lambda: read_key(self.screen))  # before the wizard: only upgraders see it
         self.setup_wizard()
         controls.show_once(self.screen)
-        self.autostream()
+        if (RUN / "reopen-display").exists():  # restarted to apply SCREEN EDGES / TEXT SIZE
+            (RUN / "reopen-display").unlink(missing_ok=True)
+            Settings(self.screen, self).run_display()
+        else:
+            self.autostream()
         self.draw()
         while True:
             key = read_key(self.screen)
@@ -1628,6 +1661,16 @@ class Settings:
         except (OSError, ValueError) as error:
             return f"NOT SAVED: {error}".upper()
         if self.launcher.any_app_running():
+            return SCREEN_NEXT_START_MESSAGE
+        log = RUN / "screen-restarts"
+        try:
+            now = time.time()
+            recent = [stamp for stamp in map(float, log.read_text().split()) if now - 60 < stamp <= now] if log.exists() else []
+            if len(recent) >= SCREEN_RESTARTS_PER_MINUTE:
+                return SCREEN_NEXT_START_MESSAGE
+            log.write_text("".join(f"{stamp}\n" for stamp in [*recent, now]))
+            (RUN / "reopen-display").touch()
+        except (OSError, ValueError):
             return SCREEN_NEXT_START_MESSAGE
         self.status = SCREEN_RESTART_MESSAGE
         self.draw("DISPLAY SETTINGS", rows, selected)
@@ -2500,6 +2543,7 @@ class StreamingSettings(RemoteDesktopSettings):
         "awake": "{} IS ON BUT SUNSHINE IS NOT ANSWERING. START SUNSHINE ON THE PC, THEN TRY AGAIN.",
         "timeout": f"{{}} DID NOT ANSWER WITHIN {int(stream.WAKE_TIMEOUT)} SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
         "cancelled": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
+        "home": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
         "sent": "WAKE REQUEST SENT TO {}. IT CAN TAKE A MINUTE TO START.",
         "noaddr": "WAKE REQUEST NOT SENT: NO ADDRESS IS KNOWN FOR {}.",
         "nonetwork": "NO NETWORK. CONNECT ETHERNET OR WI-FI, THEN TRY AGAIN.",

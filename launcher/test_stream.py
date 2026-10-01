@@ -1037,16 +1037,54 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
                 started = launcher.launch_app(self.app(), **kwargs)
         return launcher, started
 
-    def test_moonlight_is_not_started_after_a_wake_timeout_or_an_unanswering_sunshine(self):
+    def test_moonlight_opened_by_hand_starts_anyway_after_a_wake_timeout_or_an_unanswering_sunshine(self):
+        # Moonlight can still wake the PC or stream from another one; only an auto-stream is stopped.
         for result, reason in (("timeout", "90 SECONDS"), ("awake", "SUNSHINE IS NOT ANSWERING")):
             launcher, started = self.launch_after(result)
-            self.assertFalse(started, result)
-            launcher.request.assert_not_called()
-            args, kwargs = launcher.show_launch_failure.call_args
-            self.assertIn(reason, args[1])
-            self.assertIn("GAMING-PC", args[1])
-            # WAKE PC is on every Moonlight failure screen (register_failure_actions).
-            self.assertEqual(kwargs.get("app").id, "moonlight", "the dialog offers WAKE PC again")
+            self.assertTrue(started, result)
+            launcher.request.assert_called_once_with("start-moonlight")
+            launcher.show_launch_failure.assert_not_called()
+            self.assertIn(reason, launcher.screen.text())
+            self.assertIn("STARTING MOONLIGHT ANYWAY", launcher.screen.text())
+
+    def test_the_home_button_during_the_wake_wait_does_not_start_moonlight(self):
+        launcher, started = self.launch_after("home")
+        self.assertFalse(started)
+        launcher.request.assert_not_called()
+        self.assertEqual(launcher.status, "MOONLIGHT NOT STARTED")
+
+    def test_setup_and_pairing_launches_never_wake_the_default_pc(self):
+        launcher = self.launcher()
+        launcher.app_by_id = mock.Mock(return_value=self.app())
+        launcher.launch_app = mock.Mock(return_value=False)
+        for quiet in (False, True):
+            launcher.launch_and_wait("moonlight", quiet=quiet)
+            self.assertIs(launcher.launch_app.call_args.kwargs.get("wake"), False, quiet)
+
+    def test_try_again_after_a_failed_auto_stream_keeps_streaming_the_chosen_pc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.launcher()
+            launcher.wake_host = mock.Mock(return_value="up")
+            launcher.show_launch_failure = mock.Mock(return_value="retry")
+            launcher.pending_stream = ("192.168.1.50", "Steam Big Picture")
+            seen = []
+
+            def request(name):
+                path = run / "moonlight-stream.request"
+                seen.append(path.read_text() if path.exists() else None)
+                path.unlink(missing_ok=True)  # the Moonlight start consumes it
+                if len(seen) == 1:
+                    (run / "moonlight-status").write_text("failed: no route\n")
+                else:
+                    (run / "moonlight-ready").touch()
+
+            launcher.request = mock.Mock(side_effect=request)
+            clock = (i * 0.25 for i in itertools.count())
+            with self.world(run), mock.patch.object(self.module.time, "monotonic", side_effect=lambda: next(clock)):
+                self.assertTrue(launcher.launch_app(self.app(), auto=True))
+        self.assertEqual(seen, ["192.168.1.50\nSteam Big Picture\n"] * 2)
+        self.assertIn("CANCEL", launcher.wake_host.call_args.kwargs["hint"], "the retry is still an auto-stream")
 
     def test_moonlight_starts_when_the_pc_is_up_or_the_wait_was_skipped(self):
         for result in ("up", "woke", "noaddr", "sent", "cancelled", "nomac", "nonetwork"):
@@ -1127,9 +1165,10 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
                 return "cancelled"
 
             with self.world(run), mock.patch.object(self.module.stream, "wake_and_wait", side_effect=fake_wake):
-                launcher.wake_host(self.HOST)
+                result = launcher.wake_host(self.HOST)
             self.assertFalse((run / "home.request").exists())
         self.assertEqual(seen, [True])
+        self.assertEqual(result, "home", "Home means go Home, not start Moonlight without waiting")
 
     def test_wake_host_keeps_waiting_when_no_key_is_pressed(self):
         launcher = self.launcher()
@@ -1459,7 +1498,7 @@ class AutostreamTest(LauncherTestCase):
         launcher = self.launcher()
         calls = []
         launcher.refresh_sleep_support = mock.Mock(side_effect=lambda: calls.append("sleep-support"))
-        launcher.autostream = mock.Mock(side_effect=lambda: calls.append("autostream"))
+        launcher.autostream = mock.Mock(side_effect=lambda **_kwargs: calls.append("autostream"))
         with tempfile.TemporaryDirectory() as directory, self.world(pathlib.Path(directory)), mock.patch.object(
             self.module, "focus_launcher", side_effect=lambda: calls.append("focus")
         ):

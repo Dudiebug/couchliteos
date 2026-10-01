@@ -154,7 +154,8 @@ class FootHooksTest(unittest.TestCase):
         small, _ = self.choose(1920, 1080, screenfit.Settings(text="smaller"))
         auto, _ = self.choose(1920, 1080, screenfit.Settings(text="auto"))
         large, _ = self.choose(1920, 1080, screenfit.Settings(text="larger"))
-        self.assertEqual((small, auto, large), (19, 24, 30))
+        # 30 would leave fewer than 24 rows at 1080p; LARGER stops at the biggest 80x24 font.
+        self.assertEqual((small, auto, large), (19, 24, 28))
 
     def test_text_scale_clamped_to_foot_limits(self):
         tiny, _ = self.choose(200, 100, screenfit.Settings(text="smaller"))
@@ -166,8 +167,10 @@ class FootHooksTest(unittest.TestCase):
         for width, height in RESOLUTIONS:
             size, _pad = self.choose(width, height, screenfit.Settings(text="larger"))
             columns, rows = foot.grid(width, height, size)
-            self.assertGreaterEqual(columns, 70, (width, height))
-            self.assertGreaterEqual(rows, 20, (width, height))
+            self.assertGreaterEqual(columns, 80, (width, height))
+            self.assertGreaterEqual(rows, 24, (width, height))
+            auto, _pad = self.choose(width, height, screenfit.Settings(text="auto"))
+            self.assertGreaterEqual(size, auto, (width, height))
 
     def test_env_override_still_wins(self):
         size, pad = self.choose(1920, 1080, screenfit.Settings(text="larger"), {"COUCHLITEOS_FONT_SIZE": "30"})
@@ -354,6 +357,24 @@ class LauncherRowsTest(unittest.TestCase):
         self.assertEqual(stop.exception.code, 0)
         self.assertEqual(screenfit.load(), screenfit.Settings(edges=4))
         self.assertIn("RESTARTING THE LAUNCHER TO APPLY. THIS TAKES A FEW SECONDS.", self.shown(screen))
+
+    def test_the_restarted_launcher_reopens_display_instead_of_auto_streaming(self):
+        settings, _screen = self.settings(self.pick(3, 2))
+        with self.assertRaises(SystemExit):
+            settings.run_display()
+        self.assertTrue((self.run_dir / "reopen-display").exists())
+
+    def test_a_fourth_restart_within_a_minute_waits_for_the_next_start(self):
+        # systemd stops restarting the launcher after 5 starts a minute and the TV would go dark.
+        now = self.module.time.time()
+        (self.run_dir / "screen-restarts").write_text(f"{now - 100}\n{now - 30}\n{now - 20}\n")
+        settings, _screen = self.settings(self.pick(3, 2))
+        with self.assertRaises(SystemExit):  # the one 100 s ago no longer counts
+            settings.run_display()
+        settings, screen = self.settings(self.pick(3, 1) + [27])
+        settings.run_display()  # must NOT exit
+        self.assertEqual(screenfit.load().edges, 6, "still saved")
+        self.assertIn("APPLIES THE NEXT TIME", self.shown(screen))
 
     def test_an_app_running_means_save_and_apply_next_start(self):
         for ready in ("moonlight-ready", "chiaki-ng-ready", "rdp-ready", "abc123-ready"):

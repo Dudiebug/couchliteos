@@ -29,6 +29,7 @@ MIN_SIZE = 8
 MAX_SIZE = 96
 ROW_TARGET = 28
 MIN_COLUMNS = 80
+MIN_ROWS = 24  # TEXT SIZE LARGER never shrinks the launcher below 80x24
 BASE_PAD = 12  # foot.ini has pad=12x12
 PAD = 2 * BASE_PAD
 # DejaVu Sans Mono at foot's 96 dpi: a cell is about 0.80 x 1.55 px per point of font size.
@@ -49,6 +50,13 @@ def font_size(width: int, height: int, extra: tuple[int, int] = (0, 0)) -> int:
     by_rows = (height - PAD - 2 * extra[1]) / (ROW_TARGET * CELL_HEIGHT)
     by_columns = (width - PAD - 2 * extra[0]) / (MIN_COLUMNS * CELL_WIDTH)
     return max(MIN_SIZE, min(MAX_SIZE, int(min(by_rows, by_columns))))
+
+
+def largest_size(width: int, height: int, extra: tuple[int, int] = (0, 0)) -> int:
+    """The biggest font that still leaves MIN_COLUMNS x MIN_ROWS cells."""
+    by_rows = (height - PAD - 2 * extra[1]) / (MIN_ROWS * CELL_HEIGHT)
+    by_columns = (width - PAD - 2 * extra[0]) / (MIN_COLUMNS * CELL_WIDTH)
+    return max(MIN_SIZE, int(min(by_rows, by_columns)))
 
 
 def target_resolution(outputs: list[display.Output], saved: dict[str, str]) -> tuple[int, int] | None:
@@ -131,7 +139,7 @@ def choose(
     if size is None:
         size = font_size(*resolution, extra)
         if settings:
-            size = scaled(size, settings)
+            size = min(scaled(size, settings), max(size, largest_size(*resolution, extra)))
         print(f"couchliteos-foot: {resolution[0]}x{resolution[1]} -> font size {size}", file=sys.stderr)
     if pad:
         print(f"couchliteos-foot: screen edges -> pad {pad[0]}x{pad[1]}", file=sys.stderr)

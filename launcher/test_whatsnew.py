@@ -315,7 +315,12 @@ class LauncherHookTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "stop"):
                 launcher.run()
         self.assertEqual(calls[1:], ["wizard", "autostream"])
-        self.assertEqual(calls[0], ("whatsnew", (launcher.screen, self.module.read_key)))
+        screen, reader = calls[0][1]
+        self.assertEqual((calls[0][0], screen), ("whatsnew", launcher.screen))
+        # show_once calls its reader with no arguments; it must still read the launcher's screen.
+        with mock.patch.object(self.module, "read_key", return_value=27) as read_key:
+            self.assertEqual(reader(), 27)
+        read_key.assert_called_once_with(launcher.screen)
 
 
 if __name__ == "__main__":
