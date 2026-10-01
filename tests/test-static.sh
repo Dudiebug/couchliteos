@@ -426,6 +426,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
   launcher/couchliteos_pcstatus.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
+  launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py \
   scripts/couchliteos-rdp-secret \
   scripts/couchliteos-host-address scripts/couchliteos-support-export \
   scripts/couchliteos-bluetoothd scripts/couchliteos-hwdetect
@@ -705,6 +706,35 @@ refute rg -n 'Authorization|Cookie|machine-id' launcher/couchliteos_update.py
 # Hardware gating: the check is skipped without a default route, before anything is recorded.
 rg -q '/proc/net/route' launcher/couchliteos_update.py
 rg -q 'if not self.online\(\)' launcher/couchliteos_update.py
+
+# Software update: Settings > SOFTWARE UPDATE only asks; a root service copies the new release over the old.
+rg -q '^PathExists=/run/couchliteos/update-install$' services/couchliteos-update.path
+rg -q '^Unit=couchliteos-update.service$' services/couchliteos-update.path
+rg -q '^WantedBy=graphical.target$' services/couchliteos-update.path
+# The request goes first, or the path unit would start another update the moment this one ends.
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/update-install$' services/couchliteos-update.service
+rg -Fq 'ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Installing a CouchLiteOS update" /usr/libexec/couchliteos-updater run' \
+  services/couchliteos-update.service
+rg -q '^User=root$' services/couchliteos-update.service
+refute rg -q '^Condition|^ExecCondition' services/couchliteos-update.service
+rg -q '^systemctl enable couchliteos-update.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^rsync$' config/live-build/package-lists/couchliteos.list.chroot
+rg -Fq '"$ROOT/launcher/couchliteos_updater.py" "$CHROOT/usr/libexec/couchliteos-updater"' build/configure.sh
+rg -q -- '-m 0755 "\$ROOT/launcher/couchliteos_updater.py"' build/configure.sh
+rg -Fq '"$CHROOT/usr/libexec/couchliteos_softwareupdate.py"' build/configure.sh
+rg -q '^import couchliteos_softwareupdate as softwareupdate' launcher/couchliteos-launcher.py
+rg -q '"SOFTWARE UPDATE"' launcher/couchliteos-launcher.py
+rg -q 'test_updater.py test_softwareupdate.py' launcher/Makefile
+# The QEMU install smoke proves it: update the installed disk from the ISO, boot it, check what must survive.
+rg -q '^  update-apply\)$' scripts/couchliteos-qemu-smoke
+rg -q '^  update-check\)$' scripts/couchliteos-qemu-smoke
+rg -Fq 'couchliteos-updater apply-iso /dev/sr0 --force --no-reboot' scripts/couchliteos-qemu-smoke
+rg -q 'echo COUCHLITEOS_SMOKE_UPDATE_APPLIED$' scripts/couchliteos-qemu-smoke
+rg -q 'echo COUCHLITEOS_SMOKE_UPDATE_READY$' scripts/couchliteos-qemu-smoke
+rg -q '^boot_and_wait update-apply COUCHLITEOS_SMOKE_UPDATE_APPLIED$' tests/qemu-install-smoke.sh
+rg -q '^boot_and_wait update-check COUCHLITEOS_SMOKE_UPDATE_READY$' tests/qemu-install-smoke.sh
+# The updater is plain standard-library Python with no shell strings and no network credentials.
+refute rg -n 'shell=True|os\.system|^import requests|Authorization|Cookie' launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh
