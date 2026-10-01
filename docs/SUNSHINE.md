@@ -3,8 +3,14 @@
 1. Install and configure Sunshine on the gaming PC (the reference host is a
    Ryzen 5 7600X / RTX 5070 Linux PC) using Sunshine's official documentation.
 2. Keep the host and appliance on wired gigabit Ethernet where possible.
-3. Start Moonlight, add the host by name or address, and complete the PIN on the
-   Sunshine web UI. The host address is never built into CouchLiteOS. On a live
+3. Pair from the setup wizard or SETTINGS > STREAMING > PAIR A GAMING PC. FIND
+   GAMING PCS searches the local network for Sunshine (or GeForce Experience) and
+   lists what answers; pick yours and type the PIN it shows on the Sunshine web UI.
+   If the PC is not listed it is off or asleep, Sunshine is not running, or it is on
+   another network; ENTER ADDRESS MANUALLY works with its name or address (Moonlight
+   itself can also add the host). The host address is never built into
+   CouchLiteOS. The search is one mDNS question for `_nvstream._tcp.local`; answers
+   come back by unicast from UDP port 5353, which the default firewall allows. On a live
    USB without persistence the pairing is forgotten at power-off; install
    CouchLiteOS or add a persistence stick to keep it (see
    [INSTALL.md](INSTALL.md)).
