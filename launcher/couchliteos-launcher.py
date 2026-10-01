@@ -27,6 +27,7 @@ import couchliteos_power as power
 import couchliteos_rdp as rdp
 import couchliteos_setup as setup
 import couchliteos_stream as stream
+import couchliteos_streamcheck as streamcheck
 import couchliteos_cec as cec
 import couchliteos_controllers as controllers
 import couchliteos_pcstatus as pcstatus
@@ -2524,6 +2525,7 @@ class StreamingSettings(RemoteDesktopSettings):
             wake,
             "OPTIMIZE STREAM SETTINGS",
             "PAIR ANOTHER GAMING PC" if hosts else "PAIR A GAMING PC",
+            streamcheck.TITLE,
             SMOOTHER_ROW,
             "BACK",
         ]
@@ -2550,6 +2552,8 @@ class StreamingSettings(RemoteDesktopSettings):
                 self.optimize()
             elif choice == 5:
                 self.pair_pc()
+            elif choice == 6:
+                self.stream_check()
             else:
                 self.smoother()
 
@@ -2607,8 +2611,11 @@ class StreamingSettings(RemoteDesktopSettings):
             self.message("WAKE PC", stream.PAIR_FIRST)
             return
         host = stream.default_host(hosts, config) or self.pick_host(hosts, "WAKE WHICH PC?")
-        if host is None:
-            return
+        if host is not None:
+            self.wake(host)
+
+    def wake(self, host: stream.Host) -> None:
+        """Wake `host` (WAKE PC, and STREAM CHECK's button) and say how it went."""
         blocked = stream.wake_block(host)
         if blocked:
             self.message("WAKE PC", blocked)
@@ -2619,6 +2626,42 @@ class StreamingSettings(RemoteDesktopSettings):
             self.message("WAKE PC", f"WAKE FAILED: {error}".upper())
             return
         self.message("WAKE PC", self.WAKE_RESULTS.get(result, "{}").format(host.label))
+
+    def stream_check(self) -> None:
+        """Settings > STREAMING > STREAM CHECK: is the network path to the gaming PC good enough, and what to change.
+
+        B cancels the check. A PC that does not answer offers WAKE PC (the wake flow above) when a MAC is
+        known, and the check runs again after it."""
+        title = streamcheck.TITLE
+        hosts, config = stream.load_hosts(), stream.load_settings()
+        host = stream.default_host(hosts, config) if hosts else None
+        if hosts and host is None:
+            host = self.pick_host(hosts, "CHECK WHICH PC?")
+            if host is None:
+                return
+        problem = streamcheck.unavailable(hosts, host, stream.link_up())
+        if problem:
+            self.message(title, problem)
+            return
+
+        def home_pressed() -> bool:  # the Guide/Home button leaves a file instead of a key
+            if HOME_REQUEST.exists():
+                HOME_REQUEST.unlink(missing_ok=True)
+                return True
+            return False
+
+        while True:
+            runner = streamcheck.Runner(host)
+            if not streamcheck.wait(self.screen, runner, read_key, home_pressed):
+                return
+            if runner.result is None:
+                self.message(title, streamcheck.CHECK_FAILED)
+                return
+            choice = streamcheck.show_result(self.screen, runner.result, read_key)
+            if choice == streamcheck.WAKE:
+                self.wake(host)
+            elif choice != streamcheck.AGAIN:
+                return
 
     def optimize(self) -> None:
         title = "OPTIMIZE STREAM SETTINGS"

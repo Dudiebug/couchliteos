@@ -1734,15 +1734,17 @@ class StreamingSettingsTest(LauncherTestCase):
             settings.optimize()
         self.assertIn("NOT CHANGED", settings.message.call_args.args[1])
 
-    def test_pairing_and_a_smoother_stream_sit_between_optimize_and_back(self):
+    def test_pairing_a_stream_check_and_a_smoother_stream_sit_between_optimize_and_back(self):
         _launcher, settings = self.streaming()
         rows = settings.rows([], stream.StreamSettings())
-        self.assertEqual(rows[4:], ["OPTIMIZE STREAM SETTINGS", "PAIR A GAMING PC", self.module.SMOOTHER_ROW, "BACK"])
+        self.assertEqual(
+            rows[4:], ["OPTIMIZE STREAM SETTINGS", "PAIR A GAMING PC", "STREAM CHECK", self.module.SMOOTHER_ROW, "BACK"]
+        )
         self.assertEqual(settings.rows([self.HOST], self.ON)[5], "PAIR ANOTHER GAMING PC")
         self.assertLessEqual(len(self.module.SMOOTHER_ROW), 76)
 
     def test_the_new_rows_open_their_screens(self):
-        for index, method in ((5, "pair_pc"), (6, "smoother")):
+        for index, method in ((5, "pair_pc"), (6, "stream_check"), (7, "smoother")):
             with self.subTest(method=method):
                 _launcher, settings = self.streaming()
                 settings.menu.side_effect = [index, None]
