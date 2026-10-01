@@ -350,6 +350,10 @@ class IdleGuard:
         self.timer.settings = settings
         self.timer.reset(self.clock())
 
+    def keep_awake(self) -> None:
+        """A screen that is busy on its own (an update downloading) counts as activity."""
+        self.timer.reset(self.clock())
+
     def _poll(self, screen) -> None:
         action = self.timer.poll(self.clock(), self.apps_running)
         if action == BLANK:

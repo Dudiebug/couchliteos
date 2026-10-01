@@ -32,6 +32,7 @@ import couchliteos_cec as cec
 import couchliteos_controllers as controllers
 import couchliteos_pcstatus as pcstatus
 import couchliteos_update as update
+import couchliteos_softwareupdate as softwareupdate
 import couchliteos_errors as errors
 import couchliteos_netmenu as netmenu
 import couchliteos_confirm as confirmation
@@ -69,6 +70,7 @@ SETTINGS_MENU = (
     "ACTIVE APPLICATIONS",
     "TAILSCALE",
     "TV CONTROL",
+    "SOFTWARE UPDATE",
     "CHECK FOR UPDATES",
     "CONTROLLER BUTTONS",
     "SETUP WIZARD",
@@ -1653,6 +1655,17 @@ class Settings:
         if text:
             self.status = text
 
+    def run_software_update(self) -> None:
+        def keep_awake() -> None:  # a long download must not blank or sleep the box
+            if IDLE_GUARD is not None:
+                IDLE_GUARD.keep_awake()
+
+        try:
+            softwareupdate.show(
+                self.screen, read_key=read_key, apps_running=self.launcher.apps_running, keep_awake=keep_awake)
+        except Exception:  # noqa: BLE001 - a broken screen must not take the launcher down
+            self.status = "COULD NOT OPEN SOFTWARE UPDATE"
+
     def activate(self) -> bool:
         actions = {
             "DISPLAY": self.run_display,
@@ -1666,6 +1679,7 @@ class Settings:
             "ACTIVE APPLICATIONS": self.launcher.active_applications,
             "TAILSCALE": lambda: self.launch("tailscale"),
             "TV CONTROL": self.run_tv_control,
+            "SOFTWARE UPDATE": self.run_software_update,
             "CHECK FOR UPDATES": self.toggle_updates,
             "CONTROLLER BUTTONS": lambda: controls.show(self.screen),
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),

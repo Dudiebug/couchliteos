@@ -195,6 +195,18 @@ class GuardTest(unittest.TestCase):
         # The next Enter is a normal key again.
         self.assertEqual(guard.filter(screen, 10), 10)
 
+    def test_a_screen_that_keeps_itself_awake_never_blanks_or_sleeps(self):
+        guard, screen = self.guard(), FakeScreen(self.clock, [(1.0, 10)])
+        for _ in range(10):  # ten minutes of an update downloading, each tick calling keep_awake
+            self.clock.now += MINUTE
+            guard.keep_awake()
+            self.assertEqual(guard.filter(screen, -1), -1)
+        self.assertEqual(screen.calls, [])
+        self.assertEqual(self.sleeps, 0)
+        self.clock.now += 5 * MINUTE  # and the normal timer starts again from the last tick
+        guard.filter(screen, -1)
+        self.assertEqual(screen.calls[:2], ["erase", "refresh"])
+
     def test_key_press_before_the_blank_deadline_just_restarts_the_timer(self):
         guard, screen = self.guard(), FakeScreen(self.clock)
         self.clock.now += 4 * MINUTE
