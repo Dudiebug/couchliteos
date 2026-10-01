@@ -594,8 +594,11 @@ rg -q 'nvidia-suspend.service nvidia-resume.service' config/profiles/nvidia/hook
 refute rg -qi 'nvidia-suspend|PreserveVideoMemory' config/profiles/general config/live-build overlay
 # Hardware gating: SLEEP is offered only where the PC can suspend, and it is re-checked at each step.
 rg -q '^SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"$' launcher/couchliteos-launcher.py
-rg -q 'power.effective_settings\(power.load_settings\(\), self.can_sleep\)' launcher/couchliteos-launcher.py
-rg -q '^    if power.can_suspend\(\):$' launcher/gamepad-nav.py
+rg -q 'power.effective_settings\(power.load_settings\(\), self.can_sleep, self.can_wake\)' launcher/couchliteos-launcher.py
+# Idle sleep also needs something that can wake the box again; the saved timeout is ignored, not erased, and the reason is shown.
+rg -q '^IDLE_SLEEP_NO_WAKE = \"IDLE SLEEP OFF: NO CONTROLLER CAN WAKE THIS PC\"$' launcher/couchliteos-launcher.py
+rg -q 'def effective_settings\(settings: Settings, suspend_ok: bool, wake_ok: bool = True\)' launcher/couchliteos_power.py
+rg -q '^    if not app_owns_pad\(\) and power.can_suspend\(\):$' launcher/gamepad-nav.py
 rg -q '^import couchliteos_power as power$' launcher/gamepad-nav.py
 # The root side refuses too: systemctl suspend fails when logind says the PC cannot, after the request is gone.
 rg -q 'Sleep verb .suspend. is not configured' services/couchliteos-suspend.service

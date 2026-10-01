@@ -1,6 +1,7 @@
 import errno
 import importlib.util
 import pathlib
+import shutil
 import sys
 import tempfile
 import types
@@ -309,20 +310,20 @@ class GamepadMappingTest(unittest.TestCase):
     def hold(self):
         return self.module.HomeHold()
 
-    def test_holding_home_for_three_seconds_requests_sleep_exactly_once(self):
+    def test_holding_home_for_five_seconds_requests_sleep_exactly_once(self):
         hold = self.hold()
         hold.feed(self.event(Codes.BTN_MODE, 1), 100.0)
-        self.assertFalse(hold.due(102.9))
-        self.assertTrue(hold.due(103.0))
-        self.assertFalse(hold.due(103.5))
-        hold.feed(self.event(Codes.BTN_MODE, 0), 104.0)
+        self.assertFalse(hold.due(104.9))
+        self.assertTrue(hold.due(105.0))
+        self.assertFalse(hold.due(105.5))
+        hold.feed(self.event(Codes.BTN_MODE, 0), 106.0)
         self.assertFalse(hold.due(110.0))
 
     def test_the_homepage_key_counts_as_home_for_the_hold_too(self):
         hold = self.hold()
         hold.feed(self.event(Codes.KEY_HOMEPAGE, 1), 40.0)
-        self.assertFalse(hold.due(42.9))
-        self.assertTrue(hold.due(43.0))
+        self.assertFalse(hold.due(44.9))
+        self.assertTrue(hold.due(45.0))
         hold.feed(self.event(Codes.KEY_HOMEPAGE, 1), 50.0)
         hold.feed(self.event(Codes.KEY_HOMEPAGE, 0), 51.0)
         self.assertFalse(hold.due(60.0))
@@ -338,8 +339,8 @@ class GamepadMappingTest(unittest.TestCase):
         hold.feed(self.event(Codes.KEY_HOME, 1), 50.0)
         for tick in range(1, 25):
             hold.feed(self.event(Codes.KEY_HOME, 2), 50.0 + tick * 0.1)
-        self.assertFalse(hold.due(52.9))
-        self.assertTrue(hold.due(53.0))
+        self.assertFalse(hold.due(54.9))
+        self.assertTrue(hold.due(55.0))
 
     def test_other_buttons_and_a_second_press_are_independent(self):
         hold = self.hold()
@@ -348,33 +349,39 @@ class GamepadMappingTest(unittest.TestCase):
         hold.feed(self.event(Codes.BTN_MODE, 1), 20.0)
         hold.feed(self.event(Codes.BTN_MODE, 0), 21.0)
         hold.feed(self.event(Codes.BTN_MODE, 1), 30.0)
-        self.assertFalse(hold.due(32.0))
-        self.assertTrue(hold.due(33.0))
+        self.assertFalse(hold.due(34.0))
+        self.assertTrue(hold.due(35.0))
 
     def test_timeout_shrinks_to_the_remaining_hold_and_reset_clears_it(self):
         hold = self.hold()
         self.assertEqual(hold.timeout(5.0), 1.0)
         hold.feed(self.event(Codes.BTN_MODE, 1), 5.0)
         self.assertAlmostEqual(hold.timeout(6.5), 1.0)
-        self.assertAlmostEqual(hold.timeout(7.5), 0.5)
-        self.assertEqual(hold.timeout(9.0), 0.0)
+        self.assertAlmostEqual(hold.timeout(9.5), 0.5)
+        self.assertEqual(hold.timeout(11.0), 0.0)
         hold.reset()
         self.assertEqual(hold.timeout(9.0), 1.0)
         self.assertFalse(hold.due(99.0))
 
-    def request_sleep_with(self, can_suspend):
-        import tempfile
-        from unittest import mock
+    def markers(self, directory, *, app=False, focus=False):
+        """Point the module at a temporary run directory; app/focus say which markers exist."""
+        run = pathlib.Path(directory)
+        if app:
+            (run / "app-active").touch()
+        if focus:
+            (run / "launcher-focus").touch()
+        for name, marker in (("SLEEP_REQUEST", "suspend"), ("APP_ACTIVE", "app-active"), ("LAUNCHER_FOCUS", "launcher-focus")):
+            patcher = mock.patch.object(self.module, name, run / marker, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return run
+
+    def request_sleep_with(self, can_suspend, *, app=False, focus=False):
         with tempfile.TemporaryDirectory() as directory:
-            request = pathlib.Path(directory) / 'suspend'
-            old, self.module.SLEEP_REQUEST = self.module.SLEEP_REQUEST, request
-            try:
-                with mock.patch.object(self.module.power, "can_suspend", return_value=can_suspend) as check:
-                    self.module.request_sleep()
-            finally:
-                self.module.SLEEP_REQUEST = old
-            check.assert_called_once_with()
-            return request.exists()
+            run = self.markers(directory, app=app, focus=focus)
+            with mock.patch.object(self.module.power, "can_suspend", return_value=can_suspend):
+                self.module.request_sleep()
+            return (run / "suspend").exists()
 
     def test_request_sleep_touches_the_suspend_request(self):
         self.assertTrue(self.request_sleep_with(True))
@@ -426,7 +433,7 @@ class GamepadMappingTest(unittest.TestCase):
                 module.watch_home()
         return home, sleep
 
-    def test_holding_guide_for_three_seconds_goes_home_then_asks_for_sleep_once(self):
+    def test_holding_guide_goes_home_then_asks_for_sleep_once(self):
         home, sleep = self.drive_watch_home([(100.0, (1,)), (101.5, ()), (103.2, ()), (110.0, ())])
         home.assert_called_once_with()
         sleep.assert_called_once_with()
@@ -619,6 +626,97 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertEqual(pressed, [(0.0, Codes.KEY_DOWN)])
         self.assertEqual(pads.devices, {})
         self.assertEqual(timeouts[-1], 1)
+
+    def test_the_sleep_hold_is_at_least_five_seconds(self):
+        # 8BitDo pads switch off after about 3 s, Xbox after 6 s, PlayStation after 10 s.
+        self.assertGreaterEqual(self.module.SLEEP_HOLD_SECONDS, 5.0)
+        self.assertGreaterEqual(self.hold().threshold, 5.0)
+
+    def test_a_long_press_does_not_sleep_the_box_while_an_app_has_the_controller(self):
+        self.assertFalse(self.request_sleep_with(True, app=True))
+
+    def test_a_long_press_sleeps_when_the_launcher_has_focus_even_with_an_app_running(self):
+        self.assertTrue(self.request_sleep_with(True, app=True, focus=True))
+
+    # HomeHold lives in watch_home(), the thread that reads every device with a Home/Guide key.
+
+    def watch_home_rounds(self, rounds, *, app=False, focus=False, focus_after_home=False):
+        """Run watch_home() over one fake Guide button.
+
+        rounds[i] = (clock reading after select i, events select i delivers). The markers are the
+        ones present when the run starts; focus_after_home makes request_home() bring the launcher
+        to the front the way the real one does. Returns the mocks for request_home/request_sleep."""
+        state = {"round": 0, "now": 100.0}
+        run = self.markers(tempfile.mkdtemp(), app=app, focus=focus)
+        self.addCleanup(shutil.rmtree, run, True)
+        events = ()
+
+        class Stop(Exception):
+            pass
+
+        class Device:
+            def capabilities(self):
+                return {Codes.EV_KEY: [Codes.BTN_MODE]}
+
+            def read(self):
+                return [SimpleNamespace(type=Codes.EV_KEY, value=value, code=Codes.BTN_MODE) for value in events]
+
+            def close(self):
+                pass
+
+        device = Device()
+
+        def fake_select(_devices, _writable, _errors, _timeout):
+            nonlocal events
+            if state["round"] >= len(rounds):
+                raise Stop
+            state["now"], events = rounds[state["round"]]
+            state["round"] += 1
+            return ([device] if events else []), [], []
+
+        def take_focus():
+            if focus_after_home:
+                (run / "launcher-focus").touch()
+
+        module = self.module
+        with mock.patch.object(module.glob, "glob", return_value=["/dev/input/event9"]), mock.patch.object(
+            module, "InputDevice", return_value=device
+        ), mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
+            module.time, "monotonic", side_effect=lambda: state["now"]
+        ), mock.patch.object(module, "request_home", side_effect=take_focus) as home, mock.patch.object(
+            module.power, "can_suspend", return_value=True
+        ):
+            with self.assertRaises(Stop):
+                module.watch_home()
+        return home, (run / "suspend").exists()
+
+    HOLD = [(100.0, (1,)), (102.0, ()), (104.9, ()), (105.1, ()), (112.0, ())]
+
+    def test_holding_guide_in_the_launcher_asks_for_sleep_after_five_seconds(self):
+        home, slept = self.watch_home_rounds(self.HOLD)
+        home.assert_called_once_with()
+        self.assertTrue(slept)
+
+    def test_holding_guide_for_four_and_a_half_seconds_does_not_sleep(self):
+        _home, slept = self.watch_home_rounds([(100.0, (1,)), (103.5, ()), (104.5, (0,)), (112.0, ())])
+        self.assertFalse(slept)
+
+    def test_holding_guide_mid_game_to_switch_the_pad_off_does_not_sleep_the_box(self):
+        # The Guide press also brings the launcher forward, so by the time the hold is up the
+        # launcher has focus: what counts is who had the controller when the press began.
+        home, slept = self.watch_home_rounds(self.HOLD, app=True, focus_after_home=True)
+        home.assert_called_once_with()
+        self.assertFalse(slept)
+
+    def test_holding_guide_while_the_launcher_already_has_focus_sleeps_even_with_an_app_running(self):
+        _home, slept = self.watch_home_rounds(self.HOLD, app=True, focus=True)
+        self.assertTrue(slept)
+
+    def test_a_later_press_with_the_launcher_in_front_is_not_blocked_by_an_earlier_mid_game_press(self):
+        # First press: mid-game, released early (launcher takes focus). Second press: launcher in front.
+        rounds = [(100.0, (1,)), (101.0, (0,)), (200.0, (1,)), (206.0, ())]
+        _home, slept = self.watch_home_rounds(rounds, app=True, focus_after_home=True)
+        self.assertTrue(slept)
 
 
 if __name__ == "__main__":

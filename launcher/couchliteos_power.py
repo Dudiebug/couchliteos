@@ -35,6 +35,9 @@ DEFAULT_SLEEP = 30
 # time, and at most this often (it reads every application manifest).
 APP_CHECK_AFTER = 30.0
 APP_POLL_SECONDS = 5.0
+# After a resume the first real key press is swallowed if it comes within this long: the user is
+# pressing a button to wake the pad or the TV, not to choose something.
+RESUME_SWALLOW_SECONDS = 10.0
 BLANK = "blank"
 SLEEP = "sleep"
 
@@ -161,10 +164,11 @@ def can_suspend(run=subprocess.run, state_path: pathlib.Path = STATE) -> bool:
     return suspend_supported(logind_can_suspend(run), state)
 
 
-def effective_settings(settings: Settings, suspend_ok: bool) -> Settings:
-    """What to act on. A sleep timeout saved on a PC that can suspend is ignored here,
-    not erased, so it applies again when the stick goes back to that PC."""
-    return settings if suspend_ok else replace(settings, sleep=0)
+def effective_settings(settings: Settings, suspend_ok: bool, wake_ok: bool = True) -> Settings:
+    """What to act on. A sleep timeout saved on a PC that cannot suspend, or that has nothing
+    able to wake it again (see wake_sources), is ignored here, not erased, so it applies again
+    when the stick goes back to a PC where it works."""
+    return settings if suspend_ok and wake_ok else replace(settings, sleep=0)
 
 
 def wired_adapters(root: pathlib.Path = NET) -> list[tuple[str, str]]:
@@ -314,7 +318,8 @@ class IdleGuard:
     """Sits between curses input and the launcher screens.
 
     Blanks the screen when idle, swallows the key that wakes it, asks for sleep
-    when idle long enough, and reports a resume from sleep.
+    when idle long enough, and reports a resume from sleep (swallowing the first
+    real key shortly after it).
     """
 
     def __init__(
@@ -338,6 +343,7 @@ class IdleGuard:
         self.clock = clock
         self.enabled = enabled
         self.passive_keys = passive_keys
+        self.swallow_until = float("-inf")
         self.timer = IdleTimer(settings, clock())
 
     def apply(self, settings: Settings) -> None:
@@ -356,12 +362,23 @@ class IdleGuard:
         self.timer.activity(now)
         return -1  # the caller redraws; the waking key is not acted on
 
+    def _resume_wake(self, now: float, key: int) -> int:
+        # The marker is usually seen on an idle tick, before anyone touches a button; the key that
+        # comes later (the pad reconnecting, then A) must not act on the screen that was left open.
+        # A key that arrives with the marker is itself the one swallowed.
+        if key in self.passive_keys:
+            self.swallow_until = now + RESUME_SWALLOW_SECONDS
+        return self._wake(now)
+
     def filter(self, screen, key: int) -> int:
         now = self.clock()
         if self.resumed():
-            return self._wake(now)
+            return self._resume_wake(now, key)
         if not self.enabled():
             return key
+        if key not in self.passive_keys and now < self.swallow_until:
+            self.swallow_until = float("-inf")
+            return self._wake(now)
         if key not in self.passive_keys or self.home_pending():
             return -1 if self.timer.activity(now) else key
         self._poll(screen)
@@ -369,7 +386,7 @@ class IdleGuard:
             key = screen.getch()
             now = self.clock()
             if self.resumed():
-                return self._wake(now)
+                return self._resume_wake(now, key)
             if key not in self.passive_keys:
                 return self._wake(now)
             if self.home_pending():

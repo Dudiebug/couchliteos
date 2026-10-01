@@ -26,7 +26,9 @@ APP_ACTIVE = pathlib.Path("/run/couchliteos/app-active")
 LAUNCHER_FOCUS = pathlib.Path("/run/couchliteos/launcher-focus")
 CONTROLLER_ID = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
 SLEEP_REQUEST = pathlib.Path("/run/couchliteos/suspend")
-SLEEP_HOLD_SECONDS = 3.0
+# Holding Guide is also how pads are switched off (8BitDo ~3 s, Xbox ~6 s, PlayStation ~10 s), so the
+# hold is long, and a hold that began in a game never sleeps the box (see app_owns_pad).
+SLEEP_HOLD_SECONDS = 5.0
 CEC_NAV, CEC_HOME = cec.remote_key_maps(ecodes)
 # Remote keys a running app gets too (the grabbed remote reaches nobody else); the rest are launcher shortcuts.
 CEC_APP_KEYS = {ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT, ecodes.KEY_ENTER, ecodes.KEY_ESC}
@@ -64,6 +66,11 @@ def app_active() -> bool:
     _last_state_check = now
     _last_state = APP_ACTIVE.exists()
     return _last_state
+
+
+def app_owns_pad() -> bool:
+    """An app or game is running and the launcher has not taken the controller back (not cached)."""
+    return APP_ACTIVE.exists() and not LAUNCHER_FOCUS.exists()
 
 
 def navigation_blocked(active_osk: bool) -> bool:
@@ -384,9 +391,14 @@ class HomeHold:
         self.pressed.clear()
 
 
+def is_hold_press(event) -> bool:
+    return event.type == ecodes.EV_KEY and event.value == 1 and event.code in HomeHold.CODES
+
+
 def request_sleep() -> None:
-    # Checked when it happens: the stick may have moved to a PC that cannot suspend.
-    if power.can_suspend():
+    # Checked when it happens: the stick may have moved to a PC that cannot suspend, and a
+    # game that has the controller must not be put to sleep under the player.
+    if not app_owns_pad() and power.can_suspend():
         SLEEP_REQUEST.touch()
 
 
@@ -404,6 +416,7 @@ def request_home() -> None:
 def watch_home() -> None:
     devices: dict[str, InputDevice] = {}
     hold = HomeHold()
+    in_game = False  # the hold under way began while an app had the controller
     while True:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(devices) - paths:
@@ -425,10 +438,14 @@ def watch_home() -> None:
             )
             for device in readable:
                 for event in device.read():
+                    if is_hold_press(event):
+                        # Looked at before request_home() brings the launcher forward: the Guide
+                        # press itself takes the focus, so later the launcher always "has" it.
+                        in_game = app_owns_pad()
                     if is_home_event(event):
                         request_home()
                     hold.feed(event, time.monotonic())
-            if hold.due(time.monotonic()):
+            if hold.due(time.monotonic()) and not in_game:
                 request_sleep()
         except OSError:
             hold.reset()

@@ -56,6 +56,10 @@ class LauncherTest(unittest.TestCase):
         patcher = mock.patch.object(self.module.whatsnew, "show_once")
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Something that can wake the PC is plugged in unless a test says otherwise.
+        patcher = mock.patch.object(self.module.power, "wake_sources", return_value=["USB KEYBOARD"])
+        self.wake_sources = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def launcher(self):
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
@@ -822,6 +826,31 @@ class LauncherTest(unittest.TestCase):
         focus.assert_called_once_with()
         self.assertIn("RESUMED", launcher.status)
 
+    def test_on_resume_puts_the_cursor_on_the_first_menu_item_not_on_sleep(self):
+        launcher = self.launcher()
+        launcher.selected = [action for _label, action in launcher.menu].index("suspend")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), mock.patch.object(
+            self.module, "focus_launcher"
+        ):
+            launcher.on_resume()
+        self.assertEqual(launcher.selected, 0)
+
+    def test_the_first_a_press_after_waking_does_not_choose_sleep_again(self):
+        launcher = self.launcher()
+        launcher.selected = [action for _label, action in launcher.menu].index("suspend")
+        screen = Screen([-1, 10, 10])  # a timeout tick, the A that "wakes" the box, then a real A
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), mock.patch.object(
+            self.module, "focus_launcher"
+        ), mock.patch.object(self.module, "IDLE_GUARD", launcher.idle):
+            (pathlib.Path(directory) / "resumed").touch()
+            keys = [self.module.read_key(screen) for _ in range(3)]
+        self.assertEqual(keys, [-1, -1, 10])
+        self.assertEqual(launcher.selected, 0)
+
     def test_resume_marker_is_consumed_once_and_calls_on_resume(self):
         launcher = self.launcher()
         launcher.on_resume = mock.Mock()
@@ -899,7 +928,8 @@ class LauncherTest(unittest.TestCase):
         launcher = self.launcher()
         launcher.idle = mock.Mock()
         settings = self.module.Settings(Screen(list(keys)), launcher)
-        settings.draw = mock.Mock()
+        settings.shown = []  # the status line each redraw showed
+        settings.draw = mock.Mock(side_effect=lambda *_args: settings.shown.append(settings.status))
         settings.choose = mock.Mock(return_value=15)
         saved = saved or power.Settings(5, 60)
         with mock.patch.object(power, "load_settings", return_value=saved), mock.patch.object(
@@ -961,6 +991,77 @@ class LauncherTest(unittest.TestCase):
             launcher.on_resume()
             self.assertEqual(launcher.menu[-3], ("SLEEP", "suspend"))
             self.assertEqual(launcher.idle.timer.settings, power.Settings(5, 60))
+
+    def test_idle_sleep_is_off_at_runtime_when_nothing_can_wake_the_pc_but_the_setting_is_kept(self):
+        power = self.module.power
+        self.wake_sources.return_value = []
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(10, 60)), mock.patch.object(
+            power, "save_settings"
+        ) as save:
+            launcher = self.launcher()
+        self.assertEqual(launcher.idle.timer.settings, power.Settings(10, 0))  # blanking still works
+        save.assert_not_called()
+
+    def test_resume_checks_what_can_wake_the_pc_again_and_idle_sleep_follows(self):
+        power = self.module.power
+        self.wake_sources.return_value = []
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(5, 60)), tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), mock.patch.object(
+            self.module, "focus_launcher"
+        ):
+            launcher = self.launcher()
+            self.assertEqual(launcher.idle.timer.settings, power.Settings(5, 0))
+            self.wake_sources.return_value = ["BLUETOOTH ADAPTER"]  # plugged in while it slept
+            launcher.on_resume()
+            self.assertEqual(launcher.idle.timer.settings, power.Settings(5, 60))
+
+    def test_sleep_and_screen_says_why_idle_sleep_is_off_when_nothing_can_wake_the_pc(self):
+        settings, _rows, _save = self.sleep_settings_rows(saved=self.module.power.Settings(5, 30))
+        reason = "IDLE SLEEP OFF: NO CONTROLLER CAN WAKE THIS PC"
+        self.assertEqual(settings.shown[0], reason)
+        self.assertEqual(self.module.IDLE_SLEEP_NO_WAKE, reason)
+        self.assertLessEqual(len(reason), 76)  # the status line is 76 columns on an 80 column screen
+
+    def test_sleep_and_screen_shows_no_such_reason_when_something_can_wake_the_pc_or_sleep_is_off(self):
+        power = self.module.power
+        settings, _rows, _save = self.sleep_settings_rows(saved=power.Settings(5, 30), wake=["USB KEYBOARD"])
+        self.assertEqual(settings.shown[0], "")
+        settings, _rows, _save = self.sleep_settings_rows(saved=power.Settings(5, 0))
+        self.assertEqual(settings.shown[0], "")
+
+    def test_the_idle_sleep_reason_stays_up_after_a_change_and_the_saved_sleep_is_not_overwritten(self):
+        power = self.module.power
+        settings, _rows, save = self.sleep_settings_rows([10, 27], saved=power.Settings(5, 60))
+        self.assertEqual([call.args[0] for call in save.call_args_list], [power.Settings(15, 60)])
+        self.assertEqual(settings.launcher.idle.apply.call_args.args[0], power.Settings(15, 0))
+        self.assertEqual(settings.shown[-1], self.module.IDLE_SLEEP_NO_WAKE)
+
+    def test_choosing_a_sleep_time_with_nothing_to_wake_the_pc_saves_it_but_leaves_it_inactive(self):
+        keys = self.module.curses
+        power = self.module.power
+        settings, _rows, save = self.sleep_settings_rows([keys.KEY_DOWN, 10, 27], saved=power.Settings(5, 60))
+        self.assertEqual([call.args[0] for call in save.call_args_list], [power.Settings(5, 15)])
+        self.assertEqual(settings.launcher.idle.apply.call_args.args[0], power.Settings(5, 0))
+
+    def test_opening_sleep_and_screen_picks_up_a_wake_source_plugged_in_since_the_launcher_started(self):
+        power = self.module.power
+        self.wake_sources.return_value = []
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(5, 60)):
+            launcher = self.launcher()
+        self.assertFalse(launcher.can_wake)
+        launcher.idle = mock.Mock()
+        settings = self.module.Settings(Screen([10, 27]), launcher)
+        settings.draw = mock.Mock()
+        settings.choose = mock.Mock(return_value=15)
+        with mock.patch.object(power, "load_settings", return_value=power.Settings(5, 60)), mock.patch.object(
+            power, "save_settings"
+        ), mock.patch.object(power, "wake_on_lan", return_value=("none", None)), mock.patch.object(
+            power, "wake_sources", return_value=["USB KEYBOARD"]
+        ):
+            settings.run_sleep_settings()
+        self.assertTrue(launcher.can_wake)
+        self.assertEqual(launcher.idle.apply.call_args.args[0], power.Settings(15, 60))
 
     def test_sleep_after_row_says_not_supported_and_cannot_be_changed(self):
         keys = self.module.curses

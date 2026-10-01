@@ -278,6 +278,67 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(guard.filter(screen, -1), -1)
         self.assertFalse(guard.timer.blanked)  # the idle clock restarted at resume
 
+    def test_the_first_real_key_after_a_resume_is_swallowed_and_the_next_one_is_not(self):
+        # The resume marker is used up by a passive tick; the pad reconnects and the user presses A later.
+        guard, screen = self.guard(), FakeScreen(self.clock)
+        self.resume = True
+        self.assertEqual(guard.filter(screen, -1), -1)
+        self.clock.now += 4.0
+        self.assertEqual(guard.filter(screen, 10), -1)  # the key that "wakes" the box does nothing
+        self.assertEqual(guard.filter(screen, 10), 10)  # the one after it is a normal key again
+
+    def test_the_swallow_lasts_about_ten_seconds(self):
+        guard, screen = self.guard(), FakeScreen(self.clock)
+        self.resume = True
+        guard.filter(screen, -1)
+        self.clock.now += power.RESUME_SWALLOW_SECONDS - 0.5
+        self.assertEqual(guard.filter(screen, 10), -1)
+        self.resume = True
+        guard.filter(screen, -1)
+        self.clock.now += power.RESUME_SWALLOW_SECONDS + 0.5
+        self.assertEqual(guard.filter(screen, 10), 10)  # long after waking, a key press is meant
+        self.assertGreaterEqual(power.RESUME_SWALLOW_SECONDS, 9.0)
+        self.assertLessEqual(power.RESUME_SWALLOW_SECONDS, 11.0)
+
+    def test_a_key_that_arrives_together_with_the_resume_is_the_one_swallowed(self):
+        guard, screen = self.guard(), FakeScreen(self.clock)
+        self.resume = True
+        self.assertEqual(guard.filter(screen, 10), -1)
+        self.clock.now += 2.0
+        self.assertEqual(guard.filter(screen, 10), 10)  # no second key is held back
+
+    def test_timeouts_and_resizes_do_not_use_up_the_swallow(self):
+        guard, screen = self.guard(), FakeScreen(self.clock)
+        self.resume = True
+        guard.filter(screen, -1)
+        for key in (-1, RESIZE, -1):
+            self.clock.now += 1.0
+            self.assertEqual(guard.filter(screen, key), -1)  # passive keys never reach the screens
+        self.assertEqual(guard.filter(screen, 10), -1)
+        self.assertEqual(guard.filter(screen, 10), 10)
+
+    def test_a_resume_seen_while_the_screen_is_blank_also_swallows_the_next_key(self):
+        guard = self.guard()
+        screen = FakeScreen(self.clock, [(1.0, -1)])
+        self.clock.now += 5 * MINUTE
+        original = screen.getch
+
+        def getch():
+            self.resume = True
+            return original()
+
+        screen.getch = getch
+        self.assertEqual(guard.filter(screen, -1), -1)  # blanked, then the resume marker appeared
+        self.clock.now += 3.0
+        self.assertEqual(guard.filter(screen, 10), -1)
+        self.assertEqual(guard.filter(screen, 10), 10)
+
+    def test_the_swallow_is_not_used_while_automatic_power_is_off(self):
+        guard, screen = self.guard(enabled=False), FakeScreen(self.clock)
+        self.resume = True
+        guard.filter(screen, -1)
+        self.assertEqual(guard.filter(screen, 10), 10)  # the QEMU smoke tests press keys right away
+
     def test_resume_is_consumed_even_when_automatic_power_is_off(self):
         guard = self.guard(enabled=False)
         self.resume = True
@@ -399,6 +460,18 @@ class SuspendSupportTest(unittest.TestCase):
         self.assertEqual(saved, power.Settings(blank=10, sleep=60))  # the stored value is untouched
         timer = power.IdleTimer(effective, 0.0)
         self.assertIsNone(timer.poll(9 * MINUTE, lambda: False))
+        self.assertEqual(timer.poll(10 * MINUTE, lambda: False), power.BLANK)
+        self.assertIsNone(timer.poll(500 * MINUTE, lambda: False))  # never asks for sleep
+
+    def test_nothing_that_can_wake_the_pc_turns_idle_sleep_off_at_runtime_only(self):
+        saved = power.Settings(blank=10, sleep=60)
+        effective = power.effective_settings(saved, True, wake_ok=False)
+        self.assertEqual(effective, power.Settings(blank=10, sleep=0))
+        self.assertEqual(saved, power.Settings(blank=10, sleep=60))  # the stored value is untouched
+        self.assertEqual(power.effective_settings(saved, True, wake_ok=True), saved)
+        self.assertEqual(power.effective_settings(saved, True), saved)
+        self.assertEqual(power.effective_settings(saved, False, wake_ok=True).sleep, 0)
+        timer = power.IdleTimer(effective, 0.0)
         self.assertEqual(timer.poll(10 * MINUTE, lambda: False), power.BLANK)
         self.assertIsNone(timer.poll(500 * MINUTE, lambda: False))  # never asks for sleep
 

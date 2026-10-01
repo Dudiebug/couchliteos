@@ -50,6 +50,8 @@ FIXED_CONTROLS = (
 WAKE_PC = errors.Action("WAKE PC", "wake-pc")
 SMOOTHER_ROW = "SMOOTHER STREAM (LOWER QUALITY ONE STEP)"
 SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
+# Shown in SLEEP & SCREEN (at most 76 columns) when a saved sleep timeout is not acted on.
+IDLE_SLEEP_NO_WAKE = "IDLE SLEEP OFF: NO CONTROLLER CAN WAKE THIS PC"
 SETTINGS_MENU = (
     "DISPLAY",
     "AUDIO",
@@ -417,10 +419,12 @@ class Launcher:
             errors.BLUETOOTH.id: self.open_bluetooth_settings,
             errors.ACTIVE.id: self.open_active_applications,
         }
+        # Idle sleep needs something that can wake the box again; without it the saved timeout is ignored.
+        self.can_wake = bool(power.wake_sources())
         self.reload_applications()
         global IDLE_GUARD
         IDLE_GUARD = self.idle = power.IdleGuard(
-            power.effective_settings(power.load_settings(), self.can_sleep),
+            power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake),
             apps_running=self.apps_running,
             request_sleep=self.request_sleep,
             resumed=self.check_resume,
@@ -478,9 +482,10 @@ class Launcher:
     def refresh_sleep_support(self) -> None:
         """Ask again whether this PC can suspend; the SLEEP control and the auto-sleep timer follow."""
         self.can_sleep = power.can_suspend()
+        self.can_wake = bool(power.wake_sources())
         del self.menu[len(self.applications):]
         self.menu += self.fixed_controls()
-        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep))
+        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
 
     def prepare_session(self) -> None:
         RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -528,6 +533,7 @@ class Launcher:
         """Called once when the launcher sees the system resume from sleep."""
         (RUN / "suspend").unlink(missing_ok=True)  # a stale request must not suspend again
         HOME_REQUEST.unlink(missing_ok=True)  # the long press that slept us also asked for Home
+        self.selected = 0  # not on SLEEP, where the user left it: the first A would sleep the box again
         self.refresh_sleep_support()
         self.status = "RESUMED FROM SLEEP"
         self.last_status_update = time.monotonic()
@@ -1617,8 +1623,15 @@ class Settings:
             "none": "NO WIRED NETWORK ADAPTER",
             "unknown": "ADAPTER NOT CHECKED",
         }[wol]
-        wake_from = ", ".join(power.wake_sources()) or "NO USB BLUETOOTH ADAPTER OR KEYBOARD FOUND"
-        self.status = ""
+        sources = power.wake_sources()
+        can_wake = self.launcher.can_wake = bool(sources)
+        wake_from = ", ".join(sources) or "NO USB BLUETOOTH ADAPTER OR KEYBOARD FOUND"
+
+        def note() -> str:
+            # A timeout is saved but not acted on: say so, on this screen, where it was set.
+            return IDLE_SLEEP_NO_WAKE if can_sleep and not can_wake and settings.sleep else ""
+
+        self.status = note()
         selected = 0
         while True:
             rows = [
@@ -1652,10 +1665,10 @@ class Settings:
             settings = dataclasses.replace(settings, **{field: chosen})
             try:
                 power.save_settings(settings)
-                self.status = ""
+                self.status = note()
             except OSError as error:
                 self.status = f"COULD NOT SAVE: {error}"
-            self.launcher.idle.apply(power.effective_settings(settings, can_sleep))
+            self.launcher.idle.apply(power.effective_settings(settings, can_sleep, can_wake))
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()
