@@ -1531,6 +1531,246 @@ class AutostreamTest(LauncherTestCase):
         launcher.launch_app.assert_called_once()
 
 
+class StreamRowTest(LauncherTestCase):
+    """The first home row, STREAM <PC>: one press streams the chosen PC, no countdown."""
+
+    SECOND = stream.Host(name="Den-PC", uuid="UUID-2", mac=bytes.fromhex("1c1b0d8dbfe8"), local="192.168.1.51")
+
+    def home(self, run, hosts=(LauncherTestCase.HOST,), settings=None, moonlight=True):
+        launcher = self.launcher()
+        launcher.app_by_id = mock.Mock(return_value=self.app() if moonlight else None)
+        with self.world(run, hosts, settings):
+            launcher.reload_applications()
+        return launcher
+
+    def labels(self, launcher):
+        return [label for label, _action in launcher.menu]
+
+    def test_first_row_for_a_paired_pc_with_moonlight_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            plain = self.home(run, hosts=())
+            launcher = self.home(run)
+        self.assertEqual(launcher.menu[0], ("STREAM GAMING-PC", "stream-default"))
+        self.assertEqual(launcher.menu[1:], plain.menu)  # nothing else moves: apps, SETTINGS, SLEEP, ...
+        self.assertEqual(launcher.menu[-4:], list(self.module.FIXED_CONTROLS))
+        self.assertEqual(launcher.applications, plain.applications)
+
+    def test_no_row_without_a_paired_pc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = self.home(pathlib.Path(directory), hosts=())
+        self.assertNotIn("stream-default", [action for _label, action in launcher.menu])
+        self.assertEqual(launcher.stream_row, [])
+
+    def test_no_row_when_moonlight_is_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = self.home(pathlib.Path(directory), moonlight=False)
+        self.assertNotIn("stream-default", [action for _label, action in launcher.menu])
+
+    def test_the_pc_chosen_in_settings_is_the_one_named(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            chosen = self.home(run, (self.HOST, self.SECOND), stream.StreamSettings(False, "UUID-2"))
+            unchosen = self.home(run, (self.HOST, self.SECOND))  # never guess between two PCs
+            stale = self.home(run, (self.HOST,), stream.StreamSettings(False, "UUID-9"))  # not paired here
+        self.assertEqual(chosen.menu[0], ("STREAM DEN-PC", "stream-default"))
+        self.assertEqual(unchosen.stream_row, [])
+        self.assertEqual(stale.stream_row, [])
+
+    def test_a_long_pc_name_is_cut_to_fit_the_menu(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = self.home(pathlib.Path(directory), (changed(self.HOST, name="A" * 60),))
+        label = launcher.menu[0][0]
+        self.assertTrue(label.startswith("STREAM AAAA"))
+        self.assertLessEqual(len(label), self.module.STREAM_ROW_MAX)
+
+    def test_an_unreadable_hosts_file_or_settings_means_no_row_and_no_crash(self):
+        for target in ("load_hosts", "load_settings"):
+            for error in (OSError("gone"), ValueError("bad")):
+                with self.subTest(target=target, error=error), tempfile.TemporaryDirectory() as directory:
+                    launcher = self.launcher()
+                    launcher.app_by_id = mock.Mock(return_value=self.app())
+                    with self.world(pathlib.Path(directory)), mock.patch.object(
+                        self.module.stream, target, side_effect=error
+                    ):
+                        launcher.reload_applications()
+                    self.assertEqual(launcher.stream_row, [])
+                    self.assertNotIn("stream-default", [action for _label, action in launcher.menu])
+
+    def press(self, launcher, run, settings=None, hosts=(LauncherTestCase.HOST,)):
+        launcher.selected = 0
+        with self.world(run, hosts, settings):
+            launcher.activate()
+
+    def test_a_press_streams_the_chosen_app_at_once_with_auto_launch_semantics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run, settings=self.ON)
+            seen = []
+
+            def launch(app, **kwargs):
+                seen.append((app.id, kwargs, (run / "moonlight-stream.request").read_text(), launcher.pending_stream))
+                return True
+
+            launcher.launch_app = mock.Mock(side_effect=launch)
+            launcher.wait_screen = mock.Mock()
+            self.press(launcher, run, self.ON)  # autostart is on here, but the row never needs it
+            self.assertEqual(
+                seen, [("moonlight", {"auto": True}, "192.168.1.50\nSteam Big Picture\n", ("192.168.1.50", "Steam Big Picture"))]
+            )
+            launcher.wait_screen.assert_not_called()  # no countdown
+            self.assertFalse((run / "moonlight-stream.request").exists())
+            self.assertIsNone(launcher.pending_stream)
+            self.assertFalse(launcher.stream_by_hand)
+
+    def test_a_press_works_without_auto_stream_or_a_chosen_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            requests = []
+            launcher.launch_app = mock.Mock(
+                side_effect=lambda app, **_k: requests.append((run / "moonlight-stream.request").read_text()) or True
+            )
+            self.press(launcher, run)  # default settings: no PC chosen (one is paired), application Desktop
+        self.assertEqual(requests, ["192.168.1.50\nDesktop\n"])
+        launcher.launch_app.assert_called_once_with(launcher.app_by_id.return_value, auto=True)
+
+    def test_a_failed_launch_leaves_no_request_and_no_pending_stream(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.launch_app = mock.Mock(return_value=False)
+            self.press(launcher, run)
+            self.assertFalse((run / "moonlight-stream.request").exists())
+        self.assertIsNone(launcher.pending_stream)
+
+    def test_an_unusable_request_is_reported_as_a_stream_not_an_auto_stream(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.launch_app = mock.Mock()
+            with mock.patch.object(self.module.stream, "write_stream_request", side_effect=ValueError("bad name")):
+                self.press(launcher, run)
+        launcher.launch_app.assert_not_called()
+        self.assertEqual(launcher.status, "STREAM NOT STARTED: BAD NAME")
+        self.assertIsNone(launcher.pending_stream)
+
+    def test_a_press_after_the_pc_was_unpaired_says_so_and_drops_the_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.launch_app = mock.Mock()
+            self.press(launcher, run, hosts=())
+        launcher.launch_app.assert_not_called()
+        self.assertIn("NO PC TO STREAM TO", launcher.status)
+        self.assertEqual(launcher.stream_row, [])
+        self.assertNotIn("stream-default", [action for _label, action in launcher.menu])
+
+    def wake_then_press(self, wake_result):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.wake_host = mock.Mock(return_value=wake_result)
+            launcher.show_launch_failure = mock.Mock()
+            launcher.request = mock.Mock(side_effect=lambda name: (run / "moonlight-ready").touch())
+            self.press(launcher, run)
+            leftover = (run / "moonlight-stream.request").exists()
+        return launcher, leftover
+
+    def test_a_button_during_the_wake_wait_cancels_and_says_stream_not_auto_stream(self):
+        launcher, leftover = self.wake_then_press("cancelled")
+        launcher.request.assert_not_called()
+        self.assertFalse(leftover)
+        self.assertEqual(launcher.status, "STREAM CANCELLED")
+        hint = launcher.wake_host.call_args.kwargs["hint"]
+        self.assertEqual(hint, "PRESS ANY BUTTON TO CANCEL THE STREAM")
+        self.assertNotIn("AUTO", hint)
+        launcher.show_launch_failure.assert_not_called()
+
+    def test_the_stream_starts_once_the_pc_has_woken(self):
+        for result in ("woke", "up"):
+            launcher, _leftover = self.wake_then_press(result)
+            launcher.request.assert_called_once_with("start-moonlight")
+
+    def test_a_pc_that_never_woke_is_explained_and_nothing_is_streamed(self):
+        for result in ("timeout", "awake"):
+            launcher, leftover = self.wake_then_press(result)
+            launcher.request.assert_not_called()
+            self.assertFalse(leftover)
+            launcher.show_launch_failure.assert_called_once()
+
+    def test_the_auto_stream_keeps_its_own_wording(self):
+        # The shared helper must not leak the row's wording into the startup auto-stream.
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.wake_host = mock.Mock(return_value="cancelled")
+            with self.world(run, settings=self.ON):
+                launcher.start_stream(self.HOST, "Desktop")
+        self.assertEqual(launcher.wake_host.call_args.kwargs["hint"], "PRESS ANY BUTTON TO CANCEL AUTO-STREAM")
+        self.assertEqual(launcher.status, "AUTO-STREAM CANCELLED")
+
+    def test_the_row_follows_pairing_without_moving_the_selected_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run, hosts=())
+            launcher.selected = 2
+            before = self.labels(launcher)
+            clock = [launcher.last_stream_check]
+            with self.world(run, (self.HOST,)), mock.patch.object(self.module.time, "monotonic", side_effect=lambda: clock[0]):
+                self.module.stream.load_hosts.reset_mock()
+                clock[0] += 1
+                launcher.refresh_stream_row()  # too soon: the disk is not read again
+                self.module.stream.load_hosts.assert_not_called()
+                self.assertEqual(launcher.stream_row, [])
+                clock[0] += self.module.STREAM_ROW_CHECK_SECONDS
+                launcher.refresh_stream_row()
+                self.assertEqual(self.module.stream.load_hosts.call_count, 1)
+                self.assertEqual(self.labels(launcher), ["STREAM GAMING-PC"] + before)
+                self.assertEqual(launcher.selected, 3)  # still the same row as before
+                clock[0] += self.module.STREAM_ROW_CHECK_SECONDS
+                launcher.refresh_stream_row()  # unchanged: the menu is left alone
+                self.assertEqual(launcher.selected, 3)
+            with self.world(run, ()), mock.patch.object(self.module.time, "monotonic", side_effect=lambda: clock[0]):
+                clock[0] += self.module.STREAM_ROW_CHECK_SECONDS
+                launcher.refresh_stream_row()
+        self.assertEqual(self.labels(launcher), before)
+        self.assertEqual(launcher.selected, 2)
+
+    def test_selection_falls_back_to_the_first_row_when_the_selected_stream_row_disappears(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.selected = 0
+            with self.world(run, ()):
+                launcher.last_stream_check = float("-inf")
+                launcher.refresh_stream_row()
+        self.assertEqual(launcher.selected, 0)
+        self.assertEqual(launcher.stream_row, [])
+
+    def test_the_sleep_support_refresh_keeps_the_row(self):
+        power = self.module.power
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(power, "can_suspend", return_value=False), \
+                mock.patch.object(power, "wake_sources", return_value=[]):
+            launcher = self.home(pathlib.Path(directory))
+            before = self.labels(launcher)
+            launcher.refresh_sleep_support()
+        self.assertEqual(launcher.menu[0], ("STREAM GAMING-PC", "stream-default"))
+        self.assertEqual(self.labels(launcher)[1:-3], before[1:-3])
+        self.assertEqual(launcher.menu[-3], ("SLEEP: NOT SUPPORTED ON THIS PC", "suspend"))
+
+    def test_the_row_is_drawn_as_its_own_group_above_the_applications(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.home(run)
+            launcher.pcstatus = mock.Mock()
+            launcher.pcstatus.line.return_value = ""
+            launcher.footer_lines = mock.Mock(return_value=[])
+            with self.world(run):
+                launcher.draw()
+        self.assertIn(">  STREAM GAMING-PC", launcher.screen.drawn)
+
+
 class StreamingSettingsTest(LauncherTestCase):
     def streaming(self):
         launcher = self.launcher()

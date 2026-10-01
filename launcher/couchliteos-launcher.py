@@ -49,6 +49,9 @@ FIXED_CONTROLS = (
     ("SETTINGS", "settings"), ("SLEEP", "suspend"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"),
 )
 WAKE_PC = errors.Action("WAKE PC", "wake-pc")
+STREAM_ACTION = "stream-default"  # the first home row: STREAM <PC>, one press to start streaming
+STREAM_ROW_MAX = 32  # columns; a long PC name is cut so the menu stays as narrow as SLEEP: NOT SUPPORTED
+STREAM_ROW_CHECK_SECONDS = 5  # how often the home screen looks again for a paired PC
 SMOOTHER_ROW = "SMOOTHER STREAM (LOWER QUALITY ONE STEP)"
 SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
 # Shown in SLEEP & SCREEN (at most 76 columns) when a saved sleep timeout is not acted on.
@@ -415,6 +418,9 @@ class Launcher:
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
         self.pending_stream: tuple[str, str] | None = None  # (target, app) while an auto-stream starts
+        self.stream_by_hand = False  # True while the STREAM row (not the auto-stream) starts it: wording only
+        self.stream_row: list[tuple[str, str]] = []  # [] or the STREAM <PC> row, first in self.menu
+        self.last_stream_check = time.monotonic()
         # Checked on every start (the USB stick moves between PCs) and again after a resume.
         self.can_sleep = power.can_suspend()
         self.controllers = controllers.Monitor()
@@ -475,13 +481,41 @@ class Launcher:
         self.applications = tuple(
             app for app in result.applications if app.visible and app.enabled
         )
-        self.menu = [
+        self.stream_row = self.stream_row_items()
+        self.last_stream_check = time.monotonic()
+        self.menu = self.stream_row + [
             (f"{app.name}  [{SHORTCUT_TAGS[app.shortcut]}]" if app.shortcut else app.name, app.id)
             for app in self.applications
         ] + self.fixed_controls()
         self.selected = min(self.selected, max(0, len(self.menu) - 1))
         if result.errors:
             self.status = f"{len(result.errors)} INVALID APPLICATION(S) SKIPPED"
+
+    def stream_row_items(self) -> list[tuple[str, str]]:
+        """The STREAM <PC> row, only with Moonlight enabled and a paired PC to stream to (the one
+        Settings > STREAMING chose, else the only one). Anything unreadable means no row."""
+        try:
+            host = stream.autostream_host(stream.load_hosts(), stream.load_settings())
+            if host is None or self.app_by_id("moonlight") is None:
+                return []
+        except (OSError, ValueError):
+            return []
+        return [(f"STREAM {host.label}"[:STREAM_ROW_MAX].rstrip(), STREAM_ACTION)]
+
+    def refresh_stream_row(self) -> None:
+        """Follow pairing changes (Moonlight pairs in its own window): add or drop the STREAM row,
+        keeping the same row selected. Looks at most every STREAM_ROW_CHECK_SECONDS."""
+        now = time.monotonic()
+        if now - self.last_stream_check < STREAM_ROW_CHECK_SECONDS:
+            return
+        self.last_stream_check = now
+        row = self.stream_row_items()
+        if row == self.stream_row:
+            return
+        self.menu[:len(self.stream_row)] = row
+        self.selected = max(0, self.selected + len(row) - len(self.stream_row))
+        self.stream_row = row
+        self.selected = min(self.selected, max(0, len(self.menu) - 1))
 
     def fixed_controls(self) -> list[tuple[str, str]]:
         """SETTINGS, SLEEP, REBOOT, SHUTDOWN; SLEEP names its reason when this PC cannot suspend."""
@@ -494,7 +528,7 @@ class Launcher:
         """Ask again whether this PC can suspend; the SLEEP control and the auto-sleep timer follow."""
         self.can_sleep = power.can_suspend()
         self.can_wake = bool(power.wake_sources())
-        del self.menu[len(self.applications):]
+        del self.menu[len(self.stream_row) + len(self.applications):]
         self.menu += self.fixed_controls()
         self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
 
@@ -566,7 +600,9 @@ class Launcher:
         # The status line is always on screen (it carries results and errors); the footer
         # lines sit directly below it, so each one past the first moves it up a row.
         status_row = height - 4 - max(0, len(footer) - 1)
-        gap_before = (len(self.applications), len(self.applications) + 1)
+        head = len(self.stream_row)  # the STREAM row, if any, is its own group above the apps
+        after_apps = head + len(self.applications)
+        gap_before = sorted({after_apps, after_apps + 1} | ({head} if head else set()))
         if len(labels) + len(gap_before) <= status_row - 1 - first_row:
             # Everything fits: blank rows separate the apps, SETTINGS and the power buttons.
             selected += sum(1 for at in gap_before if at <= self.selected)
@@ -713,7 +749,10 @@ class Launcher:
                 return True
             result = self.wake_host(
                 host,
-                hint="PRESS ANY BUTTON TO CANCEL AUTO-STREAM" if auto else "PRESS ANY BUTTON TO START MOONLIGHT WITHOUT WAITING",
+                hint=(
+                    f"PRESS ANY BUTTON TO CANCEL {'THE STREAM' if self.stream_by_hand else 'AUTO-STREAM'}"
+                    if auto else "PRESS ANY BUTTON TO START MOONLIGHT WITHOUT WAITING"
+                ),
             )
             if result == "nonetwork":
                 self.draw_wait(stream.NO_NETWORK, "STARTING MOONLIGHT WITHOUT WAKING THE PC", "")
@@ -723,7 +762,7 @@ class Launcher:
         except (OSError, ValueError, curses.error, subprocess.SubprocessError):
             return True
         if result == "home" or (auto and result == "cancelled"):
-            self.status = "AUTO-STREAM CANCELLED" if auto else "MOONLIGHT NOT STARTED"
+            self.status = f"{self.stream_word} CANCELLED" if auto else "MOONLIGHT NOT STARTED"
             return False
         if result in ("timeout", "awake") and not auto:
             # Opened by hand: Moonlight still lists the PC and can wake it or pick another one.
@@ -801,22 +840,48 @@ class Launcher:
         if self.wait_screen(f"STARTING STREAM TO {host.label}...", countdown) != "timeout":
             self.status = "AUTO-STREAM CANCELLED"
             return False
+        return self.start_stream(host, config.app)
+
+    @property
+    def stream_word(self) -> str:
+        return "STREAM" if self.stream_by_hand else "AUTO-STREAM"
+
+    def start_stream(self, host: stream.Host, app_name: str, *, by_hand: bool = False) -> bool:
+        """Start Moonlight streaming `app_name` from `host`, for the auto-stream and the STREAM row.
+
+        `by_hand` (the row) only changes the wording of the wake wait and its failures."""
         app = self.app_by_id("moonlight")
         if app is None:
             self.status = "MOONLIGHT IS UNAVAILABLE"
             return False
         request = RUN / stream.STREAM_REQUEST.name
-        self.pending_stream = (host.target, config.app)
+        self.pending_stream = (host.target, app_name)
+        self.stream_by_hand = by_hand
         try:
-            stream.write_stream_request(host.target, config.app, request)
-        except (OSError, ValueError) as error:
-            self.status = f"AUTO-STREAM NOT STARTED: {error}".upper()
-            return False
-        try:
+            try:
+                stream.write_stream_request(host.target, app_name, request)
+            except (OSError, ValueError) as error:
+                self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
+                return False
             return self.launch_app(app, auto=True)
         finally:
             self.pending_stream = None
+            self.stream_by_hand = False
             request.unlink(missing_ok=True)
+
+    def stream_selected_pc(self) -> bool:
+        """The STREAM <PC> row: stream the PC and application chosen in Settings > STREAMING, no countdown."""
+        try:
+            config = stream.load_settings()
+            host = stream.autostream_host(stream.load_hosts(), config)
+        except (OSError, ValueError):
+            host = None
+        if host is None:
+            self.status = f"NO PC TO STREAM TO: {stream.PAIR_FIRST}"
+            self.last_stream_check = float("-inf")  # the row is out of date: drop it now
+            self.refresh_stream_row()
+            return False
+        return self.start_stream(host, config.app, by_hand=True)
 
     @staticmethod
     def read_app_status(app_id: str) -> str:
@@ -864,7 +929,7 @@ class Launcher:
             try:
                 stream.write_stream_request(*self.pending_stream, RUN / stream.STREAM_REQUEST.name)
             except (OSError, ValueError) as error:
-                self.status = f"AUTO-STREAM NOT STARTED: {error}".upper()
+                self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
                 return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
@@ -1039,7 +1104,9 @@ class Launcher:
     def activate(self) -> None:
         _label, action = self.menu[self.selected]
         app = next((item for item in self.applications if item.id == action), None)
-        if app:
+        if action == STREAM_ACTION:
+            self.stream_selected_pc()
+        elif app:
             self.launch_app(app)
         elif action == "settings":
             Settings(self.screen, self).run()
@@ -1212,6 +1279,7 @@ class Launcher:
                 pass
 
             self.refresh_status()
+            self.refresh_stream_row()
             self.draw()
 
 
