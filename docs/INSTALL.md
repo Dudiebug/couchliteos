@@ -263,16 +263,52 @@ media is unverified; only the QEMU test exercises this layout.
 
 ## Updating to a new release
 
-There is no in-place updater yet (A/B updates are deferred; see
-[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)). A new release is a new ISO, and
-what happens to your pairings depends on where they are stored:
+What you do depends on where CouchLiteOS lives:
 
 | Your setup | To update | Pairings and settings |
 |---|---|---|
-| Installed to a disk | Run the installer again from the new ISO | **Lost.** Guided partitioning erases the disk, including `/var/lib/couchliteos`. Pair again. There is no backup or restore tool yet. |
+| Installed to a disk, CouchLiteOS 0.2.1 or newer | **Settings > SOFTWARE UPDATE** (below) | **Kept**: pairings, Wi-Fi, Bluetooth, Remote Desktop connections, Tailscale, the user accounts you made, and settings. |
+| Installed to a disk, CouchLiteOS 0.2.0 or older | Run the installer again from the new ISO, once | **Lost.** Guided partitioning erases the disk, including `/var/lib/couchliteos`. Pair again. Those releases have no updater, so this is the last time you reinstall to update. |
 | Live USB with a persistence stick | Write the new ISO to the ISO stick only; keep the persistence stick | **Kept** on the persistence stick. Carrying one across releases is not tested; if a release misbehaves, boot once with `No Persistence` to compare. |
 | Live USB without persistence | Write the new ISO | Nothing was kept; you pair again at every boot. |
 | Any stick you write an ISO to | - | **Wiped.** Writing an ISO replaces everything on that stick, including a persistence partition you put on it. |
+
+A live USB cannot update itself; the SOFTWARE UPDATE screen says so and shows
+where to get the new ISO.
+
+### Settings > SOFTWARE UPDATE (installed systems)
+
+1. Connect the box to the network (Settings > NETWORK) and plug it in. Close any
+   running app; the update refuses to start while one is open.
+2. Open **Settings > SOFTWARE UPDATE**. The screen shows the installed
+   version and profile. Choose **CHECK FOR UPDATES**.
+3. If a newer release has a file for your box (the general or the NVIDIA ISO,
+   the same kind you installed), choose **INSTALL UPDATE** and confirm.
+4. The box downloads the ISO (about 2 GB; it needs that much free space plus
+   4 GiB of room), checks it against the release's `SHA256SUMS`, installs it,
+   and restarts. B cancels while it is downloading; once it says INSTALLING it
+   cannot be stopped. **Keep the box plugged in until it restarts.**
+5. After the restart the launcher shows the "what's new" screen.
+
+A download that was interrupted (the network dropped, or you cancelled) resumes
+from where it stopped the next time. The ISO is kept in
+`/var/cache/couchliteos/update` until the next update and then removed.
+
+The update replaces the system with the new release's system and keeps your
+settings, accounts, pairings, Wi-Fi and Bluetooth state, the bootloader, and
+the firmware the installer added. Packages you installed yourself with `apt`
+stay on the disk, but they are not rebuilt for the new release, so one that
+depends on libraries the release replaced may stop working. There is no way
+back to the previous release: see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+
+For an offline update, copy the ISO onto the box and run, as root:
+
+```bash
+sudo /usr/libexec/couchliteos-updater apply-iso /path/to/couchliteos-X.Y.Z-amd64.iso
+```
+
+The same checks and the same install run; `--no-reboot` stops before the
+restart. The SOFTWARE UPDATE screen itself only downloads from GitHub.
 
 ## Optional Ventoy layout
 

@@ -54,10 +54,23 @@
   Debian packages remain a future goal.
 - 4K60 SDR is best effort. HDR is unverified and unsupported for acceptance.
 - The installed root filesystem is writable; A/B read-only updates are deferred.
-  There is no in-place updater and no backup or restore of pairings: a new
-  release means reinstalling (which erases the disk) or rewriting the ISO stick
-  and keeping a separate persistence stick. See
-  [Updating to a new release](INSTALL.md#updating-to-a-new-release).
+  Installed boxes (0.2.1 and newer) update in place from Settings > SOFTWARE
+  UPDATE, but there is no rollback: the update replaces the running system, and
+  the previous release is not kept. There is no backup or restore of pairings
+  either. 0.2.0 and older have no updater: reinstall once (which erases the
+  disk). See [Updating to a new release](INSTALL.md#updating-to-a-new-release).
+- Power loss while SOFTWARE UPDATE shows INSTALLING can leave the box unable to
+  boot. The only recovery is to reinstall from the ISO, which erases the disk.
+  A download that was interrupted is safe and resumes.
+- SOFTWARE UPDATE trusts HTTPS to github.com plus the `SHA256SUMS` file of the
+  same release. Neither the ISO nor `SHA256SUMS` is signed, so someone who can
+  publish to the GitHub project could publish a bad update.
+- A live USB cannot update itself; write the new ISO to the stick. Updates do
+  not download only the changed parts (every update fetches the whole ISO, about
+  2 GB), and the SOFTWARE UPDATE screen cannot install from a file on a USB
+  stick; the command line `couchliteos-updater apply-iso` can.
+- The updater has run only in virtual machines and in unit tests, never on
+  physical hardware. See the update items in [TESTING.md](TESTING.md).
 - A live USB without persistence forgets pairings, Wi-Fi, Bluetooth and the
   Setup Wizard at every power-off. Persistence needs a second USB stick made on
   Linux (see [INSTALL.md](INSTALL.md)); Windows and macOS have no tested way to
