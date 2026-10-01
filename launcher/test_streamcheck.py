@@ -79,9 +79,14 @@ WIFI_UNREADABLE = sc.Link("wifi", "wlan0", sc.Wifi())
 VPN = sc.Link("other", "tailscale0")
 
 
-def measured(lat, link, can_wake=True):
+def measured(lat, link, can_wake=True, sunshine_up=True):
     word = sc.verdict(lat, link)
-    return sc.Result(sc.MEASURED, "GAMING-PC", link, lat, word, sc.tips_for(sc.MEASURED, word, link, can_wake), can_wake)
+    tips = sc.tips_for(sc.MEASURED, word, link, can_wake, sunshine_up)
+    return sc.Result(sc.MEASURED, "GAMING-PC", link, lat, word, tips, can_wake, sunshine_up)
+
+
+def offline(link=WIRED):
+    return sc.Result(sc.OFFLINE, "GAMING-PC", link, None, "", sc.tips_for(sc.OFFLINE, "", link, True), False)
 
 
 def silent(link=WIRED, can_wake=True):
@@ -520,6 +525,15 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(sc.verdict(latency(), WIFI_UNREADABLE), sc.GOOD)
         self.assertEqual(sc.verdict(latency(), sc.Link("wifi", "wlan0", None)), sc.GOOD)
 
+    def test_a_slow_wifi_link_caps_a_good_ping_at_ok(self):
+        slow = lambda mbps: sc.Link("wifi", "wlan0", sc.Wifi(78, 5180, mbps))
+        self.assertEqual(sc.verdict(latency(), slow(24.0)), sc.OK)
+        self.assertEqual(sc.verdict(latency(), slow(99.9)), sc.OK)
+        self.assertEqual(sc.verdict(latency(), slow(100.0)), sc.GOOD)
+        self.assertEqual(sc.verdict(latency(), slow(0.0)), sc.GOOD)  # 0 is how a driver says "no idea"
+        self.assertEqual(sc.verdict(latency(10.0), slow(24.0)), sc.POOR)  # never makes a bad ping better
+        self.assertEqual(sc.verdict(latency(), sc.Link("wired", "enp3s0", sc.Wifi(78, 5180, 24.0))), sc.GOOD)
+
     def test_wifi_never_makes_a_bad_ping_better(self):
         self.assertEqual(sc.verdict(latency(10.0), WIFI_24_WEAK), sc.POOR)
         self.assertEqual(sc.verdict(latency(10.0), WIFI_5), sc.POOR)
@@ -538,6 +552,18 @@ class TipsTest(unittest.TestCase):
     def test_a_good_connection_has_nothing_to_change(self):
         self.assertEqual(self.tips(latency(), WIRED), (sc.TIP_NOTHING,))
         self.assertEqual(self.tips(latency(), WIFI_5), (sc.TIP_NOTHING,))
+
+    def test_a_good_ping_with_sunshine_not_answering_points_to_sunshine_not_to_playing(self):
+        self.assertEqual(sc.tips_for(sc.MEASURED, sc.GOOD, WIRED, True, False), (sc.TIP_SUNSHINE,))
+        self.assertEqual(sc.tips_for(sc.MEASURED, sc.GOOD, WIRED, True, True), (sc.TIP_NOTHING,))
+
+    def test_a_slow_wifi_link_says_cable(self):
+        tips = self.tips(latency(), sc.Link("wifi", "wlan0", sc.Wifi(78, 5180, 24.0)))
+        self.assertEqual(tips, (sc.TIP_ETHERNET, sc.TIP_SMOOTHER))
+
+    def test_no_route_says_to_check_the_network_settings(self):
+        self.assertEqual(sc.tips_for(sc.OFFLINE, "", WIRED, True), (sc.NO_NETWORK,))
+        self.assertIn("SETTINGS > NETWORK", sc.NO_NETWORK)
 
     def test_2_4_ghz_wifi_says_to_switch_to_5_ghz(self):
         tips = self.tips(latency(), sc.Link("wifi", "wlan0", sc.Wifi(80, 2437, 72.0)))
@@ -727,9 +753,37 @@ class RunCheckTest(SysfsCase):
         self.assertEqual(result.tips, (sc.TIP_NOTHING,))
         self.assertEqual(result.link, WIRED)
         self.assertEqual(result.latency.method, "ping")
-        self.mocks["ping"].assert_called_once_with("192.168.1.50", None)
-        self.mocks["probe"].assert_not_called()  # a PC that answers ping needs no probe
+        # one warm-up ping (its answer is slow: ARP, Wi-Fi power save) that stays out of the numbers, then the run
+        self.assertEqual(
+            self.mocks["ping"].call_args_list,
+            [mock.call("192.168.1.50", None, count=1), mock.call("192.168.1.50", None)],
+        )
+        self.mocks["probe"].assert_called_once_with(HOST)  # a PC that answers ping may still have no Sunshine
         self.mocks["tcp"].assert_not_called()
+
+    def test_a_good_ping_while_sunshine_is_not_answering_is_not_called_ready_to_play(self):
+        for probe in ("awake", "down", "unknown"):
+            with self.subTest(probe=probe):
+                result = self.check(probe=probe)
+                self.assertEqual((result.state, result.verdict), (sc.MEASURED, sc.GOOD))  # the network is not blamed
+                self.assertEqual(result.tips, (sc.TIP_SUNSHINE,))
+                self.assertNotIn(sc.TIP_NOTHING, result.tips)
+                self.assertEqual(result.headline, sc.NO_SUNSHINE)
+                self.assertIn("NETWORK LOOKS FINE", sc.NO_SUNSHINE)
+                self.assertIn("SUNSHINE IS NOT ANSWERING", sc.NO_SUNSHINE)
+                self.mocks["probe"].assert_called_once_with(HOST)
+                self.mocks["tcp"].assert_not_called()
+
+    def test_a_bad_ping_keeps_its_verdict_and_tips_while_sunshine_is_not_answering(self):
+        result = self.check(link=WIFI_24_WEAK, ping=latency(15.0, 14.0, 18.0), probe="down")
+        self.assertEqual(result.verdict, sc.POOR)
+        self.assertEqual(result.tips, (sc.TIP_5GHZ, sc.TIP_CLOSER, sc.TIP_ETHERNET))
+        self.assertEqual(result.headline, "STREAMING WILL PROBABLY STUTTER")
+
+    def test_a_pc_that_ignores_ping_and_refuses_the_port_is_not_called_ready_to_play_either(self):
+        result = self.check(ping=sc.Latency(status=sc.NO_REPLY), probe="awake", tcp=latency(0.0, 1.0, 3.0, "port"))
+        self.assertEqual((result.state, result.verdict, result.latency.method), (sc.MEASURED, sc.GOOD, "port"))
+        self.assertEqual((result.tips, result.headline), ((sc.TIP_SUNSHINE,), sc.NO_SUNSHINE))
 
     def test_a_poor_wifi_connection(self):
         result = self.check(link=WIFI_24_WEAK, ping=latency(15.0, 14.0, 18.0))
@@ -739,7 +793,9 @@ class RunCheckTest(SysfsCase):
     def test_the_first_lan_address_and_port_are_used(self):
         manual = stream.Host(name="Pc", manual="10.0.0.7", manual_port=47990)
         self.check(manual, ping=sc.Latency(status=sc.NO_REPLY))
-        self.mocks["ping"].assert_called_once_with("10.0.0.7", None)
+        self.assertEqual(
+            self.mocks["ping"].call_args_list, [mock.call("10.0.0.7", None, count=1), mock.call("10.0.0.7", None)]
+        )
         self.mocks["tcp"].assert_called_once_with("10.0.0.7", 47990, None)
 
     def test_a_pc_that_ignores_ping_is_measured_through_its_sunshine_port(self):
@@ -757,6 +813,15 @@ class RunCheckTest(SysfsCase):
         self.assertEqual(result.tips, (sc.TIP_WAKE, sc.TIP_SUNSHINE))
         self.assertEqual((result.word, result.headline), ("NO ANSWER", "THE GAMING PC IS NOT ANSWERING"))
         self.assertEqual(result.link, WIRED)  # what is known about the route is still shown
+        self.mocks["tcp"].assert_not_called()
+
+    def test_no_route_to_the_pc_points_to_the_network_settings_not_to_wake_pc(self):
+        result = self.check(ping=sc.Latency(status=sc.NO_ROUTE), probe="down")
+        self.assertEqual((result.state, result.verdict, result.latency), (sc.OFFLINE, "", None))
+        self.assertEqual(result.tips, (sc.NO_NETWORK,))
+        self.assertEqual((result.word, result.headline), ("NO NETWORK", "THIS PC HAS NO ROUTE TO THE GAMING PC"))
+        self.assertFalse(result.can_wake)  # WAKE PC would only wake a PC that cannot be reached anyway
+        self.assertEqual(sc.button_ids(result), [sc.AGAIN, sc.BACK])
         self.mocks["tcp"].assert_not_called()
 
     def test_a_silent_pc_without_a_mac_cannot_be_woken(self):
@@ -786,11 +851,26 @@ class RunCheckTest(SysfsCase):
 
     def test_end_to_end_through_the_commands(self):
         commands = Commands(ping=PING_POOR, route=ROUTE_WIFI, nmcli=NMCLI_5GHZ)
-        with mock.patch.object(sc, "run_command", commands):
+        with mock.patch.object(sc, "run_command", commands), mock.patch.object(sc.stream, "probe", return_value="up"):
             result = sc.run_check(HOST)
         self.assertEqual((result.state, result.verdict), (sc.MEASURED, sc.POOR))
         self.assertEqual(result.link, sc.Link("wifi", "wlan0", sc.Wifi(78, 5180, 866.0)))
         self.assertEqual(result.latency.loss_pct, 15.0)
+
+    def test_one_warm_up_ping_goes_first_and_only_the_run_is_measured(self):
+        commands = Commands(ping=[PING_UNREACHABLE, PING_GOOD])  # the warm-up's answer, whatever it is, is not used
+        with mock.patch.object(sc, "run_command", commands), mock.patch.object(sc.stream, "probe", return_value="up"):
+            result = sc.run_check(HOST)
+        self.assertEqual(
+            commands.ran("ping"),
+            [["ping", "-c", "1", "-i", "0.2", "-W", "1", "-q", "192.168.1.50"],
+             ["ping", "-c", "20", "-i", "0.2", "-W", "1", "-q", "192.168.1.50"]],
+        )
+        self.assertEqual((result.state, result.verdict, result.latency.jitter_ms), (sc.MEASURED, sc.GOOD, 0.789))
+
+    def test_cancelling_the_warm_up_gives_no_result(self):
+        with mock.patch.object(sc, "run_command", Commands(ping=sc.Cancelled())):
+            self.assertIsNone(sc.run_check(HOST, threading.Event()))
 
 
 class RunnerTest(unittest.TestCase):
@@ -919,6 +999,26 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("[ WAKE PC ]", text)
         self.assertEqual(sc.button_ids(silent()), [sc.WAKE, sc.AGAIN, sc.BACK])
 
+    def test_sunshine_not_answering_shows_the_good_network_and_the_sunshine_tip(self):
+        screen = self.draw(measured(latency(), WIRED, sunshine_up=False))
+        self.assertFits(screen)
+        text = screen.last_text()
+        self.assertIn("G O O D", text)
+        self.assertIn(sc.NO_SUNSHINE, text)
+        self.assertIn("START SUNSHINE", text)
+        self.assertNotIn("NOTHING TO CHANGE", text)
+        self.assertNotIn("STREAMING SHOULD BE SMOOTH", text)
+
+    def test_no_route_says_no_network_and_points_to_settings_network(self):
+        screen = self.draw(offline())
+        self.assertFits(screen)
+        text = screen.last_text()
+        flat = " ".join(text.split())  # a tip may wrap between "SETTINGS" and "> NETWORK"
+        self.assertIn("N O   N E T W O R K", text)
+        self.assertIn("SETTINGS > NETWORK", flat)
+        self.assertNotIn("ASLEEP", text)
+        self.assertNotIn("WAKE PC", text)
+
     def test_a_silent_pc_without_a_mac_has_no_wake_button(self):
         self.assertEqual(sc.button_ids(silent(can_wake=False)), [sc.AGAIN, sc.BACK])
         self.assertNotIn("[ WAKE PC ]", self.draw(silent(can_wake=False)).last_text())
@@ -937,6 +1037,8 @@ class ScreenTest(unittest.TestCase):
             measured(latency(), WIRED), measured(latency(15.0, 14.0, 28.0, "port"), WIFI_24_WEAK),
             measured(latency(0.0, 7.0), WIFI_5_WEAK), measured(latency(15.0), VPN), silent(), silent(can_wake=False),
             sc.Result(sc.NOT_FOUND, "X" * 24, sc.Link(), None, "", sc.tips_for(sc.NOT_FOUND, "", sc.Link(), True), True),
+            measured(latency(), WIRED, sunshine_up=False), offline(),
+            measured(latency(), sc.Link("wifi", "wlan0", sc.Wifi(78, 5180, 24.0))),
         ]
         for height, width in ((24, 80), (30, 100), (45, 160), (20, 80), (18, 80), (24, 70)):
             for result in results:
@@ -964,8 +1066,11 @@ class ScreenTest(unittest.TestCase):
         for result in (measured(latency(), WIRED), measured(latency(15.0), WIFI_24_WEAK), silent()):
             for _row, _column, text, _attr in self.draw(result).last():
                 self.assertEqual(text, text.upper())
-        for text in (sc.CHECKING, sc.NO_NETWORK, sc.NO_ADDRESS, sc.PAIR_FIRST, sc.CHECK_FAILED, sc.CHECK_HINT):
+        for text in (sc.CHECKING, sc.NO_NETWORK, sc.NO_ADDRESS, sc.PAIR_FIRST, sc.CHECK_FAILED, sc.CHECK_HINT,
+                     sc.NO_SUNSHINE):
             self.assertEqual(text, text.upper())
+        self.assertLessEqual(len(sc.CHECKING), 76)
+        self.assertLessEqual(len(sc.NO_SUNSHINE), 76)
 
 
 class ButtonsTest(unittest.TestCase):
@@ -1001,12 +1106,13 @@ class WaitTest(unittest.TestCase):
     def runner(self, check):
         return sc.Runner(HOST, check)
 
-    def test_it_says_checking_about_five_seconds_until_the_result_is_there(self):
+    def test_it_says_checking_five_to_fifteen_seconds_until_the_result_is_there(self):
         release = threading.Event()
         runner = self.runner(lambda host, cancel: release.wait(5) and measured(latency(), WIRED))
         screen = FakeScreen(on_getch=release.set)
         self.assertTrue(sc.wait(screen, runner, lambda window: window.getch()))
-        self.assertIn("CHECKING... (ABOUT 5 SECONDS)", screen.all_text())
+        self.assertIn("CHECKING... (5 TO 15 SECONDS)", screen.all_text())  # a PC that ignores ping takes about 10
+        self.assertNotIn("ABOUT 5 SECONDS", screen.all_text())
         self.assertIn("GAMING PC: GAMING-PC", screen.all_text())
         self.assertIn("B / CIRCLE CANCELS", screen.all_text())
         self.assertEqual(runner.result.verdict, sc.GOOD)
@@ -1126,7 +1232,9 @@ class LauncherFlowTest(SysfsCase):
             time.sleep(0.05)
             return PING_GOOD
 
-        page, screen, commands = self.flow([27], commands=Commands(ping=slow, route=ROUTE_WIRED, nmcli=NMCLI_5GHZ))
+        page, screen, commands = self.flow(
+            [27], commands=Commands(ping=slow, route=ROUTE_WIRED, nmcli=NMCLI_5GHZ), probe="up"
+        )
         text = screen.last_text()
         for piece in ("STREAM CHECK: GAMING-PC", "G O O D", "STREAMING SHOULD BE SMOOTH", "LATENCY  2.3 MS",
                       "JITTER  0.8 MS", "PACKET LOSS  0%", "CONNECTION  ETHERNET", "NOTHING TO CHANGE",
@@ -1134,10 +1242,32 @@ class LauncherFlowTest(SysfsCase):
             self.assertIn(piece, text)
         self.assertNotIn("WI-FI", text)
         self.assertNotIn("WAKE PC", text)
-        self.assertIn("CHECKING... (ABOUT 5 SECONDS)", screen.all_text())  # shown while it ran
+        self.assertIn("CHECKING... (5 TO 15 SECONDS)", screen.all_text())  # shown while it ran
         self.assertEqual(commands.ran("nmcli"), [])
-        self.assertEqual(commands.ran("ping"), [["ping", "-c", "20", "-i", "0.2", "-W", "1", "-q", "192.168.1.50"]])
+        self.assertEqual(
+            commands.ran("ping"),
+            [["ping", "-c", "1", "-i", "0.2", "-W", "1", "-q", "192.168.1.50"],  # the warm-up
+             ["ping", "-c", "20", "-i", "0.2", "-W", "1", "-q", "192.168.1.50"]],
+        )
         page.message.assert_not_called()
+
+    def test_a_good_ping_but_no_sunshine_says_so_instead_of_start_moonlight_and_play(self):
+        _page, screen, _commands = self.flow([27], probe="down")
+        text = screen.last_text()
+        for piece in ("G O O D", sc.NO_SUNSHINE, "START SUNSHINE", "LATENCY  2.3 MS"):
+            self.assertIn(piece, text)
+        self.assertNotIn("START MOONLIGHT AND PLAY", text)
+        self.assertNotIn("STREAMING SHOULD BE SMOOTH", text)
+
+    def test_no_route_to_the_pc_points_to_settings_network_and_offers_no_wake_pc(self):
+        _page, screen, _commands = self.flow([27], commands=Commands(ping=PING_UNREACHABLE), probe="down")
+        text = screen.last_text()
+        flat = " ".join(text.split())  # a tip may wrap between "SETTINGS" and "> NETWORK"
+        for piece in ("N O   N E T W O R K", "[ RUN AGAIN ]", "[ BACK ]"):
+            self.assertIn(piece, text)
+        self.assertIn("SETTINGS > NETWORK", flat)
+        self.assertNotIn("ASLEEP", text)
+        self.assertNotIn("WAKE PC", text)
 
     def test_a_poor_wifi_connection(self):
         commands = Commands(ping=PING_POOR, route=ROUTE_WIFI, nmcli=NMCLI_24GHZ_WEAK)
@@ -1157,7 +1287,7 @@ class LauncherFlowTest(SysfsCase):
         self.assertIn("WI-FI BAND  5 GHZ    LINK SPEED  866 MBIT/S", text)
 
     def test_an_unreachable_pc_with_a_mac_offers_wake_pc_and_checks_again_after_it(self):
-        commands = Commands(ping=[PING_SILENT, PING_GOOD])
+        commands = Commands(ping=[PING_SILENT, PING_SILENT, PING_GOOD])  # (warm-up, run) of each of the two checks
         page, screen, commands = self.flow([10, 27], commands=commands)  # A on WAKE PC, then B on the new result
         first = screen.frames[[index for index, frame in enumerate(screen.frames)
                                if "N O   A N S W E R" in " ".join(cell[2] for cell in frame)][0]]
@@ -1167,7 +1297,7 @@ class LauncherFlowTest(SysfsCase):
         self.assertEqual(self.wake_calls(page), [(HOST, True)])  # the existing wake flow, forced
         self.assertIn("GAMING-PC IS AWAKE", page.message.call_args.args[1])
         self.assertEqual(page.message.call_args.args[0], "WAKE PC")
-        self.assertEqual(len(commands.ran("ping")), 2)  # it measured again by itself
+        self.assertEqual(len(commands.ran("ping")), 4)  # it measured again by itself
         self.assertIn("G O O D", screen.last_text())
 
     def wake_calls(self, page):
@@ -1192,14 +1322,14 @@ class LauncherFlowTest(SysfsCase):
         self.assertNotIn("N O   A N S W E R", text)
 
     def test_run_again_measures_again(self):
-        commands = Commands(ping=[PING_GOOD, PING_POOR])
+        commands = Commands(ping=[PING_GOOD, PING_GOOD, PING_POOR])  # (warm-up, run) of each of the two checks
         _page, screen, commands = self.flow([10, 27], commands=commands)  # A on RUN AGAIN, then B
-        self.assertEqual(len(commands.ran("ping")), 2)
+        self.assertEqual(len(commands.ran("ping")), 4)
         self.assertIn("P O O R", screen.last_text())
 
     def test_back_leaves_after_one_check(self):
         page, _screen, commands = self.flow([curses.KEY_RIGHT, 10])  # RUN AGAIN is first; BACK is the second button
-        self.assertEqual(len(commands.ran("ping")), 1)
+        self.assertEqual(len(commands.ran("ping")), 2)  # the warm-up and the run
         page.message.assert_not_called()
 
     def test_b_cancels_the_check_itself(self):
