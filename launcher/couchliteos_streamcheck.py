@@ -7,7 +7,8 @@ three plain tips.
 
 Windows PCs drop pings by default, and so would be called "not answering" while they stream
 fine. So when ping gets no answer but the PC does answer on its Sunshine port, the same
-numbers are measured with TCP connects to that port instead.
+numbers are measured with TCP connects to that port instead. Sunshine is probed on every check: a
+good network with no Sunshine on it is not called ready to play.
 
 Everything that decides something is a pure function of text and numbers. The few calls that
 touch the system (ping, ip, nmcli, a TCP connect) sit behind run_command and tcp_latency, so
@@ -58,13 +59,14 @@ GOOD_LOSS_PCT = 0.0
 GOOD_JITTER_MS = 5.0
 GOOD_AVG_MS = 10.0
 # On Wi-Fi a good ping cannot make up for a weak signal or the crowded 2.4 GHz band, which
-# stutter once the stream starts: those cap the verdict at OK.
+# stutter once the stream starts, and so does a link slower than WIFI_SLOW_MBPS: those cap the verdict at OK.
 WIFI_WEAK_PCT = 50  # below this signal strength the signal is weak
 WIFI_STRONG_PCT = 70  # from this on it is strong
+WIFI_SLOW_MBPS = 100  # below this link speed (0 is a driver saying it does not know) the link is slow
 
 GOOD, OK, POOR = "GOOD", "OK", "POOR"
 # What a check ends in.
-MEASURED, SILENT, NOT_FOUND = "measured", "silent", "notfound"
+MEASURED, SILENT, NOT_FOUND, OFFLINE = "measured", "silent", "notfound", "offline"
 # What a ping run ends in (only "ok" has numbers).
 PING_OK, NO_REPLY, UNKNOWN_HOST, NO_ROUTE, DENIED, MISSING, TIMED_OUT, FAILED = (
     "ok", "noreply", "unknownhost", "noroute", "denied", "missing", "timeout", "failed",
@@ -76,12 +78,13 @@ PAIR_FIRST = "PAIR A GAMING PC FIRST.\nSETTINGS > STREAMING > PAIR A GAMING PC."
 NO_NETWORK = "NO NETWORK. CONNECT ETHERNET OR WI-FI, THEN TRY AGAIN: SETTINGS > NETWORK."
 NO_ADDRESS = "NO ADDRESS IS KNOWN FOR THIS GAMING PC YET. OPEN MOONLIGHT WHILE IT IS ON, THEN TRY AGAIN."
 CHECK_FAILED = "THE CHECK COULD NOT RUN. TRY AGAIN."
-CHECKING = "CHECKING... (ABOUT 5 SECONDS)"
+CHECKING = "CHECKING... (5 TO 15 SECONDS)"  # a PC that ignores ping takes about 10: ping, then the port
 SMOOTHER = "SMOOTHER STREAM"  # the row in Settings > STREAMING (the launcher's SMOOTHER_ROW starts with it)
 CHECK_HINT = "B / CIRCLE CANCELS"
 RESULT_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE GOES BACK"
 SPINNER = "|/-\\"
 
+NO_SUNSHINE = "THE NETWORK LOOKS FINE, BUT SUNSHINE IS NOT ANSWERING"  # the headline of a GOOD result without Sunshine
 TIP_NOTHING = "NOTHING TO CHANGE. START MOONLIGHT AND PLAY."
 TIP_ETHERNET = "USE A NETWORK CABLE (ETHERNET) FROM THIS PC TO YOUR ROUTER. IT IS THE MOST RELIABLE FIX."
 TIP_5GHZ = "SWITCH THIS PC TO YOUR 5 GHZ WI-FI NETWORK: SETTINGS > NETWORK > JOIN A WI-FI NETWORK."
@@ -146,6 +149,10 @@ class Wifi:
     def weak(self) -> bool:
         return self.signal is not None and self.signal < WIFI_WEAK_PCT
 
+    @property
+    def slow(self) -> bool:
+        return self.rate_mbps is not None and 0 < self.rate_mbps < WIFI_SLOW_MBPS
+
 
 @dataclasses.dataclass(frozen=True)
 class Link:
@@ -156,29 +163,33 @@ class Link:
 
 @dataclasses.dataclass(frozen=True)
 class Result:
-    state: str  # MEASURED, SILENT (nothing answers) or NOT_FOUND (the name does not resolve)
+    state: str  # MEASURED, SILENT (nothing answers), NOT_FOUND (the name does not resolve) or OFFLINE (no route)
     pc: str  # the PC's name, as the screen shows it
     link: Link
     latency: Latency | None = None
     verdict: str = ""  # GOOD, OK or POOR; only when measured
     tips: tuple[str, ...] = ()
     can_wake: bool = False  # a MAC address is known, so WAKE PC can be offered
+    sunshine_up: bool = True  # Sunshine answered on its port (the network is judged either way)
 
     @property
     def headline(self) -> str:
         """The verdict in plain words."""
+        if self.verdict == GOOD and not self.sunshine_up:
+            return NO_SUNSHINE
         return {
             GOOD: "STREAMING SHOULD BE SMOOTH",
             OK: "STREAMING SHOULD WORK, BUT MAY STUTTER NOW AND THEN",
             POOR: "STREAMING WILL PROBABLY STUTTER",
-        }.get(self.verdict) or (
-            "THE GAMING PC IS NOT ANSWERING" if self.state == SILENT else "THE GAMING PC CANNOT BE FOUND"
-        )
+        }.get(self.verdict) or {
+            SILENT: "THE GAMING PC IS NOT ANSWERING",
+            OFFLINE: "THIS PC HAS NO ROUTE TO THE GAMING PC",
+        }.get(self.state, "THE GAMING PC CANNOT BE FOUND")
 
     @property
     def word(self) -> str:
         """The big word on the screen."""
-        return self.verdict or ("NO ANSWER" if self.state == SILENT else "NOT FOUND")
+        return self.verdict or {SILENT: "NO ANSWER", OFFLINE: "NO NETWORK"}.get(self.state, "NOT FOUND")
 
 
 # ---------------------------------------------------------------------- parsing
@@ -446,18 +457,25 @@ def verdict(latency: Latency, link: Link) -> str:
 
 
 def wifi_limits(link: Link) -> bool:
-    """Wi-Fi that is weak or on 2.4 GHz: fine for a ping, shaky for a stream."""
-    return link.kind == "wifi" and link.wifi is not None and (link.wifi.band == "2.4" or link.wifi.weak)
+    """Wi-Fi that is weak, slow or on 2.4 GHz: fine for a ping, shaky for a stream."""
+    return (
+        link.kind == "wifi" and link.wifi is not None
+        and (link.wifi.band == "2.4" or link.wifi.weak or link.wifi.slow)
+    )
 
 
-def tips_for(state: str, verdict_word: str, link: Link, can_wake: bool) -> tuple[str, ...]:
+def tips_for(
+    state: str, verdict_word: str, link: Link, can_wake: bool, sunshine_up: bool = True
+) -> tuple[str, ...]:
     """One to three plain tips, the most useful first."""
+    if state == OFFLINE:
+        return (NO_NETWORK,)
     if state == SILENT:
         return (TIP_WAKE if can_wake else TIP_TURN_ON, TIP_SUNSHINE)
     if state == NOT_FOUND:
         return (TIP_NOT_FOUND, TIP_WAKE if can_wake else TIP_LEARN)
     if verdict_word == GOOD:
-        return (TIP_NOTHING,)
+        return (TIP_NOTHING if sunshine_up else TIP_SUNSHINE,)
     found: list[str] = []
     if link.kind == "wifi":
         if link.wifi is not None and link.wifi.band == "2.4":
@@ -490,14 +508,17 @@ def unavailable(hosts: list[stream.Host], host: stream.Host | None, link_up: boo
 def run_check(host: stream.Host, cancel: threading.Event | None = None) -> Result | None:
     """Measure the path to `host` (which has a LAN address); None when `cancel` was set.
 
-    Takes about 5 seconds: the pings, plus the link look-up, which is quick."""
+    Takes about 5 seconds: the pings, plus the link look-up, which is quick (about 10 for a PC that
+    ignores ping: the silent pings, then the port)."""
     address, port = host.lan_addresses()[0]
     pc = pcstatus.label(host.name)
     can_wake = bool(host.mac)
     try:
         link = find_link(address, cancel)
+        ping(address, cancel, count=1)  # warm-up: the first answer is slow (ARP, Wi-Fi power save); not measured
         latency = ping(address, cancel)
-        if latency.status not in (PING_OK, UNKNOWN_HOST) and stream.probe(host) in ("up", "awake"):
+        sunshine = "unknown" if latency.status == UNKNOWN_HOST else stream.probe(host)  # at most 1 s per address
+        if latency.status not in (PING_OK, UNKNOWN_HOST) and sunshine in ("up", "awake"):
             # The PC is on but ignores ping (Windows does by default): measure Sunshine's port instead.
             latency = tcp_latency(address, port, cancel)
     except Cancelled:
@@ -506,9 +527,10 @@ def run_check(host: stream.Host, cancel: threading.Event | None = None) -> Resul
         return None
     if latency.status == PING_OK:
         word = verdict(latency, link)
-        return Result(MEASURED, pc, link, latency, word, tips_for(MEASURED, word, link, can_wake), can_wake)
-    state = NOT_FOUND if latency.status == UNKNOWN_HOST else SILENT
-    return Result(state, pc, link, None, "", tips_for(state, "", link, can_wake), can_wake)
+        tips = tips_for(MEASURED, word, link, can_wake, sunshine == "up")
+        return Result(MEASURED, pc, link, latency, word, tips, can_wake, sunshine == "up")
+    state = {UNKNOWN_HOST: NOT_FOUND, NO_ROUTE: OFFLINE}.get(latency.status, SILENT)
+    return Result(state, pc, link, None, "", tips_for(state, "", link, can_wake), can_wake and state != OFFLINE)
 
 
 class Runner:
