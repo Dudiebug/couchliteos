@@ -2,8 +2,13 @@
 set -Eeuo pipefail
 
 APP=${1:-}
+# The COUCHLITEOS_DEFAULTS, _RUN_DIR, _APPS_DIR and _LIBEXEC_DIR overrides exist so the
+# tests can run this script against fake directories; the image never sets them.
 # shellcheck source=config/default/couchliteos
-source /etc/default/couchliteos
+source "${COUCHLITEOS_DEFAULTS:-/etc/default/couchliteos}"
+RUN_DIR=${COUCHLITEOS_RUN_DIR:-/run/couchliteos}
+APPS_DIR=${COUCHLITEOS_APPS_DIR:-/opt/couchliteos/apps}
+LIBEXEC_DIR=${COUCHLITEOS_LIBEXEC_DIR:-/usr/libexec}
 LOG_DIR=${COUCHLITEOS_LOG_DIR:-/var/log/couchliteos}
 DATA_DIR=${COUCHLITEOS_DATA_DIR:-/var/lib/couchliteos}
 mkdir -p "$LOG_DIR" "$DATA_DIR/home/.config" "$DATA_DIR/home/.cache"
@@ -11,17 +16,17 @@ mkdir -p "$LOG_DIR" "$DATA_DIR/home/.config" "$DATA_DIR/home/.cache"
 appdir=
 case "$APP" in
   moonlight)
-    request=/run/couchliteos/start-moonlight
-    appdir=/opt/couchliteos/apps/moonlight
+    request=$RUN_DIR/start-moonlight
+    appdir=$APPS_DIR/moonlight
     binary=$appdir/usr/bin/moonlight
     ;;
   chiaki-ng)
-    request=/run/couchliteos/start-chiaki
-    appdir=/opt/couchliteos/apps/chiaki-ng
+    request=$RUN_DIR/start-chiaki
+    appdir=$APPS_DIR/chiaki-ng
     binary=$appdir/usr/bin/chiaki
     ;;
   firefox)
-    request=/run/couchliteos/start-firefox
+    request=$RUN_DIR/start-firefox
     binary=/usr/bin/firefox-esr
     ;;
   *)
@@ -30,10 +35,10 @@ case "$APP" in
     ;;
 esac
 
-ready=/run/couchliteos/$APP-ready
-status_file=/run/couchliteos/$APP-status
-active_file=/run/couchliteos/app-active
-close_file=/run/couchliteos/close-$APP
+ready=$RUN_DIR/$APP-ready
+status_file=$RUN_DIR/$APP-status
+active_file=$RUN_DIR/app-active
+close_file=$RUN_DIR/close-$APP
 rm -f -- "$request" "$ready" "$status_file" "$close_file"
 
 write_status() {
@@ -81,6 +86,7 @@ trap cleanup EXIT INT TERM
 
 READY_REACHED=0
 CLOSE_REQUESTED=0
+STREAM_REQUESTED=0
 run_client() {
   setsid "$@" &
   local pid=$!
@@ -165,10 +171,11 @@ PY
   fi
   # Auto-stream: the launcher leaves a host and app name in moonlight-stream.request;
   # the module validates them, so they reach Moonlight as plain arguments (no shell).
-  mapfile -t stream_request < <(python3 /usr/libexec/couchliteos_stream.py take-request 2>/dev/null || true)
+  mapfile -t stream_request < <(python3 "$LIBEXEC_DIR"/couchliteos_stream.py take-request "$RUN_DIR/moonlight-stream.request" 2>/dev/null || true)
   if ((${#stream_request[@]} == 2)); then
     host=${stream_request[0]}
     profile_app=${stream_request[1]}
+    STREAM_REQUESTED=1
     echo "Auto-stream requested: $host ($profile_app)"
   fi
   if [[ -n "$host" && -n "$profile_app" ]]; then
@@ -202,7 +209,15 @@ else
   write_status "exited: status $rc"
 fi
 
-if ((rc == 0)); then
+if ((rc != 0 && STREAM_REQUESTED == 1)); then
+  # An auto-stream request is one-shot and already used up. Letting the unit restart
+  # (Restart=on-failure) would open the Moonlight GUI, or stream to the profile host,
+  # instead of the launcher's error screen with WAKE PC, which reads the status file
+  # written above. So a failed request-driven stream exits 0.
+  printf '%s %s auto-stream failed with status %d; not restarting, the launcher reports it\n' \
+    "$(date --iso-8601=seconds)" "$APP" "$rc" >&2
+  exit 0
+elif ((rc == 0)); then
   printf '%s %s exited normally; returning to launcher\n' "$(date --iso-8601=seconds)" "$APP"
 else
   printf '%s %s crashed/failed with status %d; systemd will retry up to three times\n' \

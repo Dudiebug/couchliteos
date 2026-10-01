@@ -289,10 +289,15 @@ class WakeAndWaitTest(unittest.TestCase):
         return result, sent, clock
 
     def test_reachable_host_is_left_alone(self):
-        for state in ("up", "awake"):
-            result, sent, _clock = self.run_wake([state])
-            self.assertEqual(result, "up")
-            self.assertEqual(sent, [])
+        result, sent, _clock = self.run_wake(["up"])
+        self.assertEqual(result, "up")
+        self.assertEqual(sent, [])
+
+    def test_a_pc_that_refuses_the_port_is_on_but_not_serving(self):
+        # Sunshine is not running (or a stale address belongs to another device): no packet, own result.
+        result, sent, _clock = self.run_wake(["awake"])
+        self.assertEqual(result, "awake")
+        self.assertEqual(sent, [])
 
     def test_host_without_mac_is_not_woken(self):
         host = stream.Host(name="PC", local="192.168.1.50")
@@ -316,12 +321,19 @@ class WakeAndWaitTest(unittest.TestCase):
         self.assertTrue(ticks)
         self.assertEqual(ticks[0], 0.0)
 
-    def test_gives_up_after_thirty_seconds_and_resends(self):
+    def test_a_pc_that_was_fully_off_gets_ninety_seconds_and_is_woken_again(self):
+        self.assertEqual(stream.WAKE_TIMEOUT, 90.0)
         result, sent, clock = self.run_wake(["down"])
         self.assertEqual(result, "timeout")
-        self.assertGreaterEqual(clock.now - 100.0, 30.0)
-        self.assertLess(clock.now - 100.0, 32.0)
-        self.assertGreater(len(sent), 2)
+        self.assertGreaterEqual(clock.now - 100.0, 90.0)
+        self.assertLess(clock.now - 100.0, 92.0)
+        self.assertGreater(len(sent), 10)
+
+    def test_a_pc_that_booted_but_never_serves_ends_as_awake_not_timeout(self):
+        result, sent, clock = self.run_wake(["down", "down", "awake"])
+        self.assertEqual(result, "awake")
+        self.assertTrue(sent)
+        self.assertGreaterEqual(clock.now - 100.0, 90.0)
 
     def test_tick_can_cancel(self):
         result, sent, clock = self.run_wake(["down"], tick=lambda elapsed: elapsed >= 3)
@@ -421,6 +433,79 @@ class BitrateTest(unittest.TestCase):
         odd = stream.plan_settings(1921, 1081, 60000, stream.Network())
         self.assertEqual((odd.width % 2, odd.height % 2), (0, 0))
 
+    def test_software_decode_is_capped_at_1080p60_with_a_sane_bitrate(self):
+        fast = stream.Network(link_mbps=1000.0, link_kind="wired")
+        for mode in ((3840, 2160, 59940), (3840, 2160, 119880), (2560, 1440, 144000), (1920, 1080, 240000)):
+            plan = stream.plan_settings(*mode, fast, decode="software")
+            self.assertEqual((plan.width, plan.height, plan.fps), (1920, 1080, 60), mode)
+            self.assertEqual(plan.bitrate, 20000, mode)
+            self.assertTrue(plan.decode_limited, mode)
+        ultrawide = stream.plan_settings(3440, 1440, 100000, fast, decode="software")
+        self.assertLessEqual(ultrawide.width * ultrawide.height, 1920 * 1080)
+        self.assertEqual((ultrawide.fps, ultrawide.width / ultrawide.height > 2.3), (60, True))
+
+    def test_software_decode_still_honours_a_slow_link_and_small_modes(self):
+        slow = stream.plan_settings(3840, 2160, 60000, stream.Network(link_mbps=10.0), decode="software")
+        self.assertEqual((slow.width, slow.height, slow.bitrate), (1920, 1080, 6000))
+        small = stream.plan_settings(1280, 720, 30000, stream.Network(), decode="software")
+        self.assertEqual((small.width, small.height, small.fps), (1280, 720, 30))
+        self.assertFalse(small.decode_limited)
+        exact = stream.plan_settings(1920, 1080, 60000, stream.Network(), decode="software")
+        self.assertFalse(exact.decode_limited)
+
+    def test_hardware_and_unknown_decode_keep_the_display_mode(self):
+        for decode in ("auto", "hardware"):
+            plan = stream.plan_settings(3840, 2160, 119880, stream.Network(), decode=decode)
+            self.assertEqual((plan.width, plan.height, plan.fps), (3840, 2160, 120))
+            self.assertFalse(plan.decode_limited)
+        plan = stream.plan_settings(3840, 2160, 60000, stream.Network())
+        self.assertEqual((plan.width, plan.height, plan.fps, plan.decode_limited), (3840, 2160, 60, False))
+
+
+class VideoDecodeTest(unittest.TestCase):
+    """video_decode mirrors couchliteos-run-app: a configured decoder wins, else the GPU hint."""
+
+    def decode(self, hint=None, configured=None, videodec=None):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            env, config, conf = base / "hardware.env", base / "config.ini", base / "Moonlight.conf"
+            if hint is not None:
+                env.write_text(f"COUCHLITEOS_GPU_DRIVER=nouveau\nCOUCHLITEOS_VIDEO_DECODE={hint}\n")
+            if configured is not None:
+                config.write_text(f"[moonlight]\nresolution = 1920x1080\ndecoder = {configured}\n")
+            if videodec is not None:
+                conf.write_text(f"[General]\nfps=60\nvideodec={videodec}\n")
+            return stream.video_decode(env, config, conf)
+
+    def test_nothing_known_is_auto(self):
+        self.assertEqual(self.decode(), "auto")
+        self.assertEqual(self.decode("auto"), "auto")
+
+    def test_gpu_hint_marks_software_decode(self):
+        self.assertEqual(self.decode("software"), "software")
+
+    def test_a_configured_decoder_wins_over_the_hint(self):
+        self.assertEqual(self.decode("auto", "software"), "software")
+        self.assertEqual(self.decode("software", "hardware"), "hardware")
+        self.assertEqual(self.decode("software", "auto"), "software")
+
+    def test_software_chosen_in_moonlight_itself_counts(self):
+        self.assertEqual(self.decode(videodec=2), "software")
+        self.assertEqual(self.decode("auto", videodec=1), "auto")
+        self.assertEqual(self.decode("auto", videodec=0), "auto")
+
+    def test_garbage_is_auto(self):
+        self.assertEqual(self.decode("banana", "banana"), "auto")
+        missing = pathlib.Path("/nonexistent")
+        self.assertEqual(stream.video_decode(missing / "a", missing / "b", missing / "c"), "auto")
+
+    def test_an_undecodable_config_never_raises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            config.write_bytes(b"[moonlight]\ndecoder = software\n\xff\xfe\x80\n")
+            missing = pathlib.Path(directory) / "missing"
+            self.assertEqual(stream.video_decode(missing, config, missing), "auto")
+
 
 class NetworkMeasurementTest(unittest.TestCase):
     PING = (
@@ -487,6 +572,21 @@ class NetworkMeasurementTest(unittest.TestCase):
             run = self.fake_run({("ip",): FileNotFoundError("ip"), ("ping",): subprocess.TimeoutExpired("ping", 8)})
             network = stream.measure_network("192.168.1.50", run=run, sysfs=pathlib.Path(directory))
         self.assertEqual(network, stream.Network())
+
+    def test_an_asleep_pc_is_not_pinged_and_is_marked_so(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.sysfs(directory, "enp2s0", 1000)
+            commands = []
+
+            def run(command, **_kwargs):
+                commands.append(command[0])
+                if command[:4] == ["ip", "-o", "route", "get"]:
+                    return subprocess.CompletedProcess(command, 0, "192.168.1.50 dev enp2s0 src 192.168.1.20\n", "")
+                return subprocess.CompletedProcess(command, 1, "", "")
+
+            network = stream.measure_network("192.168.1.50", pc_asleep=True, run=run, sysfs=pathlib.Path(directory))
+        self.assertNotIn("ping", commands)
+        self.assertEqual(network, stream.Network(1000.0, "wired", "enp2s0", None, None, True))
 
     def test_link_down_speed_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -700,6 +800,39 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("20 MBPS", text)
         self.assertNotIn("CAPPED", text)
 
+    def test_summary_shows_the_software_decode_cap(self):
+        plan = stream.plan_settings(3840, 2160, 60000, stream.Network(), decode="software")
+        text = "\n".join(stream.summary_lines("3840x2160@60Hz", plan, stream.Network()))
+        self.assertIn("SOFTWARE VIDEO DECODING", text)
+        self.assertIn("1920x1080 AT 60 FPS", text)
+        self.assertIn("STREAM 1920x1080 AT 60 FPS", text)
+        normal = stream.plan_settings(1920, 1080, 60000, stream.Network())
+        self.assertNotIn("SOFTWARE", "\n".join(stream.summary_lines("x", normal, stream.Network())))
+
+    def test_summary_does_not_blame_the_network_when_nothing_answered(self):
+        # 100% loss and no round-trip time: the PC is asleep or drops pings, not a bad cable.
+        network = stream.Network(1000.0, "wired", "enp2s0", None, 100.0)
+        plan = stream.plan_settings(1920, 1080, 60000, network)
+        text = "\n".join(stream.summary_lines("x", plan, network))
+        self.assertIn("PING NOT MEASURED", text)
+        for unwanted in ("PACKET LOSS", "WIRED CONNECTION", "LOSS 100"):
+            self.assertNotIn(unwanted, text)
+
+    def test_summary_says_an_asleep_pc_was_not_measured(self):
+        network = stream.Network(1000.0, "wired", "enp2s0", None, None, True)
+        plan = stream.plan_settings(1920, 1080, 60000, network)
+        text = "\n".join(stream.summary_lines("x", plan, network))
+        self.assertIn("PC NOT ANSWERING: PING NOT MEASURED", text)
+        self.assertIn("WAKE THE PC AND OPTIMIZE AGAIN", text)
+        self.assertNotIn("PACKET LOSS", text)
+
+    def test_summary_warns_when_some_replies_came_back_but_many_were_lost(self):
+        network = stream.Network(1000.0, "wired", "enp2s0", 9.0, 40.0)
+        plan = stream.plan_settings(1920, 1080, 60000, network)
+        text = "\n".join(stream.summary_lines("x", plan, network))
+        self.assertIn("LOSS 40%", text)
+        self.assertIn("40% PACKET LOSS", text)
+
     def test_summary_warns_about_a_lossy_path(self):
         network = stream.Network(1000.0, "wired", "enp2s0", 4.0, 6.0)
         plan = stream.plan_settings(1920, 1080, 60000, network)
@@ -892,6 +1025,35 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
                 self.assertTrue(launcher.launch_app(self.app()))
         launcher.wake_host.assert_not_called()
 
+    def launch_after(self, result, **kwargs):
+        """launch_app for Moonlight when the wake wait ended with `result`."""
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.launcher()
+            launcher.wake_host = mock.Mock(return_value=result)
+            launcher.show_launch_failure = mock.Mock()
+            launcher.request = mock.Mock(side_effect=lambda name: (run / "moonlight-ready").touch())
+            with self.world(run):
+                started = launcher.launch_app(self.app(), **kwargs)
+        return launcher, started
+
+    def test_moonlight_is_not_started_after_a_wake_timeout_or_an_unanswering_sunshine(self):
+        for result, reason in (("timeout", "90 SECONDS"), ("awake", "SUNSHINE IS NOT ANSWERING")):
+            launcher, started = self.launch_after(result)
+            self.assertFalse(started, result)
+            launcher.request.assert_not_called()
+            args, kwargs = launcher.show_launch_failure.call_args
+            self.assertIn(reason, args[1])
+            self.assertIn("GAMING-PC", args[1])
+            self.assertTrue(kwargs.get("wake"), "the dialog offers WAKE PC again")
+
+    def test_moonlight_starts_when_the_pc_is_up_or_the_wait_was_skipped(self):
+        for result in ("up", "woke", "noaddr", "sent", "cancelled", "nomac", "nonetwork"):
+            launcher, started = self.launch_after(result)
+            self.assertTrue(started, result)
+            launcher.request.assert_called_once_with("start-moonlight")
+            launcher.show_launch_failure.assert_not_called()
+
     def test_wake_host_shows_progress_and_any_key_skips_the_wait(self):
         launcher = self.launcher([27])
         seen = []
@@ -904,6 +1066,69 @@ class WakeBeforeMoonlightTest(LauncherTestCase):
             self.assertEqual(launcher.wake_host(self.HOST, force=True), "cancelled")
         self.assertEqual(seen, [(self.HOST, True, True)])
         self.assertIn("WAKING GAMING-PC...", launcher.screen.text())
+
+    def drawn_hint(self, run_wake):
+        launcher = self.launcher()
+
+        def fake_wake(host, **kwargs):
+            kwargs["tick"](1.0)
+            return "woke"
+
+        with mock.patch.object(self.module.stream, "wake_and_wait", side_effect=fake_wake):
+            run_wake(launcher)
+        return launcher.screen.text()
+
+    def test_the_wait_hint_only_promises_what_a_button_does(self):
+        # WAKE PC (Settings and the failure screen) starts nothing, so it only stops the wait.
+        text = self.drawn_hint(lambda launcher: launcher.wake_host(self.HOST, force=True))
+        self.assertIn("PRESS ANY BUTTON TO STOP WAITING", text)
+        self.assertNotIn("START", text)
+
+    def test_the_caller_chooses_the_wait_hint(self):
+        text = self.drawn_hint(lambda launcher: launcher.wake_host(self.HOST, hint="PRESS ANY BUTTON TO CANCEL"))
+        self.assertIn("PRESS ANY BUTTON TO CANCEL", text)
+        self.assertNotIn("STOP WAITING", text)
+
+    def test_moonlight_launch_says_it_will_start_moonlight_without_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.launcher()
+            launcher.wake_host = mock.Mock(return_value="woke")
+            launcher.request = mock.Mock(side_effect=lambda name: (run / "moonlight-ready").touch())
+            with self.world(run):
+                launcher.launch_app(self.app())
+        self.assertEqual(launcher.wake_host.call_args.kwargs["hint"], "PRESS ANY BUTTON TO START MOONLIGHT WITHOUT WAITING")
+
+    def test_wake_pc_from_settings_uses_the_stop_waiting_hint(self):
+        launcher = self.launcher()
+        settings = self.module.StreamingSettings(Screen(), launcher)
+        settings.message = mock.Mock()
+
+        def fake_wake(host, **kwargs):
+            kwargs["tick"](1.0)
+            return "woke"
+
+        with self.world(pathlib.Path("/nonexistent")), mock.patch.object(
+            self.module.stream, "wake_and_wait", side_effect=fake_wake
+        ):
+            settings.wake_pc()
+        self.assertIn("PRESS ANY BUTTON TO STOP WAITING", launcher.screen.text())
+
+    def test_the_home_button_also_stops_the_wait_and_is_consumed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            (run / "home.request").touch()
+            launcher = self.launcher()
+            seen = []
+
+            def fake_wake(host, **kwargs):
+                seen.append(kwargs["tick"](1.0))
+                return "cancelled"
+
+            with self.world(run), mock.patch.object(self.module.stream, "wake_and_wait", side_effect=fake_wake):
+                launcher.wake_host(self.HOST)
+            self.assertFalse((run / "home.request").exists())
+        self.assertEqual(seen, [True])
 
     def test_wake_host_keeps_waiting_when_no_key_is_pressed(self):
         launcher = self.launcher()
@@ -1027,7 +1252,7 @@ class LaunchFailureTest(LauncherTestCase):
 
 
 class AutostreamTest(LauncherTestCase):
-    def autostream(self, launcher, run, settings, hosts=(LauncherTestCase.HOST,), complete=True, link=True):
+    def autostream(self, launcher, run, settings, hosts=(LauncherTestCase.HOST,), complete=True, link=True, **kwargs):
         marker = run / "setup-complete"
         if complete:
             marker.touch()
@@ -1036,7 +1261,7 @@ class AutostreamTest(LauncherTestCase):
         with self.world(run, hosts, settings, link), mock.patch.object(self.module.setup, "MARKER", marker), \
                 mock.patch.object(self.module.time, "monotonic", side_effect=lambda: next(clock)), \
                 mock.patch.object(self.module.curses, "flushinp"):
-            return launcher.autostream()
+            return launcher.autostream(**kwargs)
 
     def test_off_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1051,7 +1276,7 @@ class AutostreamTest(LauncherTestCase):
             launcher = self.launcher()
             seen = []
 
-            def launch(app):
+            def launch(app, **_kwargs):
                 seen.append((app.id, (run / "moonlight-stream.request").read_text()))
                 return True
 
@@ -1070,6 +1295,50 @@ class AutostreamTest(LauncherTestCase):
         text = launcher.screen.text()
         self.assertIn("5", text)
         self.assertNotIn("6", text.replace("192.168.1.50", ""))
+
+    def test_the_countdown_length_is_a_parameter(self):
+        # After a resume the TV and the pad need time to come back, so the caller asks for longer.
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = self.launcher()
+            launcher.launch_app = mock.Mock(return_value=True)
+            self.assertTrue(self.autostream(launcher, pathlib.Path(directory), self.ON, countdown=15))
+        self.assertIn("15 SECONDS", launcher.screen.text())
+        self.assertNotIn("16 SECONDS", launcher.screen.text())
+
+    def wake_then_stream(self, wake_result):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            launcher = self.launcher()
+            launcher.wake_host = mock.Mock(return_value=wake_result)
+            launcher.show_launch_failure = mock.Mock()
+            launcher.request = mock.Mock(side_effect=lambda name: (run / "moonlight-ready").touch())
+            started = self.autostream(launcher, run, self.ON)
+            leftover = (run / "moonlight-stream.request").exists()
+        return launcher, started, leftover
+
+    def test_a_button_during_the_wake_wait_cancels_back_to_the_launcher(self):
+        launcher, started, leftover = self.wake_then_stream("cancelled")
+        self.assertFalse(started)
+        launcher.request.assert_not_called()
+        self.assertFalse(leftover)
+        self.assertEqual(launcher.status, "AUTO-STREAM CANCELLED")
+        launcher.show_launch_failure.assert_not_called()
+        self.assertIn("CANCEL", launcher.wake_host.call_args.kwargs["hint"])
+        self.assertNotIn("START", launcher.wake_host.call_args.kwargs["hint"])
+
+    def test_the_stream_starts_once_the_pc_has_woken(self):
+        for result in ("woke", "up"):
+            launcher, started, _leftover = self.wake_then_stream(result)
+            self.assertTrue(started, result)
+            launcher.request.assert_called_once_with("start-moonlight")
+
+    def test_a_pc_that_never_woke_is_explained_and_nothing_is_streamed(self):
+        for result in ("timeout", "awake"):
+            launcher, started, leftover = self.wake_then_stream(result)
+            self.assertFalse(started, result)
+            launcher.request.assert_not_called()
+            self.assertFalse(leftover)
+            launcher.show_launch_failure.assert_called_once()
 
     def test_a_failed_launch_leaves_no_stream_request_behind(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1248,6 +1517,25 @@ class StreamingSettingsTest(LauncherTestCase):
         self.assertTrue(launcher.wake_host.call_args.kwargs["force"])
         self.assertIn("GAMING-PC IS AWAKE", settings.message.call_args.args[1])
 
+    def test_wake_pc_tells_a_pc_that_is_on_but_not_serving_from_one_that_is_fine(self):
+        launcher, settings = self.streaming()
+        launcher.wake_host = mock.Mock(return_value="awake")
+        with self.world(pathlib.Path("/nonexistent")):
+            settings.wake_pc()
+        self.assertIn("GAMING-PC IS ON BUT SUNSHINE IS NOT ANSWERING", settings.message.call_args.args[1])
+        self.assertNotIn("ALREADY AWAKE AND ANSWERING", settings.message.call_args.args[1])
+        launcher.wake_host = mock.Mock(return_value="up")
+        with self.world(pathlib.Path("/nonexistent")):
+            settings.wake_pc()
+        self.assertIn("ALREADY AWAKE AND ANSWERING", settings.message.call_args.args[1])
+
+    def test_wake_pc_timeout_message_names_the_real_wait(self):
+        launcher, settings = self.streaming()
+        launcher.wake_host = mock.Mock(return_value="timeout")
+        with self.world(pathlib.Path("/nonexistent")):
+            settings.wake_pc()
+        self.assertIn("WITHIN 90 SECONDS", settings.message.call_args.args[1])
+
     def test_wake_pc_asks_which_pc_when_several_are_paired(self):
         launcher, settings = self.streaming()
         other = changed(self.HOST, name="Other", uuid="UUID-2")
@@ -1347,8 +1635,10 @@ class StreamingSettingsTest(LauncherTestCase):
             settings.choose_app(stream.StreamSettings(True, "UUID-1", "Desktop"), self.HOST)
             save.assert_not_called()
 
-    def optimize(self, settings, run, outputs, network=None):
+    def optimize(self, settings, run, outputs, network=None, decode="auto", pc="up"):
         with self.world(run), mock.patch.object(
+            self.module.stream, "video_decode", return_value=decode
+        ), mock.patch.object(self.module.stream, "probe", return_value=pc), mock.patch.object(
             self.module.display, "query_outputs", return_value=outputs
         ), mock.patch.object(
             self.module.stream, "measure_network", return_value=network or stream.Network()
@@ -1363,10 +1653,42 @@ class StreamingSettingsTest(LauncherTestCase):
         network = stream.Network(100.0, "wired", "enp2s0", 0.5, 0.0)
         with tempfile.TemporaryDirectory() as directory:
             measure, apply = self.optimize(settings, pathlib.Path(directory), [output], network)
-        measure.assert_called_once_with("192.168.1.50")
+        measure.assert_called_once_with("192.168.1.50", pc_asleep=False)
         plan = apply.call_args.args[0]
         self.assertEqual((plan.width, plan.height, plan.fps, plan.bitrate), (3840, 2160, 60, 60000))
         self.assertIn("60 MBPS", settings.message.call_args.args[1])
+
+    def test_optimize_checks_the_pc_first_and_does_not_ping_a_sleeping_one(self):
+        _launcher, settings = self.streaming()
+        display = self.module.display
+        output = display.Output("DP-1", "TV", True, (display.Mode(1920, 1080, 60000, True, True),))
+        asleep = stream.Network(1000.0, "wired", "enp2s0", None, None, True)
+        with tempfile.TemporaryDirectory() as directory:
+            measure, apply = self.optimize(settings, pathlib.Path(directory), [output], asleep, pc="down")
+        measure.assert_called_once_with("192.168.1.50", pc_asleep=True)
+        apply.assert_called_once()
+        text = settings.message.call_args.args[1]
+        self.assertIn("PC NOT ANSWERING: PING NOT MEASURED", text)
+        self.assertNotIn("PACKET LOSS", text)
+
+    def test_optimize_pings_a_pc_that_is_on_even_when_sunshine_refuses(self):
+        _launcher, settings = self.streaming()
+        display = self.module.display
+        output = display.Output("DP-1", "TV", True, (display.Mode(1920, 1080, 60000, True, True),))
+        with tempfile.TemporaryDirectory() as directory:
+            measure, _apply = self.optimize(settings, pathlib.Path(directory), [output], pc="awake")
+        measure.assert_called_once_with("192.168.1.50", pc_asleep=False)
+
+    def test_optimize_caps_a_software_decoder_at_1080p60(self):
+        _launcher, settings = self.streaming()
+        display = self.module.display
+        output = display.Output("DP-1", "TV", True, (display.Mode(3840, 2160, 119880, True, True),))
+        network = stream.Network(1000.0, "wired", "enp2s0", 0.5, 0.0)
+        with tempfile.TemporaryDirectory() as directory:
+            _measure, apply = self.optimize(settings, pathlib.Path(directory), [output], network, "software")
+        plan = apply.call_args.args[0]
+        self.assertEqual((plan.width, plan.height, plan.fps, plan.bitrate), (1920, 1080, 60, 20000))
+        self.assertIn("SOFTWARE VIDEO DECODING", settings.message.call_args.args[1])
 
     def test_optimize_refuses_while_moonlight_runs(self):
         _launcher, settings = self.streaming()

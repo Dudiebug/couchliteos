@@ -30,13 +30,14 @@ MOONLIGHT_CONF = pathlib.Path(
 )
 CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
 RUN = pathlib.Path("/run/couchliteos")
+HARDWARE_ENV = pathlib.Path(os.environ.get("COUCHLITEOS_HARDWARE_ENV", "/run/couchliteos-hardware/hardware.env"))
 STREAM_REQUEST = RUN / "moonlight-stream.request"
 SECTION = "streaming"
 
 HTTP_PORT = 47989  # Sunshine / GameStream HTTP port; Moonlight's default
 WOL_PORTS = (9, 7)
 PROBE_TIMEOUT = 1.0
-WAKE_TIMEOUT = 30.0
+WAKE_TIMEOUT = 90.0  # a PC that was fully off needs to boot, log in and start Sunshine
 POLL_SECONDS = 0.5
 RESEND_SECONDS = 5.0
 
@@ -45,7 +46,9 @@ APP_MAX = 128
 MAC_TEXT_RE = re.compile(r"[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}")
 
 
-REQUEST_MAX_AGE = 120.0  # a stream request older than this is a leftover, not a request
+# A stream request older than this is a leftover, not a request. It must outlast the wake wait:
+# the launcher writes the request first and may then wait up to WAKE_TIMEOUT for the PC.
+REQUEST_MAX_AGE = 180.0
 PAIR_FIRST = "PAIR A GAMING PC IN MOONLIGHT FIRST"
 NO_MAC = "MOONLIGHT HASN'T LEARNED THIS PC'S NETWORK ADDRESS YET; OPEN MOONLIGHT WHILE THE PC IS ON"
 NO_NETWORK = "NO NETWORK"
@@ -542,13 +545,14 @@ def wake_and_wait(
 ) -> str:
     """Wake `host` if it is not answering and wait for it.
 
-    Returns "up" (nothing to do), "nomac", "noaddr" (no LAN address to watch; only
+    Returns "up" (nothing to do), "awake" (the PC is on but Sunshine is not answering,
+    at once or when the wait ran out), "nomac", "noaddr" (no LAN address to watch; only
     with force is a packet sent, then "sent"), "woke", "timeout", or "cancelled"
     (`tick(elapsed)` returned true).
     """
     state = probe_fn(host)
     if state in ("up", "awake"):
-        return "up"
+        return state
     if not host.mac:
         return "nomac"
     if state == "unknown" and not force:
@@ -562,9 +566,10 @@ def wake_and_wait(
         if tick is not None and tick(elapsed):
             return "cancelled"
         if elapsed >= timeout:
-            return "timeout"
+            return "awake" if state == "awake" else "timeout"
         sleep(POLL_SECONDS)
-        if probe_fn(host) == "up":
+        state = probe_fn(host)
+        if state == "up":
             return "woke"
         if clock() - last_send >= RESEND_SECONDS:
             send(host)
@@ -577,6 +582,10 @@ MIN_BITRATE = 500  # kbps; Moonlight's command-line range is 500..500000
 MAX_BITRATE = 500000
 LINK_FRACTION_PERMILLE = 600  # cap the stream at 60% of the measured link rate
 MAX_PIXELS = 3840 * 2160
+# Software decoding (nouveau, a weak iGPU) cannot keep up beyond 1080p60.
+SOFTWARE_MAX_PIXELS = 1920 * 1080
+SOFTWARE_MAX_FPS = 60
+SOFTWARE_MAX_BITRATE = 20000  # kbps; Moonlight's own default for 1080p60
 BITRATE_TABLE = (
     (640 * 360, 1), (854 * 480, 2), (1280 * 720, 5),
     (1920 * 1080, 10), (2560 * 1440, 20), (3840 * 2160, 40),
@@ -616,6 +625,7 @@ class Network:
     device: str = ""
     rtt_ms: float | None = None
     loss_pct: float | None = None
+    pc_asleep: bool = False  # the PC did not answer, so it was not pinged
 
 
 @dataclasses.dataclass(frozen=True)
@@ -626,17 +636,55 @@ class Plan:
     bitrate: int
     default_bitrate: int
     capped: bool
+    decode_limited: bool = False  # software decoding forced the mode below the display's
 
 
-def plan_settings(width: int, height: int, refresh_mhz: int, network: Network) -> Plan:
+def video_decode(
+    hardware_env: pathlib.Path = HARDWARE_ENV,
+    config: pathlib.Path = CONFIG,
+    moonlight_conf: pathlib.Path = MOONLIGHT_CONF,
+) -> str:
+    """"software", "hardware" or "auto": how this PC decodes the stream, as couchliteos-run-app decides.
+
+    A decoder set in config.ini [moonlight] wins; else hwdetect's COUCHLITEOS_VIDEO_DECODE
+    hint (nouveau has no usable decoder); else software chosen inside Moonlight (videodec=2)."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(config, encoding="utf-8")
+        configured = parser.get("moonlight", "decoder", fallback="auto").strip()
+    except (OSError, ValueError, configparser.Error):  # ValueError: not UTF-8
+        configured = "auto"
+    if configured in ("software", "hardware"):
+        return configured
+    try:
+        hint = re.findall(r"(?m)^COUCHLITEOS_VIDEO_DECODE=(.*)$", hardware_env.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        hint = []
+    if hint and hint[-1].strip() == "software":
+        return "software"
+    try:
+        chosen = re.findall(r"(?m)^videodec=(\d+)\s*$", moonlight_conf.read_bytes().decode("latin-1"))
+    except OSError:
+        chosen = []
+    return "software" if chosen and chosen[-1] == "2" else "auto"
+
+
+def plan_settings(width: int, height: int, refresh_mhz: int, network: Network, decode: str = "auto") -> Plan:
     fps = min(max(round(refresh_mhz / 1000), 24), 240)
-    if width * height > MAX_PIXELS:
-        scale = math.sqrt(MAX_PIXELS / (width * height))
+    max_pixels, max_fps = MAX_PIXELS, 240
+    if decode == "software":
+        max_pixels, max_fps = SOFTWARE_MAX_PIXELS, SOFTWARE_MAX_FPS
+    limited = width * height > max_pixels or fps > max_fps
+    fps = min(fps, max_fps)
+    if width * height > max_pixels:
+        scale = math.sqrt(max_pixels / (width * height))
         width, height = int(width * scale), int(height * scale)
     width, height = width - width % 2, height - height % 2
     bitrate = choose_bitrate(width, height, fps, network.link_mbps)
     default = default_bitrate(width, height, fps)
-    return Plan(width, height, fps, bitrate, default, bitrate < default)
+    if decode == "software":
+        bitrate = min(bitrate, SOFTWARE_MAX_BITRATE)
+    return Plan(width, height, fps, bitrate, default, bitrate < default, limited and decode == "software")
 
 
 def summary_lines(mode: str, plan: Plan, network: Network) -> list[str]:
@@ -645,8 +693,12 @@ def summary_lines(mode: str, plan: Plan, network: Network) -> list[str]:
         link = "LINK SPEED UNKNOWN"
     else:
         link = f"{'WIRED' if network.link_kind == 'wired' else 'WI-FI'} {network.link_mbps:g} MBIT/S"
-    ping = "PING NOT MEASURED" if network.rtt_ms is None else f"PING {network.rtt_ms:.1f} MS"
-    if network.loss_pct is not None:
+    # No reply at all means a sleeping PC or one that drops pings; only replies say anything about the network.
+    replies = network.rtt_ms is not None
+    ping = f"PING {network.rtt_ms:.1f} MS" if replies else "PING NOT MEASURED"
+    if network.pc_asleep:
+        ping = "PC NOT ANSWERING: PING NOT MEASURED"
+    if replies and network.loss_pct is not None:
         ping += f"  LOSS {network.loss_pct:g}%"
     bitrate = f"BITRATE {plan.bitrate / 1000:g} MBPS"
     if plan.capped:
@@ -658,7 +710,11 @@ def summary_lines(mode: str, plan: Plan, network: Network) -> list[str]:
         f"STREAM {plan.width}x{plan.height} AT {plan.fps} FPS",
         bitrate,
     ]
-    if network.loss_pct is not None and network.loss_pct >= 1:
+    if plan.decode_limited:
+        lines.append("SOFTWARE VIDEO DECODING: STREAM LIMITED TO 1920x1080 AT 60 FPS")
+    if network.pc_asleep:
+        lines.append("WAKE THE PC AND OPTIMIZE AGAIN TO MEASURE THE PING")
+    if replies and network.loss_pct is not None and network.loss_pct >= 1:
         lines.append(f"WARNING: {network.loss_pct:g}% PACKET LOSS; A WIRED CONNECTION WORKS BEST")
     return lines
 
@@ -683,10 +739,13 @@ def parse_wifi_rate(output: str) -> float | None:
 def measure_network(
     address: str | None,
     *,
+    pc_asleep: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     sysfs: pathlib.Path = pathlib.Path("/sys/class/net"),
 ) -> Network:
-    """Link rate of the interface that reaches `address`, plus ping round trip and loss."""
+    """Link rate of the interface that reaches `address`, plus ping round trip and loss.
+
+    A `pc_asleep` PC is not pinged: every probe would be lost and say nothing about the network."""
     environment = {**os.environ, "LC_ALL": "C"}
 
     def output(command: list[str], timeout: int = 3) -> str:
@@ -722,9 +781,9 @@ def measure_network(
             link_mbps = float(speed) if speed > 0 else None
 
     rtt = loss = None
-    if address:
+    if address and not pc_asleep:
         rtt, loss = parse_ping(output(["ping", "-c", "10", "-i", "0.2", "-W", "1", "-q", address], 9))
-    return Network(link_mbps, kind, device, rtt, loss)
+    return Network(link_mbps, kind, device, rtt, loss, pc_asleep)
 
 
 def moonlight_running(run_dir: pathlib.Path = RUN) -> bool:

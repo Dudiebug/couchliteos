@@ -664,8 +664,10 @@ class Launcher:
     def pressed(key: int) -> bool:
         return key not in (-1, curses.KEY_RESIZE)
 
-    def wake_host(self, host: stream.Host, *, force: bool = False) -> str:
-        """Wake a sleeping gaming PC and wait up to 30 s; any key or button stops the wait.
+    def wake_host(self, host: stream.Host, *, force: bool = False, hint: str = "PRESS ANY BUTTON TO STOP WAITING") -> str:
+        """Wake a sleeping gaming PC and wait up to 90 s; any key or button stops the wait.
+
+        `hint` is shown under the wait; it must say what stopping the wait leads to for the caller.
 
         Returns stream.wake_and_wait's result, or "nonetwork" without waiting when no link is up."""
         if not stream.link_up():
@@ -675,9 +677,13 @@ class Launcher:
             self.draw_wait(
                 f"WAKING {host.label}...  {SPINNER[int(elapsed * 4) % len(SPINNER)]}",
                 f"{int(elapsed)} OF {int(stream.WAKE_TIMEOUT)} SECONDS",
-                "PRESS ANY BUTTON TO START WITHOUT WAITING",
+                hint,
             )
-            return self.pressed(self.screen.getch())
+            key = self.screen.getch()
+            if HOME_REQUEST.exists():  # the Guide/Home button leaves a file instead of a key
+                HOME_REQUEST.unlink(missing_ok=True)
+                return True
+            return self.pressed(key)
 
         self.screen.timeout(100)
         try:
@@ -685,19 +691,36 @@ class Launcher:
         finally:
             self.screen.timeout(1000)
 
-    def wake_before_moonlight(self) -> None:
-        """Wake the gaming PC if it is asleep. Never blocks or fails the Moonlight launch."""
+    def wake_before_moonlight(self, app: apps.Application, auto: bool = False) -> bool:
+        """Wake the gaming PC if it is asleep; False when Moonlight must not start.
+
+        A button during the wait starts Moonlight at once, except for an auto-stream (`auto`),
+        where it cancels and leaves the user in the launcher.
+        A failure to wake never blocks the launch. But a PC that stayed silent for the whole
+        wait, or that is on while Sunshine is not answering, would only make Moonlight fail
+        (or stream to the wrong place), so that is explained and offered WAKE PC instead."""
         try:
             host = stream.default_host(stream.load_hosts(), stream.load_settings())
             if host is None or not host.mac:
-                return
-            if self.wake_host(host) == "nonetwork":
+                return True
+            result = self.wake_host(
+                host,
+                hint="PRESS ANY BUTTON TO CANCEL AUTO-STREAM" if auto else "PRESS ANY BUTTON TO START MOONLIGHT WITHOUT WAITING",
+            )
+            if result == "nonetwork":
                 self.draw_wait(stream.NO_NETWORK, "STARTING MOONLIGHT WITHOUT WAKING THE PC", "")
                 self.screen.timeout(2000)
                 self.screen.getch()
                 self.screen.timeout(1000)
         except (OSError, ValueError, curses.error, subprocess.SubprocessError):
-            pass
+            return True
+        if auto and result == "cancelled":
+            self.status = "AUTO-STREAM CANCELLED"
+            return False
+        if result in ("timeout", "awake"):
+            self.show_launch_failure(app.name, StreamingSettings.WAKE_RESULTS[result].format(host.label), wake=self.offer_wake(app))
+            return False
+        return True
 
     def wake_pc(self) -> None:
         StreamingSettings(self.screen, self).wake_pc()
@@ -724,11 +747,13 @@ class Launcher:
         finally:
             self.screen.timeout(1000)
 
-    def autostream(self) -> bool:
-        """Start the chosen PC's stream (Settings > STREAMING) after a cancellable 5 s countdown.
+    def autostream(self, countdown: float = 5) -> bool:
+        """Start the chosen PC's stream (Settings > STREAMING) after a cancellable `countdown` seconds.
 
         Runs once setup is complete and nothing else is running; also meant to be called
-        after the system resumes from sleep. Returns True when the stream was started."""
+        after the system resumes from sleep, with a longer countdown (the TV and the pad
+        need a few seconds to come back). Any button cancels the countdown, and also the wait
+        for a sleeping PC to wake. Returns True when the stream was started."""
         try:
             config = stream.load_settings()
             if not config.autostart or not setup.MARKER.exists() or (RUN / "app-active").exists():
@@ -744,7 +769,7 @@ class Launcher:
             if result != "done":
                 self.status = "AUTO-STREAM CANCELLED" if result == "cancelled" else f"{stream.NO_NETWORK}; AUTO-STREAM SKIPPED"
                 return False
-        if self.wait_screen(f"STARTING STREAM TO {host.label}...", 5) != "timeout":
+        if self.wait_screen(f"STARTING STREAM TO {host.label}...", countdown) != "timeout":
             self.status = "AUTO-STREAM CANCELLED"
             return False
         app = self.app_by_id("moonlight")
@@ -758,7 +783,7 @@ class Launcher:
             self.status = f"AUTO-STREAM NOT STARTED: {error}".upper()
             return False
         try:
-            return self.launch_app(app)
+            return self.launch_app(app, auto=True)
         finally:
             request.unlink(missing_ok=True)
 
@@ -773,7 +798,7 @@ class Launcher:
             return ""
         return lines[0][:240] if lines else ""
 
-    def launch_app(self, app: apps.Application, *, quiet: bool = False) -> bool:
+    def launch_app(self, app: apps.Application, *, quiet: bool = False, auto: bool = False) -> bool:
         """Start an application. `quiet` skips the failure dialog for a hidden one-off
         application whose caller explains a failed start in its own words."""
         label, app_id = app.name, app.status_id
@@ -799,8 +824,8 @@ class Launcher:
         state = RUN / f"{app_id}-status"
         if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
             return False
-        if app.id == "moonlight":
-            self.wake_before_moonlight()
+        if app.id == "moonlight" and not self.wake_before_moonlight(app, auto):
+            return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
         set_launcher_focus(False)  # the starting app takes the controller
@@ -2469,7 +2494,8 @@ class StreamingSettings(RemoteDesktopSettings):
     WAKE_RESULTS = {
         "up": "{} IS ALREADY AWAKE AND ANSWERING.",
         "woke": "{} IS AWAKE.",
-        "timeout": "{} DID NOT ANSWER WITHIN 30 SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
+        "awake": "{} IS ON BUT SUNSHINE IS NOT ANSWERING. START SUNSHINE ON THE PC, THEN TRY AGAIN.",
+        "timeout": f"{{}} DID NOT ANSWER WITHIN {int(stream.WAKE_TIMEOUT)} SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
         "cancelled": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
         "sent": "WAKE REQUEST SENT TO {}. IT CAN TAKE A MINUTE TO START.",
         "noaddr": "WAKE REQUEST NOT SENT: NO ADDRESS IS KNOWN FOR {}.",
@@ -2612,8 +2638,10 @@ class StreamingSettings(RemoteDesktopSettings):
         host = stream.default_host(stream.load_hosts(), stream.load_settings())
         addresses = host.lan_addresses() if host else []
         self.draw(title, ["MEASURING THE NETWORK...", "THIS TAKES ABOUT TEN SECONDS"], None)
-        network = stream.measure_network(addresses[0][0] if addresses else None)
-        plan = stream.plan_settings(mode.width, mode.height, mode.refresh_mhz, network)
+        # Check the PC first: a sleeping one loses every ping, which is not the network's fault.
+        asleep = bool(addresses) and stream.probe(host) == "down"
+        network = stream.measure_network(addresses[0][0] if addresses else None, pc_asleep=asleep)
+        plan = stream.plan_settings(mode.width, mode.height, mode.refresh_mhz, network, stream.video_decode())
         try:
             stream.apply_plan(plan, run_dir=RUN)
         except (OSError, stream.StreamError) as error:

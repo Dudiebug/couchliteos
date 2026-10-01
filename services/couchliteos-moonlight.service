@@ -21,6 +21,8 @@ Environment=DISPLAY=:0
 Environment=QT_QPA_PLATFORM=xcb
 EnvironmentFile=-/run/couchliteos/session.env
 ExecStart=/usr/libexec/couchliteos-run-app moonlight
+# run-app exits 0 after a failed auto-stream (its one-shot request is used up), so this
+# restarts only ordinary crashes and the launcher can show its error screen.
 Restart=on-failure
 # Restart directly: with the default mode OnFailure= fires on every retried
 # crash, which would reset the start limit and retry forever.

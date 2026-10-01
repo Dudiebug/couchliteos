@@ -51,6 +51,7 @@ test:
 	python3 -m unittest -v tests/test_lb_cache.py
 	python3 -m unittest -v tests/test_moonlight_prefs.py
 	python3 -m unittest -v tests/test_display_failed.py
+	python3 -m unittest -v tests/test_run_app.py
 	$(MAKE) -C launcher test
 
 
