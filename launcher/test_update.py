@@ -367,7 +367,8 @@ class LauncherUpdateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "update-check.ini"
             update.save_state(state, path)
-            launcher.updates = update.Checker(current="0.1.13", state_path=path, fetch=mock.Mock(), clock=lambda: NOW)
+            launcher.updates = update.Checker(
+                current="0.1.13", state_path=path, fetch=mock.Mock(), clock=lambda: NOW, live=lambda: True)
         launcher.controllers = self.module.controllers.Monitor(reader=lambda: [])
         return launcher
 
@@ -406,6 +407,130 @@ class LauncherUpdateTest(unittest.TestCase):
             launcher.updates.online = lambda: True
             settings.toggle_updates()
             self.assertNotIn("WAITS", settings.status)
+
+
+RELEASE_JSON = {
+    "tag_name": "v0.2.2",
+    "assets": [
+        {"name": "couchliteos-0.2.2-amd64.iso", "size": 1_500_000_000,
+         "browser_download_url": "https://github.com/Dudiebug/couchliteos/releases/download/v0.2.2/couchliteos-0.2.2-amd64.iso"},
+        {"name": "couchliteos-0.2.2-nvidia-amd64.iso", "size": 1_900_000_000,
+         "browser_download_url": "https://github.com/Dudiebug/couchliteos/releases/download/v0.2.2/couchliteos-0.2.2-nvidia-amd64.iso"},
+        {"name": "SHA256SUMS", "size": 200,
+         "browser_download_url": "https://github.com/Dudiebug/couchliteos/releases/download/v0.2.2/SHA256SUMS"},
+        {"name": "broken"},  # no url or size: ignored
+        "not an object",
+    ],
+}
+
+
+class FetchReleaseTest(unittest.TestCase):
+    def test_release_lists_its_assets_and_drops_the_v(self):
+        release = update.fetch_release("0.2.1", opener=mock.Mock(return_value=Response(RELEASE_JSON)))
+        self.assertEqual(release.version, "0.2.2")
+        self.assertEqual([asset.name for asset in release.assets], [
+            "couchliteos-0.2.2-amd64.iso", "couchliteos-0.2.2-nvidia-amd64.iso", "SHA256SUMS",
+        ])
+        self.assertEqual(release.assets[0].size, 1_500_000_000)
+        self.assertTrue(release.assets[0].url.startswith("https://github.com/"))
+
+    def test_release_without_assets_is_an_empty_release(self):
+        release = update.fetch_release("0.2.1", opener=mock.Mock(return_value=Response({"tag_name": "0.2.2"})))
+        self.assertEqual(release, update.Release("0.2.2", ()))
+
+    def test_timeout_is_a_parameter_and_the_new_repository_falls_back_like_fetch_latest(self):
+        missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        opener = mock.Mock(side_effect=[missing, Response(RELEASE_JSON)])
+        self.assertEqual(update.fetch_release("0.2.1", opener=opener, timeout=10).version, "0.2.2")
+        self.assertEqual(opener.call_args.kwargs["timeout"], 10)
+
+    def test_bad_answers_raise(self):
+        for body in ({"tag_name": "nightly"}, b"not json", b"[]"):
+            with self.assertRaises(update.UpdateError, msg=body):
+                update.fetch_release("0.2.1", opener=mock.Mock(return_value=Response(body)))
+
+
+class AssetSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.release = update.fetch_release("0.2.1", opener=mock.Mock(return_value=Response(RELEASE_JSON)))
+
+    def test_iso_names_follow_build_sh(self):
+        self.assertEqual(update.iso_name("0.2.2", ""), "couchliteos-0.2.2-amd64.iso")
+        self.assertEqual(update.iso_name("0.2.2", "nvidia"), "couchliteos-0.2.2-nvidia-amd64.iso")
+
+    def test_general_profile_picks_the_plain_iso_and_nvidia_its_own(self):
+        self.assertEqual(update.pick_iso(self.release, "").name, "couchliteos-0.2.2-amd64.iso")
+        self.assertEqual(update.pick_iso(self.release, "nvidia").name, "couchliteos-0.2.2-nvidia-amd64.iso")
+
+    def test_a_profile_without_an_asset_is_an_error_not_a_guess(self):
+        with self.assertRaises(update.UpdateError):
+            update.pick_iso(self.release, "intel")
+
+    def test_sums_asset(self):
+        self.assertEqual(update.sums_asset(self.release).name, "SHA256SUMS")
+        with self.assertRaises(update.UpdateError):
+            update.sums_asset(update.Release("0.2.2", ()))
+
+
+class ProfileAndLiveTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+
+    def test_profile_values_are_read_and_unquoted(self):
+        path = self.tmp / "profile.conf"
+        path.write_text(
+            "# comment\nPROFILE_NAME=nvidia\nISO_SUFFIX=nvidia\nPROFILE_DESCRIPTION=\"NVIDIA: GTX 900\"\n"
+            "LB_EXTRA_CONFIG='--firmware-binary false'\nEMPTY=\n",
+            encoding="utf-8",
+        )
+        values = update.read_profile(path)
+        self.assertEqual(values["PROFILE_NAME"], "nvidia")
+        self.assertEqual(values["ISO_SUFFIX"], "nvidia")
+        self.assertEqual(values["PROFILE_DESCRIPTION"], "NVIDIA: GTX 900")
+        self.assertEqual(values["EMPTY"], "")
+
+    def test_missing_profile_is_empty(self):
+        self.assertEqual(update.read_profile(self.tmp / "none"), {})
+
+    def test_live_when_the_medium_is_mounted_or_boot_live_is_on_the_command_line(self):
+        cmdline = self.tmp / "cmdline"
+        cmdline.write_text("BOOT_IMAGE=/vmlinuz root=/dev/sda2 quiet\n")
+        self.assertFalse(update.is_live(self.tmp / "no-medium", cmdline))
+        (self.tmp / "medium").mkdir()
+        self.assertTrue(update.is_live(self.tmp / "medium", cmdline))
+        cmdline.write_text("BOOT_IMAGE=/live/vmlinuz boot=live components quiet\n")
+        self.assertTrue(update.is_live(self.tmp / "no-medium", cmdline))
+
+    def test_no_cmdline_and_no_medium_is_not_live(self):
+        self.assertFalse(update.is_live(self.tmp / "no-medium", self.tmp / "no-cmdline"))
+
+    def test_a_word_that_merely_contains_boot_live_is_not_live(self):
+        cmdline = self.tmp / "cmdline"
+        cmdline.write_text("root=/dev/sda2 foo=boot=livecd\n")
+        self.assertFalse(update.is_live(self.tmp / "no-medium", cmdline))
+
+
+class InstalledNoticeTest(unittest.TestCase):
+    def test_installed_box_points_at_software_update(self):
+        state = update.State(latest="0.2.2", checked_at=NOW)
+        text = update.notice(state, "0.2.1", installed=True)
+        self.assertEqual(text, "COUCHLITEOS 0.2.2 IS AVAILABLE: SETTINGS > SOFTWARE UPDATE")
+        self.assertLessEqual(len(text), 76)  # fits the 80-column home screen
+
+    def test_live_keeps_the_releases_address(self):
+        state = update.State(latest="0.2.2", checked_at=NOW)
+        self.assertIn(update.RELEASES_TEXT, update.notice(state, "0.2.1", installed=False))
+
+    def test_checker_chooses_the_text_from_live_detection_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "u.ini"
+            update.save_state(update.State(latest="0.2.2", checked_at=NOW, attempted_at=NOW), path)
+            installed = update.Checker("0.2.1", path, live=lambda: False)
+            live = update.Checker("0.2.1", path, live=lambda: True)
+            self.assertIn("SETTINGS > SOFTWARE UPDATE", installed.notice())
+            self.assertIn(update.RELEASES_TEXT, live.notice())
 
 
 if __name__ == "__main__":

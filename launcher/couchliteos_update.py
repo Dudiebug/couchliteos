@@ -29,6 +29,10 @@ API_URLS = (
     "https://api.github.com/repos/Dudiebug/moonlightos/releases/latest",  # rename:keep
 )
 RELEASES_TEXT = "github.com/Dudiebug/couchliteos/releases"
+PROFILE_FILE = pathlib.Path("/usr/share/couchliteos/profile.conf")
+LIVE_MEDIUM = pathlib.Path("/run/live/medium")
+CMDLINE = pathlib.Path("/proc/cmdline")
+SUMS_NAME = "SHA256SUMS"
 STATE = pathlib.Path("/var/lib/couchliteos/update-check.ini")
 ROUTE4 = pathlib.Path("/proc/net/route")
 ROUTE6 = pathlib.Path("/proc/net/ipv6_route")
@@ -187,13 +191,26 @@ def due(state: State, now: float) -> bool:
     return not (state.attempted_at and 0 <= now - state.attempted_at < RETRY_SECONDS)
 
 
-def fetch_latest(current: str, opener: Callable[..., object] = urllib.request.urlopen) -> str:
-    """Return the latest release tag. Sends no identifiers beyond the version in the User-Agent."""
+@dataclasses.dataclass(frozen=True)
+class Asset:
+    name: str
+    url: str
+    size: int
+
+
+@dataclasses.dataclass(frozen=True)
+class Release:
+    version: str
+    assets: tuple[Asset, ...] = ()
+
+
+def _release_json(current: str, opener: Callable[..., object], timeout: float) -> dict:
+    """The newest release's JSON. Sends no identifiers beyond the version in the User-Agent."""
     headers = {"User-Agent": f"CouchLiteOS/{current or 'unknown'}", "Accept": "application/vnd.github+json"}
     try:
         for url in API_URLS:
             try:
-                with opener(urllib.request.Request(url, headers=headers), timeout=TIMEOUT) as response:
+                with opener(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
                     body = response.read(MAX_BYTES + 1)
                 break
             except urllib.error.HTTPError as error:
@@ -201,18 +218,88 @@ def fetch_latest(current: str, opener: Callable[..., object] = urllib.request.ur
                     raise
         if len(body) > MAX_BYTES:
             raise UpdateError("release answer is too large")
-        tag = json.loads(body.decode("utf-8")).get("tag_name")
+        data = json.loads(body.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise UpdateError("release answer is not an object")
     except UpdateError:
         raise
     except (OSError, ValueError, AttributeError, UnicodeError) as error:
         raise UpdateError(str(error)) from error
-    if parse_version(tag) is None:
+    if parse_version(data.get("tag_name")) is None:
         raise UpdateError("release tag is not a version")
-    return tag.strip().removeprefix("v")
+    return data
 
 
-def notice(state: State, current: str) -> str:
+def fetch_latest(
+    current: str, opener: Callable[..., object] = urllib.request.urlopen, timeout: float = TIMEOUT
+) -> str:
+    """Return the latest release tag without its `v`."""
+    return _release_json(current, opener, timeout)["tag_name"].strip().removeprefix("v")
+
+
+def fetch_release(
+    current: str, opener: Callable[..., object] = urllib.request.urlopen, timeout: float = TIMEOUT
+) -> Release:
+    """The latest release with its downloadable files (malformed entries are ignored)."""
+    data = _release_json(current, opener, timeout)
+    assets = []
+    for entry in data.get("assets") or []:
+        if not isinstance(entry, dict):
+            continue
+        name, url, size = entry.get("name"), entry.get("browser_download_url"), entry.get("size")
+        if isinstance(name, str) and isinstance(url, str) and isinstance(size, int) and size >= 0:
+            assets.append(Asset(name, url, size))
+    return Release(data["tag_name"].strip().removeprefix("v"), tuple(assets))
+
+
+def iso_name(version: str, suffix: str) -> str:
+    """The release asset name build.sh gives this version and profile (`ISO_SUFFIX`)."""
+    return f"couchliteos-{version}-{suffix + '-' if suffix else ''}amd64.iso"
+
+
+def pick_iso(release: Release, suffix: str) -> Asset:
+    wanted = iso_name(release.version, suffix)
+    for asset in release.assets:
+        if asset.name == wanted:
+            return asset
+    raise UpdateError(f"release {release.version} has no {wanted}")
+
+
+def sums_asset(release: Release) -> Asset:
+    for asset in release.assets:
+        if asset.name == SUMS_NAME:
+            return asset
+    raise UpdateError(f"release {release.version} has no {SUMS_NAME}")
+
+
+def read_profile(path: pathlib.Path = PROFILE_FILE) -> dict[str, str]:
+    """KEY=value lines of the profile this image was built from (shell quoting stripped)."""
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        match = re.match(r"^([A-Z][A-Z0-9_]*)=(.*)$", line.strip())
+        if match:
+            values[match.group(1)] = match.group(2).strip().strip("\"'")
+    return values
+
+
+def is_live(medium: pathlib.Path = LIVE_MEDIUM, cmdline: pathlib.Path = CMDLINE) -> bool:
+    """True when booted from the live ISO or stick: the running system then is the image."""
+    if medium.exists():
+        return True
+    try:
+        return "boot=live" in cmdline.read_text(encoding="ascii", errors="replace").split()
+    except OSError:
+        return False
+
+
+def notice(state: State, current: str, installed: bool = False) -> str:
     if state.enabled and is_newer(state.latest, current):
+        if installed:  # a box on its disk updates itself
+            return f"COUCHLITEOS {state.latest} IS AVAILABLE: SETTINGS > SOFTWARE UPDATE"
         return f"UPDATE AVAILABLE: {state.latest} — {RELEASES_TEXT}"
     return ""
 
@@ -227,12 +314,14 @@ class Checker:
         fetch: Callable[[str], str] = fetch_latest,
         clock: Callable[[], float] = time.time,
         online: Callable[[], bool] = has_default_route,
+        live: Callable[[], bool] = is_live,
     ) -> None:
         self.current = installed_version() if current is None else current
         self.state_path = state_path
         self.fetch = fetch
         self.clock = clock
         self.online = online
+        self.installed = not live()  # fixed for the whole boot
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._wake = threading.Event()
@@ -244,7 +333,7 @@ class Checker:
 
     def notice(self) -> str:
         with self._lock:
-            return notice(self._state, self.current)
+            return notice(self._state, self.current, self.installed)
 
     def _update(self, **changes: object) -> None:
         with self._lock:
