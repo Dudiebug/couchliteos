@@ -5,6 +5,9 @@ It registers the kernel CEC adapter as a Playback device called CouchLiteOS,
 switches the TV on (if the setting is on), then follows the bus and suspends
 the PC when the TV reports Standby (if that setting is on). With no CEC
 hardware, or no link to a TV, it does nothing.
+
+`couchliteos-cec --standby` is the pre-sleep hook: it sends Standby to the TV
+(if that setting is on) and exits within about two seconds.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import couchliteos_cec as cec  # noqa: E402
 
 SYSTEMCTL = "/usr/bin/systemctl"
 RETRY_SECONDS = 30  # adapter present but no link to a TV yet (TV off at the wall, cable out)
+RETRY_MAX_SECONDS = 300  # each look that fails waits twice as long, up to this
 RESTART_SECONDS = 5  # the monitor ended (adapter reset); look again
 
 
@@ -51,8 +55,20 @@ def follow(adapter: cec.Adapter, last_tv_on: float) -> None:
         monitor.wait()
 
 
-def main() -> int:
+def standby_before_sleep() -> int:
+    """Run by couchliteos-cec-sleep.service just before the PC sleeps; quick, and never fails the sleep."""
+    devices = cec.device_nodes()
+    if devices and cec.load_settings().tv_off_on_sleep:
+        ok = cec.standby_tv(devices)
+        log("TV sent to standby before sleep" if ok else "TV did not answer Standby before sleep")
+    return 0
+
+
+def main(argv: tuple[str, ...] | list[str] = ()) -> int:
+    if list(argv) == ["--standby"]:
+        return standby_before_sleep()
     started = None
+    delay = 0  # how long to wait before looking for a TV link again; 0 while there is one
     while True:
         devices = cec.device_nodes()
         if not devices:
@@ -60,9 +76,14 @@ def main() -> int:
             return 0
         adapter = cec.bring_up(devices=devices, edid=cec.edid_path())
         if adapter is None:
-            log("no CEC adapter that can reach a TV yet; waiting")
-            time.sleep(RETRY_SECONDS)
+            if not delay:  # say it when it starts, not on every look
+                log("no CEC adapter that can reach a TV yet; waiting")
+            delay = min(delay * 2, RETRY_MAX_SECONDS) if delay else RETRY_SECONDS
+            time.sleep(delay)
             continue
+        if delay:
+            log("CEC link to a TV found")
+            delay = 0
         if started is None:
             log(f"{adapter.device} ({adapter.driver}) physical address {adapter.phys_addr}")
             if cec.load_settings().turn_tv_on:
@@ -74,4 +95,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

@@ -28,6 +28,8 @@ CONTROLLER_ID = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
 SLEEP_REQUEST = pathlib.Path("/run/couchliteos/suspend")
 SLEEP_HOLD_SECONDS = 3.0
 CEC_NAV, CEC_HOME = cec.remote_key_maps(ecodes)
+# Remote keys a running app gets too (the grabbed remote reaches nobody else); the rest are launcher shortcuts.
+CEC_APP_KEYS = {ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT, ecodes.KEY_ENTER, ecodes.KEY_ESC}
 _last_state_check = 0.0
 _last_state = False
 # A held direction repeats like a keyboard: a pause, then steady steps.
@@ -441,8 +443,10 @@ def handle_cec_event(ui: UInput, event) -> None:
         return
     if event.code in CEC_HOME:
         request_home()
-    elif event.code in CEC_NAV and (not app_active() or OSK_ACTIVE.exists()):
-        emit(ui, CEC_NAV[event.code])
+    elif event.code in CEC_NAV:
+        key = CEC_NAV[event.code]
+        if key in CEC_APP_KEYS or not app_active() or OSK_ACTIVE.exists():
+            emit(ui, key)
 
 
 def watch_cec(ui: UInput) -> None:

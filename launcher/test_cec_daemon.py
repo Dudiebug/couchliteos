@@ -66,6 +66,25 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(self.sleeps, [self.daemon.RETRY_SECONDS])
         self.mocks["tv_on"].assert_not_called()
 
+    def test_the_wait_for_a_tv_link_backs_off_and_is_logged_once(self):
+        self.nodes(*[["/dev/cec0"]] * 6, [])
+        self.bring_up(*[None] * 6)
+        with mock.patch.object(self.daemon, "log") as log:
+            self.assertEqual(self.daemon.main(), 0)
+        self.assertEqual(self.sleeps, [30, 60, 120, 240, 300, 300])
+        waiting = [call for call in log.call_args_list if "waiting" in call.args[0]]
+        self.assertEqual(len(waiting), 1)
+
+    def test_the_wait_starts_over_and_is_logged_again_after_the_link_came_and_went(self):
+        self.nodes(["/dev/cec0"], ["/dev/cec0"], ["/dev/cec0"], ["/dev/cec0"], [])
+        self.bring_up(None, None, ADAPTER, None)
+        with mock.patch.object(self.daemon, "log") as log:
+            self.assertEqual(self.daemon.main(), 0)
+        self.assertEqual(self.sleeps, [30, 60, self.daemon.RESTART_SECONDS, 30])
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertEqual(sum("waiting" in message for message in messages), 2)
+        self.assertEqual(sum("link" in message and "waiting" not in message for message in messages), 1)
+
     def test_switches_the_tv_on_once_then_follows_the_bus_again_after_a_dropout(self):
         self.nodes(["/dev/cec0"], ["/dev/cec0"], [])
         self.bring_up(ADAPTER, ADAPTER)
@@ -107,6 +126,33 @@ class DaemonTest(unittest.TestCase):
         self.daemon.main()
         self.mocks["tv_on"].assert_not_called()
         self.assertEqual(self.mocks["watch"].call_count, 1)
+
+    def test_before_sleep_the_tv_is_sent_to_standby(self):
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv", return_value=True) as standby:
+            self.assertEqual(self.daemon.main(["--standby"]), 0)
+        standby.assert_called_once_with(["/dev/cec0"])
+        self.popen.assert_not_called()
+        self.assertEqual(self.sleeps, [])
+        self.mocks["tv_on"].assert_not_called()
+
+    def test_before_sleep_nothing_is_sent_when_the_setting_is_off(self):
+        self.mocks["settings"].return_value = cec.Settings(True, False, False)
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv") as standby:
+            self.assertEqual(self.daemon.main(["--standby"]), 0)
+        standby.assert_not_called()
+
+    def test_before_sleep_nothing_is_sent_without_a_cec_device(self):
+        self.nodes([])
+        with mock.patch.object(cec, "standby_tv") as standby:
+            self.assertEqual(self.daemon.main(["--standby"]), 0)
+        standby.assert_not_called()
+
+    def test_a_tv_that_does_not_answer_does_not_fail_the_sleep_hook(self):
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv", return_value=False):
+            self.assertEqual(self.daemon.main(["--standby"]), 0)
 
     def test_suspend_asks_systemd(self):
         with mock.patch.object(self.daemon.subprocess, "run") as run:

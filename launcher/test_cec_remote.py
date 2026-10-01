@@ -115,9 +115,26 @@ class CecRemoteNavTest(unittest.TestCase):
         self.module.handle_cec_event(None, press(Codes.KEY_ROOT_MENU))
         self.assertEqual(len(self.homes), 1)
 
-    def test_navigation_is_left_to_the_app_while_one_is_running(self):
+    def test_navigation_reaches_the_running_app(self):
+        # The remote's device is grabbed, so nobody else would ever see these keys.
         self.app_running = True
-        self.module.handle_cec_event(None, press(Codes.KEY_OK))
+        for remote, sent in (
+            (Codes.KEY_UP, Codes.KEY_UP),
+            (Codes.KEY_DOWN, Codes.KEY_DOWN),
+            (Codes.KEY_LEFT, Codes.KEY_LEFT),
+            (Codes.KEY_RIGHT, Codes.KEY_RIGHT),
+            (Codes.KEY_OK, Codes.KEY_ENTER),
+            (Codes.KEY_EXIT, Codes.KEY_ESC),
+            (Codes.KEY_BACK, Codes.KEY_ESC),
+        ):
+            self.emitted.clear()
+            self.module.handle_cec_event(None, press(remote))
+            self.assertEqual(self.emitted, [sent])
+
+    def test_launcher_shortcut_keys_stay_out_of_a_running_app(self):
+        self.app_running = True
+        for code in (Codes.KEY_RED, Codes.KEY_GREEN, Codes.KEY_YELLOW, Codes.KEY_BLUE, Codes.KEY_CLEAR):
+            self.module.handle_cec_event(None, press(code))
         self.assertEqual(self.emitted, [])
 
     def test_the_on_screen_keyboard_still_gets_navigation_while_an_app_runs(self):

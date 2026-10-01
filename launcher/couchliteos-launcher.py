@@ -1665,7 +1665,7 @@ class Settings:
         StreamingSettings(self.screen, self.launcher).run()
 
     def run_tv_control(self) -> None:
-        """HDMI-CEC: what the TV reports, and two switches that only work with a CEC adapter."""
+        """HDMI-CEC: what the TV reports, and three switches that only work with a CEC adapter."""
 
         def ask_tv() -> cec.Status:
             self.status = ""
@@ -1690,7 +1690,7 @@ class Settings:
                 status = ask_tv()
             elif not status.usable:
                 self.status = "NOT AVAILABLE: " + ("NO CEC ADAPTER FOUND" if status.adapter is None else "TV NOT CONNECTED")
-            elif selected == 1 and not can_sleep:
+            elif selected in (1, 2) and not can_sleep:
                 self.status = "NOT AVAILABLE: SUSPEND NOT SUPPORTED ON THIS PC"
             else:
                 changed = cec.toggled(settings, selected)

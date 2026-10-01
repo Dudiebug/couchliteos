@@ -91,8 +91,13 @@ class TvControlScreenTest(unittest.TestCase):
         saved, _queried = self.open_screen([KEY_DOWN, ENTER, ESC])
         saved.assert_called_once_with(cec.Settings(turn_tv_on=True, sleep_on_tv_off=True))
 
+    def test_third_row_toggles_tv_standby_when_the_pc_sleeps(self):
+        cec = self.module.cec
+        saved, _queried = self.open_screen([KEY_DOWN, KEY_DOWN, ENTER, ESC])
+        saved.assert_called_once_with(cec.Settings(True, False, False))
+
     def test_refresh_asks_the_tv_again_and_back_leaves(self):
-        saved, queried = self.open_screen([KEY_DOWN, KEY_DOWN, ENTER, KEY_DOWN, ENTER])
+        saved, queried = self.open_screen([KEY_DOWN, KEY_DOWN, KEY_DOWN, ENTER, KEY_DOWN, ENTER])
         self.assertEqual(queried.call_count, 2)
         saved.assert_not_called()
 
@@ -110,13 +115,18 @@ class TvControlScreenTest(unittest.TestCase):
         saved.assert_not_called()
         self.assertIn("NOT SUPPORTED", self.tv.status)
 
+    def test_the_standby_switch_is_disabled_on_a_pc_that_cannot_suspend(self):
+        saved, _queried = self.open_screen([KEY_DOWN, KEY_DOWN, ENTER, ESC], can_sleep=False)
+        saved.assert_not_called()
+        self.assertIn("NOT SUPPORTED", self.tv.status)
+
     def test_without_an_adapter_the_reason_is_shown_and_the_toggles_are_disabled(self):
         cec = self.module.cec
         saved, _queried = self.open_screen([ESC], status=cec.Status(None))
         text = "\n".join(self.screen.drawn)
         self.assertIn("NO CEC ADAPTER FOUND", text)
         self.assertIn("PULSE-EIGHT", text)
-        self.assertEqual(text.count("UNAVAILABLE"), 2)
+        self.assertEqual(text.count("UNAVAILABLE"), 3)
         self.assertNotIn("  ON", text)
 
     def test_without_an_adapter_the_toggles_cannot_be_switched_or_saved_over(self):

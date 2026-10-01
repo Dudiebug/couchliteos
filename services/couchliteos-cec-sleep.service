@@ -1,0 +1,16 @@
+[Unit]
+Description=Put the TV in standby before the PC sleeps (HDMI-CEC)
+ConditionPathExistsGlob=/dev/cec[0-9]*
+Before=sleep.target
+
+[Service]
+Type=oneshot
+# Sleep waits for this unit, so keep it short: the daemon's Standby is one try within 2 s.
+TimeoutStartSec=3
+# Our own Standby must not reach the daemon as "the TV went to standby" (it would suspend
+# again on wake); couchliteos-cec-wake.service starts the daemon again after resume.
+ExecStartPre=-/usr/bin/systemctl --no-block stop couchliteos-cec.service
+ExecStart=/usr/libexec/couchliteos-cec --standby
+
+[Install]
+WantedBy=sleep.target

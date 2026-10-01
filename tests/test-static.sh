@@ -636,9 +636,16 @@ rg -q '^After=suspend.target$' services/couchliteos-cec-wake.service
 rg -q '^WantedBy=suspend.target$' services/couchliteos-cec-wake.service
 rg -q '^ExecStart=/usr/bin/systemctl restart couchliteos-cec.service$' services/couchliteos-cec-wake.service
 rg -q '^systemctl enable couchliteos-cec-wake.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
-refute rg -q 'sh -c|/bin/sh|/bin/bash' services/couchliteos-cec.service services/couchliteos-cec-wake.service
+# TV Standby before the PC sleeps: sleep waits for this unit, so it is short and bounded.
+for required in 'ConditionPathExistsGlob=/dev/cec\[0-9\]\*' 'Before=sleep.target' 'WantedBy=sleep.target' 'TimeoutStartSec=3' 'ExecStart=/usr/libexec/couchliteos-cec --standby'; do
+  rg -q "^$required\$" services/couchliteos-cec-sleep.service
+done
+rg -q '^systemctl enable couchliteos-cec-sleep.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+refute rg -q 'sh -c|/bin/sh|/bin/bash' services/couchliteos-cec.service services/couchliteos-cec-wake.service services/couchliteos-cec-sleep.service
 rg -q 'SUBSYSTEM=="cec".*SYSTEMD_WANTS.*couchliteos-cec\.service' overlay/etc/udev/rules.d/75-couchliteos-cec.rules
 rg -q 'idVendor.*2548.*SYSTEMD_WANTS.*couchliteos-pulse8-inputattach@%k\.service' overlay/etc/udev/rules.d/75-couchliteos-cec.rules
+# The launcher runs as the couchliteos user (group video) and calls cec-ctl on /dev/cec* itself.
+rg -q 'SUBSYSTEM=="cec".*GROUP="video".*MODE="0660"' overlay/etc/udev/rules.d/75-couchliteos-cec.rules
 rg -q '^ExecStart=/usr/bin/inputattach --pulse8-cec /dev/%I$' 'services/couchliteos-pulse8-inputattach@.service'
 rg -q '^v4l-utils$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^inputattach$' config/live-build/package-lists/couchliteos.list.chroot

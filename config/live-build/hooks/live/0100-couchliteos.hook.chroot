@@ -92,6 +92,7 @@ systemctl enable couchliteos-hwdetect-early.service couchliteos-hwdetect.service
 systemctl enable tailscaled.service couchliteos-tailscale-enroll.path couchliteos-tailscale-ssh.path
 # HDMI-CEC: the daemon is started by udev (75-couchliteos-cec.rules) only when a CEC adapter exists.
 systemctl enable couchliteos-cec-wake.service
+systemctl enable couchliteos-cec-sleep.service
 
 # The standard kernel supplies these modules; load them on the applicable side.
 printf '%s\n' usbip_host uinput tun > /etc/modules-load.d/couchliteos-usbip.conf

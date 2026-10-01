@@ -27,10 +27,16 @@ TV = 0
 BROADCAST = 15
 # Ignore a Standby this long after we switched the TV on or asked to suspend.
 STANDBY_QUIET_SECONDS = 60.0
+# The pre-sleep Standby may hold up suspend by about this much (the unit's own timeout is a bit more).
+SLEEP_HOOK_SECONDS = 2.0
 INVALID_PHYS_ADDR = "f.f.f.f"
 # linux/input.h BUS_CEC: the bus of the input device the kernel's rc-cec keymap uses.
 BUS_CEC = 0x1E
 POWER_STATE = pathlib.Path("/sys/power/state")
+LOGIND_CAN_SUSPEND = (
+    "busctl", "--system", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
+    "org.freedesktop.login1.Manager", "CanSuspend",
+)
 
 Run = Callable[..., "str | None"]
 
@@ -56,6 +62,7 @@ def cec_ctl(device: str, *args: str) -> list[str]:
 class Settings:
     turn_tv_on: bool = True
     sleep_on_tv_off: bool = False
+    tv_off_on_sleep: bool = True  # Standby to the TV as the PC goes to sleep
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -77,6 +84,7 @@ def load_settings(path: pathlib.Path = CONFIG) -> Settings:
     return Settings(
         _as_bool(parser.get(SECTION, "turn_tv_on", fallback=None), defaults.turn_tv_on),
         _as_bool(parser.get(SECTION, "sleep_on_tv_off", fallback=None), defaults.sleep_on_tv_off),
+        _as_bool(parser.get(SECTION, "tv_off_on_sleep", fallback=None), defaults.tv_off_on_sleep),
     )
 
 
@@ -86,6 +94,7 @@ def save_settings(settings: Settings, path: pathlib.Path = CONFIG) -> None:
         f"[{SECTION}]\n"
         f"turn_tv_on = {str(settings.turn_tv_on).lower()}\n"
         f"sleep_on_tv_off = {str(settings.sleep_on_tv_off).lower()}\n"
+        f"tv_off_on_sleep = {str(settings.tv_off_on_sleep).lower()}\n"
     )
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
@@ -311,6 +320,22 @@ def turn_tv_on(
     return True
 
 
+def standby_tv(
+    devices: list[str], run: Run = run_cec, budget: float = SLEEP_HOOK_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Standby to the TV as the PC goes to sleep: one try per adapter, `budget` seconds in all."""
+    deadline = clock() + budget
+    for device in devices:
+        left = deadline - clock()
+        if left <= 0:
+            break
+        output = run(cec_ctl(device, "--skip-info", "--to", str(TV), "--standby"), left)
+        if output is not None and tx_ok(output):
+            return True
+    return False
+
+
 def watch(
     lines,
     load: Callable[[], Settings],
@@ -322,7 +347,11 @@ def watch(
     """Suspend when the TV says Standby and the setting is on; `lines` is `cec-ctl --monitor` output."""
     last_suspend = None
     for line in lines:
-        if should_suspend(parse_message(line), load(), now(), last_tv_on, last_suspend):
+        message = parse_message(line)
+        # Reading the settings asks logind whether the PC can suspend, so only do it for a Standby.
+        if message is None or message.opcode != OP_STANDBY:
+            continue
+        if should_suspend(message, load(), now(), last_tv_on, last_suspend):
             last_suspend = now()
             log("TV went to standby; asking systemd to suspend")
             suspend()
@@ -402,10 +431,22 @@ def status_lines(status: Status) -> list[str]:
     return lines + [f"TV  {status.tv.vendor}  {status.tv.osd_name}  {power}".upper()]
 
 
-def suspend_supported(state: pathlib.Path = POWER_STATE) -> bool:
-    """Whether this PC can suspend to RAM (`systemctl suspend` needs "mem" in /sys/power/state)."""
+def suspend_supported(state: pathlib.Path = POWER_STATE, run=subprocess.run) -> bool:
+    """Whether this PC can suspend: the same answer as the main SLEEP entry (couchliteos_power).
+
+    logind's CanSuspend "yes"/"challenge" means yes and "na" means no; anything else (the launcher's
+    non-root call usually gets "no": no polkit) leaves /sys/power/state to decide: "mem" or "freeze"."""
     try:
-        return "mem" in state.read_text().split()
+        result = run(LOGIND_CAN_SUSPEND, capture_output=True, text=True, timeout=3, check=False)
+        answer = re.fullmatch(r's "(\w+)"\s*', result.stdout or "") if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        answer = None
+    if answer and answer.group(1) in ("yes", "challenge"):
+        return True
+    if answer and answer.group(1) == "na":
+        return False
+    try:
+        return bool({"mem", "freeze"} & set(state.read_text().split()))
     except OSError:
         return False
 
@@ -419,14 +460,24 @@ def toggle_rows(settings: Settings, usable: bool = True, can_sleep: bool = True)
     def word(value: bool) -> str:
         return ("ON" if value else "OFF") if usable else "UNAVAILABLE"
 
-    sleep = word(settings.sleep_on_tv_off) if can_sleep or not usable else "NOT SUPPORTED ON THIS PC"
-    return [f"TURN TV ON AT START/WAKE  {word(settings.turn_tv_on)}", f"SLEEP WHEN TV TURNS OFF  {sleep}"]
+    def sleepy(value: bool) -> str:
+        return word(value) if can_sleep or not usable else "NOT SUPPORTED ON THIS PC"
+
+    return [
+        f"TURN TV ON AT START/WAKE  {word(settings.turn_tv_on)}",
+        f"SLEEP WHEN TV TURNS OFF  {sleepy(settings.sleep_on_tv_off)}",
+        f"TV STANDBY WHEN PC SLEEPS  {sleepy(settings.tv_off_on_sleep)}",
+    ]
 
 
 def toggled(settings: Settings, index: int, usable: bool = True, can_sleep: bool = True) -> Settings:
-    """The settings after flipping toggle `index`; unchanged when that switch is unavailable here."""
-    if not usable or (index == 1 and not can_sleep):
+    """The settings after flipping toggle `index` (0 TV on, 1 sleep on TV off, 2 TV standby on sleep).
+
+    Unchanged when that switch is unavailable here."""
+    if not usable or (index > 0 and not can_sleep):
         return settings
     if index == 0:
         return dataclasses.replace(settings, turn_tv_on=not settings.turn_tv_on)
-    return dataclasses.replace(settings, sleep_on_tv_off=not settings.sleep_on_tv_off)
+    if index == 1:
+        return dataclasses.replace(settings, sleep_on_tv_off=not settings.sleep_on_tv_off)
+    return dataclasses.replace(settings, tv_off_on_sleep=not settings.tv_off_on_sleep)

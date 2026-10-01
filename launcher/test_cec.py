@@ -208,6 +208,17 @@ class SettingsTest(unittest.TestCase):
         self.assertIn("[tailscale]\nenabled = true\n", text)
         self.assertEqual(cec.load_settings(self.path), cec.Settings(True, False))
 
+    def test_the_tv_goes_to_standby_with_the_pc_unless_switched_off(self):
+        self.assertTrue(cec.load_settings(self.path).tv_off_on_sleep)
+        self.path.write_text("[cec]\ntv_off_on_sleep = false\n")
+        self.assertFalse(cec.load_settings(self.path).tv_off_on_sleep)
+        self.assertTrue(cec.load_settings(self.path).turn_tv_on)
+
+    def test_save_keeps_the_standby_with_sleep_switch(self):
+        cec.save_settings(cec.Settings(True, False, False), self.path)
+        self.assertIn("tv_off_on_sleep = false\n", self.path.read_text())
+        self.assertEqual(cec.load_settings(self.path), cec.Settings(True, False, False))
+
     def test_save_creates_a_missing_file_group_readable(self):
         cec.save_settings(cec.Settings(True, True), self.path)
         self.assertEqual(cec.load_settings(self.path), cec.Settings(True, True))
@@ -324,6 +335,52 @@ class StandbyDecisionTest(unittest.TestCase):
     def test_ignores_repeats_after_a_suspend_request(self):
         self.assertFalse(self.decide(now=1030.0, last_suspend=1000.0))
         self.assertTrue(self.decide(now=1061.0, last_suspend=1000.0))
+
+
+class StandbyTvTest(unittest.TestCase):
+    """The hook that runs before the PC sleeps must be quick and must ask only the TV."""
+
+    def setUp(self):
+        self.calls = []
+        self.now = 0.0
+
+    def run_cec(self, *answers):
+        replies = list(answers)
+
+        def run(argv, timeout=10.0):
+            self.calls.append((list(argv), timeout))
+            self.now += 0.5
+            return replies.pop(0)
+
+        return run
+
+    def standby(self, run, devices=("/dev/cec0",), budget=2.0):
+        return cec.standby_tv(list(devices), run, budget, lambda: self.now)
+
+    def test_sends_standby_to_the_tv(self):
+        self.assertTrue(self.standby(self.run_cec(TX_OK)))
+        self.assertEqual(
+            self.calls, [(["cec-ctl", "-d", "/dev/cec0", "--skip-info", "--to", "0", "--standby"], 2.0)]
+        )
+
+    def test_a_tv_that_does_not_answer_is_not_retried_and_not_waited_for(self):
+        self.assertFalse(self.standby(self.run_cec(TX_NACK)))
+        self.assertEqual(len(self.calls), 1)
+        self.assertFalse(self.standby(self.run_cec(None)))
+
+    def test_no_adapter_means_no_command(self):
+        self.assertFalse(self.standby(self.run_cec(), devices=()))
+        self.assertEqual(self.calls, [])
+
+    def test_the_next_adapter_is_tried_within_the_same_budget(self):
+        self.assertTrue(self.standby(self.run_cec(None, TX_OK), devices=("/dev/cec0", "/dev/cec1")))
+        self.assertEqual([call[0][2] for call in self.calls], ["/dev/cec0", "/dev/cec1"])
+        self.assertEqual([call[1] for call in self.calls], [2.0, 1.5])
+
+    def test_it_stops_when_the_budget_is_spent(self):
+        devices = ("/dev/cec0", "/dev/cec1", "/dev/cec2", "/dev/cec3", "/dev/cec4")
+        self.assertFalse(self.standby(self.run_cec(None, None, None, None, None), devices=devices))
+        self.assertEqual(len(self.calls), 4)
 
 
 class EdidPathTest(unittest.TestCase):
@@ -500,7 +557,10 @@ class StatusTest(unittest.TestCase):
 
     def test_toggle_rows(self):
         rows = cec.toggle_rows(cec.Settings(True, False))
-        self.assertEqual(rows, ["TURN TV ON AT START/WAKE  ON", "SLEEP WHEN TV TURNS OFF  OFF"])
+        self.assertEqual(
+            rows,
+            ["TURN TV ON AT START/WAKE  ON", "SLEEP WHEN TV TURNS OFF  OFF", "TV STANDBY WHEN PC SLEEPS  ON"],
+        )
         self.assertTrue(cec.query_status(FakeRun(INFO_PLAYBACK, TV_QUERY), devices=["/dev/cec1"]).usable)
 
 
@@ -520,18 +580,25 @@ class GateTest(unittest.TestCase):
         saved_elsewhere = cec.Settings(turn_tv_on=True, sleep_on_tv_off=True)
         rows = cec.toggle_rows(saved_elsewhere, usable=False)
         self.assertEqual(
-            rows, ["TURN TV ON AT START/WAKE  UNAVAILABLE", "SLEEP WHEN TV TURNS OFF  UNAVAILABLE"]
+            rows,
+            [
+                "TURN TV ON AT START/WAKE  UNAVAILABLE",
+                "SLEEP WHEN TV TURNS OFF  UNAVAILABLE",
+                "TV STANDBY WHEN PC SLEEPS  UNAVAILABLE",
+            ],
         )
 
     def test_toggling_flips_one_setting_and_keeps_the_other(self):
         settings = cec.Settings(turn_tv_on=True, sleep_on_tv_off=False)
         self.assertEqual(cec.toggled(settings, 0, usable=True), cec.Settings(False, False))
         self.assertEqual(cec.toggled(settings, 1, usable=True), cec.Settings(True, True))
+        self.assertEqual(cec.toggled(settings, 2, usable=True), cec.Settings(True, False, False))
 
     def test_toggling_without_a_usable_adapter_changes_nothing(self):
         settings = cec.Settings(turn_tv_on=True, sleep_on_tv_off=True)
         self.assertIs(cec.toggled(settings, 0, usable=False), settings)
         self.assertIs(cec.toggled(settings, 1, usable=False), settings)
+        self.assertIs(cec.toggled(settings, 2, usable=False), settings)
 
     def test_bring_up_without_any_cec_device_runs_nothing(self):
         run = FakeRun()
@@ -614,6 +681,23 @@ class WatchTest(unittest.TestCase):
         self.watch(MONITOR.splitlines(), last_tv_on=990.0)
         self.assertEqual(self.suspended, [])
 
+    def test_the_settings_are_only_read_for_a_tv_standby(self):
+        reads = []
+
+        def load():
+            reads.append(1)
+            return self.settings
+
+        cec.watch(
+            [
+                "Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):",
+                "Received from Audio System to all (5 to 15): REPORT_POWER_STATUS (0x90):",
+                "some other line of cec-ctl output",
+            ],
+            load, self.tick, lambda: None, self.logged.append, 0.0,
+        )
+        self.assertEqual(reads, [])
+
     def test_a_remote_key_press_is_not_a_standby(self):
         self.watch(["Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):"])
         self.assertEqual(self.suspended, [])
@@ -630,22 +714,66 @@ class SleepGateTest(unittest.TestCase):
             path.write_text(text)
         return path
 
+    @staticmethod
+    def logind(answer, returncode=0):
+        """A stand-in for `busctl ... CanSuspend`; answer None is a bus that cannot be reached."""
+        def run(argv, **_kwargs):
+            if answer is None:
+                raise OSError("no busctl")
+            return SimpleNamespace(returncode=returncode, stdout=f's "{answer}"\n')
+        return run
+
+    def supported(self, text, answer="no"):
+        return cec.suspend_supported(self.state(text), self.logind(answer))
+
     def test_suspend_to_ram_listed(self):
-        self.assertTrue(cec.suspend_supported(self.state("freeze mem disk")))
+        self.assertTrue(self.supported("freeze mem disk"))
 
     def test_no_suspend_to_ram(self):
-        self.assertFalse(cec.suspend_supported(self.state("freeze disk")))
-        self.assertFalse(cec.suspend_supported(self.state("")))
-        self.assertFalse(cec.suspend_supported(self.state(None)))
+        self.assertFalse(self.supported("disk"))
+        self.assertFalse(self.supported(""))
+        self.assertFalse(self.supported(None))
+
+    def test_the_same_states_as_the_main_sleep_entry_count(self):
+        # couchliteos_power.suspend_supported: "mem" or "freeze" (suspend-to-idle) is enough
+        self.assertTrue(self.supported("freeze disk"))
+        self.assertTrue(self.supported("mem"))
+
+    def test_logind_yes_or_challenge_decides_whatever_the_state_file_says(self):
+        for answer in ("yes", "challenge"):
+            self.assertTrue(self.supported("", answer))
+            self.assertTrue(self.supported(None, answer))
+
+    def test_logind_na_means_this_pc_cannot_suspend(self):
+        self.assertFalse(self.supported("freeze mem disk", "na"))
+
+    def test_a_logind_that_cannot_answer_leaves_the_state_file_to_decide(self):
+        for run in (self.logind(None), self.logind("yes", returncode=1), self.logind("maybe")):
+            self.assertTrue(cec.suspend_supported(self.state("mem"), run))
+            self.assertFalse(cec.suspend_supported(self.state("disk"), run))
+
+    def test_logind_is_asked_with_a_short_timeout_and_no_shell(self):
+        seen = {}
+
+        def run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return SimpleNamespace(returncode=0, stdout='s "yes"\n')
+
+        cec.suspend_supported(self.state("mem"), run)
+        self.assertEqual(seen["argv"][0], "busctl")
+        self.assertIn("CanSuspend", seen["argv"])
+        self.assertLessEqual(seen["timeout"], 3)
 
     def test_the_sleep_row_says_why_it_is_off(self):
         rows = cec.toggle_rows(cec.Settings(True, True), usable=True, can_sleep=False)
         self.assertEqual(rows[0], "TURN TV ON AT START/WAKE  ON")
         self.assertEqual(rows[1], "SLEEP WHEN TV TURNS OFF  NOT SUPPORTED ON THIS PC")
+        self.assertEqual(rows[2], "TV STANDBY WHEN PC SLEEPS  NOT SUPPORTED ON THIS PC")
 
     def test_the_sleep_switch_cannot_be_turned_on_without_suspend(self):
         settings = cec.Settings(True, False)
         self.assertIs(cec.toggled(settings, 1, usable=True, can_sleep=False), settings)
+        self.assertIs(cec.toggled(settings, 2, usable=True, can_sleep=False), settings)
         self.assertEqual(cec.toggled(settings, 0, usable=True, can_sleep=False), cec.Settings(False, False))
 
     def test_a_saved_sleep_setting_is_ignored_where_suspend_is_missing(self):
