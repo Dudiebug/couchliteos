@@ -863,5 +863,15 @@ refute rg -q 'IP_ADD_MEMBERSHIP|SO_REUSEADDR|SO_REUSEPORT|^import (dbus|zeroconf
 rg -q 'policy accept;' config/nftables/couchliteos.nft
 rg -q 'policy accept;' scripts/couchliteos-firewall
 refute rg -q 'policy (drop|reject)|[sd]port 5353' config/nftables/couchliteos.nft scripts/couchliteos-firewall
+# STREAM CHECK (Settings > STREAMING): the module ships in the image and the launcher opens it.
+rg -qF 'couchliteos_streamcheck.py" "$CHROOT/usr/libexec/couchliteos_streamcheck.py"' build/configure.sh
+rg -q '^import couchliteos_streamcheck as streamcheck$' launcher/couchliteos-launcher.py
+rg -q 'couchliteos_streamcheck.py .*gamepad-nav.py' launcher/Makefile
+rg -q 'test_streamcheck.py' launcher/Makefile
+# The launcher runs as an unprivileged user: ping may not go faster than 0.2 s apart for it.
+rg -q '^PING_INTERVAL = 0\.2$' launcher/couchliteos_streamcheck.py
+refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b' launcher/couchliteos_streamcheck.py
+# The tips send people to a row that exists in Settings > STREAMING.
+rg -q '^SMOOTHER_ROW = "SMOOTHER STREAM ' launcher/couchliteos-launcher.py
 
 printf 'Static tests passed.\n'
