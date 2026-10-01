@@ -425,6 +425,7 @@ class Launcher:
         self.applications: tuple[apps.Application, ...] = ()
         self.menu: list[tuple[str, str]] = []
         self.pending_stream: tuple[str, str] | None = None  # (target, app) while an auto-stream starts
+        self.woke_up = False  # set by on_resume; ACTIVE APPLICATIONS closes on it
         self.stream_by_hand = False  # True while the STREAM row (not the auto-stream) starts it: wording only
         self.stream_row: list[tuple[str, str]] = []  # [] or the STREAM <PC> row, first in self.menu
         self.last_stream_check = time.monotonic()
@@ -590,6 +591,7 @@ class Launcher:
         self.status = "RESUMED FROM SLEEP"
         self.last_status_update = time.monotonic()
         focus_launcher()
+        self.woke_up = True  # the Guide hold that slept the box opened ACTIVE APPLICATIONS; wake to the main menu
         self.autostream(countdown=15)  # the chosen PC streams again after a wake-up; no-op unless Settings > STREAMING asks
 
     def draw(self) -> None:
@@ -1071,6 +1073,7 @@ class Launcher:
         selected = 0
         status = f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK"
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
+        self.woke_up = False
         while True:
             running = self.running_applications()
             rows = [f"{app.name:<32} RUNNING" for app in running] + ["RETURN TO MAIN LAUNCHER"]
@@ -1090,6 +1093,9 @@ class Launcher:
             add_centered(self.screen, height - 3, status if running else "NO MANAGED APPLICATIONS ARE RUNNING")
             self.screen.refresh()
             key = read_key(self.screen)
+            if self.woke_up:  # the box slept and woke while this menu was open
+                self.woke_up = False
+                return
             if HOME_REQUEST.exists():  # Guide again while the menu is open closes it
                 HOME_REQUEST.unlink(missing_ok=True)
                 return

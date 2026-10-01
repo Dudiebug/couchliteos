@@ -867,6 +867,33 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(keys, [-1, -1, 10])
         self.assertEqual(launcher.selected, 0)
 
+    def test_a_wake_up_seen_inside_active_applications_returns_to_the_main_menu(self):
+        # Holding Guide to sleep opens ACTIVE APPLICATIONS first, so the wake-up arrives inside it.
+        launcher = self.launcher()
+        launcher.running_applications = mock.Mock(return_value=[])
+        launcher.autostream = mock.Mock(return_value=False)
+        calls = []
+
+        class WakeScreen(Screen):
+            def getch(self):
+                calls.append(1)
+                if len(calls) > 1:
+                    raise AssertionError("ACTIVE APPLICATIONS stayed open after the wake-up")
+                launcher.on_resume()
+                return -1
+
+        launcher.screen = WakeScreen()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), mock.patch.object(
+            self.module, "focus_launcher"
+        ):
+            launcher.active_applications()
+            self.assertEqual(len(calls), 1)
+            launcher.screen = Screen([-1, 27])  # the next visit is not cut short by the old wake-up
+            launcher.active_applications()
+            self.assertEqual(launcher.screen.keys, [])
+
     def test_resume_marker_is_consumed_once_and_calls_on_resume(self):
         launcher = self.launcher()
         launcher.on_resume = mock.Mock()
