@@ -654,6 +654,16 @@ rg -q '^v4l-utils$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^inputattach$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '"TV CONTROL"' launcher/couchliteos-launcher.py
 rg -q 'import couchliteos_cec as cec' launcher/gamepad-nav.py
+# TV Standby on sleep only when the TV shows this box: the daemon keeps a marker in /run/couchliteos (it is
+# otherwise read-only to the daemon), the sleep hook sends Standby only while the marker exists.
+rg -q '^ReadWritePaths=-/run/couchliteos$' services/couchliteos-cec.service
+rg -q '^ACTIVE_SOURCE_MARKER = pathlib.Path\("/run/couchliteos/cec-active-source"\)$' launcher/couchliteos_cec.py
+rg -q 'O_NOFOLLOW' launcher/couchliteos_cec.py
+rg -q 'phys_addr=adapter.phys_addr, marker=cec.ACTIVE_SOURCE_MARKER' scripts/couchliteos-cec
+rg -q 'cec.should_standby_on_sleep\(settings, cec.ACTIVE_SOURCE_MARKER\)' scripts/couchliteos-cec
+# TEST REMOTE BUTTONS exists only with an adapter; CEC colour keys reach the launcher by the gamepad's focus rule.
+rg -q 'cec.REMOTE_TEST_ROW\] if status.adapter is not None' launcher/couchliteos-launcher.py
+rg -q 'key in CEC_APP_KEYS or not navigation_blocked\(OSK_ACTIVE.exists\(\)\)' launcher/gamepad-nav.py
 
 # Easier everyday use: controller batteries
 rg -q 'couchliteos_controllers.py' build/configure.sh

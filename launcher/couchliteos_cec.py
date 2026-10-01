@@ -11,6 +11,7 @@ from __future__ import annotations
 import configparser
 import dataclasses
 import glob
+import math
 import os
 import pathlib
 import re
@@ -23,6 +24,10 @@ CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
 SECTION = "cec"
 OSD_NAME = "CouchLiteOS"
 OP_STANDBY = 0x36
+OP_ROUTING_CHANGE = 0x80
+OP_ROUTING_INFORMATION = 0x81
+OP_ACTIVE_SOURCE = 0x82
+OP_SET_STREAM_PATH = 0x86
 TV = 0
 BROADCAST = 15
 # Ignore a Standby this long after we switched the TV on or asked to suspend.
@@ -33,6 +38,9 @@ INVALID_PHYS_ADDR = "f.f.f.f"
 # linux/input.h BUS_CEC: the bus of the input device the kernel's rc-cec keymap uses.
 BUS_CEC = 0x1E
 POWER_STATE = pathlib.Path("/sys/power/state")
+# Exists while the TV is showing this box (we are the active source). The root daemon keeps it up to
+# date as it follows the bus and the pre-sleep hook reads it: no file means "another input, or not known".
+ACTIVE_SOURCE_MARKER = pathlib.Path("/run/couchliteos/cec-active-source")
 LOGIND_CAN_SUSPEND = (
     "busctl", "--system", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
     "org.freedesktop.login1.Manager", "CanSuspend",
@@ -62,7 +70,7 @@ def cec_ctl(device: str, *args: str) -> list[str]:
 class Settings:
     turn_tv_on: bool = True
     sleep_on_tv_off: bool = False
-    tv_off_on_sleep: bool = True  # Standby to the TV as the PC goes to sleep
+    tv_off_on_sleep: bool = True  # Standby to the TV as the PC goes to sleep, if it is showing this box
 
 
 def _as_bool(value: str | None, default: bool) -> bool:
@@ -248,6 +256,114 @@ def parse_message(line: str) -> Message | None:
     return Message(int(match.group(1)), int(match.group(2)), int(match.group(3), 16)) if match else None
 
 
+# --- which input the TV shows -----------------------------------------------
+
+# cec-ctl prints a message's opcode on one line and its parameters on the lines after, indented with a tab:
+#   Received from Playback Device 2 to all (8 to 15): ACTIVE_SOURCE (0x82):
+#   \tphys-addr: 2.0.0.0
+# ("Transmitted by ..." for what this adapter sent). Events are single lines:
+#   Event: State Change: PA: 1.1.0.0, LA mask: 0x0010      ("Initial Event: ..." when the monitor starts)
+_HEADER_RE = re.compile(r"^(?:Received from|Transmitted by) .+? \(\d+ to \d+\):\s*\S+ \(0x([0-9a-fA-F]{2})\)")
+_PARAMETER_RE = re.compile(r"^\s*((?:orig-|new-)?phys-addr):\s*(\S+)")
+_STATE_CHANGE_RE = re.compile(r"Event: State Change: PA: ([0-9a-fA-F.]+),")
+_ADDRESS_RE = re.compile(r"[0-9a-f](?:\.[0-9a-f]){3}")
+_SOURCE_OPCODES = frozenset({OP_ROUTING_CHANGE, OP_ROUTING_INFORMATION, OP_ACTIVE_SOURCE, OP_SET_STREAM_PATH})
+
+
+def _address(value: object) -> str | None:
+    text = value.strip().lower() if isinstance(value, str) else ""
+    return text if _ADDRESS_RE.fullmatch(text) else None
+
+
+def _header_opcode(line: str) -> int | None:
+    match = _HEADER_RE.match(line)
+    return int(match.group(1), 16) if match else None
+
+
+def parse_source(text: str, our_physical_address: str) -> bool | None:
+    """Is the TV showing this box? `text` is one `cec-ctl --monitor` message: its first line and the
+    parameter lines after it.
+
+    True: Active Source, Routing Information, Set Stream Path or Routing Change names our physical address.
+    False: they name another one (another input is now showing). None: anything else, a first line without
+    its address yet, or no usable address of ours. Never raises."""
+    ours = _address(our_physical_address)
+    if ours is None or ours == INVALID_PHYS_ADDR or not isinstance(text, str):
+        return None
+    opcode = None
+    shown: dict[str, str | None] = {}
+    for line in text.splitlines():
+        header = _HEADER_RE.match(line)
+        if header:
+            opcode, shown = int(header.group(1), 16), {}
+        elif opcode is not None and (parameter := _PARAMETER_RE.match(line)):
+            shown.setdefault(parameter.group(1).lower(), _address(parameter.group(2)))
+    if opcode not in _SOURCE_OPCODES:
+        return None
+    address = shown.get("new-phys-addr" if opcode == OP_ROUTING_CHANGE else "phys-addr")
+    return None if address is None else address == ours
+
+
+class SourceTracker:
+    """Feeds `cec-ctl --monitor` lines to parse_source, which needs a message's lines together.
+
+    feed() answers as soon as a message's address line arrives: True (the TV shows this box), False (it
+    shows another input, or this box can no longer be known to be shown: the adapter's state changed) or
+    None (nothing to say). A line that begins a new message or event ends the one before it."""
+
+    def __init__(self, phys_addr: str) -> None:
+        self.phys_addr = phys_addr
+        self.block: list[str] = []
+
+    def feed(self, line: str) -> bool | None:
+        text = line.rstrip("\r\n")
+        if not text.strip():
+            return None
+        if text[0].isspace():
+            if not self.block:
+                return None
+            self.block.append(text)
+        else:
+            self.block = [text] if _header_opcode(text) in _SOURCE_OPCODES else []
+            changed = _STATE_CHANGE_RE.search(text)
+            if changed:
+                self.phys_addr = _address(changed.group(1)) or INVALID_PHYS_ADDR
+                # The monitor's first line only says where we are; a change later means the TV or the
+                # cable came or went, and what it shows is unknown.
+                return None if "Initial" in text else False
+            if not self.block:
+                return None
+        result = parse_source("\n".join(self.block), self.phys_addr)
+        if result is not None:
+            self.block = []
+        return result
+
+
+def mark_active_source(
+    active: bool, marker: pathlib.Path = ACTIVE_SOURCE_MARKER, log: Callable[[str], None] = lambda message: None
+) -> bool:
+    """Create (the TV shows this box) or remove (it does not, or unknown) the marker; False when that failed.
+
+    Best effort: without the marker the pre-sleep hook leaves the TV alone."""
+    try:
+        if active:
+            # The daemon is root and the directory belongs to the launcher's user: never follow a link there.
+            os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644))
+        else:
+            marker.unlink(missing_ok=True)
+    except OSError as error:
+        log(f"could not {'create' if active else 'remove'} {marker}: {error}")
+        return False
+    return True
+
+
+def should_standby_on_sleep(settings: Settings, marker: pathlib.Path = ACTIVE_SOURCE_MARKER) -> bool:
+    """Standby for the TV as the PC sleeps: the setting is on and the TV is showing this box.
+
+    A TV on another input (or a state not known) is left alone: someone may be watching it."""
+    return settings.tv_off_on_sleep and os.path.exists(marker)
+
+
 def tx_ok(output: str) -> bool:
     """cec-ctl exits 0 even when nobody acknowledged; the Tx status line tells."""
     return "\tSequence:" in output and not re.search(r"^\s*Tx, (?!OK)", output, re.M)
@@ -343,14 +459,34 @@ def watch(
     suspend: Callable[[], None],
     log: Callable[[str], None],
     last_tv_on: float,
+    phys_addr: str | None = None,
+    marker: pathlib.Path = ACTIVE_SOURCE_MARKER,
 ) -> None:
-    """Suspend when the TV says Standby and the setting is on; `lines` is `cec-ctl --monitor` output."""
+    """Suspend when the TV says Standby and the setting is on; `lines` is `cec-ctl --monitor` output.
+
+    Given this box's physical address it also keeps `marker` in step with whether the TV shows this box:
+    created when we become the active source, removed when another input does, or when the TV goes to
+    standby or the adapter's state changes (what it shows is then unknown)."""
     last_suspend = None
+    tracker = SourceTracker(phys_addr) if phys_addr else None
+    marked = None  # what the marker was last set to; None until the first answer
+
+    def mark(active: bool) -> None:
+        nonlocal marked
+        if active != marked and mark_active_source(active, marker, log):
+            marked = active
+
     for line in lines:
+        if tracker is not None:
+            seen = tracker.feed(line)
+            if seen is not None:
+                mark(seen)
         message = parse_message(line)
         # Reading the settings asks logind whether the PC can suspend, so only do it for a Standby.
         if message is None or message.opcode != OP_STANDBY:
             continue
+        if tracker is not None and message.source == TV:
+            mark(False)
         if should_suspend(message, load(), now(), last_tv_on, last_suspend):
             last_suspend = now()
             log("TV went to standby; asking systemd to suspend")
@@ -382,6 +518,91 @@ def remote_key_maps(ecodes) -> tuple[dict[int, int], set[int]]:
 
 def is_cec_bus(bustype: int) -> bool:
     return bustype == BUS_CEC
+
+
+# --- TEST REMOTE BUTTONS ----------------------------------------------------
+
+REMOTE_TEST_ROW = "TEST REMOTE BUTTONS"
+REMOTE_TEST_SECONDS = 10.0  # the screen closes after this long without a button
+REMOTE_TEST_BACKS = 2  # ... or when BACK is pressed this many times in a row (BACK is under test too)
+HOME_KEY = "HOME"  # stands for _REMOTE_HOME: gamepad-nav turns those into a request file, not a key
+# Launcher keys that several remote keys end up as are named by the one a person presses most.
+_KEY_TITLES = {"KEY_ENTER": "OK", "KEY_ESC": "BACK"}
+BACK_KEY = "KEY_ESC"
+
+
+def _reverse_map() -> dict[str, str]:
+    """Launcher key (a _REMOTE_NAV value) -> what to call the remote key that sent it: UP, OK, RED -> F5."""
+    labels = {}
+    for target in dict.fromkeys(_REMOTE_NAV.values()):
+        name = target.removeprefix("KEY_")
+        first = next(source for source, value in _REMOTE_NAV.items() if value == target).removeprefix("KEY_")
+        labels[target] = _KEY_TITLES.get(target) or (first if first == name else f"{first} → {name}")
+    if _REMOTE_HOME:
+        labels[HOME_KEY] = "HOME"
+    return labels
+
+
+REMOTE_LABELS = _reverse_map()
+
+
+def describe_key(launcher_key: str | None, code: int) -> str:
+    """The name of a key that arrived; `launcher_key` is its KEY_* name (HOME_KEY for Home), None if we have none."""
+    return REMOTE_LABELS.get(launcher_key or "") or f"UNKNOWN KEY {code}"
+
+
+class RemoteTest:
+    """TEST REMOTE BUTTONS: the keys seen so far, and when the screen is over.
+
+    The launcher only sees what gamepad-nav forwards, so this names the keys the TV got through to the
+    launcher, as the launcher key they became. It ends after `seconds` with no key, or `backs` BACKs in a row."""
+
+    HISTORY = 4  # the last one and three before it fit an 80-column screen even with unknown codes
+
+    def __init__(self, now: float, seconds: float = REMOTE_TEST_SECONDS, backs: int = REMOTE_TEST_BACKS) -> None:
+        self.seconds = seconds
+        self.backs = backs
+        self.last_key = now
+        self.back_run = 0
+        self.seen: list[str] = []
+
+    def press(self, launcher_key: str | None, code: int, now: float) -> str:
+        label = describe_key(launcher_key, code)
+        self.last_key = now
+        self.back_run = self.back_run + 1 if launcher_key == BACK_KEY else 0
+        self.seen = (self.seen + [label])[-self.HISTORY:]
+        return label
+
+    def seconds_left(self, now: float) -> int:
+        return max(0, math.ceil(self.seconds - (now - self.last_key)))
+
+    def done(self, now: float) -> bool:
+        return self.back_run >= self.backs or self.seconds_left(now) <= 0
+
+    def rows(self) -> list[str]:
+        return [
+            "PRESS BUTTONS ON THE TV REMOTE. EACH ONE IS NAMED HERE.",
+            "A BUTTON THAT IS NEVER NAMED IS BLOCKED BY THE TV.",
+            "",
+            f"LAST BUTTON  {self.seen[-1] if self.seen else '-'}",
+            f"EARLIER  {'  '.join(reversed(self.seen[:-1])) or '-'}",
+        ]
+
+    def hint(self, now: float) -> str:
+        return f"PRESS BACK TWICE TO LEAVE  ·  CLOSES IN {self.seconds_left(now)} S WITH NO BUTTON"
+
+
+STANDBY_ROW = "TV STANDBY WHEN PC SLEEPS"
+STANDBY_HINT = "TURNS THE TV OFF WHEN THIS BOX SLEEPS (ONLY IF THE TV IS SHOWING IT)"
+_ROW_HINTS = {
+    STANDBY_ROW: STANDBY_HINT,
+    REMOTE_TEST_ROW: "SEE WHICH BUTTONS OF YOUR TV REMOTE THE TV PASSES ON",
+}
+
+
+def row_hint(row: str) -> str:
+    """The footer for a TV CONTROL row, or "" for the usual one."""
+    return _ROW_HINTS.get(row.split("  ")[0], "")
 
 
 # --- launcher screen --------------------------------------------------------
@@ -466,7 +687,7 @@ def toggle_rows(settings: Settings, usable: bool = True, can_sleep: bool = True)
     return [
         f"TURN TV ON AT START/WAKE  {word(settings.turn_tv_on)}",
         f"SLEEP WHEN TV TURNS OFF  {sleepy(settings.sleep_on_tv_off)}",
-        f"TV STANDBY WHEN PC SLEEPS  {sleepy(settings.tv_off_on_sleep)}",
+        f"{STANDBY_ROW}  {sleepy(settings.tv_off_on_sleep)}",
     ]
 
 

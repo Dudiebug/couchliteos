@@ -1,3 +1,4 @@
+import os
 import pathlib
 import tempfile
 import unittest
@@ -780,6 +781,404 @@ class SleepGateTest(unittest.TestCase):
         saved_elsewhere = cec.Settings(True, True)
         self.assertEqual(cec.effective_settings(saved_elsewhere, can_sleep=False), cec.Settings(True, False))
         self.assertIs(cec.effective_settings(saved_elsewhere, can_sleep=True), saved_elsewhere)
+
+
+
+# Captured from cec-ctl 1.30.1 (vivid): a message's opcode is on one line and its parameters follow on
+# lines indented with a tab. The "Transmitted by" form was captured; "Received from" differs only in the
+# verb (as in the STANDBY lines of MONITOR above).
+ACTIVE_SOURCE_US = lines(
+    "Received from Playback Device 1 to all (4 to 15): ACTIVE_SOURCE (0x82):",
+    "\tphys-addr: 1.1.0.0",
+)
+ACTIVE_SOURCE_CABLE = lines(
+    "Received from Playback Device 2 to all (8 to 15): ACTIVE_SOURCE (0x82):",
+    "\tphys-addr: 2.0.0.0",
+)
+STREAM_PATH_US = lines(
+    "Received from TV to all (0 to 15): SET_STREAM_PATH (0x86):",
+    "\tphys-addr: 1.1.0.0",
+)
+STREAM_PATH_CABLE = STREAM_PATH_US.replace("1.1.0.0", "2.0.0.0")
+ROUTING_INFORMATION_US = lines(
+    "Received from Switch to all (14 to 15): ROUTING_INFORMATION (0x81):",
+    "\tphys-addr: 1.1.0.0",
+)
+ROUTING_INFORMATION_CABLE = ROUTING_INFORMATION_US.replace("1.1.0.0", "2.0.0.0")
+ROUTING_TO_US = lines(
+    "Received from Switch to all (14 to 15): ROUTING_CHANGE (0x80):",
+    "\torig-phys-addr: 2.0.0.0",
+    "\tnew-phys-addr: 1.1.0.0",
+)
+ROUTING_AWAY = lines(
+    "Received from Switch to all (14 to 15): ROUTING_CHANGE (0x80):",
+    "\torig-phys-addr: 1.1.0.0",
+    "\tnew-phys-addr: 2.0.0.0",
+)
+TV_STANDBY = "Received from TV to all (0 to 15): STANDBY (0x36)\n"
+STATE_CHANGE = "Event: State Change: PA: 1.1.0.0, LA mask: 0x0010\n"
+OTHER_TRAFFIC = lines(
+    "Received from TV to Playback Device 1 (0 to 4): GIVE_OSD_NAME (0x46)",
+    "Received from Audio System to all (5 to 15): REPORT_PHYSICAL_ADDR (0x84):",
+    "\tphys-addr: 2.0.0.0",
+    "\tprim-devtype: audiosystem (0x05)",
+    "Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):",
+    "\tui-cmd: up (0x01)",
+)
+
+
+class ParseSourceTest(unittest.TestCase):
+    def source(self, text, ours="1.1.0.0"):
+        return cec.parse_source(text, ours)
+
+    def test_active_source_names_who_shows(self):
+        self.assertIs(self.source(ACTIVE_SOURCE_US), True)
+        self.assertIs(self.source(ACTIVE_SOURCE_CABLE), False)
+
+    def test_set_stream_path_names_where_the_tv_switched(self):
+        self.assertIs(self.source(STREAM_PATH_US), True)
+        self.assertIs(self.source(STREAM_PATH_CABLE), False)
+
+    def test_routing_information_names_the_active_path(self):
+        self.assertIs(self.source(ROUTING_INFORMATION_US), True)
+        self.assertIs(self.source(ROUTING_INFORMATION_CABLE), False)
+
+    def test_routing_change_goes_by_the_new_address(self):
+        self.assertIs(self.source(ROUTING_TO_US), True)
+        self.assertIs(self.source(ROUTING_AWAY), False)
+
+    def test_what_this_adapter_sent_counts_too(self):
+        sent = ACTIVE_SOURCE_US.replace("Received from", "Transmitted by")
+        self.assertIs(self.source(sent), True)
+
+    def test_a_first_line_alone_has_no_address_yet(self):
+        self.assertIsNone(self.source(ACTIVE_SOURCE_US.splitlines()[0]))
+        self.assertIsNone(self.source(ROUTING_AWAY.splitlines()[0] + "\n\torig-phys-addr: 1.1.0.0\n"))
+
+    def test_other_messages_are_not_about_the_source(self):
+        self.assertIsNone(self.source(OTHER_TRAFFIC))
+        self.assertIsNone(self.source(TV_STANDBY))
+        self.assertIsNone(self.source(MONITOR))
+
+    def test_the_address_is_compared_whatever_the_case_or_spacing(self):
+        self.assertIs(self.source(ACTIVE_SOURCE_US.replace("1.1.0.0", "A.0.0.0  "), " a.0.0.0\n"), True)
+
+    def test_garbage_is_nothing_and_never_raises(self):
+        for garbage in (
+            "", "\n", "\x00\x01\xff", "ACTIVE_SOURCE (0x82)", "phys-addr: 1.1.0.0", None, b"bytes", 5, [],
+            "Received from (0 to 15): ACTIVE_SOURCE (0x82):\n\tphys-addr: 1.1.0.0",
+            ACTIVE_SOURCE_US.replace("1.1.0.0", "garbage"),
+            ACTIVE_SOURCE_US.replace("1.1.0.0", "1.1.0"),
+            ACTIVE_SOURCE_US.replace("phys-addr:", "phys-addr"),
+            ACTIVE_SOURCE_US.replace("(0x82)", "(0xzz)"),
+        ):
+            self.assertIsNone(self.source(garbage), repr(garbage))
+
+    def test_without_a_usable_address_of_our_own_nothing_can_be_said(self):
+        for ours in ("", "f.f.f.f", "nonsense", None, 0):
+            self.assertIsNone(self.source(ACTIVE_SOURCE_US, ours), repr(ours))
+            self.assertIsNone(self.source(ACTIVE_SOURCE_CABLE, ours), repr(ours))
+
+
+class SourceTrackerTest(unittest.TestCase):
+    def results(self, text, ours="1.1.0.0"):
+        tracker = cec.SourceTracker(ours)
+        return [tracker.feed(line) for line in text.splitlines(keepends=True)]
+
+    def answers(self, text, ours="1.1.0.0"):
+        return [result for result in self.results(text, ours) if result is not None]
+
+    def test_the_answer_comes_with_the_address_line_not_with_the_next_message(self):
+        self.assertEqual(self.results(ACTIVE_SOURCE_US), [None, True])
+        self.assertEqual(self.results(ACTIVE_SOURCE_CABLE), [None, False])
+        self.assertEqual(self.results(ROUTING_TO_US), [None, None, True])
+        self.assertEqual(self.results(ROUTING_AWAY), [None, None, False])
+
+    def test_a_run_of_messages(self):
+        text = MONITOR + ACTIVE_SOURCE_CABLE + STREAM_PATH_US + TV_STANDBY + ROUTING_AWAY + OTHER_TRAFFIC + ACTIVE_SOURCE_US
+        self.assertEqual(self.answers(text), [False, True, False, True])
+
+    def test_an_unrelated_parameter_line_is_not_taken_for_an_address(self):
+        self.assertEqual(self.answers(OTHER_TRAFFIC), [])
+
+    def test_a_message_cut_short_by_the_next_one_is_dropped(self):
+        text = ACTIVE_SOURCE_US.splitlines()[0] + "\n" + ACTIVE_SOURCE_CABLE
+        self.assertEqual(self.results(text), [None, None, False])
+
+    def test_an_address_without_a_message_is_ignored(self):
+        self.assertEqual(self.results("\tphys-addr: 1.1.0.0\n"), [None])
+        self.assertEqual(self.results("some line\n\tphys-addr: 1.1.0.0\n"), [None, None])
+
+    def test_blank_lines_garbage_and_carriage_returns_change_nothing(self):
+        text = "\n\n\x00\xff\r\n" + ACTIVE_SOURCE_CABLE.replace("\n", "\r\n") + "\n"
+        self.assertEqual(self.answers(text), [False])
+
+    def test_the_first_state_line_only_says_where_we_are(self):
+        self.assertEqual(self.results("Initial Event: State Change: PA: 1.1.0.0, LA mask: 0x0010\n"), [None])
+
+    def test_a_later_state_change_means_what_the_tv_shows_is_not_known(self):
+        self.assertEqual(self.results(STATE_CHANGE), [False])
+
+    def test_the_address_follows_a_state_change(self):
+        text = "Event: State Change: PA: 2.0.0.0, LA mask: 0x0010\n" + ACTIVE_SOURCE_CABLE
+        self.assertEqual(self.answers(text), [False, True])
+
+    def test_a_lost_link_leaves_nothing_to_compare_with(self):
+        text = "Event: State Change: PA: f.f.f.f, LA mask: 0x0000\n" + ACTIVE_SOURCE_US
+        self.assertEqual(self.answers(text), [False])
+
+
+class ActiveSourceMarkerTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = pathlib.Path(directory.name)
+        self.marker = self.directory / "cec-active-source"
+        self.logged = []
+
+    def mark(self, active):
+        return cec.mark_active_source(active, self.marker, self.logged.append)
+
+    def test_it_lives_in_the_runtime_directory_the_launcher_user_owns(self):
+        self.assertEqual(cec.ACTIVE_SOURCE_MARKER, pathlib.Path("/run/couchliteos/cec-active-source"))
+
+    def test_created_and_removed(self):
+        self.assertTrue(self.mark(True))
+        self.assertTrue(self.marker.is_file())
+        self.assertTrue(self.mark(True))  # again is fine
+        self.assertTrue(self.mark(False))
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(self.mark(False))  # nothing to remove is fine
+        self.assertEqual(self.logged, [])
+
+    def test_a_missing_directory_is_reported_not_created_or_raised(self):
+        self.marker = self.directory / "missing" / "cec-active-source"
+        self.assertFalse(self.mark(True))
+        self.assertFalse((self.directory / "missing").exists())
+        self.assertIn("could not create", self.logged[0])
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "needs O_NOFOLLOW")
+    def test_a_link_in_its_place_is_not_followed(self):
+        target = self.directory / "target"
+        target.write_text("keep")
+        self.marker.symlink_to(target)
+        self.assertFalse(self.mark(True))
+        self.assertEqual(target.read_text(), "keep")
+        self.assertTrue(self.mark(False))  # removing takes the link away, not what it points at
+        self.assertEqual(target.read_text(), "keep")
+        self.assertFalse(self.marker.is_symlink())
+
+
+class SleepStandbyGateTest(unittest.TestCase):
+    """The pre-sleep Standby needs the setting on and the TV showing this box."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.marker = pathlib.Path(directory.name) / "cec-active-source"
+
+    def test_setting_on_and_the_tv_showing_us_sends_standby(self):
+        self.marker.touch()
+        self.assertTrue(cec.should_standby_on_sleep(cec.Settings(tv_off_on_sleep=True), self.marker))
+
+    def test_an_unknown_or_other_input_is_left_alone(self):
+        self.assertFalse(cec.should_standby_on_sleep(cec.Settings(tv_off_on_sleep=True), self.marker))
+
+    def test_the_setting_off_sends_nothing_even_when_the_tv_shows_us(self):
+        self.marker.touch()
+        self.assertFalse(cec.should_standby_on_sleep(cec.Settings(tv_off_on_sleep=False), self.marker))
+
+    def test_the_setting_still_defaults_to_on(self):
+        self.assertTrue(cec.Settings().tv_off_on_sleep)
+
+    def test_the_row_explains_what_the_switch_does(self):
+        row = cec.toggle_rows(cec.Settings())[2]
+        self.assertEqual(row, "TV STANDBY WHEN PC SLEEPS  ON")
+        self.assertEqual(cec.row_hint(row), "TURNS THE TV OFF WHEN THIS BOX SLEEPS (ONLY IF THE TV IS SHOWING IT)")
+        self.assertLessEqual(len(cec.row_hint(row)), 72)  # an 80-column TV
+        self.assertEqual(cec.row_hint("REFRESH"), "")
+
+
+class WatchMarkerTest(unittest.TestCase):
+    """watch() keeps the marker in step with what the TV shows."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.marker = pathlib.Path(directory.name) / "cec-active-source"
+        self.logged = []
+        self.suspended = []
+        self.settings = cec.Settings(True, False)
+
+    def watch(self, feed, phys_addr="1.1.0.0", marker=None):
+        """Run watch() over the lines of `feed`; whether the marker existed after each line was handled."""
+        states = []
+
+        def recording():
+            for line in feed:
+                yield line
+                states.append(self.marker.exists())  # runs once watch() is done with `line`
+
+        cec.watch(
+            recording(), lambda: self.settings, lambda: 1000.0, lambda: self.suspended.append(1),
+            self.logged.append, 0.0, phys_addr=phys_addr, marker=marker or self.marker,
+        )
+        return states
+
+    def test_created_when_we_become_the_active_source_and_removed_when_another_does(self):
+        states = self.watch((ACTIVE_SOURCE_US + ACTIVE_SOURCE_CABLE + ACTIVE_SOURCE_US).splitlines())
+        # each answer lands with its address line, not when the next message starts
+        self.assertEqual(states, [False, True, True, False, False, True])
+
+    def test_each_kind_of_message_moves_it(self):
+        for ours, theirs in (
+            (STREAM_PATH_US, STREAM_PATH_CABLE),
+            (ROUTING_INFORMATION_US, ROUTING_INFORMATION_CABLE),
+            (ROUTING_TO_US, ROUTING_AWAY),
+        ):
+            with self.subTest(ours.splitlines()[0]):
+                self.marker.unlink(missing_ok=True)
+                self.watch(ours.splitlines())
+                self.assertTrue(self.marker.exists())
+                self.watch(theirs.splitlines())
+                self.assertFalse(self.marker.exists())
+
+    def test_it_stays_while_other_traffic_goes_by(self):
+        self.marker.touch()
+        self.watch(OTHER_TRAFFIC.splitlines())
+        self.assertTrue(self.marker.exists())
+
+    def test_the_tv_going_to_standby_clears_it_and_still_suspends(self):
+        self.settings = cec.Settings(True, True)
+        self.watch(ACTIVE_SOURCE_US.splitlines())
+        self.assertTrue(self.marker.exists())
+        self.watch(TV_STANDBY.splitlines())
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.suspended, [1])
+
+    def test_another_device_going_to_standby_does_not_clear_it(self):
+        self.watch(ACTIVE_SOURCE_US.splitlines())
+        self.watch(["Received from Audio System to all (5 to 15): STANDBY (0x36)"])
+        self.assertTrue(self.marker.exists())
+
+    def test_a_state_change_clears_it_but_the_first_state_line_does_not(self):
+        self.watch(ACTIVE_SOURCE_US.splitlines())
+        self.watch(["Initial Event: State Change: PA: 1.1.0.0, LA mask: 0x0010"])
+        self.assertTrue(self.marker.exists())
+        self.watch(STATE_CHANGE.splitlines())
+        self.assertFalse(self.marker.exists())
+
+    def test_the_marker_is_left_alone_without_this_boxs_address(self):
+        self.marker.touch()
+        self.watch(ACTIVE_SOURCE_CABLE.splitlines(), phys_addr=None)
+        self.assertTrue(self.marker.exists())
+        self.marker.unlink()
+        self.watch(ACTIVE_SOURCE_US.splitlines(), phys_addr=None)
+        self.assertFalse(self.marker.exists())
+
+    def test_a_marker_that_cannot_be_written_is_logged_and_does_not_stop_the_watch(self):
+        missing = self.marker.parent / "gone" / "cec-active-source"
+        self.settings = cec.Settings(True, True)
+        self.watch((ACTIVE_SOURCE_US + TV_STANDBY).splitlines(), marker=missing)
+        self.assertTrue(any("could not create" in entry for entry in self.logged))
+        self.assertEqual(self.suspended, [1])
+
+    def test_garbage_on_the_bus_never_stops_the_watch(self):
+        garbage = ["", "\x00", "\xff\xfe", "Received from", "Event: State Change: PA: ,", "\tphys-addr: 1.1.0.0"]
+        self.watch(garbage * 3)
+        self.assertFalse(self.marker.exists())
+
+
+class RemoteLabelsTest(unittest.TestCase):
+    """TEST REMOTE BUTTONS names a key by the remote key that sent it."""
+
+    def test_every_launcher_key_a_remote_key_becomes_has_a_name(self):
+        for target in set(cec._REMOTE_NAV.values()):
+            self.assertIn(target, cec.REMOTE_LABELS)
+            self.assertTrue(cec.REMOTE_LABELS[target])
+
+    def test_the_names(self):
+        self.assertEqual(
+            cec.REMOTE_LABELS,
+            {
+                "KEY_UP": "UP", "KEY_DOWN": "DOWN", "KEY_LEFT": "LEFT", "KEY_RIGHT": "RIGHT",
+                "KEY_ENTER": "OK", "KEY_ESC": "BACK", "KEY_DELETE": "CLEAR → DELETE",
+                "KEY_F5": "RED → F5", "KEY_F6": "GREEN → F6", "KEY_F7": "YELLOW → F7",
+                "KEY_F8": "BLUE → F8", cec.HOME_KEY: "HOME",
+            },
+        )
+
+    def test_a_key_is_described_by_its_name(self):
+        self.assertEqual(cec.describe_key("KEY_F5", 269), "RED → F5")
+        self.assertEqual(cec.describe_key("KEY_ESC", 27), "BACK")
+        self.assertEqual(cec.describe_key(cec.HOME_KEY, 0), "HOME")
+
+    def test_an_unknown_key_shows_its_raw_code(self):
+        self.assertEqual(cec.describe_key(None, 9999), "UNKNOWN KEY 9999")
+        self.assertEqual(cec.describe_key("KEY_PLAYPAUSE", 164), "UNKNOWN KEY 164")
+        self.assertEqual(cec.describe_key("", -1), "UNKNOWN KEY -1")
+
+
+class RemoteTestSessionTest(unittest.TestCase):
+    """The exit rules and the text of TEST REMOTE BUTTONS."""
+
+    def test_it_ends_after_ten_seconds_with_no_button(self):
+        test = cec.RemoteTest(100.0)
+        self.assertFalse(test.done(100.0))
+        self.assertFalse(test.done(109.9))
+        self.assertTrue(test.done(110.0))
+        self.assertEqual([test.seconds_left(now) for now in (100.0, 105.5, 109.9, 110.0, 200.0)], [10, 5, 1, 0, 0])
+
+    def test_every_button_starts_the_ten_seconds_again(self):
+        test = cec.RemoteTest(100.0)
+        test.press("KEY_UP", 103, 108.0)
+        self.assertFalse(test.done(117.9))
+        self.assertTrue(test.done(118.0))
+
+    def test_back_twice_in_a_row_ends_it(self):
+        test = cec.RemoteTest(0.0)
+        test.press("KEY_ESC", 1, 1.0)
+        self.assertFalse(test.done(1.0))
+        test.press("KEY_ESC", 1, 2.0)
+        self.assertTrue(test.done(2.0))
+
+    def test_back_between_other_buttons_does_not(self):
+        test = cec.RemoteTest(0.0)
+        for key in ("KEY_ESC", "KEY_UP", "KEY_ESC", None, "KEY_ESC"):
+            test.press(key, 1, 1.0)
+            self.assertFalse(test.done(1.0))
+        test.press(cec.HOME_KEY, 0, 1.0)
+        test.press("KEY_ESC", 1, 1.0)
+        self.assertFalse(test.done(1.0))
+
+    def test_buttons_are_named_and_the_last_ones_are_kept(self):
+        test = cec.RemoteTest(0.0)
+        self.assertEqual(test.press("KEY_RIGHT", 106, 1.0), "RIGHT")
+        self.assertEqual(test.press("KEY_ENTER", 28, 2.0), "OK")
+        self.assertEqual(test.press(None, 7777, 3.0), "UNKNOWN KEY 7777")
+        self.assertEqual(test.press("KEY_ESC", 27, 4.0), "BACK")
+        self.assertEqual(test.press("KEY_F5", 269, 5.0), "RED → F5")
+        self.assertEqual(test.seen, ["OK", "UNKNOWN KEY 7777", "BACK", "RED → F5"])
+
+    def test_the_screen_says_what_to_do_and_what_arrived(self):
+        test = cec.RemoteTest(0.0)
+        rows = test.rows()
+        self.assertTrue(any("PRESS BUTTONS ON THE TV REMOTE" in row for row in rows))
+        self.assertIn("LAST BUTTON  -", rows)
+        test.press("KEY_UP", 103, 1.0)
+        test.press("KEY_F6", 270, 2.0)
+        rows = test.rows()
+        self.assertIn("LAST BUTTON  GREEN → F6", rows)
+        self.assertIn("EARLIER  UP", rows)
+        self.assertEqual(test.hint(2.0), "PRESS BACK TWICE TO LEAVE  ·  CLOSES IN 10 S WITH NO BUTTON")
+        self.assertIn("CLOSES IN 4 S", test.hint(8.0))
+
+    def test_every_row_fits_an_80_column_screen_even_with_odd_codes(self):
+        test = cec.RemoteTest(0.0)
+        for code in (12345, 12346, 12347, 12348, 12349):
+            test.press(None, code, 1.0)
+        for row in test.rows() + [test.hint(1.0)]:
+            self.assertLessEqual(len(row), 72, row)
 
 
 if __name__ == "__main__":

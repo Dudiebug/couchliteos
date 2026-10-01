@@ -82,6 +82,12 @@ ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
 SHORTCUT_KEYS = {curses.KEY_F5: "lb", curses.KEY_F6: "rb", curses.KEY_F7: "view", curses.KEY_F8: "menu"}
 SHORTCUT_TAGS = apps.SHORTCUTS  # one set of names on the main menu and in Settings
+# TEST REMOTE BUTTONS: the launcher keys gamepad-nav makes of TV remote keys, by the name cec.REMOTE_LABELS uses.
+REMOTE_TEST_KEYS = {
+    curses.KEY_UP: "KEY_UP", curses.KEY_DOWN: "KEY_DOWN", curses.KEY_LEFT: "KEY_LEFT", curses.KEY_RIGHT: "KEY_RIGHT",
+    curses.KEY_ENTER: "KEY_ENTER", 10: "KEY_ENTER", 13: "KEY_ENTER", 27: cec.BACK_KEY, curses.KEY_DC: "KEY_DELETE",
+    curses.KEY_F5: "KEY_F5", curses.KEY_F6: "KEY_F6", curses.KEY_F7: "KEY_F7", curses.KEY_F8: "KEY_F8",
+}
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / CIRCLE CANCEL"
@@ -1332,7 +1338,9 @@ class Settings:
             )
         )
 
-    def draw(self, title: str = "SETTINGS", rows: list[str] | None = None, selected: int | None = None) -> None:
+    def draw(
+        self, title: str = "SETTINGS", rows: list[str] | None = None, selected: int | None = None, hint: str = "",
+    ) -> None:
         self.screen.erase()
         height, width = self.screen.getmaxyx()
         if height >= 8 and width >= 24:
@@ -1346,7 +1354,7 @@ class Settings:
             selected = self.selected
         left = max(2, (width - max((len(item) for item in rows), default=1) - 3) // 2)
         listview.draw_rows(self.screen, rows, selected, max(5, height // 3), height - 4, left)
-        add_centered(self.screen, height - 3, self.status)
+        add_centered(self.screen, height - 3, self.status or hint)
         self.screen.refresh()
 
     def menu_label(self, item: str) -> str:
@@ -1908,16 +1916,27 @@ class Settings:
         selected = 0
         while True:
             info = cec.status_lines(status)
-            actions = cec.toggle_rows(settings, status.usable, can_sleep) + ["REFRESH", "BACK"]
-            self.draw("TV CONTROL", info + [""] + actions, len(info) + 1 + selected)
+            actions = (
+                cec.toggle_rows(settings, status.usable, can_sleep) + ["REFRESH"]
+                + ([cec.REMOTE_TEST_ROW] if status.adapter is not None else []) + ["BACK"]
+            )
+            selected = min(selected, len(actions) - 1)
+            self.draw(
+                "TV CONTROL", info + [""] + actions, len(info) + 1 + selected, hint=cec.row_hint(actions[selected]),
+            )
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(actions))
-            if key == 27 or (key in ENTER_KEYS and selected == len(actions) - 1):
+            if key == 27 or (key in ENTER_KEYS and actions[selected] == "BACK"):
                 return
             if key not in ENTER_KEYS:
                 continue
-            if selected == len(actions) - 2:
+            if actions[selected] == "REFRESH":
                 status = ask_tv()
+            elif actions[selected] == cec.REMOTE_TEST_ROW:
+                if status.usable:
+                    self.run_remote_test()
+                else:
+                    self.status = "NOT AVAILABLE: TV NOT CONNECTED"
             elif not status.usable:
                 self.status = "NOT AVAILABLE: " + ("NO CEC ADAPTER FOUND" if status.adapter is None else "TV NOT CONNECTED")
             elif selected in (1, 2) and not can_sleep:
@@ -1930,6 +1949,28 @@ class Settings:
                     self.status = f"NOT SAVED: {error}"
                 else:
                     settings, self.status = changed, "SAVED"
+
+    def run_remote_test(self) -> None:
+        """TEST REMOTE BUTTONS: name each key as the TV sends it; closes after 10 s of quiet or BACK twice."""
+        test = cec.RemoteTest(time.monotonic())
+        self.status = ""
+        flush_input()
+        self.screen.timeout(100)
+        try:
+            while True:
+                now = time.monotonic()
+                if test.done(now):
+                    return
+                self.draw(cec.REMOTE_TEST_ROW, test.rows(), None, hint=test.hint(now))
+                key = read_key(self.screen)
+                now = time.monotonic()
+                if HOME_REQUEST.exists():  # HOME or MENU on the remote (and Guide) leave a file, not a key
+                    HOME_REQUEST.unlink(missing_ok=True)
+                    test.press(cec.HOME_KEY, 0, now)
+                if key not in (-1, curses.KEY_RESIZE):
+                    test.press(REMOTE_TEST_KEYS.get(key), key, now)
+        finally:
+            self.screen.timeout(1000)
 
     def run(self) -> None:
         self.refresh_outputs()

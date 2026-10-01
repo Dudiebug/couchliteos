@@ -77,17 +77,19 @@ class CecRemoteNavTest(unittest.TestCase):
         self.homes = []
         self.app_running = False
         self.osk_open = False
+        self.launcher_has_focus = False
         module = self.module
-        self.saved = (module.emit, module.request_home, module.app_active, module.OSK_ACTIVE)
+        self.saved = (module.emit, module.request_home, module.app_active, module.OSK_ACTIVE, module.LAUNCHER_FOCUS)
         module.emit = lambda ui, key: self.emitted.append(key)
         module.request_home = lambda: self.homes.append(True)
         module.app_active = lambda: self.app_running
         module.OSK_ACTIVE = SimpleNamespace(exists=lambda: self.osk_open)
+        module.LAUNCHER_FOCUS = SimpleNamespace(exists=lambda: self.launcher_has_focus)
         self.addCleanup(self.restore)
 
     def restore(self):
         module = self.module
-        module.emit, module.request_home, module.app_active, module.OSK_ACTIVE = self.saved
+        module.emit, module.request_home, module.app_active, module.OSK_ACTIVE, module.LAUNCHER_FOCUS = self.saved
 
     def test_remote_keys_are_translated_to_launcher_keys(self):
         for remote, launcher in (
@@ -136,6 +138,41 @@ class CecRemoteNavTest(unittest.TestCase):
         for code in (Codes.KEY_RED, Codes.KEY_GREEN, Codes.KEY_YELLOW, Codes.KEY_BLUE, Codes.KEY_CLEAR):
             self.module.handle_cec_event(None, press(code))
         self.assertEqual(self.emitted, [])
+
+    def test_launcher_shortcut_keys_reach_the_launcher_when_it_has_the_focus_over_a_running_app(self):
+        # Home brought the launcher forward while the app keeps running behind it: the same test as the gamepad's
+        self.app_running = True
+        self.launcher_has_focus = True
+        for remote, sent in (
+            (Codes.KEY_RED, Codes.KEY_F5),
+            (Codes.KEY_GREEN, Codes.KEY_F6),
+            (Codes.KEY_YELLOW, Codes.KEY_F7),
+            (Codes.KEY_BLUE, Codes.KEY_F8),
+            (Codes.KEY_CLEAR, Codes.KEY_DELETE),
+        ):
+            self.emitted.clear()
+            self.module.handle_cec_event(None, press(remote))
+            self.assertEqual(self.emitted, [sent])
+
+    def test_the_focus_makes_the_remote_agree_with_the_gamepad(self):
+        for app_running in (False, True):
+            for focus in (False, True):
+                for osk in (False, True):
+                    self.app_running, self.launcher_has_focus, self.osk_open = app_running, focus, osk
+                    self.emitted.clear()
+                    self.module.handle_cec_event(None, press(Codes.KEY_RED))
+                    blocked = self.module.navigation_blocked(self.osk_open)
+                    self.assertEqual(self.emitted, [] if blocked else [Codes.KEY_F5], (app_running, focus, osk))
+
+    def test_navigation_still_reaches_the_launcher_and_a_running_app_whoever_has_the_focus(self):
+        self.app_running = True
+        for focus in (False, True):
+            self.launcher_has_focus = focus
+            self.emitted.clear()
+            self.module.handle_cec_event(None, press(Codes.KEY_UP))
+            self.module.handle_cec_event(None, press(Codes.KEY_OK))
+            self.module.handle_cec_event(None, press(Codes.KEY_BACK))
+            self.assertEqual(self.emitted, [Codes.KEY_UP, Codes.KEY_ENTER, Codes.KEY_ESC])
 
     def test_the_on_screen_keyboard_still_gets_navigation_while_an_app_runs(self):
         self.app_running = True
