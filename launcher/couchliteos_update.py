@@ -17,10 +17,17 @@ import re
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable
 
-API_URL = "https://api.github.com/repos/Dudiebug/couchliteos/releases/latest"
+# The project is moving from Dudiebug/moonlightos to Dudiebug/couchliteos on GitHub. Until the
+# repository is renamed the new name is a 404, so the old one is asked next; after the rename GitHub
+# redirects the old name, so either order keeps working.
+API_URLS = (
+    "https://api.github.com/repos/Dudiebug/couchliteos/releases/latest",
+    "https://api.github.com/repos/Dudiebug/moonlightos/releases/latest",  # rename:keep
+)
 RELEASES_TEXT = "github.com/Dudiebug/couchliteos/releases"
 STATE = pathlib.Path("/var/lib/couchliteos/update-check.ini")
 ROUTE4 = pathlib.Path("/proc/net/route")
@@ -182,12 +189,16 @@ def due(state: State, now: float) -> bool:
 
 def fetch_latest(current: str, opener: Callable[..., object] = urllib.request.urlopen) -> str:
     """Return the latest release tag. Sends no identifiers beyond the version in the User-Agent."""
-    request = urllib.request.Request(
-        API_URL, headers={"User-Agent": f"CouchLiteOS/{current or 'unknown'}", "Accept": "application/vnd.github+json"}
-    )
+    headers = {"User-Agent": f"CouchLiteOS/{current or 'unknown'}", "Accept": "application/vnd.github+json"}
     try:
-        with opener(request, timeout=TIMEOUT) as response:
-            body = response.read(MAX_BYTES + 1)
+        for url in API_URLS:
+            try:
+                with opener(urllib.request.Request(url, headers=headers), timeout=TIMEOUT) as response:
+                    body = response.read(MAX_BYTES + 1)
+                break
+            except urllib.error.HTTPError as error:
+                if error.code != 404 or url == API_URLS[-1]:
+                    raise
         if len(body) > MAX_BYTES:
             raise UpdateError("release answer is too large")
         tag = json.loads(body.decode("utf-8")).get("tag_name")

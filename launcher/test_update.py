@@ -120,6 +120,28 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(set(headers), {"user-agent", "accept"})
         self.assertEqual(opener.call_args.kwargs["timeout"], 5)
 
+    def test_the_old_repository_name_answers_while_the_new_one_does_not_exist(self):
+        # Until Dudiebug/moonlightos is renamed on GitHub, Dudiebug/couchliteos is a 404.
+        missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        opener = mock.Mock(side_effect=[missing, Response({"tag_name": "v0.2.2"})])
+        self.assertEqual(update.fetch_latest("0.2.1", opener=opener), "0.2.2")
+        urls = [call.args[0].full_url for call in opener.call_args_list]
+        self.assertEqual(urls, [
+            "https://api.github.com/repos/Dudiebug/couchliteos/releases/latest",
+            "https://api.github.com/repos/Dudiebug/moonlightos/releases/latest",  # rename:keep
+        ])
+
+    def test_other_http_errors_do_not_fall_back(self):
+        opener = mock.Mock(side_effect=urllib.error.HTTPError("u", 500, "Server Error", {}, None))
+        with self.assertRaises(update.UpdateError):
+            update.fetch_latest("0.2.1", opener=opener)
+        self.assertEqual(opener.call_count, 1)
+
+    def test_no_repository_answering_is_an_update_error(self):
+        missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with self.assertRaises(update.UpdateError):
+            update.fetch_latest("0.2.1", opener=mock.Mock(side_effect=[missing, missing]))
+
     def test_bad_answers_raise(self):
         for body in ({"tag_name": "nightly"}, {"name": "x"}, {"tag_name": 5}, b"not json", b"[]"):
             with self.assertRaises(update.UpdateError, msg=body):
