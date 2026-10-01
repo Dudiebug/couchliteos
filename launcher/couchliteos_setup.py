@@ -30,7 +30,9 @@ from typing import Any
 
 import couchliteos_audio as audio
 import couchliteos_bluetooth as bluetooth
+import couchliteos_discover as discover
 import couchliteos_display as display
+import couchliteos_stream as streaming
 
 
 MARKER = pathlib.Path("/var/lib/couchliteos/setup-complete")
@@ -481,6 +483,37 @@ def new_hosts(before: Sequence[str], after: Sequence[str]) -> list[str]:
     return [host for host in after if host not in before]
 
 
+def sunshine_web_address(target: str) -> str:
+    """Where Sunshine's web page is for a pairing target (`HOST` or `HOST:PORT`): its HTTP port plus one."""
+    host, _, port = target.partition(":")
+    return f"{host}:{int(port) + 1}" if port.isdigit() else f"{host}:47990"
+
+
+def found_label(pc: discover.FoundPC, paired: Sequence[str] = ()) -> str:
+    """One line of the FIND GAMING PCS list: the name Sunshine announces, then its address."""
+    name = bluetooth.safe_text(pc.name, 28).upper()
+    where = pc.address if pc.port == discover.DEFAULT_PORT else f"{pc.address} (PORT {pc.port})"
+    already = "  (ALREADY PAIRED)" if pc.name.casefold() in (host.casefold() for host in paired) else ""
+    return f"{name}  {where}{already}"
+
+
+def not_found_lines(problem: str = "") -> list[str]:
+    """What to tell the user when the search found nothing (`problem`: it could not even run)."""
+    if problem:
+        return [
+            f"{problem}. CONNECT ETHERNET OR WI-FI (SETTINGS > NETWORK), THEN SEARCH AGAIN.",
+            "OR ENTER THE GAMING PC'S ADDRESS YOURSELF.",
+        ]
+    return [
+        "NO GAMING PC ANSWERED. THE USUAL REASONS:",
+        "1. THE GAMING PC IS OFF OR ASLEEP",
+        "2. SUNSHINE IS NOT RUNNING ON THE GAMING PC",
+        "3. THE GAMING PC IS ON A DIFFERENT NETWORK THAN THIS BOX",
+        "",
+        "IF YOU KNOW ITS ADDRESS, YOU CAN ENTER IT YOURSELF.",
+    ]
+
+
 def pairing_help(host: str = "") -> list[str]:
     """What to check when a pairing attempt saved nothing (an asleep or unreachable PC looks like this)."""
     lines = [
@@ -728,11 +761,27 @@ class System:
                 continue
         return hosts
 
+    @staticmethod
+    def start_search() -> discover.Search:
+        return discover.Search()
+
+    def wakeable_pcs(self) -> list[streaming.Host]:
+        """Paired gaming PCs whose network address Moonlight has learned, so they can be woken."""
+        hosts: list[streaming.Host] = []
+        for path in sorted(self.config_root.glob("*/Moonlight.conf")):
+            hosts += [host for host in streaming.load_hosts(path) if host.mac]
+        return hosts
+
 
 # --- the wizard: what happens on each screen --------------------------------
 
 SKIP = "SKIP THIS STEP"
 OK = "OK"
+FIND_PCS = "FIND GAMING PCS"
+SEARCH_AGAIN = "SEARCH AGAIN"
+ENTER_MANUALLY = "ENTER ADDRESS MANUALLY"
+WAKE_PC = "WAKE PC"
+BACK = "BACK"
 HIDDEN_NETWORK = "OTHER NETWORK (HIDDEN)"
 HIDDEN_SECURITY = (
     ("WPA2 PASSWORD (MOST HOME NETWORKS)", "WPA2"),
@@ -1244,15 +1293,18 @@ class SetupWizard:
         keep = "KEEP THE PC ALREADY PAIRED"
         if already:
             lines.append(bluetooth.safe_text("ALREADY PAIRED: " + ", ".join(already), 70))
-        choices = ["FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"] + ([keep] if already else []) + [SKIP]
+        choices = [FIND_PCS, "FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"] + ([keep] if already else []) + [SKIP]
         while True:
             choice = self.pick("STREAMING PC", lines, choices)
             if choice == keep:
                 return DONE
-            if choice not in ("FIND MY GAMING PC IN MOONLIGHT", "PAIR WITH A PIN SHOWN HERE"):
+            if choice not in choices[:3]:
                 return SKIPPED
             self.pairing_host = ""
-            paired = self.pair_in_moonlight() if choice.startswith("FIND") else self.pair_with_pin()
+            if choice == FIND_PCS:
+                paired = self.pair_found_pc()
+            else:
+                paired = self.pair_in_moonlight() if choice.startswith("FIND") else self.pair_with_pin()
             if paired is None:
                 continue
             if paired:
@@ -1278,21 +1330,105 @@ class SetupWizard:
         self.actions["launch"]("moonlight")
         return bool(new_hosts(before, self.system.paired_hosts()))
 
-    def pair_with_pin(self) -> bool | None:
+    def pair_found_pc(self) -> bool | None:
+        """FIND GAMING PCS, then the PIN pairing for the PC picked; None when backed out."""
+        picked = self.find_gaming_pc()
+        if picked is None:
+            return None
+        if isinstance(picked, str):  # ENTER ADDRESS MANUALLY
+            return self.pair_with_pin()
+        if picked.name.casefold() in (host.casefold() for host in self.system.paired_hosts()):
+            # No "pair again" here: the pairing check below only trusts a PC that is new to this system,
+            # so a repeat pairing would be reported as a failure even when it worked.
+            choice = self.pick(
+                "ALREADY PAIRED",
+                [
+                    f"{bluetooth.safe_text(picked.name, 28).upper()} IS ALREADY PAIRED WITH THIS SYSTEM.",
+                    "TO PAIR IT AGAIN, DELETE IT IN MOONLIGHT FIRST.",
+                ],
+                ["USE IT", BACK],
+            )
+            return True if choice == "USE IT" else None
+        return self.pair_with_pin(picked)
+
+    def find_gaming_pc(self) -> discover.FoundPC | str | None:
+        """Search the network for gaming PCs until one is picked.
+
+        Returns the PC picked, ENTER_MANUALLY to type an address instead, or None for B / BACK."""
         while True:
-            typed = self.actions["text"]("GAMING PC", "ADDRESS OR NAME OF YOUR GAMING PC (LIKE 192.168.1.20)", 253, masked=False)
-            if typed is None:
+            problem = ""
+            try:
+                found = self.search_network()
+            except discover.DiscoveryError as error:
+                found, problem = [], str(error)
+            if found is None:
                 return None
-            host = valid_host(typed.strip())
-            if host:
-                break
-            self.notice("GAMING PC", ["THAT IS NOT A VALID ADDRESS OR NAME.", "USE LETTERS, NUMBERS, DOTS AND DASHES ONLY."])
+            if found:
+                paired = self.system.paired_hosts()
+                labels = [found_label(pc, paired) for pc in found]
+                count = f"{len(found)} GAMING PC{'S' if len(found) != 1 else ''}"
+                index = self.ui.menu(
+                    FIND_PCS, [f"FOUND {count}. PICK YOURS."], labels + [SEARCH_AGAIN, ENTER_MANUALLY, BACK]
+                )
+                if index is None or index == len(labels) + 2:
+                    return None
+                if index < len(labels):
+                    return found[index]
+                if index == len(labels) + 1:
+                    return ENTER_MANUALLY
+                continue
+            wakeable = [] if problem or not callable(self.actions.get("wake_pc")) else self.system.wakeable_pcs()
+            choice = self.pick(
+                FIND_PCS, not_found_lines(problem), ([WAKE_PC] if wakeable else []) + [SEARCH_AGAIN, ENTER_MANUALLY, BACK]
+            )
+            if choice == WAKE_PC:
+                self.wake_known_pc(wakeable)  # then search again: that is what waking it was for
+            elif choice == ENTER_MANUALLY:
+                return ENTER_MANUALLY
+            elif choice != SEARCH_AGAIN:
+                return None
+
+    def search_network(self) -> list[discover.FoundPC] | None:
+        """SEARCHING... for a few seconds; the PCs found, or None when B cancelled. May raise DiscoveryError."""
+        title, lines = FIND_PCS, ["SEARCHING...  (B CANCELS)"]
+        self.ui.status(title, lines)
+        search = self.system.start_search()
+        try:
+            if self.ui.wait(title, lines, search.poll, discover.LISTEN_SECONDS + 5) is None:
+                return None
+            return search.results()
+        finally:
+            search.close()
+
+    def wake_known_pc(self, wakeable: list[streaming.Host]) -> None:
+        """WAKE PC from the not-found screen: the one paired PC with a known address, else ask which."""
+        host = wakeable[0]
+        if len(wakeable) > 1:
+            index = self.ui.menu("WAKE WHICH PC?", [], [pc.label for pc in wakeable] + [BACK])
+            if index is None or index >= len(wakeable):
+                return
+            host = wakeable[index]
+        self.notice(WAKE_PC, [self.actions["wake_pc"](host)])
+
+    def pair_with_pin(self, found: discover.FoundPC | None = None) -> bool | None:
+        if found is not None:
+            host, title = found.target, f"PAIR WITH {bluetooth.safe_text(found.name, 24).upper()} ({found.address})"
+        else:
+            while True:
+                typed = self.actions["text"]("GAMING PC", "ADDRESS OR NAME OF YOUR GAMING PC (LIKE 192.168.1.20)", 253, masked=False)
+                if typed is None:
+                    return None
+                host = valid_host(typed.strip())
+                if host:
+                    break
+                self.notice("GAMING PC", ["THAT IS NOT A VALID ADDRESS OR NAME.", "USE LETTERS, NUMBERS, DOTS AND DASHES ONLY."])
+            title = f"PAIR WITH {host}"
         self.pairing_host = host
         pin = new_pairing_pin()
         choice = self.pick(
-            f"PAIR WITH {host}",
+            title,
             [
-                f"ON THE GAMING PC OPEN HTTPS://{host}:47990 (SUNSHINE), CLICK THE PIN TAB,",
+                f"ON THE GAMING PC OPEN HTTPS://{sunshine_web_address(host)} (SUNSHINE), CLICK THE PIN TAB,",
                 "AND TYPE THIS NUMBER. PRESS START PAIRING, THEN ENTER THE PIN AT ONCE.",
             ],
             ["START PAIRING", "BACK"],

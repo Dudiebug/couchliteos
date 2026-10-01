@@ -743,6 +743,17 @@ class Launcher:
     def wake_pc(self) -> None:
         StreamingSettings(self.screen, self).wake_pc()
 
+    def wake_message(self, host: stream.Host) -> str:
+        """Wake `host` and say how it went, in the words of SETTINGS > STREAMING > WAKE PC."""
+        blocked = stream.wake_block(host)
+        if blocked:
+            return blocked
+        try:
+            result = self.wake_host(host, force=True)
+        except OSError as error:
+            return f"WAKE FAILED: {error}".upper()
+        return StreamingSettings.WAKE_RESULTS.get(result, "{}").format(host.label)
+
     def wait_screen(self, title: str, seconds: float, until=None) -> str:
         """A countdown any key or button cancels: "done" (`until()` turned true), "cancelled", or "timeout"."""
         end = time.monotonic() + seconds
@@ -1055,6 +1066,7 @@ class Launcher:
             "tone": lambda: self.launch_and_wait("audio-test"),
             "launch": self.launch_and_wait,
             "pair_moonlight": self.pair_moonlight,
+            "wake_pc": self.wake_message,
             "applications": Settings(self.screen, self).run_applications,
         }
         tv_control = getattr(self, "tv_control_screen", None)
@@ -1138,7 +1150,7 @@ class Launcher:
             return self.launch_and_wait(
                 app.id, big=pin, patience=180, quiet=True,
                 lines=[
-                    f"ON THE GAMING PC OPEN HTTPS://{host}:47990, CLICK THE PIN TAB AND TYPE:",
+                    f"ON THE GAMING PC OPEN HTTPS://{setup.sunshine_web_address(host)}, CLICK THE PIN TAB AND TYPE:",
                     "THIS SCREEN CLOSES BY ITSELF WHEN PAIRING ENDS. B OR ESC CANCELS.",
                 ],
             )
@@ -2653,16 +2665,7 @@ class StreamingSettings(RemoteDesktopSettings):
         host = stream.default_host(hosts, config) or self.pick_host(hosts, "WAKE WHICH PC?")
         if host is None:
             return
-        blocked = stream.wake_block(host)
-        if blocked:
-            self.message("WAKE PC", blocked)
-            return
-        try:
-            result = self.launcher.wake_host(host, force=True)
-        except OSError as error:
-            self.message("WAKE PC", f"WAKE FAILED: {error}".upper())
-            return
-        self.message("WAKE PC", self.WAKE_RESULTS.get(result, "{}").format(host.label))
+        self.message("WAKE PC", self.launcher.wake_message(host))
 
     def optimize(self) -> None:
         title = "OPTIMIZE STREAM SETTINGS"
@@ -2710,6 +2713,7 @@ class StreamingSettings(RemoteDesktopSettings):
             "text": self.launcher.wizard_text,
             "launch": self.launcher.launch_and_wait,
             "pair_moonlight": self.launcher.pair_moonlight,
+            "wake_pc": self.launcher.wake_message,
         }
         setup.SetupWizard(setup.CursesUI(self.screen), actions, setup.System()).step_streaming()
         after = {self.ident(host) for host in stream.load_hosts()}

@@ -850,4 +850,18 @@ rg -q '^    screenfit = None' launcher/couchliteos_foot.py
 rg -qF '"main.pad=' launcher/couchliteos_foot.py
 refute rg -q 'systemctl|nomodeset' launcher/couchliteos_screenfit.py
 
+# FIND GAMING PCS: one mDNS question for _nvstream._tcp.local, standard library only, in the image and tested.
+rg -qF 'couchliteos_discover.py" "$CHROOT/usr/libexec/couchliteos_discover.py"' build/configure.sh
+rg -q '^import couchliteos_discover as discover$' launcher/couchliteos_setup.py
+rg -q 'couchliteos_discover.py .*gamepad-nav.py' launcher/Makefile
+rg -q 'test_discover.py' launcher/Makefile
+# A legacy unicast query (RFC 6762 6.7): sent from a random port, so no multicast group is joined, no port is shared, no daemon is needed.
+rg -qF 'self.sock.bind(("", 0))' launcher/couchliteos_discover.py
+refute rg -q 'IP_ADD_MEMBERSHIP|SO_REUSEADDR|SO_REUSEPORT|^import (dbus|zeroconf)' launcher/couchliteos_discover.py
+# The unicast replies (from UDP port 5353) get in because the input chain accepts by default and filters only TCP 3240.
+# No rule was added for them, and none may open UDP 5353 or turn the default into a drop.
+rg -q 'policy accept;' config/nftables/couchliteos.nft
+rg -q 'policy accept;' scripts/couchliteos-firewall
+refute rg -q 'policy (drop|reject)|[sd]port 5353' config/nftables/couchliteos.nft scripts/couchliteos-firewall
+
 printf 'Static tests passed.\n'

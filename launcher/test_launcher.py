@@ -1146,7 +1146,7 @@ class LauncherTest(unittest.TestCase):
         captured = self.run_wizard_glue(launcher, force=True)
         self.assertEqual(
             set(captured["actions"]),
-            {"text", "display", "tone", "launch", "pair_moonlight", "applications"},
+            {"text", "display", "tone", "launch", "pair_moonlight", "wake_pc", "applications"},
         )
         self.assertTrue(captured["force"])
         self.assertTrue(captured["reloaded"])

@@ -1,4 +1,7 @@
 # Fail-closed template. couchliteos-firewall renders literal approved peer IPs.
+# FIND GAMING PCS (couchliteos_discover.py) sends an mDNS question from a random UDP port and Sunshine
+# answers by unicast from UDP port 5353 to that port. This chain accepts by default and filters only
+# TCP 3240, so the answers arrive and no rule is needed. Do not add one, and do not open UDP 5353.
 table inet couchliteos {
   chain input {
     type filter hook input priority filter; policy accept;
