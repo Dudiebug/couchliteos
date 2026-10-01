@@ -6,8 +6,9 @@ switches the TV on (if the setting is on), then follows the bus and suspends
 the PC when the TV reports Standby (if that setting is on). With no CEC
 hardware, or no link to a TV, it does nothing.
 
-`couchliteos-cec --standby` is the pre-sleep hook: it sends Standby to the TV
-(if that setting is on) and exits within about two seconds.
+`couchliteos-cec --standby` is the pre-sleep hook: it sends Standby to the TV (if that setting is on
+and the TV is showing this box: the daemon keeps /run/couchliteos/cec-active-source for that) and
+exits within about two seconds.
 """
 
 from __future__ import annotations
@@ -49,7 +50,10 @@ def follow(adapter: cec.Adapter, last_tv_on: float) -> None:
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace",
     )
     try:
-        cec.watch(monitor.stdout, settings, time.monotonic, suspend, log, last_tv_on)
+        cec.watch(
+            monitor.stdout, settings, time.monotonic, suspend, log, last_tv_on,
+            phys_addr=adapter.phys_addr, marker=cec.ACTIVE_SOURCE_MARKER,
+        )
     finally:
         monitor.terminate()
         monitor.wait()
@@ -58,9 +62,14 @@ def follow(adapter: cec.Adapter, last_tv_on: float) -> None:
 def standby_before_sleep() -> int:
     """Run by couchliteos-cec-sleep.service just before the PC sleeps; quick, and never fails the sleep."""
     devices = cec.device_nodes()
-    if devices and cec.load_settings().tv_off_on_sleep:
+    if not devices:
+        return 0
+    settings = cec.load_settings()
+    if cec.should_standby_on_sleep(settings, cec.ACTIVE_SOURCE_MARKER):
         ok = cec.standby_tv(devices)
         log("TV sent to standby before sleep" if ok else "TV did not answer Standby before sleep")
+    elif settings.tv_off_on_sleep:
+        log("TV left alone before sleep: it is not known to be showing this box")
     return 0
 
 
@@ -86,9 +95,13 @@ def main(argv: tuple[str, ...] | list[str] = ()) -> int:
             delay = 0
         if started is None:
             log(f"{adapter.device} ({adapter.driver}) physical address {adapter.phys_addr}")
+            # What the TV shows is not known until we say (Active Source below) or hear it.
+            cec.mark_active_source(False, cec.ACTIVE_SOURCE_MARKER, log)
             if cec.load_settings().turn_tv_on:
                 ok = cec.turn_tv_on(adapter.device, adapter.phys_addr, log=log)
                 log("TV switched on" if ok else "TV did not answer Image View On")
+                if ok:  # it ends by making this box the active source
+                    cec.mark_active_source(True, cec.ACTIVE_SOURCE_MARKER, log)
             started = time.monotonic()  # a standby soon after this is our own doing, not the user's
         follow(adapter, started)
         time.sleep(RESTART_SECONDS)

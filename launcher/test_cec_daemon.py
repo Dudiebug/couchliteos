@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -16,6 +17,7 @@ def load_daemon():
     return module
 
 
+REAL_WATCH = cec.watch  # DaemonTest replaces cec.watch; a few tests run the real one
 ADAPTER = cec.Adapter("/dev/cec0", "vivid", "vivid-000-vid-out0", frozenset(), "1.1.0.0", 0x10)
 
 
@@ -26,6 +28,9 @@ class DaemonTest(unittest.TestCase):
 
     def setUp(self):
         self.sleeps = []
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.marker = pathlib.Path(directory.name) / "cec-active-source"
         self.popen = mock.MagicMock()
         self.popen.return_value.stdout = iter(())
         patches = {
@@ -35,6 +40,7 @@ class DaemonTest(unittest.TestCase):
             "settings": mock.patch.object(cec, "load_settings", return_value=cec.Settings(True, False)),
             "watch": mock.patch.object(cec, "watch"),
             "tv_on": mock.patch.object(cec, "turn_tv_on", return_value=True),
+            "marker": mock.patch.object(cec, "ACTIVE_SOURCE_MARKER", self.marker),
         }
         self.mocks = {}
         for name, patch in patches.items():
@@ -127,7 +133,8 @@ class DaemonTest(unittest.TestCase):
         self.mocks["tv_on"].assert_not_called()
         self.assertEqual(self.mocks["watch"].call_count, 1)
 
-    def test_before_sleep_the_tv_is_sent_to_standby(self):
+    def test_before_sleep_the_tv_is_sent_to_standby_when_it_is_showing_this_box(self):
+        self.marker.touch()
         self.nodes(["/dev/cec0"])
         with mock.patch.object(cec, "standby_tv", return_value=True) as standby:
             self.assertEqual(self.daemon.main(["--standby"]), 0)
@@ -138,10 +145,105 @@ class DaemonTest(unittest.TestCase):
 
     def test_before_sleep_nothing_is_sent_when_the_setting_is_off(self):
         self.mocks["settings"].return_value = cec.Settings(True, False, False)
+        self.marker.touch()
         self.nodes(["/dev/cec0"])
         with mock.patch.object(cec, "standby_tv") as standby:
             self.assertEqual(self.daemon.main(["--standby"]), 0)
         standby.assert_not_called()
+
+    def test_before_sleep_the_tv_is_left_alone_when_it_may_be_showing_something_else(self):
+        # no marker: another input is showing, or nothing is known (a daemon that just started, a TV that never said)
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv") as standby, mock.patch.object(self.daemon, "log") as log:
+            self.assertEqual(self.daemon.main(["--standby"]), 0)
+        standby.assert_not_called()
+        self.assertIn("left alone", log.call_args.args[0])
+
+    def test_before_sleep_a_marker_alone_does_not_bring_back_a_setting_that_is_off(self):
+        self.mocks["settings"].return_value = cec.Settings(True, False, False)
+        self.marker.touch()
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv") as standby, mock.patch.object(self.daemon, "log") as log:
+            self.assertEqual(self.daemon.main(["--standby"]), 0)
+        standby.assert_not_called()
+        log.assert_not_called()
+
+    def run_daemon_over(self, *monitor_lines):
+        """The daemon with the real watch() reading these cec-ctl lines, TV switch-on mocked as answered."""
+        self.mocks["watch"].side_effect = REAL_WATCH
+        self.popen.return_value.stdout = iter(monitor_lines)
+        self.nodes(["/dev/cec0"], [])
+        self.bring_up(ADAPTER)
+        self.daemon.main()
+
+    def test_a_tv_switched_to_another_input_is_left_on_when_the_pc_sleeps(self):
+        # the box turned the TV on and was the active source; later the cable box took over
+        self.run_daemon_over(
+            "Received from Playback Device 2 to all (8 to 15): ACTIVE_SOURCE (0x82):",
+            "\tphys-addr: 2.0.0.0",
+        )
+        self.assertFalse(self.marker.exists())
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv") as standby:
+            self.daemon.main(["--standby"])
+        standby.assert_not_called()
+
+    def test_a_tv_still_showing_this_box_goes_to_standby_when_the_pc_sleeps(self):
+        self.run_daemon_over(
+            "Received from Playback Device 2 to all (8 to 15): ACTIVE_SOURCE (0x82):",
+            "\tphys-addr: 2.0.0.0",
+            "Received from TV to all (0 to 15): SET_STREAM_PATH (0x86):",
+            "\tphys-addr: 1.1.0.0",
+        )
+        self.assertTrue(self.marker.exists())
+        self.nodes(["/dev/cec0"])
+        with mock.patch.object(cec, "standby_tv", return_value=True) as standby:
+            self.daemon.main(["--standby"])
+        standby.assert_called_once_with(["/dev/cec0"])
+
+    def test_the_tv_is_known_to_show_this_box_once_the_daemon_made_it_the_active_source(self):
+        self.nodes(["/dev/cec0"], [])
+        self.bring_up(ADAPTER)
+        self.daemon.main()
+        self.assertTrue(self.marker.exists())
+
+    def test_a_marker_left_by_an_earlier_run_is_cleared_when_the_daemon_starts(self):
+        self.marker.touch()  # before a sleep, say; the TV may have been switched meanwhile
+        self.mocks["settings"].return_value = cec.Settings(False, False)  # and this run does not switch it on
+        self.nodes(["/dev/cec0"], [])
+        self.bring_up(ADAPTER)
+        self.daemon.main()
+        self.assertFalse(self.marker.exists())
+
+    def test_a_tv_that_does_not_answer_is_not_known_to_show_this_box(self):
+        self.marker.touch()
+        self.mocks["tv_on"].return_value = False
+        self.nodes(["/dev/cec0"], [])
+        self.bring_up(ADAPTER)
+        self.daemon.main()
+        self.assertFalse(self.marker.exists())
+
+    def test_a_dropout_of_the_monitor_does_not_forget_what_the_tv_shows(self):
+        self.nodes(["/dev/cec0"], ["/dev/cec0"], [])
+        self.bring_up(ADAPTER, ADAPTER)
+        self.daemon.main()
+        self.assertEqual(self.mocks["watch"].call_count, 2)
+        self.assertTrue(self.marker.exists())
+
+    def test_the_watch_is_given_this_boxs_address_and_the_marker(self):
+        self.nodes(["/dev/cec0"], [])
+        self.bring_up(ADAPTER)
+        self.daemon.main()
+        self.assertEqual(self.mocks["watch"].call_args.kwargs, {"phys_addr": "1.1.0.0", "marker": self.marker})
+
+    def test_a_marker_that_cannot_be_written_does_not_stop_the_daemon(self):
+        gone = self.marker.parent / "gone" / "cec-active-source"
+        self.nodes(["/dev/cec0"], [])
+        self.bring_up(ADAPTER)
+        with mock.patch.object(cec, "ACTIVE_SOURCE_MARKER", gone), mock.patch.object(self.daemon, "log") as log:
+            self.assertEqual(self.daemon.main(), 0)
+        self.assertEqual(self.mocks["watch"].call_count, 1)
+        self.assertTrue(any("could not create" in call.args[0] for call in log.call_args_list))
 
     def test_before_sleep_nothing_is_sent_without_a_cec_device(self):
         self.nodes([])

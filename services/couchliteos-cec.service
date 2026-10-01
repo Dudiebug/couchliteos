@@ -13,6 +13,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
+# The active-source marker for the pre-sleep hook (tmpfiles creates the directory; ignored if it is missing).
+ReadWritePaths=-/run/couchliteos
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX
 RestrictSUIDSGID=yes

@@ -462,7 +462,9 @@ def handle_cec_event(ui: UInput, event) -> None:
         request_home()
     elif event.code in CEC_NAV:
         key = CEC_NAV[event.code]
-        if key in CEC_APP_KEYS or not app_active() or OSK_ACTIVE.exists():
+        # The launcher's shortcut keys (colour keys, Clear) go to it whenever it has the focus, even with an
+        # app running behind it: the same test as the gamepad's.
+        if key in CEC_APP_KEYS or not navigation_blocked(OSK_ACTIVE.exists()):
             emit(ui, key)
 
 
