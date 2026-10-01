@@ -289,6 +289,7 @@ class LauncherTest(unittest.TestCase):
             save_password=True,
         )
         launcher, remote, patches = self.remote(connection, "ab" * 32)
+        launcher.show_failure = mock.Mock(return_value="dismiss")
         remote.text_input = mock.Mock()
         remote.password_request = mock.Mock(return_value=(True, "password handed to the session"))
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
@@ -302,18 +303,19 @@ class LauncherTest(unittest.TestCase):
             self.assertFalse(remote.prepare_launch(self.rdp_button()))
         remote.password_request.assert_called_with("stage", "rdp-work-pc")
         remote.text_input.assert_not_called()
-        self.assertIn("DIFFERENT SERVER", launcher.show_launch_failure.call_args.args[1])
+        self.assertIn("DIFFERENT SERVER", launcher.show_failure.call_args.args[0].detail)
 
     def test_a_session_that_is_still_reconnecting_blocks_another_connection(self):
         connection = self.module.rdp.Connection(id="rdp-work-pc", name="Work", host="10.0.0.9", username="alice")
         launcher, remote, patches = self.remote(connection, "cd" * 32)
+        launcher.show_failure = mock.Mock(return_value="dismiss")
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             self.module, "RUN", pathlib.Path(directory)
         ), patches[0], patches[1] as probe, patches[2], patches[3]:
             (pathlib.Path(directory) / "rdp-session").write_text("rdp-other\n")
             self.assertFalse(remote.prepare_launch(self.rdp_button()))
         probe.assert_not_called()
-        self.assertIn("RECONNECTING", launcher.show_launch_failure.call_args.args[1])
+        self.assertIn("RECONNECTING", launcher.show_failure.call_args.args[0].detail)
 
     def test_timed_out_rdp_launch_removes_the_unused_request_and_password(self):
         launcher = self.launcher()

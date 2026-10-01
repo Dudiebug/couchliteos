@@ -255,7 +255,7 @@ class LauncherErrorsTest(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
-    def launcher(self, keys=(), online=True):
+    def launcher(self, keys=(), online=True, bluetooth=True):
         summary = "10.0.0.7  ONLINE" if online else "NO IPV4  OFFLINE"
         with mock.patch.object(self.module, "network_summary", return_value=summary):
             launcher = self.module.Launcher(Screen(keys))
@@ -264,6 +264,9 @@ class LauncherErrorsTest(unittest.TestCase):
         self.network = mock.patch.object(self.module, "network_summary", return_value=summary)
         self.network.start()
         self.addCleanup(self.network.stop)
+        adapter = mock.patch.object(self.module.controllers, "bluetooth_present", return_value=bluetooth)
+        adapter.start()  # the PC under test has (or has not) a Bluetooth adapter, whatever the VM has
+        self.addCleanup(adapter.stop)
         return launcher
 
     def moonlight(self):
@@ -370,6 +373,106 @@ class LauncherErrorsTest(unittest.TestCase):
             self.assertTrue(remote.prepare_launch(application))
         self.assertEqual(probe.call_count, 2)
 
+    # --- Remote Desktop problems that only Settings can fix ---------------------------------------
+
+    def prepare_with_problem(self, launcher, *, connection, password_result=None):
+        """prepare_launch with the saved connection gone (connection=None) or its saved password refused."""
+        stored, application, remote = self.remote_desktop(launcher)
+        remote.password_request = mock.Mock(return_value=password_result)
+        found = stored if connection is None else connection
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "RUN", pathlib.Path(directory)
+        ), mock.patch.object(self.module, "active_rdp_session", return_value=None), mock.patch.object(
+            self.module.rdp, "get_connection", return_value=None if connection is None else found
+        ), mock.patch.object(self.module.rdp, "probe_certificate", return_value="ab" * 32), mock.patch.object(
+            self.module.errors, "show", return_value="dismiss"
+        ) as show:
+            self.assertFalse(remote.prepare_launch(application))
+        return show.call_args.args[1]
+
+    def test_a_deleted_saved_connection_points_at_remote_desktop_settings_online_or_not(self):
+        for online in (True, False):
+            with self.subTest(online=online):
+                failure = self.prepare_with_problem(self.launcher(online=online), connection=None)
+                self.assertEqual(ids(failure), ["dismiss"], "no network button, no TRY AGAIN that cannot work")
+                self.assertIn("NO LONGER EXISTS", failure.detail)
+                self.assertIn("SETTINGS > REMOTE DESKTOP", failure.hint)
+                self.assertNotIn("NETWORK", failure.detail + failure.hint)
+                self.assertNotIn("TRY AGAIN", failure.hint)
+
+    def test_a_refused_saved_password_points_at_remote_desktop_settings_online_or_not(self):
+        saved = self.module.rdp.Connection(
+            id="rdp-work-pc", name="Work", host="10.0.0.9", username="alice", certificate="ab" * 32,
+            save_password=True,
+        )
+        for online in (True, False):
+            with self.subTest(online=online):
+                failure = self.prepare_with_problem(
+                    self.launcher(online=online), connection=saved,
+                    password_result=(False, "the saved password belongs to different server settings"),
+                )
+                self.assertEqual(ids(failure), ["support", "dismiss"])
+                self.assertIn("DIFFERENT SERVER SETTINGS", failure.detail)
+                self.assertIn("SETTINGS > REMOTE DESKTOP", failure.hint)
+                self.assertNotIn("NETWORK", failure.hint)
+                self.assertNotIn("TRY AGAIN", failure.hint)
+
+    # --- another Remote Desktop session is open -------------------------------------------------
+
+    def prepare_with_session(self, launcher, sessions, choices, *, other_ready=True):
+        """Run prepare_launch for rdp-work-pc. `sessions` are the ids active_rdp_session reports, one per look;
+        `choices` are the error-screen buttons pressed. Returns (result, the errors.show mock)."""
+        _connection, application, remote = self.remote_desktop(launcher)
+        remote.text_input = mock.Mock(return_value="Fake-Typed-Password")
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            if other_ready:
+                (run / "rdp-home-pc-ready").touch()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "active_rdp_session", side_effect=sessions
+            ), mock.patch.object(
+                self.module.rdp, "get_connection", return_value=_connection
+            ), mock.patch.object(
+                self.module.rdp, "probe_certificate", return_value="ab" * 32
+            ), mock.patch.object(self.module.rdp, "write_handoff"), mock.patch.object(
+                self.module.errors, "show", side_effect=choices
+            ) as show:
+                return remote.prepare_launch(application), show
+
+    def test_open_remote_desktop_session_offers_active_applications_not_try_again(self):
+        launcher = self.launcher()
+        result, show = self.prepare_with_session(launcher, ["rdp-home-pc"], ["dismiss"])
+        self.assertFalse(result)
+        failure = show.call_args.args[1]
+        self.assertEqual(ids(failure), ["active-apps", "dismiss"])
+        self.assertEqual(failure.actions[0].label, "ACTIVE APPLICATIONS")
+        self.assertNotIn("TRY AGAIN", failure.detail + failure.hint)
+
+    def test_closing_the_other_session_carries_on_with_the_connection(self):
+        launcher = self.launcher()
+        launcher.active_applications = mock.Mock()
+        result, show = self.prepare_with_session(launcher, ["rdp-home-pc", None, None], ["active-apps"])
+        self.assertTrue(result, "no other session is left, so the launch goes on to the password prompt")
+        launcher.active_applications.assert_called_once_with()
+        self.assertEqual(show.call_count, 1)
+
+    def test_the_other_session_still_open_brings_the_screen_back(self):
+        launcher = self.launcher()
+        launcher.active_applications = mock.Mock()
+        result, show = self.prepare_with_session(
+            launcher, ["rdp-home-pc", "rdp-home-pc"], ["active-apps", "dismiss"]
+        )
+        self.assertFalse(result)
+        self.assertEqual(show.call_count, 2)
+
+    def test_a_session_that_is_only_starting_or_reconnecting_is_waited_for_not_listed(self):
+        launcher = self.launcher()
+        result, show = self.prepare_with_session(launcher, ["rdp-home-pc"], ["dismiss"], other_ready=False)
+        self.assertFalse(result)
+        failure = show.call_args.args[1]
+        self.assertEqual(ids(failure), ["retry", "dismiss"], "it is not in ACTIVE APPLICATIONS yet")
+        self.assertIn("WAIT", failure.hint)
+
     # --- the WAKE PC hook ---------------------------------------------------------------------
 
     def test_a_registered_wake_pc_action_runs_its_handler_and_can_request_a_retry(self):
@@ -441,6 +544,35 @@ class LauncherErrorsTest(unittest.TestCase):
         self.assertEqual(ids(show.call_args.args[1]), ["retry", "support", "dismiss"])
         self.assertIn("no pipewire".upper(), show.call_args.args[1].detail)
 
+    # --- no Bluetooth adapter on this PC ---------------------------------------------------------
+
+    def test_no_sound_output_on_a_pc_without_bluetooth_offers_no_bluetooth_button(self):
+        launcher = self.launcher([-1, ESC], bluetooth=False)
+        settings = self.module.Settings(launcher.screen, launcher)
+        with mock.patch.object(self.module.audio, "query_sinks", return_value=[]), mock.patch.object(
+            self.module.errors, "show", return_value="dismiss"
+        ) as show:
+            settings.run_audio()
+        failure = show.call_args.args[1]
+        self.assertEqual(ids(failure), ["retry", "dismiss"])
+        self.assertNotIn("BLUETOOTH", failure.detail + failure.hint, "nothing to pair on a PC without an adapter")
+        self.assertIn("TV OR SPEAKERS", failure.detail)
+
+    def test_a_bluetooth_failure_on_a_pc_without_bluetooth_says_so_instead_of_offering_settings(self):
+        launcher = self.launcher(bluetooth=False)
+        with mock.patch.object(self.module.errors, "show", return_value="dismiss") as show:
+            launcher.show_launch_failure("PAIRING", "BLUETOOTH IS TURNED OFF")
+        failure = show.call_args.args[1]
+        self.assertEqual(ids(failure), ["retry", "dismiss"])
+        self.assertNotIn("BLUETOOTH SETTINGS", failure.hint)
+        self.assertIn("NO BLUETOOTH ADAPTER", failure.hint)
+
+    def test_a_bluetooth_failure_on_a_pc_with_bluetooth_still_offers_settings(self):
+        launcher = self.launcher(bluetooth=True)
+        with mock.patch.object(self.module.errors, "show", return_value="dismiss") as show:
+            launcher.show_launch_failure("PAIRING", "BLUETOOTH IS TURNED OFF")
+        self.assertEqual(ids(show.call_args.args[1]), ["bluetooth", "retry", "dismiss"])
+
     # --- status-line wording -----------------------------------------------------------------
 
     def test_a_missing_app_says_where_to_turn_it_on(self):
@@ -466,6 +598,148 @@ class LauncherErrorsTest(unittest.TestCase):
             with mock.patch.object(self.module, "RUN", run), mock.patch.object(launcher, "focus_app", return_value=False):
                 self.assertFalse(launcher.launch_app(self.moonlight()))
         self.assertIn("ACTIVE APPLICATIONS", launcher.status)
+
+
+class RemoteSessionBusyTest(unittest.TestCase):
+    def test_open_session_offers_active_applications_and_names_the_buttons(self):
+        failure = errors.remote_session_busy("WORK PC", open_now=True)
+        self.assertEqual(failure.title, "WORK PC FAILED TO START")
+        self.assertEqual(ids(failure), ["active-apps", "dismiss"])
+        for needle in ("ACTIVE APPLICATIONS", "A/ENTER", "Y (XBOX) / SQUARE (PS)", "B/ESC"):
+            self.assertIn(needle, failure.hint)
+
+    def test_session_that_is_starting_is_waited_for(self):
+        failure = errors.remote_session_busy("WORK PC", open_now=False)
+        self.assertEqual(ids(failure), ["retry", "dismiss"])
+        self.assertIn("TRY AGAIN", failure.hint)
+
+    def test_both_screens_fit_80_columns_with_nothing_cut_off(self):
+        for open_now in (True, False):
+            failure = errors.remote_session_busy("A VERY LONG CONNECTION NAME", open_now=open_now)
+            screen = Screen([ESC], size=(24, 80))
+            errors.show(screen, failure)
+            lines = screen.frames[-1]
+            self.assertTrue(all(len(line) <= 76 for line in lines), lines)
+            text = " ".join(line.strip() for line in lines)
+            self.assertIn(failure.detail, text)
+            self.assertIn(failure.hint, text)
+
+
+class NoBluetoothAdapterTest(unittest.TestCase):
+    def test_without_bluetooth_drops_the_button_and_the_hint_that_points_at_it(self):
+        failure = errors.describe_failure("PAIRING", "BLUETOOTH IS TURNED OFF").without_bluetooth()
+        self.assertEqual(ids(failure), ["retry", "dismiss"])
+        self.assertNotIn("BLUETOOTH SETTINGS", failure.hint)
+        self.assertIn("NO BLUETOOTH ADAPTER", failure.hint)
+        self.assertIn("TRY AGAIN", failure.hint)
+
+    def test_the_replacement_hint_does_not_promise_try_again_when_there_is_no_such_button(self):
+        failure = errors.describe_failure("PAIRING", "BLUETOOTH IS TURNED OFF", retry=False).without_bluetooth()
+        self.assertEqual(ids(failure), ["dismiss"])
+        self.assertNotIn("TRY AGAIN", failure.hint)
+
+    def test_failures_without_the_button_are_returned_unchanged(self):
+        failure = errors.describe_failure("MOONLIGHT", "boom", app_id="moonlight", online=True)
+        self.assertIs(failure.without_bluetooth(), failure)
+
+    def test_a_failure_that_only_carries_the_button_loses_just_the_button(self):
+        failure = errors.simple_failure("NO SOUND", "x", errors.BLUETOOTH, hint="CHECK THE TV.", retry=True)
+        trimmed = failure.without_bluetooth()
+        self.assertEqual(ids(trimmed), ["retry", "dismiss"])
+        self.assertEqual(trimmed.hint, "CHECK THE TV.")
+
+    def test_no_sound_screen_names_bluetooth_only_when_there_is_an_adapter(self):
+        with_adapter = errors.no_sound_output(bluetooth=True)
+        self.assertEqual(ids(with_adapter), ["bluetooth", "retry", "dismiss"])
+        self.assertIn("BLUETOOTH SPEAKER", with_adapter.detail)
+        without = errors.no_sound_output(bluetooth=False)
+        self.assertEqual(ids(without), ["retry", "dismiss"])
+        self.assertNotIn("BLUETOOTH", without.detail)
+
+
+class RemoteSettingsProblemTest(unittest.TestCase):
+    def test_a_missing_connection_says_where_to_go_and_fits_80_columns(self):
+        failure = errors.connection_missing("A VERY LONG CONNECTION NAME")
+        self.assertEqual(ids(failure), ["dismiss"])
+        self.assertEqual(failure.title, "A VERY LONG CONNECTION NAME FAILED TO START")
+        for needle in ("B/ESC", "SETTINGS > REMOTE DESKTOP", "A/ENTER"):
+            self.assertIn(needle, failure.hint)
+        screen = Screen([ESC], size=(24, 80))
+        errors.show(screen, failure)
+        self.assertTrue(all(len(line) <= 76 for line in screen.frames[-1]), screen.frames[-1])
+        self.assertIn(failure.hint, " ".join(line.strip() for line in screen.frames[-1]))
+
+    def test_a_refused_saved_password_keeps_the_support_file_button(self):
+        failure = errors.saved_password_unusable("WORK", "the password service did not respond")
+        self.assertEqual(ids(failure), ["support", "dismiss"])
+        self.assertIn("PASSWORD SERVICE DID NOT RESPOND", failure.detail)
+        self.assertIn("SETTINGS > REMOTE DESKTOP", failure.hint)
+        self.assertNotIn("TRY AGAIN", failure.hint)
+
+
+class EveryFailureKeepsItsPromisesTest(unittest.TestCase):
+    """A hint must never send the user to a button the screen does not have (a dead end)."""
+
+    PROMISES = (
+        ("TRY AGAIN", "retry"),
+        ("NETWORK SETTINGS", "network"),
+        ("BLUETOOTH SETTINGS", "bluetooth"),
+        ("SUPPORT FILE", "support"),
+        ("ACTIVE APPLICATIONS", "active-apps"),
+    )
+
+    def every_failure(self):
+        messages = (
+            "boom",
+            "BLUETOOTH IS TURNED OFF",
+            "NETWORK IS UNREACHABLE",
+            "COULD NOT REACH 10.0.0.9:3389: timed out",
+        )
+        for message, app_id, app_kind, online, retry in itertools.product(
+            messages, ("", "moonlight", "network-setup", "terminal"), ("", "rdp"), (True, False, None), (True, False)
+        ):
+            label = f"{message!r} app={app_id!r}/{app_kind!r} online={online} retry={retry}"
+            failure = errors.describe_failure(
+                "X", message, app_id=app_id, app_kind=app_kind, online=online, retry=retry
+            )
+            yield label, failure
+            yield label + " (no bluetooth adapter)", failure.without_bluetooth()
+        for kind, retry in itertools.product(("network", "bluetooth", "app"), (True, False)):
+            yield f"problem {kind} retry={retry}", errors.problem("X", "boom", kind=kind, retry=retry)
+
+    def test_hints_only_name_buttons_that_are_on_the_screen(self):
+        checked = 0
+        for label, failure in self.every_failure():
+            for words, action_id in self.PROMISES:
+                if words in failure.hint:
+                    self.assertIn(action_id, ids(failure), f"{label}: hint says {words}: {failure.hint}")
+            checked += 1
+        self.assertGreater(checked, 200)
+
+    def test_every_screen_fits_80_columns_with_nothing_cut_off(self):
+        for label, failure in self.every_failure():
+            screen = Screen([ESC], size=(24, 80))
+            errors.show(screen, failure)
+            lines = screen.frames[-1]
+            self.assertTrue(all(len(line) <= 76 for line in lines), label)
+            text = " ".join(line.strip() for line in lines)
+            self.assertIn(failure.detail, text, label)
+            self.assertIn(failure.hint, text, label)
+
+    def test_every_screen_ends_with_back_and_has_no_repeated_button(self):
+        for label, failure in self.every_failure():
+            self.assertEqual(ids(failure)[-1], "dismiss", label)
+            self.assertEqual(len(set(ids(failure))), len(ids(failure)), label)
+
+    def test_a_hint_without_try_again_still_says_what_to_do(self):
+        offline = errors.describe_failure("X", "boom", app_id="moonlight", online=False, retry=False)
+        self.assertIn("OPEN NETWORK SETTINGS", offline.hint)
+        self.assertNotIn("TRY AGAIN", offline.hint)
+        rdp = errors.describe_failure("X", "boom", app_kind="rdp", online=True, retry=False)
+        self.assertIn("SETTINGS > REMOTE DESKTOP", rdp.hint)
+        app = errors.describe_failure("X", "boom", app_id="terminal", online=True, retry=False)
+        self.assertEqual(app.hint, "SAVE A SUPPORT FILE TO A USB DRIVE SO IT CAN BE DIAGNOSED.")
+        self.assertEqual(ids(app), ["support", "dismiss"])
 
 
 if __name__ == "__main__":

@@ -415,6 +415,7 @@ class Launcher:
             errors.NETWORK.id: self.open_network_settings,
             errors.SUPPORT.id: self.save_support_file,
             errors.BLUETOOTH.id: self.open_bluetooth_settings,
+            errors.ACTIVE.id: self.open_active_applications,
         }
         self.reload_applications()
         global IDLE_GUARD
@@ -602,6 +603,12 @@ class Launcher:
         bluetooth.run_bluetooth(self.screen)
         return False
 
+    def open_active_applications(self, app: apps.Application | None = None) -> bool:
+        """ACTIVE APPLICATIONS from an error screen; True (go on) once no other Remote Desktop session is left."""
+        self.active_applications()
+        session = active_rdp_session()
+        return session is None or (app is not None and session == app.connection)
+
     def show_failure(self, failure: errors.Failure, app: apps.Application | None = None) -> str:
         """Show an error screen with its buttons; returns "retry" or "dismiss".
 
@@ -609,6 +616,8 @@ class Launcher:
         screen back, unless the handler asks for another try by returning True.
         """
         set_launcher_focus(True)  # the dialog is on top of a failed app: keep the controller on it
+        if not controllers.bluetooth_present():
+            failure = failure.without_bluetooth()  # nothing to open on a PC with no adapter
         while True:
             choice = errors.show(self.screen, failure, read_key=read_key)
             if choice in ("retry", errors.DISMISS.id):
@@ -1552,12 +1561,7 @@ class Settings:
                     "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
                 )
                 if not sinks:
-                    failure = errors.simple_failure(
-                        "NO SOUND OUTPUT FOUND",
-                        "NO SOUND DEVICE IS AVAILABLE. CHECK THAT THE TV OR SPEAKERS ARE ON AND CONNECTED, "
-                        "OR PAIR A BLUETOOTH SPEAKER OR HEADSET.",
-                        errors.BLUETOOTH, retry=True,
-                    )
+                    failure = errors.no_sound_output(bluetooth=controllers.bluetooth_present())
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 sinks = []
                 rows = ["BACK"]
@@ -2299,19 +2303,13 @@ class RemoteDesktopSettings(ApplicationsSettings):
         label = app.name
         connection = rdp.get_connection(app.connection)
         if connection is None:
-            self.launcher.show_launch_failure(
-                label, "THE SAVED CONNECTION NO LONGER EXISTS. CHECK SETTINGS > REMOTE DESKTOP.", app=app, retry=False
-            )
+            self.launcher.show_failure(errors.connection_missing(label), app)
             return False
         session = active_rdp_session()
         if session and session != connection.id:
             # Also covers a session that is starting or reconnecting after a crash.
-            if self.launcher.show_launch_failure(
-                label,
-                "ANOTHER REMOTE DESKTOP SESSION IS OPEN OR RECONNECTING. PRESS HOME/GUIDE AND CLOSE "
-                f"IT WITH {CLOSE_BUTTON}, OR WAIT FOR IT TO END.",
-                app=app,
-            ) == "retry":
+            busy = errors.remote_session_busy(label, open_now=(RUN / f"{session}-ready").exists())
+            if self.launcher.show_failure(busy, app) == "retry":
                 return self.prepare_launch(app)
             return False
         self.status = "CONNECTING...  CAN TAKE 15 SECONDS IF THE PC IS ASLEEP"
@@ -2361,9 +2359,7 @@ class RemoteDesktopSettings(ApplicationsSettings):
             handoff.unlink(missing_ok=True)
             ok, detail = self.password_request("stage", connection.id)
             if not ok:
-                self.launcher.show_launch_failure(
-                    label, f"THE SAVED PASSWORD COULD NOT BE USED: {detail}".upper(), app=app, retry=False
-                )
+                self.launcher.show_failure(errors.saved_password_unusable(label, detail), app)
                 return False
             return True
         password = self.text_input(

@@ -40,6 +40,7 @@ RETRY = Action("TRY AGAIN", "retry")
 NETWORK = Action("NETWORK SETTINGS", "network")
 SUPPORT = Action("SAVE SUPPORT FILE", "support")
 BLUETOOTH = Action("BLUETOOTH SETTINGS", "bluetooth")
+ACTIVE = Action("ACTIVE APPLICATIONS", "active-apps")
 
 # Applications that cannot work without a network connection.
 NETWORK_APP_IDS = frozenset({"moonlight", "chiaki-ng", "firefox", "google-chrome", "tailscale"})
@@ -53,20 +54,26 @@ NETWORK_WORDS = re.compile(
 )
 BLUETOOTH_WORDS = re.compile(r"bluetooth", re.IGNORECASE)
 
+# What to do, without the last step: _hint() adds ", THEN TRY AGAIN" only when the screen has that button.
 HINTS = {
     "network-offline": (
-        "THIS PC IS NOT CONNECTED TO A NETWORK. OPEN NETWORK SETTINGS TO JOIN WI-FI OR PLUG IN "
-        "ETHERNET, THEN TRY AGAIN."
+        "THIS PC IS NOT CONNECTED TO A NETWORK. OPEN NETWORK SETTINGS TO JOIN WI-FI OR PLUG IN ETHERNET"
     ),
     "network": (
         "THE OTHER COMPUTER MAY BE OFF OR ASLEEP, OR THIS PC MAY BE ON A DIFFERENT NETWORK. "
-        "CHECK NETWORK SETTINGS, THEN TRY AGAIN."
+        "CHECK NETWORK SETTINGS"
     ),
-    "network-setup": "CHECK THE CABLE OR WI-FI AND TRY AGAIN.",
-    "bluetooth": "OPEN BLUETOOTH SETTINGS TO TURN BLUETOOTH ON OR PAIR THE DEVICE AGAIN, THEN TRY AGAIN.",
-    "rdp": "CHECK THE CONNECTION UNDER SETTINGS > REMOTE DESKTOP, THEN TRY AGAIN.",
-    "app": "TRY AGAIN. IF IT FAILS AGAIN, SAVE A SUPPORT FILE TO A USB DRIVE SO IT CAN BE DIAGNOSED.",
+    "network-setup": "CHECK THE CABLE OR WI-FI",
+    "bluetooth": "OPEN BLUETOOTH SETTINGS TO TURN BLUETOOTH ON OR PAIR THE DEVICE AGAIN",
+    "rdp": "CHECK THE CONNECTION UNDER SETTINGS > REMOTE DESKTOP",
 }
+NO_BLUETOOTH_HINT = "THIS PC HAS NO BLUETOOTH ADAPTER. PLUG IN A USB BLUETOOTH ADAPTER"
+SUPPORT_HINT = "SAVE A SUPPORT FILE TO A USB DRIVE SO IT CAN BE DIAGNOSED."
+
+
+def _hint(text: str, retry: bool) -> str:
+    return text + (", THEN TRY AGAIN." if retry else ".")
+
 BASE_ACTIONS = {
     "network": (NETWORK, RETRY),
     "bluetooth": (BLUETOOTH, RETRY),
@@ -84,6 +91,21 @@ class Failure:
     hint: str
     kind: str
     actions: tuple[Action, ...]
+
+    def without_bluetooth(self) -> "Failure":
+        """The same screen for a PC with no Bluetooth adapter.
+
+        BLUETOOTH SETTINGS would only open "NO BLUETOOTH ADAPTER FOUND", so the button goes, and a hint
+        that sent the user there says what is missing instead.
+        """
+        if BLUETOOTH.id not in {action.id for action in self.actions}:
+            return self
+        hint = self.hint
+        if self.kind == "bluetooth":
+            hint = _hint(NO_BLUETOOTH_HINT, RETRY.id in {action.id for action in self.actions})
+        return dataclasses.replace(
+            self, actions=tuple(action for action in self.actions if action.id != BLUETOOTH.id), hint=hint
+        )
 
 
 def register_action(action: Action, *, kinds: Sequence[str] = (), app_ids: Sequence[str] = ()) -> None:
@@ -139,11 +161,13 @@ def problem(
     retry: bool = True,
 ) -> Failure:
     if kind == "network":
-        hint = HINTS["network-setup"] if app_id == NETWORK_SETUP_ID else HINTS["network-offline" if online is False else "network"]
-    elif kind == "app" and app_kind == "rdp":
-        hint = HINTS["rdp"]
+        key = "network-setup" if app_id == NETWORK_SETUP_ID else "network-offline" if online is False else "network"
     else:
-        hint = HINTS.get(kind, HINTS["app"])
+        key = "rdp" if kind == "app" and app_kind == "rdp" else kind
+    if key in HINTS:
+        hint = _hint(HINTS[key], retry)
+    else:
+        hint = ("TRY AGAIN. IF IT FAILS AGAIN, " if retry else "") + SUPPORT_HINT
     return Failure(title, _clean(message), hint, kind, actions_for(kind, app_id, retry=retry))
 
 
@@ -170,6 +194,55 @@ def simple_failure(
     buttons = [*actions, *([RETRY] if retry else []), DISMISS]
     unique = tuple({action.id: action for action in buttons}.values())
     return Failure(title, _clean(message), hint.upper(), "generic", unique)
+
+
+def no_sound_output(*, bluetooth: bool) -> Failure:
+    """Nothing to play sound on; pairing a Bluetooth speaker only makes sense when the PC has an adapter."""
+    detail = "NO SOUND DEVICE IS AVAILABLE. CHECK THAT THE TV OR SPEAKERS ARE ON AND CONNECTED"
+    if bluetooth:
+        return simple_failure(
+            "NO SOUND OUTPUT FOUND", detail + ", OR PAIR A BLUETOOTH SPEAKER OR HEADSET.", BLUETOOTH, retry=True
+        )
+    return simple_failure("NO SOUND OUTPUT FOUND", detail + ".", retry=True)
+
+
+def connection_missing(label: str) -> Failure:
+    """A Remote Desktop button whose saved connection was deleted. Only Settings can fix it, whatever the
+    network is doing, so there is no network button and no TRY AGAIN."""
+    return simple_failure(
+        f"{label} FAILED TO START", "THE SAVED CONNECTION NO LONGER EXISTS.",
+        hint="PRESS B/ESC TO GO BACK, THEN CHOOSE SETTINGS > REMOTE DESKTOP (A/ENTER) TO CHECK OR ADD IT AGAIN.",
+    )
+
+
+def saved_password_unusable(label: str, detail: str) -> Failure:
+    """The saved Remote Desktop password was refused (for example it belongs to other server settings)."""
+    return simple_failure(
+        f"{label} FAILED TO START", f"THE SAVED PASSWORD COULD NOT BE USED: {detail}", SUPPORT,
+        hint="PRESS B/ESC TO GO BACK, THEN CHOOSE SETTINGS > REMOTE DESKTOP (A/ENTER) AND SAVE THIS "
+        "CONNECTION'S PASSWORD AGAIN.",
+    )
+
+
+def remote_session_busy(label: str, *, open_now: bool) -> Failure:
+    """Another Remote Desktop session holds the one session slot.
+
+    An open session can be closed from ACTIVE APPLICATIONS, so that is the button (TRY AGAIN would only
+    show this screen again). One that is still starting or reconnecting is not listed there yet; it
+    ends by itself, so waiting and trying again is the way out.
+    """
+    title = f"{label} FAILED TO START"
+    if open_now:
+        return simple_failure(
+            title, "ANOTHER REMOTE DESKTOP SESSION IS OPEN.", ACTIVE,
+            hint="CHOOSE ACTIVE APPLICATIONS (A/ENTER), SELECT THE OTHER SESSION, PRESS Y (XBOX) / SQUARE (PS) "
+            "TO CLOSE IT, THEN PRESS B/ESC TO CONNECT. CHOOSE BACK TO CANCEL.",
+        )
+    return simple_failure(
+        title, "ANOTHER REMOTE DESKTOP SESSION IS STARTING OR RECONNECTING.",
+        hint="WAIT A FEW SECONDS FOR IT TO END, THEN CHOOSE TRY AGAIN (A/ENTER). B/ESC GOES BACK.",
+        retry=True,
+    )
 
 
 class ActionMenu:
@@ -219,9 +292,9 @@ def draw(screen: "curses.window", failure: Failure, menu: ActionMenu) -> None:
             pass
     _centered(screen, max(2, height // 8), failure.title)
     wrap = max(8, width - 8)
-    rows = textwrap.wrap(failure.detail, width=wrap)
+    rows = textwrap.wrap(failure.detail, width=wrap, break_on_hyphens=False)  # never "WI-" then "FI"
     if failure.hint:
-        rows += [""] + textwrap.wrap(failure.hint, width=wrap)
+        rows += [""] + textwrap.wrap(failure.hint, width=wrap, break_on_hyphens=False)
     first = max(4, height // 8 + 3)
     rows = rows[: max(1, height - first - len(menu.actions) - 5)]
     for offset, row in enumerate(rows):
