@@ -13,17 +13,24 @@ import json
 import os
 import pathlib
 import stat
+import subprocess
+import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Callable
 
 
+APP_ID = "couchliteos-osk"  # set by couchliteos-osk-session; Cage docks it
 PAYLOAD = pathlib.Path("/run/couchliteos/osk-payload.json")
 # Written by the launcher when the keyboard is opened for a password field.
 MASK_REQUEST = pathlib.Path("/run/couchliteos/osk-masked")
 MAX_TEXT = 512
 # Seconds a new virtual keyboard needs before the compositor sees its keys.
 DEVICE_SETTLE = 0.5
+# The window the text is for is brought back to the front (Home or the Guide menu may have
+# raised the launcher meanwhile): checked every REFOCUS_POLL seconds, REFOCUS_TRIES times.
+REFOCUS_POLL = 0.05
+REFOCUS_TRIES = 20
 LETTERS = (
     tuple("1234567890"),
     tuple("QWERTYUIOP"),
@@ -189,9 +196,88 @@ def character_events(text: str, enter: bool, ecodes: Any) -> list[tuple[int, boo
     return events
 
 
-def inject(path: pathlib.Path = PAYLOAD) -> int:
+Run = Callable[..., subprocess.CompletedProcess]
+
+
+def _wlrctl(run: Run, *arguments: str) -> subprocess.CompletedProcess | None:
+    try:
+        return run(["wlrctl", "toplevel", *arguments], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _toplevels(run: Run, *matches: str) -> list[tuple[str, str]]:
+    """(app_id, title) of each window matching; wlrctl prints "app_id: title" lines."""
+    result = _wlrctl(run, "list", *matches)
+    if result is None or result.returncode != 0:
+        return []
+    windows = []
+    for line in result.stdout.splitlines():
+        app_id, separator, title = line.partition(": ")
+        if not separator and line.endswith(":"):
+            app_id, title = line[:-1], ""
+        windows.append((app_id, title))
+    return windows
+
+
+def active_toplevel(run: Run = subprocess.run) -> dict[str, str] | None:
+    """The focused window, the one the keyboard is opened for; None when it is not known."""
+    windows = _toplevels(run, "state:active")
+    if len(windows) != 1 or windows[0] == ("", "") or windows[0][0] == APP_ID:
+        return None
+    app_id, title = windows[0]
+    return {"app_id": app_id, "title": title}
+
+
+def parse_target(argument: str) -> dict[str, str] | None:
+    try:
+        target = json.loads(argument)
+    except ValueError:
+        return None
+    if not isinstance(target, dict) or set(target) != {"app_id", "title"}:
+        return None
+    if not all(isinstance(value, str) for value in target.values()) or not any(target.values()):
+        return None
+    return target
+
+
+def target_matches(target: dict[str, str], run: Run = subprocess.run) -> list[tuple[str, ...]]:
+    """wlrctl matches for the window, most exact first. The title may have changed since
+    (a browser loading a page), so the app_id alone too, but only while no other window
+    shares it: the launcher and terminal apps are all foot windows."""
+    app_id, title = target["app_id"], target["title"]
+    matches: list[tuple[str, ...]] = []
+    if app_id and title:
+        matches.append((f"app_id:{app_id}", f"title:{title}"))
+    elif title:
+        matches.append((f"title:{title}",))
+    if app_id and len(_toplevels(run, f"app_id:{app_id}")) == 1:
+        matches.append((f"app_id:{app_id}",))
+    return matches
+
+
+def refocus(target: dict[str, str], run: Run = subprocess.run) -> bool:
+    """Bring the window the keyboard was opened for back to the front; False when it is gone."""
+    for match in target_matches(target, run):
+        focused = _wlrctl(run, "focus", *match)
+        if focused is None or focused.returncode != 0:
+            continue
+        for _ in range(REFOCUS_TRIES):
+            active = _wlrctl(run, "find", *match, "state:active")
+            if active is not None and active.returncode == 0:
+                return True
+            time.sleep(REFOCUS_POLL)
+    return False
+
+
+def inject(path: pathlib.Path = PAYLOAD, target: dict[str, str] | None = None, run: Run = subprocess.run) -> int:
+    """Types the payload. With a target (the window focused when the keyboard opened) the
+    text goes to that window, or nowhere once it has closed; without one, to the focused window."""
     payload = load_payload(path)
     if payload is None:
+        return 0
+    if target is not None and not refocus(target, run):
+        print("couchliteos-osk: the window the text was for has closed; nothing typed", file=sys.stderr)
         return 0
     from evdev import UInput, ecodes
 
@@ -318,7 +404,18 @@ def ui(screen: curses.window) -> None:
                 return
 
 
-if __name__ == "__main__":
-    import sys
+def main(argv: list[str]) -> int:
+    """No argument: the keyboard. --target: print the focused window (JSON) for --inject.
+    --inject [TARGET]: type the keyboard's text, into TARGET when it is given and known."""
+    if argv == ["--target"]:
+        target = active_toplevel()
+        if target is not None:
+            print(json.dumps(target, separators=(",", ":")))
+        return 0
+    if argv[:1] == ["--inject"] and len(argv) <= 2:
+        return inject(target=parse_target(argv[1]) if len(argv) == 2 and argv[1] else None)
+    return curses.wrapper(ui) or 0
 
-    raise SystemExit(inject() if sys.argv[1:] == ["--inject"] else curses.wrapper(ui) or 0)
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

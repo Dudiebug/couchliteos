@@ -207,8 +207,10 @@ class CagePatchTest(unittest.TestCase):
 
 
 class OskPanelPatchTest(unittest.TestCase):
-    def test_patch_touches_only_the_view_code(self):
-        self.assertEqual(re.findall(r"^\+\+\+ b/(\S+)", text(OSK_PATCH), re.MULTILINE), ["view.c", "view.h", "xdg_shell.c"])
+    def test_patch_touches_only_the_view_and_focus_code(self):
+        self.assertEqual(
+            re.findall(r"^\+\+\+ b/(\S+)", text(OSK_PATCH), re.MULTILINE), ["seat.c", "view.c", "view.h", "xdg_shell.c"]
+        )
 
     def test_the_keyboard_app_id_is_docked_at_the_bottom_forty_percent(self):
         patch = text(OSK_PATCH)
@@ -216,18 +218,50 @@ class OskPanelPatchTest(unittest.TestCase):
         self.assertIn("+#define CAGE_OSK_PANEL_SHARE 0.40", patch)
         self.assertIn("+#define CAGE_OSK_PANEL_MIN_HEIGHT 240", patch)
         self.assertIn("+\treturn app_id && strcmp(app_id, CAGE_OSK_APP_ID) == 0;", patch)
-        self.assertIn("+\tint height = (int) (layout_box->height * CAGE_OSK_PANEL_SHARE);", patch)
-        self.assertIn("+\tview->ly = layout_box->y + layout_box->height - height;", patch)
-        self.assertIn("+\tview->impl->maximize(view, layout_box->width, height);", patch)
+        self.assertIn("+\tint height = (int) (box.height * CAGE_OSK_PANEL_SHARE);", patch)
+        self.assertIn("+\tview->ly = box.y + box.height - height;", patch)
+        self.assertIn("+\tview->impl->maximize(view, box.width, height);", patch)
         self.assertIn("+\tif (view_is_osk(view)) {\n+\t\tview_dock_osk(view, &layout_box);", patch)
 
-    def test_the_keyboard_stays_on_top_with_the_focus_and_ignores_fullscreen(self):
+    def test_the_panel_docks_to_the_output_of_the_app_it_types_into(self):
         patch = text(OSK_PATCH)
-        self.assertIn("+\t\t\twlr_scene_node_raise_to_top(&view->scene_tree->node);", patch)
-        # Mapping or raising another view keeps the keyboard above it and focused.
-        self.assertEqual(patch.count("+\tstruct cg_view *osk = view_raise_osk(view->server);"), 2)
-        self.assertEqual(patch.count("+\tif (osk && osk != view)\n+\t\treturn;\n \tseat_set_focus(view->server->seat, view);"), 2)
+        self.assertIn("+\tstruct cg_view *target = seat_get_focus(server->seat);", patch)
+        self.assertIn("+\treturn wlr_output_layout_output_at(server->output_layout, target->lx + width / 2.0,", patch)
+        # The whole layout when that output is not known.
+        self.assertIn("+\tstruct wlr_box box = *layout_box;", patch)
+        self.assertIn("+\t\twlr_output_layout_get_box(view->server->output_layout, output, &box);", patch)
+        self.assertIn("+\t\tif (wlr_box_empty(&box))\n+\t\t\tbox = *layout_box;", patch)
+
+    def test_the_keyboard_stays_on_top_and_ignores_fullscreen(self):
+        patch = text(OSK_PATCH)
+        self.assertIn("+\t\twlr_scene_node_raise_to_top(&osk->scene_tree->node);", patch)
+        # Mapping or raising another view keeps the keyboard above it.
+        self.assertEqual(patch.count("+\tview_raise_osk(view->server);"), 2)
+        self.assertNotIn("if (osk && osk != view)\n+\t\treturn;", patch, "focus is guarded in seat_set_focus only")
         self.assertIn("+\tif (view_is_osk(&xdg_shell_view->view)) {", patch)
+
+    def test_no_focus_change_takes_the_keyboard_focus_away(self):
+        # Clicks, activation requests, views mapped and views destroyed (view_destroy focuses
+        # the first view) all go through seat_set_focus: the guard is there, after XWayland's
+        # wants-focus check, and only reorders the view so it is focused when the keyboard closes.
+        patch = text(OSK_PATCH)
+        guard = (
+            "+\tstruct cg_view *osk = view_find_osk(server);\n"
+            "+\tif (osk && osk != view) {\n"
+            "+\t\tif (!view_is_primary(view)) {\n"
+            "+\t\t\twl_list_remove(&view->link);\n"
+            "+\t\t\twl_list_insert(&server->views, &view->link);\n"
+            "+\t\t}\n"
+            "+\t\treturn;\n"
+            "+\t}\n"
+            "+\n"
+            " \tif (prev_view) {\n"
+            " \t\tview_activate(prev_view, false);"
+        )
+        self.assertIn(guard, patch)
+        self.assertEqual(patch.count("view_find_osk(server)"), 2, "seat_set_focus and view_raise_osk")
+        self.assertLess(patch.index("+++ b/seat.c"), patch.index(guard))
+        self.assertIn("+struct cg_view *view_find_osk(struct cg_server *server);", patch)
 
     def test_foot_sizes_its_font_for_the_same_panel(self):
         foot = text(ROOT / "launcher/couchliteos_foot.py")
@@ -254,6 +288,19 @@ class PointerSpeedPatchTest(unittest.TestCase):
         self.assertIn("+\tif (!libinput_device_config_accel_is_available(handle))", patch)
         self.assertIn("+\t\tspeed = libinput_device_config_accel_get_default_speed(handle);", patch)
         self.assertIn("libinput_device_config_accel_set_speed(handle, speed)", patch)
+
+    def test_the_controller_mouse_keeps_libinputs_default_speed(self):
+        # gamepad-nav moves its virtual mouse at CONTROLLER MOUSE SPEED: MOUSE SPEED must not compound it.
+        patch = text(SPEED_PATCH)
+        self.assertIn('+#define CAGE_CONTROLLER_MOUSE_NAME "CouchLiteOS Controller Mouse"', patch)
+        self.assertIn(
+            "+\tif (device->name && strcmp(device->name, CAGE_CONTROLLER_MOUSE_NAME) == 0)\n"
+            "+\t\thave_speed = false;\n"
+            "+\tif (!have_speed)\n"
+            "+\t\tspeed = libinput_device_config_accel_get_default_speed(handle);",
+            patch,
+        )
+        self.assertIn('name="CouchLiteOS Controller Mouse"', text(ROOT / "launcher/gamepad-nav.py"))
 
     def test_new_pointers_and_sighup_apply_it(self):
         patch = text(SPEED_PATCH)

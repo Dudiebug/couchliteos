@@ -1,5 +1,7 @@
+import io
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import types
@@ -245,12 +247,45 @@ class ControllerDeleteTest(unittest.TestCase):
         self.assertEqual(typed, [("a", False)])
 
 
+class FakeWlrctl:
+    """wlrctl toplevel list/find/focus over (app_id, title) windows, the first one focused."""
+
+    def __init__(self, windows, timeline=None, focusable=True):
+        self.windows = list(windows)
+        self.timeline = [] if timeline is None else timeline
+        self.focusable = focusable  # False: the focus is refused (the keyboard still has it)
+
+    def matches(self, window, terms):
+        for term in terms:
+            key, _, value = term.partition(":")
+            if key == "state" and value == "active" and window != self.windows[0]:
+                return False
+            if (key == "app_id" and window[0] != value) or (key == "title" and window[1] != value):
+                return False
+        return True
+
+    def __call__(self, command, **_kwargs):
+        self.timeline.append(("wlrctl", tuple(command[2:])))
+        action, terms = command[2], command[3:]
+        found = [window for window in self.windows if self.matches(window, terms)]
+        if action == "list":
+            return subprocess.CompletedProcess(command, 0, "".join(f"{a}: {t}\n" for a, t in found), "")
+        if action == "focus" and found and self.focusable:
+            self.windows.remove(found[0])
+            self.windows.insert(0, found[0])
+        return subprocess.CompletedProcess(command, 0 if found else 1, "", "")
+
+
+LAUNCHER = ("foot", "CouchLiteOS Launcher")
+CHROME = ("google-chrome", "Sign in - Google Chrome")
+
+
 class InjectTest(unittest.TestCase):
     """inject() waits for the compositor to open the new keyboard before typing, and for
     the last release to be read before the keyboard goes away."""
 
-    def run_inject(self, text, enter=False, payload=True):
-        timeline = []  # ("open"/"write"/"syn"/"close"/"sleep", detail)
+    def run_inject(self, text, enter=False, payload=True, target=None, wlrctl=None):
+        timeline = [] if wlrctl is None else wlrctl.timeline  # ("open"/"write"/"syn"/"close"/"sleep"/"wlrctl", detail)
 
         class Device:
             def __init__(self, capabilities, name):
@@ -281,7 +316,10 @@ class InjectTest(unittest.TestCase):
             with mock.patch.dict(sys.modules, {"evdev": fake}), mock.patch.object(
                 osk.time, "sleep", side_effect=lambda seconds: timeline.append(("sleep", seconds))
             ):
-                result = osk.inject(path)
+                if wlrctl is None:
+                    result = osk.inject(path)
+                else:
+                    result = osk.inject(path, target, wlrctl)
             self.assertFalse(path.exists(), "the payload (maybe a password) is never left behind")
         return result, timeline, codes
 
@@ -316,6 +354,106 @@ class InjectTest(unittest.TestCase):
         result, timeline, _codes = self.run_inject("", payload=False)
         self.assertEqual(result, 0)
         self.assertEqual(timeline, [])
+
+    def test_the_text_goes_to_the_window_the_keyboard_was_opened_for(self):
+        # Home raised the launcher while the keyboard was open: closing the keyboard focused it.
+        wlrctl = FakeWlrctl([LAUNCHER, CHROME])
+        target = {"app_id": CHROME[0], "title": CHROME[1]}
+        result, timeline, _codes = self.run_inject("ab", target=target, wlrctl=wlrctl)
+        self.assertEqual(result, 0)
+        self.assertEqual(wlrctl.windows[0], CHROME)
+        focus = timeline.index(("wlrctl", ("focus", "app_id:google-chrome", "title:Sign in - Google Chrome")))
+        active = timeline.index(
+            ("wlrctl", ("find", "app_id:google-chrome", "title:Sign in - Google Chrome", "state:active"))
+        )
+        opened = timeline.index(("open", "CouchLiteOS Buffered Keyboard"))
+        self.assertLess(focus, active)
+        self.assertLess(active, opened, "nothing is typed before the window is back in front")
+        self.assertEqual(sum(kind == "write" for kind, _detail in timeline), 4)
+
+    def test_a_window_whose_title_changed_is_found_by_its_app_id(self):
+        wlrctl = FakeWlrctl([LAUNCHER, ("google-chrome", "Inbox - Google Chrome")])
+        result, timeline, _codes = self.run_inject("a", target={"app_id": CHROME[0], "title": CHROME[1]}, wlrctl=wlrctl)
+        self.assertEqual(result, 0)
+        self.assertIn(("wlrctl", ("focus", "app_id:google-chrome")), timeline)
+        self.assertEqual(wlrctl.windows[0][0], "google-chrome")
+        self.assertIn(("open", "CouchLiteOS Buffered Keyboard"), timeline)
+
+    def test_an_app_id_other_windows_share_is_not_enough(self):
+        # The launcher and terminal apps are all foot windows: app_id:foot could focus the launcher.
+        wlrctl = FakeWlrctl([LAUNCHER, ("foot", "htop")])
+        result, timeline, _codes = self.run_inject("a", target={"app_id": "foot", "title": "vim"}, wlrctl=wlrctl)
+        self.assertEqual(result, 0)
+        self.assertEqual(wlrctl.windows[0], LAUNCHER)
+        self.assertNotIn(("wlrctl", ("focus", "app_id:foot")), timeline)
+        self.assertFalse(any(kind == "open" for kind, _detail in timeline), "nothing typed into the launcher")
+
+    def test_nothing_is_typed_once_the_window_has_closed(self):
+        wlrctl = FakeWlrctl([LAUNCHER])
+        with mock.patch("sys.stderr"):
+            result, timeline, _codes = self.run_inject("secret", target={"app_id": CHROME[0], "title": CHROME[1]},
+                                                       wlrctl=wlrctl)
+        self.assertEqual(result, 0)
+        self.assertFalse(any(kind in {"open", "write"} for kind, _detail in timeline))
+
+    def test_nothing_is_typed_while_the_window_cannot_get_the_focus(self):
+        wlrctl = FakeWlrctl([LAUNCHER, CHROME], focusable=False)
+        with mock.patch("sys.stderr"):
+            _result, timeline, _codes = self.run_inject("a", target={"app_id": CHROME[0], "title": CHROME[1]},
+                                                        wlrctl=wlrctl)
+        self.assertFalse(any(kind == "open" for kind, _detail in timeline))
+        # Both matches (app_id and title, then the app_id alone) are tried, each for a while.
+        polls = [detail for kind, detail in timeline if kind == "sleep"]
+        self.assertEqual(polls, [osk.REFOCUS_POLL] * osk.REFOCUS_TRIES * 2)
+        self.assertLessEqual(sum(polls), 2.5, "gives up within a couple of seconds")
+
+    def test_without_a_target_the_focused_window_gets_the_text(self):
+        wlrctl = FakeWlrctl([LAUNCHER, CHROME])
+        _result, timeline, _codes = self.run_inject("a", target=None, wlrctl=wlrctl)
+        self.assertFalse(any(kind == "wlrctl" for kind, _detail in timeline))
+        self.assertIn(("open", "CouchLiteOS Buffered Keyboard"), timeline)
+
+
+class TargetTest(unittest.TestCase):
+    def test_the_focused_window_is_the_target(self):
+        self.assertEqual(osk.active_toplevel(FakeWlrctl([CHROME, LAUNCHER])), {"app_id": CHROME[0], "title": CHROME[1]})
+        self.assertEqual(osk.active_toplevel(FakeWlrctl([("foot", "ONE: first")])), {"app_id": "foot", "title": "ONE: first"})
+
+    def test_no_target_when_it_is_not_known(self):
+        self.assertIsNone(osk.active_toplevel(FakeWlrctl([])))
+        self.assertIsNone(osk.active_toplevel(FakeWlrctl([("couchliteos-osk", "COUCHLITEOS KEYBOARD"), CHROME])))
+        self.assertIsNone(osk.active_toplevel(mock.Mock(side_effect=FileNotFoundError("wlrctl"))))
+        self.assertIsNone(osk.active_toplevel(mock.Mock(side_effect=subprocess.TimeoutExpired("wlrctl", 5))))
+        failed = mock.Mock(return_value=subprocess.CompletedProcess([], 1, "", "no compositor"))
+        self.assertIsNone(osk.active_toplevel(failed))
+
+    def test_the_target_survives_the_command_line(self):
+        target = {"app_id": "", "title": "Moonlight \"PC\" : 1"}
+        with mock.patch.object(osk, "active_toplevel", return_value=target), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            self.assertEqual(osk.main(["--target"]), 0)
+        with mock.patch.object(osk, "inject", return_value=0) as inject:
+            osk.main(["--inject", stdout.getvalue().strip()])
+        inject.assert_called_once_with(target=target)
+
+    def test_inject_without_a_known_target_types_into_the_focused_window(self):
+        for argv in (["--inject"], ["--inject", ""], ["--inject", "not json"], ["--inject", '{"app_id": 1}'],
+                     ["--inject", '{"app_id": "", "title": ""}'], ["--inject", "[]"]):
+            with self.subTest(argv=argv), mock.patch.object(osk, "inject", return_value=0) as inject:
+                osk.main(argv)
+                inject.assert_called_once_with(target=None)
+
+    def test_target_prints_nothing_when_unknown(self):
+        with mock.patch.object(osk, "active_toplevel", return_value=None), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            self.assertEqual(osk.main(["--target"]), 0)
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_the_session_remembers_the_target_before_the_keyboard_opens(self):
+        session = (pathlib.Path(__file__).resolve().parent.parent / "scripts/couchliteos-osk-session").read_text()
+        remember = session.index("target=$(/usr/libexec/couchliteos-osk --target) || target=\n")
+        self.assertLess(remember, session.index("/usr/libexec/couchliteos-foot --app-id=couchliteos-osk"))
+        self.assertTrue(session.rstrip().endswith('exec /usr/libexec/couchliteos-osk --inject "$target"'))
 
 
 class MaskRequestTest(unittest.TestCase):

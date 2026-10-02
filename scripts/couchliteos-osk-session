@@ -8,10 +8,13 @@ rm -f -- "$request" "$payload"
 touch "$active"
 cleanup() { rm -f -- "$active"; }
 trap cleanup EXIT INT TERM
+# The window the keyboard is opened for. The text is typed into it even if Home or the Guide
+# menu brought the launcher to the front meanwhile, and not at all once it has closed.
+target=$(/usr/libexec/couchliteos-osk --target) || target=
 # Cage docks this app-id along the bottom of the screen (config/cage/cage-0.2.0-osk-panel.patch),
 # so the app being typed into stays visible above the keyboard. Not full-screen, foot would
 # draw a title bar: the panel has none.
 /usr/libexec/couchliteos-foot --app-id=couchliteos-osk -o csd.preferred=none --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk
 rm -f -- "$active"
 sleep 0.25
-exec /usr/libexec/couchliteos-osk --inject
+exec /usr/libexec/couchliteos-osk --inject "$target"

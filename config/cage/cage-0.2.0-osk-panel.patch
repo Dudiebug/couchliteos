@@ -2,20 +2,53 @@ Cage: dock the on-screen keyboard along the bottom of the screen.
 
 Cage maximises every toplevel, so the full-screen keyboard hid the application
 it types into. A toplevel with app-id couchliteos-osk is placed instead as a
-panel across the full width and the bottom 40% of the output layout (at least
-240 px), and is kept above every other view, even one mapped or raised (wlrctl
-toplevel focus) while it is open. It takes the keyboard focus when it maps and
-keeps it while it is open; a view mapped or raised meanwhile moves to the front
-of server->views, so when the keyboard closes view_destroy focuses it, and
-otherwise the view that was focused before. Fullscreen requests from the
-keyboard are ignored. Cage 0.2.0 has no wlr-layer-shell, hence the app-id.
+panel across the full width and the bottom 40% (at least 240 px) of the output
+showing the application it types into (of the whole output layout when that is
+not known), and is kept above every other view, even one mapped or raised
+(wlrctl toplevel focus) while it is open. It takes the keyboard focus when it
+maps and seat_set_focus keeps it there while it is open, whatever asks for the
+focus (a click, an activation request, a view mapped or destroyed): the view
+asking only moves to the front of server->views, so when the keyboard closes
+view_destroy focuses it, and otherwise the view that was focused before.
+Fullscreen requests from the keyboard are ignored. Cage 0.2.0 has no
+wlr-layer-shell, hence the app-id.
 Applied after cage-0.2.0-foreign-toplevel.patch (it uses its request_activate)
 with patch -p1 by config/live-build/hooks/live/0050-cage.hook.chroot.
 
+diff -ruN a/seat.c b/seat.c
+--- a/seat.c
++++ b/seat.c
+@@ -928,6 +928,18 @@
+ 	}
+ #endif
+ 
++	/* While the keyboard panel is open it keeps the keyboard focus, whatever asks
++	   for it (a click, an activation request, a view mapped or destroyed). The
++	   view only moves to the front, so it is focused when the keyboard closes. */
++	struct cg_view *osk = view_find_osk(server);
++	if (osk && osk != view) {
++		if (!view_is_primary(view)) {
++			wl_list_remove(&view->link);
++			wl_list_insert(&server->views, &view->link);
++		}
++		return;
++	}
++
+ 	if (prev_view) {
+ 		view_activate(prev_view, false);
+ 	}
 diff -ruN a/view.c b/view.c
 --- a/view.c
 +++ b/view.c
-@@ -21,10 +21,36 @@
+@@ -15,16 +15,51 @@
+ #include <wayland-server-core.h>
+ #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+ #include <wlr/types/wlr_output.h>
++#include <wlr/types/wlr_output_layout.h>
+ #include <wlr/types/wlr_scene.h>
++#include <wlr/util/box.h>
+ 
+ #include "output.h"
  #include "seat.h"
  #include "server.h"
  #include "view.h"
@@ -34,46 +67,88 @@ diff -ruN a/view.c b/view.c
 +	return app_id && strcmp(app_id, CAGE_OSK_APP_ID) == 0;
 +}
 +
-+/* The keyboard panel is drawn above every other view, including one mapped or
-+   raised while it is open. Returns the open keyboard, or NULL. */
++/* The open (mapped) keyboard, or NULL. */
 +struct cg_view *
-+view_raise_osk(struct cg_server *server)
++view_find_osk(struct cg_server *server)
 +{
 +	struct cg_view *view;
 +	wl_list_for_each (view, &server->views, link) {
-+		if (view->scene_tree && view_is_osk(view)) {
-+			wlr_scene_node_raise_to_top(&view->scene_tree->node);
++		if (view->scene_tree && view_is_osk(view))
 +			return view;
-+		}
 +	}
 +	return NULL;
++}
++
++/* The keyboard panel is drawn above every other view, including one mapped or
++   raised while it is open. */
++void
++view_raise_osk(struct cg_server *server)
++{
++	struct cg_view *osk = view_find_osk(server);
++	if (osk)
++		wlr_scene_node_raise_to_top(&osk->scene_tree->node);
 +}
 +
  char *
  view_get_title(struct cg_view *view)
  {
-@@ -91,13 +117,35 @@
+@@ -91,13 +126,70 @@
  	}
  }
  
-+/* Full width, CAGE_OSK_PANEL_SHARE of the height, at the bottom of the layout. */
++/* The output showing the view the keyboard types into: the focused view, or the
++   first other one once the keyboard has the focus. NULL when there is none. */
++static struct wlr_output *
++osk_output(struct cg_view *osk)
++{
++	struct cg_server *server = osk->server;
++	struct cg_view *target = seat_get_focus(server->seat);
++	if (!target || view_is_osk(target)) {
++		struct cg_view *view;
++		target = NULL;
++		wl_list_for_each (view, &server->views, link) {
++			if (!view_is_osk(view)) {
++				target = view;
++				break;
++			}
++		}
++	}
++	if (!target)
++		return NULL;
++
++	int width, height;
++	target->impl->get_geometry(target, &width, &height);
++	return wlr_output_layout_output_at(server->output_layout, target->lx + width / 2.0,
++					   target->ly + height / 2.0);
++}
++
++/* Full width, CAGE_OSK_PANEL_SHARE of the height, at the bottom of that output
++   (of the whole layout when it is not known). */
 +static void
 +view_dock_osk(struct cg_view *view, struct wlr_box *layout_box)
 +{
-+	int height = (int) (layout_box->height * CAGE_OSK_PANEL_SHARE);
++	struct wlr_box box = *layout_box;
++	struct wlr_output *output = osk_output(view);
++	if (output) {
++		wlr_output_layout_get_box(view->server->output_layout, output, &box);
++		if (wlr_box_empty(&box))
++			box = *layout_box;
++	}
++
++	int height = (int) (box.height * CAGE_OSK_PANEL_SHARE);
 +	if (height < CAGE_OSK_PANEL_MIN_HEIGHT)
 +		height = CAGE_OSK_PANEL_MIN_HEIGHT;
-+	if (height > layout_box->height)
-+		height = layout_box->height;
++	if (height > box.height)
++		height = box.height;
 +
-+	view->lx = layout_box->x;
-+	view->ly = layout_box->y + layout_box->height - height;
++	view->lx = box.x;
++	view->ly = box.y + box.height - height;
 +
 +	if (view->scene_tree) {
 +		wlr_scene_node_set_position(&view->scene_tree->node, view->lx, view->ly);
 +	}
 +
-+	view->impl->maximize(view, layout_box->width, height);
++	view->impl->maximize(view, box.width, height);
 +}
 +
  void
@@ -89,28 +164,21 @@ diff -ruN a/view.c b/view.c
  		view_maximize(view, &layout_box);
  	} else {
  		view_center(view, &layout_box);
-@@ -137,8 +185,12 @@
+@@ -137,6 +229,8 @@
  	struct cg_view *view = wl_container_of(listener, view, request_activate);
  
  	wlr_scene_node_raise_to_top(&view->scene_tree->node);
-+	struct cg_view *osk = view_raise_osk(view->server);
++	/* An open keyboard stays above it and keeps the focus (seat_set_focus). */
++	view_raise_osk(view->server);
  	wl_list_remove(&view->link);
  	wl_list_insert(&view->server->views, &view->link);
-+	/* The open keyboard keeps the focus; this view, now first, gets it when the keyboard closes. */
-+	if (osk && osk != view)
-+		return;
  	seat_set_focus(view->server->seat, view);
- }
- 
-@@ -180,6 +232,11 @@
+@@ -180,6 +274,8 @@
  	view->request_close.notify = handle_surface_request_close;
  	wl_signal_add(&view->foreign_toplevel_handle->events.request_close, &view->request_close);
  
-+	/* The open keyboard stays on top and keeps the focus; this view, now
-+	   first, gets it when the keyboard closes. */
-+	struct cg_view *osk = view_raise_osk(view->server);
-+	if (osk && osk != view)
-+		return;
++	/* An open keyboard stays above it and keeps the focus (seat_set_focus). */
++	view_raise_osk(view->server);
  	seat_set_focus(view->server->seat, view);
  	return;
  
@@ -130,12 +198,13 @@ diff -ruN a/view.h b/view.h
  enum cg_view_type {
  	CAGE_XDG_SHELL_VIEW,
  #if CAGE_HAS_XWAYLAND
-@@ -52,6 +58,8 @@
+@@ -52,6 +58,9 @@
  char *view_get_title(struct cg_view *view);
  bool view_is_primary(struct cg_view *view);
  bool view_is_transient_for(struct cg_view *child, struct cg_view *parent);
 +bool view_is_osk(struct cg_view *view);
-+struct cg_view *view_raise_osk(struct cg_server *server);
++struct cg_view *view_find_osk(struct cg_server *server);
++void view_raise_osk(struct cg_server *server);
  void view_activate(struct cg_view *view, bool activate);
  void view_position(struct cg_view *view);
  void view_position_all(struct cg_server *server);
