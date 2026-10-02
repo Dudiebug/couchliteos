@@ -349,6 +349,10 @@ def collect(bundle: pathlib.Path) -> None:
         env=environment,
     )
     add_command(bundle, "audio/alsa-devices.txt", ["aplay", "-l"])
+    add_file(bundle, "audio/alsa-cards.txt", pathlib.Path("/proc/asound/cards"))
+    # HDMI/DP jacks with a TV attached show a monitor name and audio formats here.
+    for eld in sorted(pathlib.Path("/proc/asound").glob("card*/eld#*")):
+        add_file(bundle, f"audio/eld/{eld.parent.name}-{eld.name.replace('#', '-')}.txt", eld)
     add_command(bundle, "network/networkmanager.txt", ["nmcli", "device", "show"])
     add_command(bundle, "network/ipv4-addresses.txt", ["ip", "-4", "address", "show"])
     add_command(bundle, "network/routes.txt", ["ip", "route", "show", "table", "all"])

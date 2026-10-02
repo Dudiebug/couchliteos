@@ -392,6 +392,8 @@ class AudioVolumeTest(LauncherFixesTest):
             "toggle_mute": mock.Mock(return_value=audio.Volume(50, True)),
             "set_default": mock.Mock(),
             "ensure_audible": mock.Mock(return_value=""),
+            "query_profile_outputs": mock.Mock(return_value=[]),
+            "switch_to": mock.Mock(),
         }
         mocks.update(audio_patches)
         patches = [mock.patch.object(audio, name, value) for name, value in mocks.items()]
@@ -454,6 +456,52 @@ class AudioVolumeTest(LauncherFixesTest):
 
         frames, _mocks = self.run_audio([self.ESC], get_volume=unreadable)
         self.assertEqual(frames[0][0], ["*  HDMI OUTPUT", "VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE", "BACK"])
+
+    def test_an_output_behind_another_card_profile_is_listed_after_the_sinks(self):
+        audio = self.module.audio
+        speaker = audio.ProfileOutput(47, 1, "Built-in Audio Analog Stereo")
+        frames, _mocks = self.run_audio([self.ESC], query_profile_outputs=mock.Mock(return_value=[speaker]))
+        self.assertEqual(
+            frames[0][0],
+            ["*  HDMI OUTPUT", "   Built-in Audio Analog Stereo",
+             "VOLUME  [##########..........]  50%", "MUTE  OFF", "BACK"],
+        )
+
+    def test_choosing_it_switches_the_card_then_makes_the_new_sink_the_default(self):
+        audio = self.module.audio
+        speaker = audio.ProfileOutput(47, 1, "Built-in Audio Analog Stereo")
+        new_sink = audio.Sink(61, "Built-in Audio Analog Stereo")
+        frames, mocks = self.run_audio(
+            [self.KEY_DOWN, self.ENTER, self.ESC],
+            query_profile_outputs=mock.Mock(return_value=[speaker]),
+            switch_to=mock.Mock(return_value=new_sink),
+        )
+        mocks["switch_to"].assert_called_once_with(speaker, {7})
+        mocks["set_default"].assert_called_once_with(61)
+        mocks["ensure_audible"].assert_called_once_with(61)
+        self.assertIn("SWITCHING OUTPUT...", [status for _rows, status in frames])
+        self.assertEqual(frames[-1][1], "DEFAULT OUTPUT: Built-in Audio Analog Stereo")
+
+    def test_a_failed_switch_is_shown_and_changes_nothing_else(self):
+        audio = self.module.audio
+        speaker = audio.ProfileOutput(47, 1, "Built-in Audio Analog Stereo")
+        frames, mocks = self.run_audio(
+            [self.KEY_DOWN, self.ENTER, self.ESC],
+            query_profile_outputs=mock.Mock(return_value=[speaker]),
+            switch_to=mock.Mock(side_effect=RuntimeError("the output did not appear")),
+        )
+        mocks["set_default"].assert_not_called()
+        self.assertEqual(frames[-1][1], "OUTPUT NOT CHANGED: the output did not appear. TRY ANOTHER OUTPUT")
+
+    def test_volume_rows_follow_the_extra_outputs(self):
+        audio = self.module.audio
+        speaker = audio.ProfileOutput(47, 1, "Built-in Audio Analog Stereo")
+        _frames, mocks = self.run_audio(
+            [self.KEY_DOWN, self.KEY_DOWN, self.KEY_RIGHT, self.ESC],
+            query_profile_outputs=mock.Mock(return_value=[speaker]),
+        )
+        self.assertEqual([call.args for call in mocks["change_volume"].call_args_list], [(5,)])
+        mocks["switch_to"].assert_not_called()
 
     def test_no_outputs_means_no_volume_rows(self):
         # The first ESC closes the "no sound output found" explanation (feat/easy), the second leaves AUDIO.

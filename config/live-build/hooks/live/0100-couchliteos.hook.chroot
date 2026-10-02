@@ -97,6 +97,21 @@ systemctl enable tailscaled.service couchliteos-tailscale-enroll.path couchliteo
 systemctl enable couchliteos-cec-wake.service
 systemctl enable couchliteos-cec-sleep.service
 
+# Sound: UCM files (apt-recommends is off), the WirePlumber hook that puts plain HDA
+# cards on their HDMI/DP profile when a TV is attached, and the tools the launcher
+# uses to offer the card's other outputs.
+if [[ -z "$(find /usr/share/alsa/ucm2 -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+  echo 'alsa-ucm-conf is missing: /usr/share/alsa/ucm2 is absent or empty' >&2
+  exit 1
+fi
+[[ -s /usr/share/wireplumber/scripts/couchliteos/find-tv-profile.lua ]] || {
+  echo 'WirePlumber TV profile hook is missing' >&2
+  exit 1
+}
+for tool in pw-dump pw-cli wpctl; do
+  command -v "$tool" >/dev/null || { echo "$tool is missing" >&2; exit 1; }
+done
+
 # The standard kernel supplies these modules; load them on the applicable side.
 printf '%s\n' usbip_host uinput tun > /etc/modules-load.d/couchliteos-usbip.conf
 

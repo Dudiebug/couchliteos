@@ -357,6 +357,7 @@ Applications and acceleration:
 - [ ] 4K60 SDR best effort over DisplayPort
 - [ ] chiaki-ng registration, connection, and gameplay
 - [ ] HDMI/DP audio and wired controller input
+- [ ] HD Audio desktop (for example a Dell OptiPlex), TV on HDMI: after boot the HDMI output is the default in Settings > AUDIO OUTPUT and sound plays on the TV; the built-in speaker is listed too, switching to it and back works and survives a restart; unplugging the TV moves sound to the speaker and plugging it back returns it
 - [ ] One exact allowlisted specialty USB/IP device
 - [ ] Ethernet interruption and recovery
 - [ ] Pairing/configuration survives cold reboot

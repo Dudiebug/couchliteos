@@ -98,9 +98,9 @@ find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.2.1 ]]
+[[ "$(< VERSION)" == 0.2.2 ]]
 cmp -s VERSION overlay/etc/couchliteos-version
-rg -q 'couchliteos-0.2.1-amd64\.iso' .github/workflows/build.yml
+rg -q 'couchliteos-0.2.2-amd64\.iso' .github/workflows/build.yml
 rg -Fq 'ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso' Makefile
 rg -Fq 'ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"' build/build.sh
 rg -q '^PROFILE \?= general$' Makefile
@@ -677,6 +677,29 @@ rg -q 'if not bluetooth_present' launcher/couchliteos_controllers.py
 # Easier everyday use: sound follows the TV (declarative WirePlumber 0.5 rule)
 rg -q 'cp -a "\$ROOT/overlay/\."' build/configure.sh
 rg -q -- '--profile main-systemwide' scripts/couchliteos-audio
+# UCM files (apt-recommends is off): SOF and AMD ACP cards need them.
+rg -q '^alsa-ucm-conf$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^alsa-topology-conf$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q 'find /usr/share/alsa/ucm2 ' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+# Plain HDA cards: HDMI/DP sinks exist only under an HDMI card profile. A WirePlumber
+# hook picks it when a TV is attached; the launcher offers the card's other outputs.
+hook=overlay/usr/share/wireplumber/scripts/couchliteos/find-tv-profile.lua
+tvconf=overlay/etc/wireplumber/wireplumber.conf.d/51-couchliteos-tv-profile.conf
+rg -Fq 'after = "device/find-stored-profile"' "$hook"
+rg -Fq 'before = "device/find-preferred-profile"' "$hook"
+rg -Fq 'profile.available == "yes"' "$hook"
+rg -Fq '"^output:hdmi%-"' "$hook"
+rg -Fq 'device.properties ["device.api"] ~= "alsa"' "$hook"
+rg -Fq 'name = couchliteos/find-tv-profile.lua, type = script/lua' "$tvconf"
+rg -Fq 'hooks.device.profile.couchliteos-find-tv = optional' "$tvconf"
+rg -q 'find-tv-profile.lua' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q 'for tool in pw-dump pw-cli wpctl' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '"pw-cli", "set-param"' launcher/couchliteos_audio.py
+rg -Fq '"save": True' launcher/couchliteos_audio.py
+rg -q 'audio.query_profile_outputs\(\)' launcher/couchliteos-launcher.py
+rg -q '/proc/asound/cards' scripts/couchliteos-support-export
+rg -Fq 'card*/eld#*' scripts/couchliteos-support-export
+rg -Fq 'node.name = "~.*HDMI.*"' overlay/etc/wireplumber/wireplumber.conf.d/50-couchliteos-hdmi-default.conf
 python3 - <<'PY'
 import pathlib, re
 conf = pathlib.Path('overlay/etc/wireplumber/wireplumber.conf.d/50-couchliteos-hdmi-default.conf').read_text()

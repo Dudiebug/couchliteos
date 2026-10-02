@@ -54,6 +54,10 @@ pipewire
 pipewire-audio
 wireplumber
 alsa-utils
+# apt-recommends is off, so libasound2-data's Recommends must be listed. SOF and AMD ACP
+# cards (most recent laptops) need the UCM files for any sound and to list HDMI/DP outputs.
+alsa-ucm-conf
+alsa-topology-conf
 libspa-0.2-modules
 libspa-0.2-bluetooth
 joystick

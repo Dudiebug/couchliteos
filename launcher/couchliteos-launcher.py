@@ -1794,7 +1794,11 @@ class Settings:
             failure: errors.Failure | None = None
             try:
                 sinks = audio.query_sinks()
+                # Outputs the sound card has only under another profile (the
+                # speaker while a TV has HDMI, a second HDMI/DP port).
+                others = audio.query_profile_outputs()
                 rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks]
+                rows += [f"   {output.name}" for output in others]
                 if sinks:
                     try:
                         volume = audio.get_volume()
@@ -1805,12 +1809,14 @@ class Settings:
                         rows += ["VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE"]
                 rows.append("BACK")
                 self.status = result or (
-                    "* IS THE CURRENT DEFAULT OUTPUT" if sinks else "NO AUDIO OUTPUTS AVAILABLE"
+                    "* IS THE CURRENT DEFAULT OUTPUT" if sinks else
+                    "CHOOSE AN OUTPUT" if others else "NO AUDIO OUTPUTS AVAILABLE"
                 )
-                if not sinks:
+                if not sinks and not others:
                     failure = errors.no_sound_output(bluetooth=controllers.bluetooth_present())
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 sinks = []
+                others = []
                 rows = ["BACK"]
                 self.status = f"AUDIO QUERY FAILED: {error}"
                 failure = errors.problem("AUDIO QUERY FAILED", str(error))
@@ -1829,24 +1835,30 @@ class Settings:
                 return
             if key not in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
                 continue
-            if selected < len(sinks):
+            if selected < len(sinks) + len(others):
                 if key not in ENTER_KEYS:
                     continue
                 try:
-                    audio.set_default(sinks[selected].id)
-                    result = f"DEFAULT OUTPUT: {sinks[selected].name}"
+                    if selected < len(sinks):
+                        sink = sinks[selected]
+                    else:
+                        self.status = "SWITCHING OUTPUT..."
+                        self.draw("AUDIO OUTPUT", rows, selected)
+                        sink = audio.switch_to(others[selected - len(sinks)], {s.id for s in sinks})
+                    audio.set_default(sink.id)
+                    result = f"DEFAULT OUTPUT: {sink.name}"
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     result = f"OUTPUT NOT CHANGED: {error}. TRY ANOTHER OUTPUT"
                     continue
                 try:
-                    note = audio.ensure_audible(sinks[selected].id)
+                    note = audio.ensure_audible(sink.id)
                 except (OSError, RuntimeError, subprocess.SubprocessError):
                     note = "VOLUME NOT CHECKED"
                 if note:
                     result += f" ({note})"
                 continue
             try:
-                if selected == len(sinks):
+                if selected == len(sinks) + len(others):
                     step = -audio.VOLUME_STEP if key == curses.KEY_LEFT else audio.VOLUME_STEP
                     result = f"VOLUME {audio.change_volume(step).percent}%"
                 else:

@@ -15,7 +15,7 @@ instead.
 | Launcher does not appear | See [the black-screen section](#the-screen-stays-black-or-the-launcher-never-appears) |
 | Moonlight returns immediately | `/var/log/couchliteos/moonlight.log`; verify XWayland and VA-API output |
 | chiaki-ng black screen | Try Vulkan then OpenGL; optionally set `gamescope = true`; keep HDR off |
-| No HDMI/DP audio | `wpctl status`, `aplay -l`; select the display sink in application settings |
+| No HDMI/DP audio | `wpctl status`, `aplay -l`; select the display sink in Settings > AUDIO OUTPUT. If `aplay -l` lists the HDMI device but `wpctl status` has no HDMI sink, update to 0.2.2 (0.2.1 kept HDA cards on their analog profile); `audio.log` says which HDMI/DP profile was chosen, and the support file has `audio/alsa-cards.txt` and `audio/eld/` |
 | No DHCP | `nmcli device`, `ip route`, cable/switch link, `/var/log/couchliteos/network.log` |
 | USB/IP refused | `couchliteos-usbip list`; confirm exact serial and risky-class policy |
 | Tailscale is offline | `couchliteos-tailscale-diagnostics`; local LAN remains usable |
