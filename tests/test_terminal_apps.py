@@ -145,7 +145,7 @@ class EnrollmentWaitsTest(TerminalAppTest):
         terminal.read_until("SYSTEM DIAGNOSTICS")
         self.assertNotIn("couchliteos-tailscale-diagnostics", terminal.output)
         terminal.assert_contains("SETTINGS > SYSTEM DIAGNOSTICS")
-        terminal.assert_contains("ENTER")
+        terminal.read_until("ENTER")  # the prompt line can arrive after the message
         self.assert_still_open(terminal)
         terminal.send(b"\n")
         self.assertEqual(terminal.finish(), 1)
