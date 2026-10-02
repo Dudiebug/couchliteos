@@ -4,3 +4,4 @@ build/out/
 *.iso
 __pycache__/
 *.pyc
+build/.tests-passed

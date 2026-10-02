@@ -29,6 +29,25 @@ done
   exit 1
 }
 
+# Only release builds (sudo make build RELEASE=1, xz squashfs) are assets: a test build's
+# zstd squashfs is larger. The compression id is a 16-bit field at byte 20 of the
+# squashfs superblock (4 = xz, 6 = zstd).
+squashfs_compression() {
+  local lba
+  lba=$(xorriso -indev "$1" -find /live/filesystem.squashfs -exec report_lba -- 2>/dev/null \
+    | sed -n -E 's/^File data lba: *[0-9]+ *, *([0-9]+) *,.*/\1/p') || return 1
+  [[ $lba =~ ^[0-9]+$ ]] || return 1
+  od -An -tu2 -j $((lba * 2048 + 20)) -N 2 -- "$1" | tr -d ' \n'
+}
+command -v xorriso >/dev/null || { echo 'xorriso is required to check the ISOs' >&2; exit 1; }
+for iso in "${isos[@]}"; do
+  compression=$(squashfs_compression "$iso") || compression=
+  [[ $compression == 4 ]] || {
+    echo "$iso is not a release build (squashfs compression id '${compression:-unreadable}', not xz); rebuild it with: sudo make build RELEASE=1" >&2
+    exit 1
+  }
+done
+
 sha256sum -- "${isos[@]}" > SHA256SUMS
 sha256sum -c SHA256SUMS
 for asset in "${isos[@]}" SHA256SUMS; do
