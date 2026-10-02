@@ -1,0 +1,20 @@
+name: Feature request
+description: An idea for something CouchLiteOS should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe it from the couch. What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could it work?
+  - type: input
+    id: hardware
+    attributes:
+      label: Your setup (optional)
+      placeholder: "PC, TV, controller"

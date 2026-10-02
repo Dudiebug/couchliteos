@@ -1,8 +1,44 @@
 # Building CouchLiteOS
 
-The [README](../README.md#exact-build-command) lists the packages a Debian 13 x86_64
-build host needs. This page covers the two kinds of build, the stage timings and the
-caches that make repeat builds faster.
+This page is for people who want to build the ISO themselves or work on CouchLiteOS.
+To install it, download an ISO from the
+[latest release](https://github.com/Dudiebug/couchliteos/releases/latest) and follow the
+[wiki](https://github.com/Dudiebug/couchliteos/wiki).
+
+## Build host
+
+Build on Debian 13 x86_64 (a VM works, and so does the iMac Late 2013 itself):
+
+```bash
+sudo apt update
+sudo apt install --yes make git live-build curl ca-certificates xorriso   squashfs-tools grub-pc-bin grub-efi-amd64-bin mtools dosfstools
+sudo make build RELEASE=1                  # general ISO
+sudo make build PROFILE=nvidia RELEASE=1   # NVIDIA ISO
+```
+
+The ISOs are written to `build/out/couchliteos-<version>-amd64.iso` and
+`build/out/couchliteos-<version>-nvidia-amd64.iso`.
+
+`curl` downloads the pinned application payloads, `squashfs-tools` (`unsquashfs`)
+extracts them, and `git` stamps the source commit into the image (the build falls back
+to `unknown` without it). The other make targets need more:
+
+- `make test`: `python3` and `ripgrep` (`rg`).
+- QEMU tests (`make qemu-smoke`, `qemu-persistence-smoke`, `qemu-install-smoke`):
+  `qemu-system-x86`, `ovmf` and `python3`; the install test also needs `qemu-utils`
+  (`qemu-img`), and the persistence test needs `xorriso` (or `bsdtar`) and `mke2fs`
+  from `e2fsprogs`.
+- `make release-check`: `python3` and `git`.
+
+`scripts/fetch-apps.sh` downloads only the fixed versions and HTTPS URLs in
+`build/applications.lock`, and `build/configure.sh` extracts their pinned payloads into
+the read-only image, so runtime FUSE is not needed. Firefox comes from Debian's signed
+repositories and Google Chrome Stable from Google's signed repository. No application
+binary is committed to Git.
+
+The single-machine profiles `intel` and `imac2013` still build
+(`couchliteos-<version>-intel-amd64.iso`, `-imac2013-amd64.iso`) but are not release
+assets.
 
 ## Test builds and release builds
 
@@ -164,3 +200,32 @@ and 0.2.3 build logs show `tailscale 1.102.4`, while the images shipped the list
 `.pref.chroot` file, which live-build removes afterwards, and the image check fails the
 build if `/etc/apt/preferences.d/couchliteos-pins` is in the image. The installed system
 follows Tailscale's repository as before.
+
+## Testing
+
+```bash
+make test                          # unit and static tests
+make qemu-smoke                    # boots the ISO in QEMU (UEFI) and waits for the launcher
+make qemu-install-smoke            # installs to a virtual disk and boots it twice
+make qemu-persistence-smoke        # checks live persistence across reboots
+```
+
+Every QEMU target takes `PROFILE=` (for example `PROFILE=nvidia`) or an explicit `ISO=`.
+Without KVM, set `COUCHLITEOS_QEMU_TIMEOUT_SCALE=N` (1-99) to stretch every wait by the
+same factor. `make release-gauntlet` runs all three QEMU tests on a release ISO.
+
+To try an ISO in a full VM:
+
+```powershell
+# Hyper-V (Generation 2), as Administrator on the Windows host
+.\tools\hyperv-create-test-vm.ps1 -IsoPath D:\iso\couchliteos-<version>-amd64.iso -Start
+```
+
+```bash
+# Proxmox VE, after uploading the ISO to an ISO storage
+./tools/proxmox-create-test-vm.sh --iso local:iso/couchliteos-<version>-amd64.iso --start
+```
+
+The ISO ships Debian's Microsoft-signed shim, so the Hyper-V VM keeps Secure Boot on;
+pass `-SecureBoot Off` to test without it. A VM cannot emulate an NVIDIA GPU, the iMac's
+Broadcom Wi-Fi or its audio, so test those on the hardware.

@@ -1,0 +1,63 @@
+name: Bug report
+description: Something on the box does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Check [Troubleshooting](https://github.com/Dudiebug/couchliteos/wiki/Troubleshooting)
+        and [Known limitations](https://github.com/Dudiebug/couchliteos/wiki/Known-Limitations) first.
+  - type: input
+    id: version
+    attributes:
+      label: CouchLiteOS version
+      description: Shown in Settings > SOFTWARE UPDATE, on the "THIS BOX" line.
+      placeholder: "0.2.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: iso
+    attributes:
+      label: Which ISO
+      options:
+        - General (couchliteos-X.Y.Z-amd64.iso)
+        - NVIDIA (couchliteos-X.Y.Z-nvidia-amd64.iso)
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Running from
+      options:
+        - Installed to the PC's drive
+        - Live USB with persistence
+        - Live USB without persistence
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: PC and graphics
+      placeholder: "Dell OptiPlex 7010 Micro, Intel UHD 770"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: support-file
+    attributes:
+      label: Support file
+      description: |
+        Plug in a USB drive, choose Settings > GENERATE SUPPORT FILE, and drag the file here.
+        Passwords and keys are left out; see [Support file and privacy](https://github.com/Dudiebug/couchliteos/wiki/Support-File-and-Privacy).
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Photos of the screen, the controller or TV model, how often it happens.

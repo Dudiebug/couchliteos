@@ -12,7 +12,7 @@ ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.
 # Without it `make build` makes a test ISO (zstd squashfs; docs/BUILDING.md).
 RELEASE ?= 0
 
-.PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet release-assets clean
+.PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet release-assets release-check clean
 
 help:
 	@printf '%s\n' \
@@ -24,7 +24,7 @@ help:
 	  'make qemu-persistence-smoke  Verify live persistence and recovery boot' \
 	  'make qemu-install-smoke  Install to a VM disk and boot it independently' \
 	  'make release-gauntlet  Run the final source and real-ISO release gate' \
-	  'make release-assets  Write SHA256SUMS for built ISOs and check asset sizes' \
+	  'make release-assets  Write SHA256SUMS for built ISOs and check asset sizes' 	  'make release-check  Check versions, public notes, the tag and SHA256SUMS before publishing' \
 	  'sudo make clean   Remove generated build state' \
 	  '' \
 	  "Profile: $(PROFILE)  ISO: $(ISO)"
@@ -87,6 +87,9 @@ release-gauntlet:
 
 release-assets:
 	./tools/release-assets.sh
+
+release-check:
+	./tools/release-check.sh
 
 clean:
 	./build/clean.sh

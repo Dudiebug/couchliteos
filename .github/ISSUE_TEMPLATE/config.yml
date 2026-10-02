@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User guide and troubleshooting
+    url: https://github.com/Dudiebug/couchliteos/wiki
+    about: Installing, updating, controls, streaming and common problems.
+  - name: Report a security problem
+    url: https://github.com/Dudiebug/couchliteos/security/advisories/new
+    about: Please report security problems privately.

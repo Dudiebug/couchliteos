@@ -7,7 +7,7 @@ Create a Hyper-V Generation 2 test VM that boots a CouchLiteOS ISO.
 .DESCRIPTION
 The VM covers boot, launcher, Settings, persistence (install to the virtual
 disk), and Remote Desktop. It cannot emulate the iMac's NVIDIA Kepler GPU,
-Broadcom Wi-Fi, or audio; test those on the hardware (docs/TESTING.md).
+Broadcom Wi-Fi, or audio; test those on the hardware (docs/BUILDING.md#testing).
 
 The CouchLiteOS ISO ships Debian's Microsoft-signed shim, so Secure Boot stays
 on with the "Microsoft UEFI Certificate Authority" template. Use

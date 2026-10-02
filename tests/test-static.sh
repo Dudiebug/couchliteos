@@ -100,17 +100,14 @@ rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
 [[ "$(< VERSION)" == 0.2.4 ]]
 cmp -s VERSION overlay/etc/couchliteos-version
-rg -q 'couchliteos-0.2.4-amd64\.iso' .github/workflows/build.yml
+rg -Fq 'path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso' .github/workflows/build.yml
+rg -Fq 'echo "VERSION=$(< VERSION)" >> "$GITHUB_ENV"' .github/workflows/build.yml
+refute rg -q 'couchliteos-[0-9]+\.[0-9]+\.[0-9]+-' .github/workflows/build.yml
 rg -Fq 'ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso' Makefile
 rg -Fq 'ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"' build/build.sh
 rg -q '^PROFILE \?= general$' Makefile
-refute rg -qi 'sha-?256|sha256|\.sha256' .github/workflows/build.yml .github/workflows/release-v0.1.11.yml
+refute rg -qi 'sha-?256|sha256|\.sha256' .github/workflows/build.yml
 rg -q 'sudo chown -R .*build/out' .github/workflows/build.yml
-rg -q '^  actions: read$' .github/workflows/release-v0.1.11.yml
-rg -q 'git/refs/tags/0\.1\.11' .github/workflows/release-v0.1.11.yml
-rg -q 'docs/releases/v0\.1\.11\.md' .github/workflows/release-v0.1.11.yml
-rg -q 'release delete 0\.1\.11.*--yes' .github/workflows/release-v0.1.11.yml
-refute rg -q 'git/ref/tags/v1\.1' .github/workflows/release-v0.1.11.yml
 rg -q '^ipv6.method=disabled$' overlay/etc/NetworkManager/conf.d/10-couchliteos.conf
 rg -q '^net.ipv6.conf.all.disable_ipv6=1$' overlay/etc/sysctl.d/90-couchliteos.conf
 refute rg -q 'couchliteos-network-ready.service' services/couchliteos-launcher.service
@@ -235,7 +232,7 @@ done
 # iMac Late 2013) never gets it: no GBM for Cage past the 470 branch.
 refute rg -q '^[^#]*nvidia' config/live-build/package-lists config/profiles/intel/package-lists config/profiles/imac2013/package-lists
 [[ $(rg --no-filename '^[^#]*nvidia' config/profiles/general/package-lists) == firmware-nvidia-graphics ]]
-refute rg -q 'nomodeset' config overlay build
+refute rg -q -g '!build/work' -g '!build/out' -g '!build/downloads' 'nomodeset' config overlay build
 for module in b43 bcma ssb brcmsmac; do
   rg -q "^blacklist $module\$" config/profiles/imac2013/overlay/etc/modprobe.d/couchliteos-imac2013.conf
 done
@@ -306,8 +303,8 @@ rg -q '^wpasupplicant$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^qrencode$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^bluez$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^steam-devices$' config/live-build/package-lists/couchliteos.list.chroot
-refute rg -q '^steam(-installer)?$|i386|multilib' config/live-build/package-lists/couchliteos.list.chroot build
-refute rg -q '\bwvkbd\b' config build launcher scripts services
+refute rg -q -g '!build/work' -g '!build/out' -g '!build/downloads' '^steam(-installer)?$|i386|multilib' config/live-build/package-lists/couchliteos.list.chroot build
+refute rg -q -g '!build/work' -g '!build/out' -g '!build/downloads' '\bwvkbd\b' config build launcher scripts services
 rg -q '^libspa-0\.2-bluetooth$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^python3-dbus$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^python3-gi$' config/live-build/package-lists/couchliteos.list.chroot
@@ -824,6 +821,11 @@ refute rg -q 'couchliteos-pins\.pref(\.binary)?"' build/configure.sh
 for script in build/timed.sh build/test-gate.sh build/apt-pins.sh tools/setup-apt-cacher-ng.sh; do
   [[ -x $script ]] || { echo "$script is not executable" >&2; exit 1; }
 done
+# Release notes and the README are written for people using the box: no internal wording.
+[[ -x tools/release-check.sh ]]
+rg -q '^release-check:$' Makefile
+./tools/release-check.sh --notes README.md docs/releases/*.md
+refute rg -q -- '--draft' tools Makefile .github
 
 # First-boot wizard (launcher/couchliteos_setup.py): every module it imports ships in the image.
 for module in $(rg -o --no-filename '^import (couchliteos_[a-z_]+)' -r '$1' launcher/couchliteos_setup.py); do
