@@ -18,6 +18,7 @@ start so the firmware search path covers the persistent copy.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import lzma
 import os
@@ -39,6 +40,7 @@ FIRMWARE_PATH_PARAMETER = SYSFS / "module/firmware_class/parameters/path"
 HARDWARE_ENV = Path(ENV.get("COUCHLITEOS_HARDWARE_ENV", "/run/couchliteos-hardware/hardware.env"))
 EXTRACTOR = Path(ENV.get("COUCHLITEOS_FIRMWARE_EXTRACTOR", "/usr/libexec/couchliteos/envytools-extract-firmware.py"))
 VAINFO = ENV.get("COUCHLITEOS_VAINFO", "/usr/bin/vainfo")
+CONFIG = Path(ENV.get("COUCHLITEOS_CONFIG", "/var/lib/couchliteos/config.ini"))
 
 VERSION = "325.15"
 DRIVER = f"NVIDIA-Linux-x86-{VERSION}"
@@ -101,7 +103,8 @@ def download(destination: Path, progress=lambda done, total: None) -> None:
         with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as handle:
             if not response.geturl().startswith("https://"):
                 raise FirmwareError("THE DOWNLOAD WAS REDIRECTED AWAY FROM HTTPS")
-            total = int(response.headers.get("Content-Length") or 0)
+            length = response.headers.get("Content-Length") or "0"
+            total = int(length) if length.isdigit() else 0
             while block := response.read(1 << 16):
                 done += len(block)
                 if done > DRIVER_MAX_BYTES:
@@ -109,8 +112,8 @@ def download(destination: Path, progress=lambda done, total: None) -> None:
                 digest.update(block)
                 handle.write(block)
                 progress(done, total)
-    except OSError as error:
-        raise FirmwareError(f"DOWNLOAD FAILED: {error}") from error
+    except (OSError, http.client.HTTPException) as error:  # IncompleteRead: the connection dropped
+        raise FirmwareError(f"DOWNLOAD FAILED: {error}".upper()) from error
     if digest.hexdigest() != DRIVER_SHA256:
         raise FirmwareError("THE DOWNLOADED DRIVER DID NOT MATCH ITS CHECKSUM")
 
@@ -198,9 +201,11 @@ def install(source: Path) -> None:
 
 
 def point_kernel_at_store(enabled: bool = True) -> bool:
-    """firmware_class searches this path before /lib/firmware for every later request."""
+    """firmware_class searches this path before /lib/firmware for every later request.
+
+    No trailing newline: older kernels keep it as part of the path ("echo -n" in the docs)."""
     try:
-        FIRMWARE_PATH_PARAMETER.write_text(f"{STORE}\n" if enabled else "\n", encoding="ascii")
+        FIRMWARE_PATH_PARAMETER.write_bytes(str(STORE).encode("ascii") if enabled else b"\0")
     except OSError as error:
         print(f"firmware search path not set: {error}", file=sys.stderr)
         return False
@@ -279,7 +284,31 @@ def serve_install() -> str:
         return ("FIRMWARE SAVED, BUT THE VIDEO DECODER DID NOT START YET. RESTART THE PC, THEN PICK "
                 "VIDEO DECODER FIRMWARE AGAIN TO TEST IT. STREAMING KEEPS USING SOFTWARE DECODING.")
     mark_verified(gpu.get("COUCHLITEOS_GPU_ID", "unknown"))
+    allow_hardware_decoder()
     return "HARDWARE VIDEO DECODING IS READY. RESTART THE PC TO USE IT IN MOONLIGHT."
+
+
+def allow_hardware_decoder() -> None:
+    """Asking for the firmware is asking for hardware decoding: a [moonlight] decoder =
+    software (the iMac 2013 image's default) would keep forcing software, so it becomes
+    auto. The file is rewritten in place so it keeps its owner."""
+    try:
+        with CONFIG.open("r+", encoding="utf-8") as handle:
+            lines = handle.read().splitlines(keepends=True)
+            section, changed = None, False
+            for index, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    section = stripped
+                elif section == "[moonlight]" and stripped.replace(" ", "") == "decoder=software":
+                    lines[index] = "decoder = auto\n"
+                    changed = True
+            if changed:
+                handle.seek(0)
+                handle.write("".join(lines))
+                handle.truncate()
+    except (OSError, UnicodeDecodeError) as error:
+        print(f"config.ini decoder left as is: {error}", file=sys.stderr)
 
 
 def serve_remove() -> str:
@@ -301,7 +330,7 @@ def serve() -> int:
             message = serve_remove()
         else:
             raise FirmwareError("UNKNOWN REQUEST")
-    except (FirmwareError, OSError) as error:
+    except Exception as error:  # anything unexpected must not leave the launcher waiting on "running"
         text = str(error) if isinstance(error, FirmwareError) else f"FAILED: {error}".upper()
         write_status("failed", text)
         print(text, file=sys.stderr)

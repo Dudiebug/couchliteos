@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import time
 
 RUN = pathlib.Path("/run/couchliteos")
 REQUEST = RUN / "nvidia-firmware.request"
@@ -47,7 +48,8 @@ def applies(path: pathlib.Path | None = None) -> bool:
 
 
 def installed(store: pathlib.Path | None = None) -> bool:
-    return ((store or STORE) / "nouveau" / "nve0_bsp").is_file()
+    """All three blobs are there (the helper also checks their hashes before it trusts them)."""
+    return all(((store or STORE) / "nouveau" / name).is_file() for name in ("nve0_bsp", "nve0_vp", "nvc0_ppp"))
 
 
 def verified(store: pathlib.Path | None = None, hardware_env: pathlib.Path | None = None) -> bool:
@@ -72,6 +74,19 @@ def submit(action: str, run_dir: pathlib.Path | None = None) -> None:
     temporary = run / f".{REQUEST.name}.tmp"
     temporary.write_text(action + "\n", encoding="ascii")
     os.replace(temporary, run / REQUEST.name)
+
+
+def busy(run_dir: pathlib.Path | None = None, now: float | None = None) -> bool:
+    """A job is still running: a new request now would be answered by the old job's status.
+    A "running" status older than the service's 15-minute limit is a job systemd stopped."""
+    status = read_status(run_dir)
+    if status is None or status[0] != "running":
+        return False
+    try:
+        age = (time.time() if now is None else now) - ((run_dir or RUN) / STATUS.name).stat().st_mtime
+    except OSError:
+        return False
+    return age < 16 * 60
 
 
 def read_status(run_dir: pathlib.Path | None = None) -> tuple[str, str] | None:

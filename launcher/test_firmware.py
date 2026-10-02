@@ -30,6 +30,9 @@ class FirmwareSettingTest(unittest.TestCase):
         self.assertEqual(firmware.state_label(self.store, self.hardware), "OFF (SOFTWARE DECODING)")
         (self.store / "nouveau").mkdir(parents=True)
         (self.store / "nouveau" / "nve0_bsp").write_bytes(b"x")
+        self.assertEqual(firmware.state_label(self.store, self.hardware), "OFF (SOFTWARE DECODING)")  # partial
+        for name in ("nve0_vp", "nvc0_ppp"):
+            (self.store / "nouveau" / name).write_bytes(b"x")
         self.assertEqual(firmware.state_label(self.store, self.hardware), "SAVED, NOT WORKING YET")
         (self.store / "verified").write_text("10de:1234\n")
         self.assertEqual(firmware.state_label(self.store, self.hardware), "SAVED, NOT WORKING YET")
@@ -51,6 +54,16 @@ class FirmwareSettingTest(unittest.TestCase):
         for junk in ("not json", "[]", '{"state": "odd", "message": "x"}', '{"state": "done", "message": 5}'):
             status.write_text(junk)
             self.assertIsNone(firmware.read_status(self.base), junk)
+
+    def test_busy_only_while_a_recent_job_runs(self):
+        status = self.base / "nvidia-firmware.status"
+        self.assertFalse(firmware.busy(self.base))
+        status.write_text(json.dumps({"state": "running", "message": "DOWNLOADING"}))
+        mtime = status.stat().st_mtime
+        self.assertTrue(firmware.busy(self.base, now=mtime + 60))
+        self.assertFalse(firmware.busy(self.base, now=mtime + 17 * 60))  # stopped by systemd's timeout
+        status.write_text(json.dumps({"state": "done", "message": "READY"}))
+        self.assertFalse(firmware.busy(self.base))
 
     def test_about_text_says_what_happens(self):
         for words in ("NVIDIA.COM", "325.15", "LICENSE", "SOFTWARE DECODING"):

@@ -61,7 +61,7 @@ class HelperTest(unittest.TestCase):
         patches = {
             "RUN": self.run_dir, "REQUEST": self.run_dir / "nvidia-firmware.request",
             "STATUS": self.run_dir / "nvidia-firmware.status", "STORE": self.store, "SYSFS": self.sysfs,
-            "FIRMWARE_PATH_PARAMETER": parameter, "HARDWARE_ENV": self.hardware_env, "BLOBS": FAKE_HASHES,
+            "FIRMWARE_PATH_PARAMETER": parameter, "HARDWARE_ENV": self.hardware_env, "BLOBS": FAKE_HASHES, "CONFIG": base / "config.ini",
         }
         for name, value in patches.items():
             patcher = mock.patch.object(nvfw, name, value)
@@ -157,10 +157,25 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.status()["state"], "done")
         self.assertIn("READY", self.status()["message"])
         self.assertFalse((self.run_dir / "nvidia-firmware.request").exists())
-        self.assertEqual(nvfw.FIRMWARE_PATH_PARAMETER.read_text().strip(), str(self.store))
+        self.assertEqual(nvfw.FIRMWARE_PATH_PARAMETER.read_bytes(), str(self.store).encode())  # no newline
         self.assertEqual(nvfw.verified_ids(), {"10de:0fe9"})
         self.assertEqual(nvfw.boot("10de:0fe9"), 0)
         self.assertEqual(nvfw.boot("10de:1234"), 1)  # another GPU is not vouched for
+
+    def test_a_verified_decoder_turns_a_forced_software_decoder_back_to_auto(self):
+        config = self.base / "config.ini"
+        config.write_text("[moonlight]\ncodec = H.264\ndecoder = software\n[display]\ndecoder = software\n")
+        nvfw.install(self.blobs_in(self.base / "out"))
+        with mock.patch.object(nvfw, "decoder_works", return_value=True):
+            self.request("install")
+            self.assertEqual(nvfw.serve(), 0)
+        self.assertEqual(config.read_text(), "[moonlight]\ncodec = H.264\ndecoder = auto\n[display]\ndecoder = software\n")
+
+    def test_an_unexpected_error_still_ends_the_wait(self):
+        with mock.patch.object(nvfw, "download", side_effect=RuntimeError("boom")):
+            self.request("install")
+            self.assertEqual(nvfw.serve(), 1)
+        self.assertEqual(self.status(), {"state": "failed", "message": "FAILED: BOOM"})
 
     def test_a_retest_does_not_download_again(self):
         nvfw.install(self.blobs_in(self.base / "out"))
@@ -225,6 +240,13 @@ class DownloadTest(unittest.TestCase):
                 mock.patch.object(nvfw, "DRIVER_SHA256", hashlib.sha256(b"driver").hexdigest()), \
                 mock.patch.object(nvfw.urllib.request, "urlopen", return_value=self.fake_response(b"driver")):
             nvfw.download(pathlib.Path(temporary) / "driver.run")
+
+    def test_a_dropped_connection_is_a_download_failure(self):
+        response = self.fake_response(b"driver")
+        response.read.side_effect = nvfw.http.client.IncompleteRead(b"dri", 3)
+        with tempfile.TemporaryDirectory() as temporary,                 mock.patch.object(nvfw.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(nvfw.FirmwareError, "DOWNLOAD FAILED"):
+                nvfw.download(pathlib.Path(temporary) / "driver.run")
 
     def test_a_redirect_off_https_is_refused(self):
         response = self.fake_response(b"driver", url="http://example.invalid/driver.run")

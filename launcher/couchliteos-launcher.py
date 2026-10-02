@@ -3009,6 +3009,9 @@ class StreamingSettings(RemoteDesktopSettings):
     def decoder_firmware(self) -> None:
         """Settings > STREAMING > VIDEO DECODER FIRMWARE (nouveau PCs only): fetch, retest or remove it."""
         title = firmware.TITLE
+        if firmware.busy(RUN):  # hidden with B earlier: show that job instead of starting another
+            self.message(title, self.wait_for_firmware(title))
+            return
         _height, width = self.screen.getmaxyx()
         about = [line for part in firmware.ABOUT.split("\n") for line in (textwrap.wrap(part, width=max(8, width - 10)) or [""])]
         state = firmware.state_label()

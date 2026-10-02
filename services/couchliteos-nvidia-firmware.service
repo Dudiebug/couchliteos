@@ -26,8 +26,9 @@ RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 # The firmware search path lives in /sys, so ProtectKernelTunables stays off;
-# writes are limited to it, the firmware store and the status file.
-ReadWritePaths=/run/couchliteos /var/lib/couchliteos/firmware /sys/module/firmware_class/parameters/path
+# writes are limited to it, the firmware store, the status file and config.ini
+# (a verified decoder turns [moonlight] decoder = software back to auto).
+ReadWritePaths=/run/couchliteos /var/lib/couchliteos/firmware -/var/lib/couchliteos/config.ini /sys/module/firmware_class/parameters/path
 InaccessiblePaths=/var/lib/couchliteos/home /var/lib/tailscale -/var/lib/bluetooth -/var/lib/couchliteos/rdp-secrets
 ExecStartPre=+/usr/bin/install -d -m 0755 /var/lib/couchliteos/firmware
 StandardOutput=journal
