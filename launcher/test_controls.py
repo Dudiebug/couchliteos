@@ -231,6 +231,55 @@ class RowsTest(unittest.TestCase):
                 self.assertEqual(row, row.upper())
 
 
+class HomeShortcutRowsTest(unittest.TestCase):
+    """The help shows the Home shortcut chosen in Settings > CONTROLS."""
+
+    def text(self, family="xbox", **choices):
+        return "\n".join(controls.rows(family, True, **choices))
+
+    def test_select_start_is_shown_by_default_with_the_pads_own_names(self):
+        self.assertIn("VIEW + MENU", self.text("xbox"))
+        self.assertIn("SHARE + OPTIONS", self.text("playstation"))
+        self.assertIn("MINUS + PLUS", self.text("nintendo"))
+        self.assertIn("HELD 1.5 S", self.text())
+        self.assertIn("NOT WITH LB OR RB HELD", " ".join(self.text().split()))
+
+    def test_each_choice(self):
+        sticks = self.text(home="l3-r3")
+        self.assertIn("L3 + R3", sticks)
+        self.assertNotIn("VIEW + MENU", sticks)
+        guide_only = self.text(home="guide")
+        self.assertNotIn("L3 + R3", guide_only)
+        self.assertNotIn("VIEW + MENU", guide_only)
+        self.assertNotIn("HELD", guide_only)
+
+    def test_the_keyboard_row_follows_its_switch(self):
+        self.assertIn("CTRL+ALT+H", self.text(keyboard=True))
+        self.assertNotIn("CTRL+ALT+H", self.text(keyboard=False))
+        self.assertIn("SUPER", self.text(keyboard=False))
+
+    def test_every_choice_fits_76_columns_and_the_80x24_screen(self):
+        for family in ("xbox", "playstation", "nintendo", "generic"):
+            for home in ("guide", "select-start", "l3-r3"):
+                for keyboard in (True, False):
+                    lines = controls.rows(family, True, home=home, keyboard=keyboard)
+                    with self.subTest(family=family, home=home, keyboard=keyboard):
+                        self.assertTrue(all(len(line) <= 76 and line == line.upper() and line.isascii()
+                                            for line in lines), lines)
+                        self.assertLessEqual(len(lines), 24 - 7, "title, gap, footer and border must still fit")
+
+    def test_the_screen_reads_the_saved_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            controls.inputprefs.save_settings(controls.inputprefs.Settings(home="l3-r3", keyboard_home=False), config)
+            screen = FakeScreen([10])
+            controls.show(screen, can_sleep=True, proc=pathlib.Path(directory) / "devices", config=config)
+        text = "\n".join(item[2] for item in screen.drawn)
+        self.assertIn("L3 + R3", text)
+        self.assertNotIn("CTRL+ALT+H", text)
+        self.assertIn("SUPER", text)
+
+
 class GamepadNavMappingTest(unittest.TestCase):
     """The help must describe what gamepad-nav really does, so a remap breaks these."""
 
@@ -259,11 +308,11 @@ class GamepadNavMappingTest(unittest.TestCase):
     }
 
     def described_as(self, family, button, can_sleep=True):
-        """The description text of the row whose label names this button."""
+        """The description text of the row whose label names this button (not the held Home shortcut)."""
         name = self.BUTTON_NAMES[family][button]
         found = [
             text for label, text in controls.table(family, can_sleep)
-            if any(name in words(line) for line in label)
+            if any(name in words(line) for line in label) and "HELD" not in " ".join(label)
         ]
         self.assertEqual(len(found), 1, f"{family} {button} ({name}) must be on exactly one row")
         return found[0]
@@ -314,6 +363,14 @@ class GamepadNavMappingTest(unittest.TestCase):
         self.assertTrue(self.nav.is_home_event(SimpleNamespace(type=Codes.EV_KEY, value=1, code=Codes.BTN_MODE)))
         guide = [text for label, text in controls.table("xbox", True) if "GUIDE" in " ".join(label) and "HOLD" not in " ".join(label)]
         self.assertEqual(len(guide), 1)
+
+    def test_the_home_shortcut_matches_gamepad_nav(self):
+        pair, cancel = self.nav.HOME_COMBOS["select-start"]
+        self.assertEqual(pair, {Codes.BTN_SELECT, Codes.BTN_START})  # VIEW + MENU
+        self.assertEqual(cancel, {Codes.BTN_TL, Codes.BTN_TR})  # LB / RB
+        self.assertEqual(self.nav.HOME_COMBOS["l3-r3"][0], {Codes.BTN_THUMBL, Codes.BTN_THUMBR})
+        self.assertNotIn("guide", self.nav.HOME_COMBOS)
+        self.assertEqual(self.nav.HomeCombo().threshold, 1.5)
 
     def test_sleep_hold_matches_gamepad_nav(self):
         if not hasattr(self.nav, "SLEEP_HOLD_SECONDS"):
@@ -450,13 +507,17 @@ class ShowOnceTest(unittest.TestCase):
 class LauncherHookTest(unittest.TestCase):
     def test_settings_menu_has_the_row_just_before_the_setup_wizard(self):
         menu = load_launcher().SETTINGS_MENU
-        self.assertEqual(menu.index("CONTROLLER BUTTONS") + 1, menu.index("SETUP WIZARD"))
+        self.assertEqual(menu.index("CONTROLS") + 1, menu.index("SETUP WIZARD"))
+        self.assertNotIn("CONTROLLER BUTTONS", menu, "the help moved into Settings > CONTROLS")
 
     def test_settings_row_opens_the_screen(self):
         launcher = load_launcher()
-        settings = launcher.Settings(FakeScreen(), mock.Mock())
-        settings.selected = launcher.SETTINGS_MENU.index("CONTROLLER BUTTONS")
-        with mock.patch.object(launcher.controls, "show") as show:
+        screen = FakeScreen([curses.KEY_UP, curses.KEY_UP, 10, 27])  # BACK, CONTROLLER BUTTONS, A, then B
+        settings = launcher.Settings(screen, mock.Mock())
+        settings.selected = launcher.SETTINGS_MENU.index("CONTROLS")
+        with mock.patch.object(launcher.controls, "show") as show, mock.patch.object(
+            launcher, "read_key", side_effect=lambda window: window.getch()
+        ), mock.patch.object(launcher.inputprefs, "load_settings", return_value=launcher.inputprefs.Settings()):
             self.assertTrue(settings.activate())
         show.assert_called_once_with(settings.screen)
 

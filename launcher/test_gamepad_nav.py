@@ -61,6 +61,14 @@ class Codes:
     KEY_PAGEDOWN = 109
     KEY_LEFTMETA = 125
     KEY_RIGHTMETA = 126
+    # The Home shortcut (Settings > CONTROLS): L3/R3 and Ctrl+Alt+H.
+    BTN_THUMBL = 317
+    BTN_THUMBR = 318
+    KEY_LEFTCTRL = 29
+    KEY_RIGHTCTRL = 97
+    KEY_LEFTALT = 56
+    KEY_RIGHTALT = 100
+    KEY_H = 35
 
 
 class Stop(Exception):
@@ -1325,6 +1333,388 @@ class PointerModeTest(unittest.TestCase):
         watched, home, _keyboard = self.watch_keyboards([[]], capabilities=(Codes.KEY_ENTER,))
         self.assertEqual(watched, [])
         home.assert_not_called()
+
+
+class FixedSettings:
+    """Stands in for gamepad-nav's INPUT_SETTINGS watcher."""
+
+    def __init__(self, settings):
+        self.settings = settings
+
+    def current(self):
+        return self.settings
+
+
+class HomeShortcutTest(unittest.TestCase):
+    """Settings > CONTROLS: SELECT+START or L3+R3 held, Ctrl+Alt+H, and the controller mouse speed."""
+
+    @classmethod
+    def setUpClass(cls):
+        fake = types.ModuleType("evdev")
+        fake.InputDevice = object
+        fake.UInput = object
+        fake.ecodes = Codes
+        sys.modules["evdev"] = fake
+        path = pathlib.Path(__file__).with_name("gamepad-nav.py")
+        spec = importlib.util.spec_from_file_location("gamepad_nav_home", path)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    # The pointer-mode helpers are shared, not inherited (that would run those tests twice).
+    run_dir = PointerModeTest.run_dir
+    pads = PointerModeTest.pads
+    drive = PointerModeTest.drive
+    moved = staticmethod(PointerModeTest.moved)
+
+    def use(self, **choices):
+        """Make gamepad-nav see these Settings > CONTROLS choices."""
+        settings = self.module.inputprefs.Settings(**choices)
+        patcher = mock.patch.object(self.module, "INPUT_SETTINGS", FixedSettings(settings))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def combo(self, home="select-start"):
+        return self.module.HomeCombo(choice=lambda: home)
+
+    @staticmethod
+    def hold(combo, *codes, now=0.0, pad="pad", value=1):
+        for code in codes:
+            combo.feed(pad, key_event(code, value), now)
+
+    # HomeCombo
+
+    def test_the_hold_is_one_and_a_half_seconds(self):
+        self.assertEqual(self.module.inputprefs.HOME_HOLD_SECONDS, 1.5)
+        self.assertEqual(self.combo().threshold, 1.5)
+
+    def test_holding_select_and_start_opens_home_once_after_the_hold(self):
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=10.0)
+        self.assertFalse(combo.due(11.4))
+        self.assertAlmostEqual(combo.timeout(11.4), 0.1)
+        self.assertTrue(combo.due(11.5))
+        self.assertFalse(combo.due(20.0), "one hold, one Home")
+        self.assertEqual(combo.timeout(20.0), 1.0)
+
+    def test_a_tap_does_nothing(self):
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.2, value=0)
+        self.assertFalse(combo.due(5.0))
+
+    def test_letting_go_of_either_button_early_cancels(self):
+        for released in (Codes.BTN_SELECT, Codes.BTN_START):
+            with self.subTest(released=released):
+                combo = self.combo()
+                self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+                self.hold(combo, released, now=1.0, value=0)
+                self.assertFalse(combo.due(1.6))
+                self.hold(combo, released, now=2.0)  # pressed again: a new hold starts then
+                self.assertFalse(combo.due(3.4))
+                self.assertTrue(combo.due(3.5))
+
+    def test_one_button_alone_or_held_repeats_do_not_count(self):
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_START, now=0.0)
+        self.hold(combo, Codes.BTN_SELECT, now=0.5, value=2)  # autorepeat is not a press
+        self.assertFalse(combo.due(9.0))
+
+    def test_moonlights_quit_combination_never_opens_home(self):
+        # Select+Start+L1+R1 quits a Moonlight stream; however it is pressed, Home stays out of it.
+        orders = (
+            (Codes.BTN_TL, Codes.BTN_TR, Codes.BTN_SELECT, Codes.BTN_START),
+            (Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_TL, Codes.BTN_TR),
+            (Codes.BTN_SELECT, Codes.BTN_TL, Codes.BTN_START, Codes.BTN_TR),
+        )
+        for order in orders:
+            with self.subTest(order=order):
+                combo = self.combo()
+                for offset, code in enumerate(order):
+                    self.hold(combo, code, now=offset * 0.2)
+                self.assertFalse(combo.due(5.0))
+
+    def test_a_shoulder_let_go_mid_hold_does_not_restart_it(self):
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_TL, now=0.0)
+        self.hold(combo, Codes.BTN_TL, now=0.5, value=0)
+        self.assertFalse(combo.due(5.0), "the pair must be pressed afresh")
+        self.hold(combo, Codes.BTN_START, now=6.0, value=0)
+        self.hold(combo, Codes.BTN_START, now=6.1)
+        self.assertTrue(combo.due(7.7))
+
+    def test_l3_and_r3_when_chosen_and_then_select_start_does_nothing(self):
+        combo = self.combo("l3-r3")
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+        self.assertFalse(combo.due(5.0))
+        self.hold(combo, Codes.BTN_THUMBL, Codes.BTN_THUMBR, now=10.0)
+        self.assertFalse(combo.due(11.0))
+        self.assertTrue(combo.due(11.5))
+
+    def test_select_start_when_chosen_and_then_l3_r3_does_nothing(self):
+        combo = self.combo("select-start")
+        self.hold(combo, Codes.BTN_THUMBL, Codes.BTN_THUMBR, now=0.0)
+        self.assertFalse(combo.due(5.0))
+
+    def test_guide_only_turns_both_holds_off(self):
+        combo = self.combo("guide")
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_THUMBL, Codes.BTN_THUMBR, now=0.0)
+        self.assertFalse(combo.due(5.0))
+        self.assertEqual(combo.timeout(0.0), 1.0)
+
+    def test_choosing_guide_only_during_a_hold_cancels_it(self):
+        choice = {"home": "select-start"}
+        combo = self.module.HomeCombo(choice=lambda: choice["home"])
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+        choice["home"] = "guide"
+        self.assertFalse(combo.due(2.0))
+
+    def test_holds_are_tracked_per_pad(self):
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, now=0.0, pad="one")
+        self.hold(combo, Codes.BTN_START, now=0.0, pad="two")
+        self.assertFalse(combo.due(5.0))
+        combo.forget("one")
+        self.assertNotIn("one", combo.held)
+
+    def test_the_real_key_state_replaces_buttons_let_go_unseen(self):
+        # SELECT was released while the pad was grabbed (no event reached watch_home): a lone START must not count.
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, now=0.0)
+        combo.feed("pad", key_event(Codes.BTN_START, 1), 10.0, pressed=[Codes.BTN_START])
+        self.assertFalse(combo.due(20.0))
+        combo.feed("pad", key_event(Codes.BTN_SELECT, 1), 30.0, pressed=[Codes.BTN_START, Codes.BTN_SELECT])
+        self.assertTrue(combo.due(31.5))
+
+    def test_the_default_choice_is_read_live_from_the_settings(self):
+        self.use(home="guide")
+        combo = self.module.HomeCombo()
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+        self.assertFalse(combo.due(2.0))
+        self.use(home="l3-r3")
+        self.hold(combo, Codes.BTN_THUMBL, Codes.BTN_THUMBR, now=3.0)
+        self.assertTrue(combo.due(4.5))
+
+    # KeyboardHome
+
+    def chord(self, enabled=True):
+        return self.module.KeyboardHome(enabled=lambda: enabled)
+
+    def test_ctrl_alt_h_opens_home_with_either_ctrl_and_either_alt(self):
+        for ctrl in (Codes.KEY_LEFTCTRL, Codes.KEY_RIGHTCTRL):
+            for alt in (Codes.KEY_LEFTALT, Codes.KEY_RIGHTALT):
+                with self.subTest(ctrl=ctrl, alt=alt):
+                    chord = self.chord()
+                    self.assertFalse(chord.feed("kbd", key_event(ctrl, 1)))
+                    self.assertFalse(chord.feed("kbd", key_event(alt, 1)))
+                    self.assertTrue(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
+                    self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 2)), "a held H opens it once")
+                    self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 0)))
+
+    def test_h_alone_ctrl_h_or_alt_h_do_not(self):
+        chord = self.chord()
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
+        chord.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 1))
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
+        chord.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 0))
+        chord.feed("kbd", key_event(Codes.KEY_LEFTALT, 1))
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
+
+    def test_ctrl_alt_h_counts_only_on_one_keyboard(self):
+        chord = self.chord()
+        chord.feed("one", key_event(Codes.KEY_LEFTCTRL, 1))
+        chord.feed("two", key_event(Codes.KEY_LEFTALT, 1))
+        self.assertFalse(chord.feed("two", key_event(Codes.KEY_H, 1)))
+        chord.feed("two", key_event(Codes.KEY_LEFTCTRL, 1))
+        self.assertTrue(chord.feed("two", key_event(Codes.KEY_H, 1)))
+        chord.forget("two")
+        self.assertFalse(chord.feed("two", key_event(Codes.KEY_H, 1)), "a keyboard unplugged forgets its keys")
+
+    def test_the_keyboard_shortcut_can_be_turned_off_and_is_read_live(self):
+        chord = self.chord(enabled=False)
+        chord.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 1))
+        chord.feed("kbd", key_event(Codes.KEY_LEFTALT, 1))
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
+        self.use(keyboard_home=False)
+        live = self.module.KeyboardHome()
+        live.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 1))
+        live.feed("kbd", key_event(Codes.KEY_LEFTALT, 1))
+        self.assertFalse(live.feed("kbd", key_event(Codes.KEY_H, 1)))
+        self.use(keyboard_home=True)
+        self.assertTrue(live.feed("kbd", key_event(Codes.KEY_H, 1)))
+
+    # watch_home: the same Home request as Guide, from devices it only watches (never grabs)
+
+    def watch(self, rounds, capabilities, *, app=True):
+        """watch_home() over one device; rounds[i] = (clock after select i, [(code, value), ...]).
+
+        An app owns the pad by default: the shortcut must work over it, as Guide does.
+        Returns (request_home mock, select timeouts, devices watched)."""
+        module = self.module
+        run = self.run_dir(app=app, pointer=False)
+        state = {"round": 0, "now": 0.0}
+        events = []
+        down = set()
+        timeouts = []
+
+        class Device:
+            def capabilities(self):
+                return {Codes.EV_KEY: list(capabilities)}
+
+            def read(self):
+                for code, value in events:
+                    down.add(code) if value else down.discard(code)
+                return [key_event(code, value) for code, value in events]
+
+            def active_keys(self):
+                return sorted(down)
+
+            def close(self):
+                pass
+
+            def grab(self):
+                raise AssertionError("watch_home must never grab")
+
+        device = Device()
+        watched = []
+
+        def fake_select(devices, _writable, _errors, timeout):
+            nonlocal events
+            watched.append(list(devices))
+            timeouts.append(timeout)
+            if state["round"] >= len(rounds):
+                raise Stop
+            state["now"], events = rounds[state["round"]]
+            state["round"] += 1
+            return ([device] if events and devices else []), [], []
+
+        with mock.patch.object(module.glob, "glob", return_value=["/dev/input/event5"]), mock.patch.object(
+            module, "InputDevice", return_value=device
+        ), mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
+            module.time, "monotonic", side_effect=lambda: state["now"]
+        ), mock.patch.object(module, "request_home") as home, mock.patch.object(module, "request_sleep"):
+            with self.assertRaises(Stop):
+                module.watch_home()
+        self.assertTrue((run / "app-active").exists())
+        return home, timeouts, watched[0]
+
+    PAD = (Codes.BTN_SOUTH, Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_TL, Codes.BTN_TR,
+           Codes.BTN_THUMBL, Codes.BTN_THUMBR)  # no Guide button at all
+    KEYBOARD = (Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H, Codes.KEY_ENTER)
+
+    def test_a_pad_without_guide_is_watched_and_the_hold_opens_home_over_a_game(self):
+        self.use(home="select-start")
+        home, timeouts, watched = self.watch(
+            [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (1.0, []), (1.5, []), (3.0, [])], self.PAD)
+        self.assertEqual(len(watched), 1)
+        home.assert_called_once_with()
+        self.assertAlmostEqual(timeouts[2], 0.5, msg="select() wakes when the hold is up")
+
+    def test_a_short_press_through_watch_home_does_not_open_home(self):
+        self.use(home="select-start")
+        home, _timeouts, _watched = self.watch(
+            [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (0.3, [(Codes.BTN_START, 0)]), (3.0, [])],
+            self.PAD)
+        home.assert_not_called()
+
+    def test_the_quit_combination_through_watch_home_does_not_open_home(self):
+        self.use(home="select-start")
+        rounds = [(0.0, [(Codes.BTN_TL, 1), (Codes.BTN_TR, 1), (Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]),
+                  (2.0, []), (4.0, [])]
+        home, _timeouts, _watched = self.watch(rounds, self.PAD)
+        home.assert_not_called()
+
+    def test_l3_r3_through_watch_home_and_guide_only_ignores_both(self):
+        self.use(home="l3-r3")
+        home, _timeouts, _watched = self.watch(
+            [(0.0, [(Codes.BTN_THUMBL, 1), (Codes.BTN_THUMBR, 1)]), (1.6, [])], self.PAD)
+        home.assert_called_once_with()
+        self.use(home="guide")
+        rounds = [(0.0, [(Codes.BTN_THUMBL, 1), (Codes.BTN_THUMBR, 1), (Codes.BTN_SELECT, 1),
+                         (Codes.BTN_START, 1)]), (1.6, []), (5.0, [])]
+        home, _timeouts, _watched = self.watch(rounds, self.PAD)
+        home.assert_not_called()
+
+    def test_ctrl_alt_h_through_watch_home_and_its_off_switch(self):
+        rounds = [(0.0, [(Codes.KEY_LEFTCTRL, 1), (Codes.KEY_LEFTALT, 1)]), (0.1, [(Codes.KEY_H, 1)])]
+        self.use(keyboard_home=True)
+        home, _timeouts, watched = self.watch(rounds, self.KEYBOARD)
+        self.assertEqual(len(watched), 1, "a keyboard without Home or Super is watched for Ctrl+Alt+H")
+        home.assert_called_once_with()
+        self.use(keyboard_home=False)
+        home, _timeouts, _watched = self.watch(rounds, self.KEYBOARD)
+        home.assert_not_called()
+
+    def test_devices_watched_for_the_shortcuts(self):
+        watches = self.module.watches_home
+        self.assertTrue(watches({Codes.BTN_SELECT, Codes.BTN_START}))
+        self.assertTrue(watches({Codes.BTN_THUMBL, Codes.BTN_THUMBR}))
+        self.assertTrue(watches({Codes.KEY_RIGHTCTRL, Codes.KEY_RIGHTALT, Codes.KEY_H}))
+        self.assertTrue(watches({Codes.BTN_MODE}))
+        self.assertFalse(watches({Codes.BTN_SELECT, Codes.KEY_H, Codes.KEY_ENTER}))
+
+    # Pointer mode grabs the pad, so it watches for the hold itself.
+
+    def test_the_hold_opens_home_while_the_mouse_has_grabbed_the_pad(self):
+        self.use(home="select-start")
+        run = self.run_dir()
+        with mock.patch.object(self.module.subprocess, "run") as run_command:
+            _pressed, timeouts, pads, _mouse, pad = self.drive(
+                [(0.0, [(Codes.EV_KEY, Codes.BTN_SELECT, 1), (Codes.EV_KEY, Codes.BTN_START, 1)]),
+                 (1.0, []), (1.5, []), (3.0, [])], run=run)
+        self.assertTrue(pads.pointer_on)
+        pad.grab.assert_called()
+        self.assertTrue((run / "home.request").exists())
+        self.assertEqual(run_command.call_count, 1, "one hold, one request")
+        self.assertAlmostEqual(timeouts[1], 0.5, msg="select() wakes when the hold is up")
+
+    def test_a_tap_or_the_quit_combination_in_mouse_mode_does_not_go_home(self):
+        self.use(home="select-start")
+        for script in (
+            [(0.0, [(Codes.EV_KEY, Codes.BTN_SELECT, 1), (Codes.EV_KEY, Codes.BTN_START, 1)]),
+             (0.2, [(Codes.EV_KEY, Codes.BTN_SELECT, 0)]), (3.0, [])],
+            [(0.0, [(Codes.EV_KEY, code, 1) for code in (Codes.BTN_TL, Codes.BTN_TR, Codes.BTN_SELECT,
+                                                          Codes.BTN_START)]), (3.0, [])],
+        ):
+            run = self.run_dir()
+            with mock.patch.object(self.module.subprocess, "run"):
+                self.drive(script, run=run)
+            self.assertFalse((run / "home.request").exists())
+
+    def test_leaving_mouse_mode_forgets_a_hold(self):
+        pads, _mouse = self.pads()
+        pads.set_pointer(True, 0.0)
+        pads.combo.feed("/dev/input/event3", key_event(Codes.BTN_SELECT, 1), 0.0)
+        pads.set_pointer(False, 0.5)
+        self.assertEqual(pads.combo.held, {})
+
+    # Controller mouse speed
+
+    def test_the_speed_steps(self):
+        self.assertEqual(self.module.inputprefs.PAD_SPEEDS,
+                         {"slow": 0.5, "normal": 1.0, "fast": 1.6, "very-fast": 2.4})
+        for speed, factor in self.module.inputprefs.PAD_SPEEDS.items():
+            with self.subTest(speed=speed):
+                self.use(pad_speed=speed)
+                self.assertAlmostEqual(self.module.pointer_speed(), self.module.POINTER_SPEED * factor)
+
+    def test_the_stick_moves_the_pointer_at_the_chosen_speed(self):
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, 32767)]), (0.05, [])]
+        for speed, factor in self.module.inputprefs.PAD_SPEEDS.items():
+            with self.subTest(speed=speed):
+                self.use(pad_speed=speed)
+                _pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+                self.assertEqual(self.moved(mouse, Codes.REL_X), int(self.module.POINTER_SPEED * factor * 0.05))
+
+    def test_a_new_speed_takes_effect_without_a_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            clock = {"now": 0.0}
+            watcher = self.module.inputprefs.Watcher(config, interval=0.5, clock=lambda: clock["now"])
+            with mock.patch.object(self.module, "INPUT_SETTINGS", watcher):
+                self.assertEqual(self.module.pointer_speed(), self.module.POINTER_SPEED)
+                self.module.inputprefs.save_settings(self.module.inputprefs.Settings(pad_speed="very-fast"), config)
+                clock["now"] = 1.0
+                self.assertAlmostEqual(self.module.pointer_speed(), self.module.POINTER_SPEED * 2.4)
 
 
 if __name__ == "__main__":

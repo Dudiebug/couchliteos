@@ -57,6 +57,14 @@ class Codes:
     KEY_PAGEDOWN = 109
     KEY_LEFTMETA = 125
     KEY_RIGHTMETA = 126
+    # The Home shortcut (Settings > CONTROLS): L3/R3 and Ctrl+Alt+H.
+    BTN_THUMBL = 317
+    BTN_THUMBR = 318
+    KEY_LEFTCTRL = 29
+    KEY_RIGHTCTRL = 97
+    KEY_LEFTALT = 56
+    KEY_RIGHTALT = 100
+    KEY_H = 35
     # Keys the kernel's rc-cec keymap reports for a TV remote.
     KEY_OK = 352
     KEY_EXIT = 174
