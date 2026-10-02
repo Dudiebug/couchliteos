@@ -1190,6 +1190,48 @@ class PointerModeTest(unittest.TestCase):
         self.assertEqual(run_command.call_count, 1, "one press, one request")
         self.assertIn("title:CouchLiteOS Launcher", run_command.call_args[0][0])
 
+    def test_without_a_mouse_device_the_pad_stays_a_pad(self):
+        run = self.run_dir()
+        failing = mock.Mock(side_effect=OSError(16, "Device or resource busy"))
+        pads = self.module.Pads()
+        pads.pointer = self.module.Pointer(factory=failing)
+        pad = ScriptedPad(-32768, 32767)
+        pad.grab, pad.ungrab = mock.Mock(), mock.Mock()
+        pads.devices = {"/dev/input/event3": pad}
+        pads.clock = lambda: 0.0
+        with mock.patch.object(self.module.select, "select", return_value=([], [], [])):
+            pads.pump(mock.Mock())
+            pad.grab.assert_not_called()  # the app still gets its controller
+            self.assertEqual(failing.call_count, 1)
+            pads.pump(mock.Mock())
+            self.assertEqual(failing.call_count, 2, "creating the mouse is tried again")
+            failing.side_effect = None
+            failing.return_value = FakeMouse()
+            pads.pump(mock.Mock())
+        self.assertIsNotNone(pads.pointer.device)
+        pad.grab.assert_called()
+
+    def test_the_mouse_goes_away_with_the_last_pad(self):
+        pads, mouse = self.pads()
+        pads.devices = {"/dev/input/event3": mock.Mock()}
+        pads.clock = lambda: 0.0
+        pads.set_pointer(True, 0.0)
+        pads.pointer.button(Codes.BTN_LEFT, True)  # A held when the pad switched itself off
+        pads.drop("/dev/input/event3")
+        self.assertFalse(pads.pointer_on)
+        self.assertTrue(mouse.closed)
+        self.assertEqual(self.clicks(mouse)[-1], (Codes.BTN_LEFT, 0), "the held click is let go")
+
+    def test_super_tap_is_left_to_a_stream_or_remote_desktop(self):
+        for session, remote in (("moonlight", True), ("rdp", True), ("firefox", False)):
+            run = self.run_dir(pointer=False)
+            (run / "app-active").write_text(session + "\n", encoding="ascii")
+            self.assertEqual(self.module.remote_session_in_front(), remote, session)
+            (run / "launcher-focus").touch()
+            self.assertFalse(self.module.remote_session_in_front(), "the launcher has the keyboard")
+        self.run_dir(app=False)
+        self.assertFalse(self.module.remote_session_in_front())
+
     def test_leaving_mouse_mode_forgets_the_sticks(self):
         pads, _mouse = self.pads()
         pads.sticks = {"/dev/input/event3": {Codes.ABS_RY: [-0.9, 0]}}

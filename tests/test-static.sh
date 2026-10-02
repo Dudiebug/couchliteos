@@ -261,6 +261,7 @@ refute rg -qi 'remmina|freerdp2|xfreerdp' config/live-build/package-lists config
 rg -q '"/from-stdin:force"' launcher/couchliteos_rdp.py
 rg -q 'cert:deny,fingerprint:sha256:' launcher/couchliteos_rdp.py
 rg -q '"SDL_VIDEO_DRIVER": "wayland"' launcher/couchliteos_rdp.py
+rg -q '"SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR": "0"' launcher/couchliteos_rdp.py
 refute rg -n '"/p:|/p:\{|--password' launcher/couchliteos_rdp.py launcher/couchliteos_app_runner.py launcher/couchliteos-launcher.py
 rg -q 'stdin=subprocess.PIPE' launcher/couchliteos_app_runner.py
 # The session unit runs with the appliance user's environment: nothing in it may run as root.

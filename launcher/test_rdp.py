@@ -196,6 +196,8 @@ class ArgumentTest(unittest.TestCase):
         self.assertEqual(environment["SDL_VIDEO_DRIVER"], "wayland")
         self.assertEqual(environment["SDL_APP_ID"], rdp.WAYLAND_APP_ID)
         self.assertEqual(environment["WAYLAND_DISPLAY"], "wayland-0")
+        # Through libdecor (no plugin installed) sdl-freerdp3 connects but never maps a window.
+        self.assertEqual(environment["SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR"], "0")
 
 
 class NegotiationTest(unittest.TestCase):

@@ -95,6 +95,20 @@ def app_owns_pad() -> bool:
     return APP_ACTIVE.exists() and not LAUNCHER_FOCUS.exists()
 
 
+# Streams and remote desktops pass the Super key on to the remote PC (its Start menu).
+REMOTE_SESSIONS = frozenset({"moonlight", "rdp"})
+
+
+def remote_session_in_front() -> bool:
+    """A stream or remote desktop has the keyboard, so a Super tap belongs to the remote PC."""
+    if LAUNCHER_FOCUS.exists():
+        return False
+    try:
+        return APP_ACTIVE.read_text(encoding="ascii").strip() in REMOTE_SESSIONS
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def navigation_blocked(active_osk: bool) -> bool:
     """An app owns the controller, unless the launcher was brought back with Home."""
     return app_active() and not active_osk and not LAUNCHER_FOCUS.exists()
@@ -291,6 +305,9 @@ class Pads:
         except OSError:
             pass
         self.grabbed.discard(path)
+        if not self.devices:
+            # The last pad went (idle timeout, flat battery): no cursor or held click without one.
+            self.set_pointer(False, self.clock())
 
     def drop_all(self) -> None:
         for path in list(self.devices):
@@ -411,6 +428,8 @@ class Pads:
 
     def set_pointer(self, on: bool, now: float) -> None:
         if on == self.pointer_on:
+            if on and self.pointer.device is None:
+                self.pointer.open()  # creating the mouse failed before: try again
             return
         self.pointer_on = on
         self.carry = [0.0, 0.0, 0.0, 0.0]
@@ -459,6 +478,8 @@ class Pads:
         active_osk = OSK_ACTIVE.exists()
         pointer = pointer_mode(active_osk)
         self.set_pointer(pointer, now)
+        # Without a virtual mouse (uinput failed) the pad stays a pad rather than going dead.
+        pointer = pointer and self.pointer.device is not None
         # The keyboard and the mouse grab every pad so the app never also sees the presses.
         self.sync_grab(active_osk or pointer)
         blocked = navigation_blocked(active_osk) and not pointer
@@ -664,7 +685,8 @@ def watch_home() -> None:
                         # Looked at before request_home() brings the launcher forward: the Guide
                         # press itself takes the focus, so later the launcher always "has" it.
                         in_game = app_owns_pad()
-                    if tap.feed(id(device), event) or is_home_event(event):
+                    tapped = tap.feed(id(device), event) and not remote_session_in_front()
+                    if tapped or is_home_event(event):
                         request_home()
                     hold.feed(event, time.monotonic())
             if hold.due(time.monotonic()) and not in_game:

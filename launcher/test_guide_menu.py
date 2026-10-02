@@ -244,11 +244,15 @@ class GuideMenuTest(GuideFixture):
         self.assertIn(self.module.CLOSE_BUTTON, text)
         self.assertNotEqual(launcher.status, "TYPING INTO GOOGLE CHROME")
 
-    def test_x_triangle_with_nothing_running_opens_the_keyboard_for_the_launcher(self):
+    def test_x_triangle_with_nothing_running_does_not_type_into_the_menu(self):
         screen, _launcher = self.guide([self.curses.KEY_F12, 27])
-        self.assertTrue((self.run_dir / "start-osk").exists())
+        self.assertFalse((self.run_dir / "start-osk").exists(), "keys typed here would drive the menu")
         self.assertEqual(self.wlrctl, [])
-        self.assertGreaterEqual(len([frame for frame in screen.frames if frame]), 2, "the menu stayed open")
+        self.assertIn("NO APP IS RUNNING TO TYPE INTO", "\n".join(map(str, screen.frames)))
+
+    def test_the_menu_takes_the_pad_back_from_a_running_app(self):
+        self.guide([27])
+        self.assertTrue((self.run_dir / "launcher-focus").exists())
 
     def test_a_second_keyboard_is_not_requested_while_one_is_open(self):
         (self.run_dir / "osk-active").touch()

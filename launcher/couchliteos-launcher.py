@@ -1101,6 +1101,7 @@ class Launcher:
         selected = 0
         status = ""
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
+        set_launcher_focus(True)  # the pad drives this menu even with an app (or its mouse) running
         self.woke_up = False
         while True:
             running = self.running_applications()
@@ -1153,7 +1154,8 @@ class Launcher:
             if key == curses.KEY_F12:
                 target = running[selected] if selected < len(running) else front
                 if target is None:
-                    request_osk()  # nothing to type into but the launcher
+                    # Typed into this menu, letters would move the selection and Enter pick a row.
+                    status = "NO APP IS RUNNING TO TYPE INTO"
                     continue
                 problem = self.type_into(target)
                 if problem is None:

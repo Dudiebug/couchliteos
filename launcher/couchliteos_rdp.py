@@ -350,6 +350,10 @@ def client_environment(base: dict[str, str]) -> dict[str, str]:
         "SDL_VIDEO_DRIVER": "wayland",
         "SDL_VIDEODRIVER": "wayland",
         "SDL_APP_ID": WAYLAND_APP_ID,
+        # Cage asks for client-side decorations, so SDL goes through libdecor; with no
+        # libdecor plugin installed the window is never mapped (connected, nothing on
+        # screen). Plain xdg-shell needs no decorations: Cage shows apps fullscreen.
+        "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR": "0",
     })
     return environment
 
