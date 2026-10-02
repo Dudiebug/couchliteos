@@ -61,6 +61,7 @@ BLOBS = {
 VP5_CHIPS = ("nvd7", "nvd9", "nve4", "nve6", "nve7", "nvf0", "nvf1", "nv106", "nv108")
 LINKS = {"fuc084": "nve0_bsp", "fuc085": "nve0_vp", "fuc086": "nvc0_ppp"}
 VERIFIED = "verified"
+DECODER_PENDING = "decoder-auto-pending"
 
 
 class FirmwareError(Exception):
@@ -284,6 +285,10 @@ def serve_install() -> str:
         return ("FIRMWARE SAVED, BUT THE VIDEO DECODER DID NOT START YET. RESTART THE PC, THEN PICK "
                 "VIDEO DECODER FIRMWARE AGAIN TO TEST IT. STREAMING KEEPS USING SOFTWARE DECODING.")
     mark_verified(gpu.get("COUCHLITEOS_GPU_ID", "unknown"))
+    # The launcher saves config.ini by atomic rename, and this sandbox bind-mounts the
+    # file, so a settings save during the download can drop this edit. The marker makes
+    # the next boot (hwdetect, not sandboxed) apply it once more.
+    (STORE / DECODER_PENDING).touch()
     allow_hardware_decoder()
     return "HARDWARE VIDEO DECODING IS READY. RESTART THE PC TO USE IT IN MOONLIGHT."
 
@@ -344,7 +349,13 @@ def boot(gpu_id: str) -> int:
     if not installed():
         return 1
     point_kernel_at_store()
-    return 0 if gpu_id in verified_ids() else 1
+    if gpu_id not in verified_ids():
+        return 1
+    pending = STORE / DECODER_PENDING
+    if pending.exists():
+        allow_hardware_decoder()
+        pending.unlink(missing_ok=True)
+    return 0
 
 
 def main(argv: list[str]) -> int:

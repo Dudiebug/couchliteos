@@ -171,6 +171,20 @@ class HelperTest(unittest.TestCase):
             self.assertEqual(nvfw.serve(), 0)
         self.assertEqual(config.read_text(), "[moonlight]\ncodec = H.264\ndecoder = auto\n[display]\ndecoder = software\n")
 
+    def test_an_edit_lost_to_a_settings_save_is_redone_once_at_boot(self):
+        config = self.base / "config.ini"
+        config.write_text("[moonlight]\ndecoder = software\n")
+        nvfw.install(self.blobs_in(self.base / "out"))
+        with mock.patch.object(nvfw, "decoder_works", return_value=True):
+            self.request("install")
+            self.assertEqual(nvfw.serve(), 0)
+        config.write_text("[moonlight]\ndecoder = software\n")  # the launcher replaced the file meanwhile
+        self.assertEqual(nvfw.boot("10de:0fe9"), 0)
+        self.assertEqual(config.read_text(), "[moonlight]\ndecoder = auto\n")
+        config.write_text("[moonlight]\ndecoder = software\n")  # later the user picks software on purpose
+        self.assertEqual(nvfw.boot("10de:0fe9"), 0)
+        self.assertEqual(config.read_text(), "[moonlight]\ndecoder = software\n")
+
     def test_an_unexpected_error_still_ends_the_wait(self):
         with mock.patch.object(nvfw, "download", side_effect=RuntimeError("boom")):
             self.request("install")
