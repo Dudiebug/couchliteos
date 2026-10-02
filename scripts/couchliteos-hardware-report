@@ -1,6 +1,6 @@
 #!/bin/bash
 # Identify the machine and record the hardware facts CouchLiteOS depends on,
-# with the iMac Late 2013 checks from docs/IMAC-2013.md (section 0). Read-only:
+# with the iMac Late 2013 checks from the iMac Late 2013 wiki page. Read-only:
 # it changes no settings. Run it as root (sudo) so dmidecode can read the serial.
 set -uo pipefail
 

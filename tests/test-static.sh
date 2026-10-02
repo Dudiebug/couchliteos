@@ -219,7 +219,6 @@ rg -Fq '("/var/lib/moonlightos", "/var/lib/couchliteos")' scripts/couchliteos-mi
 rg -Fq '("/var/log/moonlightos", "/var/log/couchliteos")' scripts/couchliteos-migrate # rename:keep
 rg -Fq 'os.lchown' scripts/couchliteos-migrate
 refute rg -q 'os\.chown|shutil\.chown|followlinks=True|shell=True' scripts/couchliteos-migrate
-rg -Fq 'Sticks made for MoonlightOS keep their settings automatically' docs/INSTALL.md # rename:keep
 rg -Fq 'unittest -v tests/test_migrate.py' Makefile
 
 refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
@@ -408,7 +407,7 @@ printf 'sha256\n' > "$digest_control"
 rg -q -i "$digest_pattern" "$digest_control"
 rm -f -- "$digest_control"
 if rg -n -i "$digest_pattern" \
-  scripts/couchliteos-support-export launcher/couchliteos_support.py docs/SUPPORT.md; then
+  scripts/couchliteos-support-export launcher/couchliteos_support.py; then
   echo 'Support export must not create checksum sidecars or manifests.' >&2
   exit 1
 else
@@ -554,7 +553,7 @@ refute rg -q 'RUN / "support-media"|LOCK\.open|os\.chmod\(temporary' scripts/cou
 # persistence: the documented persistence.conf and the smoke test's backend both
 # persist the keyfile directory, and the image creates it root-only so the
 # persisted copy is never readable by the unprivileged couchliteos user.
-for f in docs/INSTALL.md tests/qemu-persistence-smoke.sh; do
+for f in tests/qemu-persistence-smoke.sh; do
   rg -q '^/etc/NetworkManager/system-connections source=nm-connections$' "$f"
 done
 rg -q 'install -d -o root -g root -m 0700 /etc/NetworkManager/system-connections' \

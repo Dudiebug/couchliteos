@@ -86,7 +86,7 @@ ETC_KEEP = (
     "/NetworkManager/system-connections/", "/ssh/ssh_host_*",
     "/passwd", "/group", "/shadow", "/gshadow", "/passwd-", "/group-", "/shadow-", "/gshadow-",
     "/subuid", "/subgid", "/sudoers.d/", "/.pwd.lock",
-    # Written or edited on the box by the owner (docs/USBIP.md, scripts/couchliteos-tailscale).
+    # Written or edited on the box by the owner (wiki: USB-IP, scripts/couchliteos-tailscale).
     "/couchliteos/tailscale-auth.key", "/couchliteos/usbip-allowlist.conf", "/couchliteos-usbip-client.conf",
     # Changes last, once everything else worked, so a failed update can be tried again.
     "/couchliteos-version",

@@ -1,0 +1,41 @@
+name: Works on my PC
+description: Tell us CouchLiteOS runs on your hardware, for the compatibility table.
+labels: [hardware-report]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: CouchLiteOS version
+      description: Shown in Settings > SOFTWARE UPDATE, on the "THIS BOX" line.
+    validations:
+      required: true
+  - type: input
+    id: pc
+    attributes:
+      label: PC model
+      placeholder: "Dell OptiPlex 7010 Micro"
+    validations:
+      required: true
+  - type: input
+    id: graphics
+    attributes:
+      label: Graphics
+      placeholder: "Intel UHD 770"
+    validations:
+      required: true
+  - type: dropdown
+    id: iso
+    attributes:
+      label: Which ISO
+      options:
+        - General
+        - NVIDIA
+    validations:
+      required: true
+  - type: textarea
+    id: works
+    attributes:
+      label: What works, and what does not
+      description: Streaming resolution and frame rate, Wi-Fi, Bluetooth, sound, sleep, TV control.
+    validations:
+      required: true
