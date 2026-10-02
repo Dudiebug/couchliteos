@@ -186,9 +186,15 @@ def get_volume(target: str = DEFAULT_SINK) -> Volume:
     return parse_volume(_wpctl("get-volume", target))
 
 
-def change_volume(step: int, target: str = DEFAULT_SINK) -> Volume:
-    """Raise or lower the volume by `step` percent, never above 100%."""
+def step_volume(step: int, target: str = DEFAULT_SINK) -> None:
+    """Raise or lower the volume by `step` percent, never above 100%, without reading it back
+    (one wpctl call: the volume keys step it while held, and nothing shows the level)."""
     _wpctl("set-volume", "-l", "1.0", target, f"{abs(step)}%{'+' if step > 0 else '-'}")
+
+
+def change_volume(step: int, target: str = DEFAULT_SINK) -> Volume:
+    """step_volume(), then the new level for the Guide menu and Settings to show."""
+    step_volume(step, target)
     return get_volume(target)
 
 

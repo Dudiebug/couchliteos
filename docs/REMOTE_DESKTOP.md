@@ -109,6 +109,9 @@ requests a connection. The session behaves like the other applications:
 - **Home/Guide** opens Active Applications; **A** resumes the session and
   **Y** (Xbox) / **Square** (PlayStation) closes it. X/Triangle open the
   on-screen keyboard instead.
+- On a keyboard, the Super key goes to the remote PC, so **Ctrl+Alt+H** is the
+  way back to Home (Settings → Controls can turn it off). The volume and
+  brightness keys keep controlling this box, the TV's sound, not the remote PC.
 - If the client crashes or the connection drops, systemd restarts it (up to
   three starts per minute) and it reconnects with the same credentials. When
   the restarts are exhausted, `couchliteos-rdp-cleanup.service` removes the
