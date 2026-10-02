@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import functools
 import glob
 import pathlib
+import queue
 import select
 import subprocess
 import threading
@@ -14,6 +16,8 @@ from evdev import InputDevice, UInput, ecodes
 
 import couchliteos_power as power
 import couchliteos_cec as cec
+import couchliteos_audio as audio
+import couchliteos_brightness as brightness
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
@@ -78,6 +82,13 @@ POINTER_KEYS = {
     ecodes.BTN_TR: ecodes.KEY_PAGEDOWN,
 }
 SUPER_KEYS = frozenset({ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHTMETA})
+# A keyboard's brightness and volume keys (Apple's Fn layer sends the same codes). Cage does not
+# act on them, so gamepad-nav does, the same way the Guide menu's rows do.
+BRIGHTNESS_KEYS = {ecodes.KEY_BRIGHTNESSUP: brightness.STEP, ecodes.KEY_BRIGHTNESSDOWN: -brightness.STEP}
+VOLUME_KEYS = {ecodes.KEY_VOLUMEUP: audio.VOLUME_STEP, ecodes.KEY_VOLUMEDOWN: -audio.VOLUME_STEP}
+MEDIA_KEYS = frozenset({*BRIGHTNESS_KEYS, *VOLUME_KEYS, ecodes.KEY_MUTE})
+# The ACPI device a laptop's own brightness keys arrive from; see brightness.kernel_handles_hotkeys.
+ACPI_VIDEO_KEYS = "Video Bus"
 
 
 def app_active() -> bool:
@@ -631,6 +642,43 @@ class SuperTap:
         self.armed.clear()
 
 
+def media_action(event, device):
+    """What a brightness, volume or mute key does, as a call to make; None for any other event.
+
+    Brightness and volume step again while the key is held (autorepeat); mute toggles once a press.
+    """
+    if event.type != ecodes.EV_KEY or event.code not in MEDIA_KEYS or event.value not in (1, 2):
+        return None
+    if event.code in BRIGHTNESS_KEYS:
+        if device.name == ACPI_VIDEO_KEYS and brightness.kernel_handles_hotkeys():
+            return None  # the kernel has already stepped it
+        return functools.partial(brightness.change, BRIGHTNESS_KEYS[event.code])
+    if event.code in VOLUME_KEYS:
+        return functools.partial(audio.change_volume, VOLUME_KEYS[event.code])
+    return audio.toggle_mute if event.value == 1 else None
+
+
+# Key actions run on their own thread: wpctl can be slow, and Home must not wait for it. A key
+# held while a change is stuck queues a few steps, not a long tail.
+MEDIA_QUEUE: queue.Queue = queue.Queue(maxsize=4)
+
+
+def queue_media(action) -> None:
+    try:
+        MEDIA_QUEUE.put_nowait(action)
+    except queue.Full:
+        pass
+
+
+def apply_media() -> None:
+    while True:
+        action = MEDIA_QUEUE.get()
+        try:
+            action()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            print(f"media key not applied: {error}", flush=True)
+
+
 def is_hold_press(event) -> bool:
     return event.type == ecodes.EV_KEY and event.value == 1 and event.code in HomeHold.CODES
 
@@ -669,7 +717,7 @@ def watch_home() -> None:
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *SUPER_KEYS} & keys:
+                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *SUPER_KEYS, *MEDIA_KEYS} & keys:
                     devices[path] = device
                 else:
                     device.close()
@@ -688,6 +736,9 @@ def watch_home() -> None:
                     tapped = tap.feed(id(device), event) and not remote_session_in_front()
                     if tapped or is_home_event(event):
                         request_home()
+                    action = media_action(event, device)
+                    if action is not None:
+                        queue_media(action)
                     hold.feed(event, time.monotonic())
             if hold.due(time.monotonic()) and not in_game:
                 request_sleep()
@@ -747,6 +798,7 @@ def watch_cec(ui: UInput) -> None:
 
 
 def run() -> None:
+    threading.Thread(target=apply_media, daemon=True).start()
     threading.Thread(target=watch_home, daemon=True).start()
     ui = UInput({ecodes.EV_KEY: KEYS}, name="CouchLiteOS Launcher Navigation")
     pads = Pads()

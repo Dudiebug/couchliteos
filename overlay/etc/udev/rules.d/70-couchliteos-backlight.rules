@@ -1,0 +1,4 @@
+# The launcher (Guide menu BRIGHTNESS row) and gamepad-nav (keyboard brightness keys) run as
+# couchliteos, group video, and set the screen brightness themselves; sysfs makes the file
+# root-only, so hand it to group video when the backlight appears. No root service is needed.
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
