@@ -43,10 +43,12 @@ It is built on Debian 13 and is not a general-purpose desktop.
 | NVIDIA RTX 50 series | not supported yet |
 
 Not sure about an NVIDIA card? Use the NVIDIA ISO: it uses NVIDIA's driver only
-where that driver supports the card, and the open driver otherwise. Not every
-release has an NVIDIA ISO; without one, the general ISO runs NVIDIA cards with the
-open driver, and Moonlight decodes the video in software. The same USB
-stick works on different PCs, because the hardware is detected on every boot.
+where that driver supports the card, and the open driver otherwise. The NVIDIA
+ISO is added to a release after the general one, so it can be missing for a
+while (and a few older releases never got one). Without it, the general ISO runs
+NVIDIA cards with the open driver, and Moonlight decodes the video in software.
+The same USB stick works on different PCs, because the hardware is detected on
+every boot.
 [Hardware compatibility](https://github.com/Dudiebug/couchliteos/wiki/Hardware-Compatibility)
 has the details, including Secure Boot.
 
