@@ -98,9 +98,9 @@ find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.2.3 ]]
+[[ "$(< VERSION)" == 0.2.4 ]]
 cmp -s VERSION overlay/etc/couchliteos-version
-rg -q 'couchliteos-0.2.3-amd64\.iso' .github/workflows/build.yml
+rg -q 'couchliteos-0.2.4-amd64\.iso' .github/workflows/build.yml
 rg -Fq 'ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso' Makefile
 rg -Fq 'ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"' build/build.sh
 rg -q '^PROFILE \?= general$' Makefile
