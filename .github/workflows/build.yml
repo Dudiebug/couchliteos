@@ -71,13 +71,13 @@ jobs:
       - name: Upload ISO
         uses: actions/upload-artifact@v7
         with:
-          name: couchliteos-0.2.2-amd64
-          path: build/out/couchliteos-0.2.2-amd64.iso
+          name: couchliteos-0.2.3-amd64
+          path: build/out/couchliteos-0.2.3-amd64.iso
           if-no-files-found: error
       - name: Upload release evidence
         uses: actions/upload-artifact@v7
         with:
-          name: couchliteos-0.2.2-evidence
+          name: couchliteos-0.2.3-evidence
           path: |
             /tmp/couchliteos-qemu-smoke.log
             /tmp/couchliteos-qemu-smoke.ppm

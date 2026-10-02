@@ -176,5 +176,15 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(apps.sanitized_summary(apps.LoadResult((), ())), "")
 
 
+class EnvironmentSpacingTest(unittest.TestCase):
+    def test_spaces_after_separators_and_a_trailing_separator_are_accepted(self):
+        self.assertEqual(apps.parse_environment("A=1; B=2;"), {"A": "1", "B": "2"})
+        self.assertEqual(apps.parse_environment(" ; A=1 ;B=2"), {"A": "1 ", "B": "2"})
+
+    def test_a_missing_value_is_still_refused(self):
+        with self.assertRaises(apps.ManifestError):
+            apps.parse_environment("A=1; B")
+
+
 if __name__ == "__main__":
     unittest.main()

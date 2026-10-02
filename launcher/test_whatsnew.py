@@ -224,9 +224,9 @@ class ShowOnceTest(unittest.TestCase):
 
 
 class ScreenTest(unittest.TestCase):
-    def draw(self, size=(24, 80)):
+    def draw(self, size=(24, 80), version="0.2.3", seen=""):
         screen = Screen(size=size)
-        whatsnew.draw(screen, "0.2.0")
+        whatsnew.draw(screen, version, seen)
         return screen
 
     def test_shows_everything_inside_80x24(self):
@@ -235,7 +235,7 @@ class ScreenTest(unittest.TestCase):
             self.assertTrue(0 < row < 23, (row, text))
             self.assertTrue(col >= 1 and col + len(text) <= 79, (col, text))
         text = "\n".join(screen.text())
-        self.assertIn("WHAT'S NEW IN 0.2.0", text)
+        self.assertIn("WHAT'S NEW IN 0.2.3", text)
         self.assertIn(whatsnew.RENAME_NOTICE, text)
         for feature in whatsnew.FEATURES:
             self.assertIn(feature, text)
@@ -245,7 +245,10 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(len(rows), len(set(rows)))
 
     def test_every_line_fits_76_columns(self):
-        for line in (whatsnew.RENAME_NOTICE, *("- " + feature for feature in whatsnew.FEATURES)):
+        lines = [whatsnew.RENAME_NOTICE, whatsnew.MORE]
+        for release, features in whatsnew.RELEASES:
+            lines += [f"NEW IN {release}:", *("- " + feature for feature in features)]
+        for line in lines:
             self.assertLessEqual(len(line), 76, line)
         for _row, col, text, _attr in self.draw().frame:
             self.assertLessEqual(len(text), 76, text)
@@ -264,7 +267,25 @@ class ScreenTest(unittest.TestCase):
 
     def test_the_title_is_bold(self):
         attrs = {text: attr for _row, _col, text, attr in self.draw().frame}
-        self.assertTrue(attrs["WHAT'S NEW IN 0.2.0"] & curses.A_BOLD)
+        self.assertTrue(attrs["WHAT'S NEW IN 0.2.3"] & curses.A_BOLD)
+
+    def test_an_upgrade_from_0_2_2_shows_only_0_2_3_without_the_rename(self):
+        text = "\n".join(self.draw(seen="0.2.2").text())
+        self.assertNotIn(whatsnew.RENAME_NOTICE, text)
+        for feature in whatsnew.FEATURES:
+            self.assertIn(feature, text)
+        self.assertNotIn("HDMI", text)  # 0.2.2's note was seen already
+        self.assertNotIn("NEW IN 0.2.3:", text)  # one release needs no heading
+
+    def test_a_long_upgrade_keeps_the_newest_notes_and_points_to_the_rest(self):
+        screen = self.draw(seen="0.1.13")
+        text = screen.text()
+        self.assertIn(whatsnew.RENAME_NOTICE, text)
+        self.assertIn("NEW IN 0.2.3:", text)
+        self.assertEqual(text.count(whatsnew.MORE), 1)
+        rows = [row for row, _col, _text, _attr in screen.frame]
+        self.assertEqual(len(rows), len(set(rows)))
+        self.assertTrue(all(row < 21 for row, _c, line, _a in screen.frame if line != whatsnew.FOOTER))
 
 
 class ContentTest(unittest.TestCase):
@@ -273,18 +294,39 @@ class ContentTest(unittest.TestCase):
 
     def test_features_are_one_constant_tuple_so_the_lead_can_trim_it(self):
         self.assertIsInstance(whatsnew.FEATURES, tuple)
-        self.assertTrue(all(isinstance(line, str) and line == line.upper() for line in whatsnew.FEATURES))
+        for _release, features in whatsnew.RELEASES:
+            self.assertTrue(all(isinstance(line, str) and line == line.upper() and len(line) <= 66 for line in features))
+
+    def test_releases_are_newest_first_and_the_current_version_has_notes(self):
+        versions = [whatsnew.update.parse_version(release) for release, _features in whatsnew.RELEASES]
+        self.assertEqual(versions, sorted(versions, reverse=True))
+        current = (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
+        self.assertEqual(whatsnew.RELEASES[0][0], current)
+
+    def test_notes_cover_every_release_since_the_one_seen(self):
+        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[0]]))
+        renamed, releases = whatsnew.notes("0.2.3", "0.2.0")
+        self.assertFalse(renamed)
+        self.assertEqual([r for r, _f in releases], ["0.2.3", "0.2.2", "0.2.1"])
+        renamed, releases = whatsnew.notes("0.2.3", "0.1.13")
+        self.assertTrue(renamed)
+        self.assertEqual(len(releases), len(whatsnew.RELEASES))
+        self.assertTrue(whatsnew.notes("0.2.3", "")[0])  # no marker: from before the rename
+        # A release without its own notes shows the newest notes it includes.
+        self.assertEqual(whatsnew.notes("0.2.4", "0.2.3")[1], [whatsnew.RELEASES[0]])
+        # A future version's notes are not shown on an older system.
+        self.assertEqual(whatsnew.notes("0.2.2", "0.2.1")[1][0][0], "0.2.2")
 
     def test_find_gaming_pcs_is_placed_where_it_really_is(self):
         # FIND GAMING PCS is inside STREAMING > PAIR A GAMING PC, not a row of its own.
-        line = next(line for line in whatsnew.FEATURES if "FIND GAMING PCS" in line)
+        line = next(line for _r, features in whatsnew.RELEASES for line in features if "FIND GAMING PCS" in line)
         self.assertIn("SETTINGS > STREAMING", line)
         self.assertIn("PAIR A / ANOTHER GAMING PC", line)  # the row says ANOTHER once a PC is paired
         self.assertLessEqual(len(line), 74)
 
     def test_every_new_feature_is_listed(self):
-        text = "\n".join(whatsnew.FEATURES)
-        for needle in ("SETUP WIZARD", "HOLD THE GUIDE", "TV REMOTE", "GAMING PC WAKES", "FIND GAMING PCS", "STREAM CHECK", "SCREEN EDGES",
+        text = "\n".join(line for _r, features in whatsnew.RELEASES for line in features)
+        for needle in ("TYPE INTO AN APP", "CONTROLLER MOUSE", "SUPER KEY", "SETUP WIZARD", "HOLD THE GUIDE", "TV REMOTE", "GAMING PC WAKES", "FIND GAMING PCS", "STREAM CHECK", "SCREEN EDGES",
                        "SOFTWARE UPDATE: SETTINGS > SOFTWARE UPDATE"):
             self.assertIn(needle, text)
 

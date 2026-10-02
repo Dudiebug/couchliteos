@@ -115,7 +115,6 @@ class PreferenceTest(unittest.TestCase):
     # preference file raises UnicodeDecodeError out of _apply_saved_power, i.e.
     # out of the BlueZ InterfacesAdded / GetManagedObjects callbacks. Remove the
     # decorator once read_preference also treats UnicodeError as "no preference".
-    @unittest.expectedFailure
     def test_corrupt_non_ascii_file_has_no_preference(self):
         self.path.parent.mkdir()
         self.path.write_bytes(b"\xff\xfe")

@@ -113,7 +113,7 @@ def write_preference(enabled: bool, path: pathlib.Path = PREFERENCE) -> None:
 def read_preference(path: pathlib.Path = PREFERENCE) -> bool | None:
     try:
         value = path.read_text(encoding="ascii").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):  # a power cut can leave the file corrupt
         return None
     if value == "1":
         return True

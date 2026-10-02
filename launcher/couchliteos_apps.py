@@ -368,9 +368,12 @@ def parse_environment(value: str) -> dict[str, str]:
     if not value.strip():
         return environment
     for item in value.split(";"):
+        if not item.strip():  # "A=1;" or "A=1; ; B=2"
+            continue
         if "=" not in item:
             raise ManifestError("environment values must use KEY=value")
         key, item_value = item.split("=", 1)
+        key = key.strip()  # "A=1; B=2"
         if not ENV_RE.fullmatch(key):
             raise ManifestError(f"invalid environment name: {key}")
         environment[key] = _scalar(item_value, f"environment {key}", MAX_ENV_VALUE)

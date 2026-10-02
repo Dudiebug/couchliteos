@@ -261,6 +261,6 @@ def read_status(request_id: str) -> dict[str, str] | None:
         payload = json.loads(STATUS.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if payload.get("request_id") != request_id:
+    if not isinstance(payload, dict) or payload.get("request_id") != request_id:
         return None
     return {str(key): safe_terminal_text(str(value), 240) for key, value in payload.items()}

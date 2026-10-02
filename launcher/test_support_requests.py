@@ -174,7 +174,6 @@ class RequestAndStatusTest(unittest.TestCase):
     # KNOWN BUG: read_status calls payload.get() without checking that the JSON is
     # an object, so a status file holding a JSON array/string/number raises
     # AttributeError into the launcher's progress loop instead of returning None.
-    @unittest.expectedFailure
     def test_read_status_ignores_non_object_json(self):
         for text in ("[]", '"abc"', "5", "null"):
             self.write_status(text)
