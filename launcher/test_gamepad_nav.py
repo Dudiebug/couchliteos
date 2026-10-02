@@ -61,6 +61,14 @@ class Codes:
     KEY_PAGEDOWN = 109
     KEY_LEFTMETA = 125
     KEY_RIGHTMETA = 126
+    # Keyboard brightness and volume keys (gamepad-nav acts on them).
+    KEY_MUTE = 113
+    KEY_VOLUMEDOWN = 114
+    KEY_VOLUMEUP = 115
+    KEY_BRIGHTNESSDOWN = 224
+    KEY_BRIGHTNESSUP = 225
+    KEY_F1 = 59
+    KEY_FN = 464
 
 
 class Stop(Exception):
@@ -1325,6 +1333,154 @@ class PointerModeTest(unittest.TestCase):
         watched, home, _keyboard = self.watch_keyboards([[]], capabilities=(Codes.KEY_ENTER,))
         self.assertEqual(watched, [])
         home.assert_not_called()
+
+
+class MediaKeyTest(unittest.TestCase):
+    """A keyboard's brightness, volume and mute keys, read by watch_home() like the Super key."""
+
+    @classmethod
+    def setUpClass(cls):
+        fake = types.ModuleType("evdev")
+        fake.InputDevice = object
+        fake.UInput = object
+        fake.ecodes = Codes
+        sys.modules["evdev"] = fake
+        path = pathlib.Path(__file__).with_name("gamepad-nav.py")
+        spec = importlib.util.spec_from_file_location("gamepad_nav_media", path)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def setUp(self):
+        """Every brightness and volume change lands in self.changes as (what, step) instead."""
+        module = self.module
+        self.changes = []
+        self.kernel_steps = False
+        for target, attribute, value in (
+            (module.brightness, "change", lambda step: self.changes.append(("brightness", step))),
+            (module.brightness, "kernel_handles_hotkeys", lambda: self.kernel_steps),
+            (module.audio, "change_volume", lambda step: self.changes.append(("volume", step))),
+            (module.audio, "toggle_mute", lambda: self.changes.append(("mute", None))),
+        ):
+            patcher = mock.patch.object(target, attribute, side_effect=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def act(self, code, value=1, name="USB Keyboard", kind=Codes.EV_KEY):
+        """Run what one key event does; True when it did something."""
+        action = self.module.media_action(key_event(code, value, kind), SimpleNamespace(name=name))
+        if action is None:
+            return False
+        action()
+        return True
+
+    def test_brightness_and_volume_keys_step_by_the_guide_menus_steps(self):
+        step, volume = self.module.brightness.STEP, self.module.audio.VOLUME_STEP
+        for code in (Codes.KEY_BRIGHTNESSUP, Codes.KEY_BRIGHTNESSDOWN, Codes.KEY_VOLUMEUP, Codes.KEY_VOLUMEDOWN,
+                     Codes.KEY_MUTE):
+            self.assertTrue(self.act(code), code)
+        self.assertEqual(self.changes, [("brightness", step), ("brightness", -step), ("volume", volume),
+                                        ("volume", -volume), ("mute", None)])
+        self.assertEqual((step, volume), (5, 5))
+
+    def test_holding_brightness_or_volume_keeps_stepping_but_mute_toggles_once(self):
+        for code in (Codes.KEY_BRIGHTNESSDOWN, Codes.KEY_VOLUMEUP):
+            self.assertTrue(self.act(code, 2), code)
+        self.assertFalse(self.act(Codes.KEY_MUTE, 2), "a held mute key would flicker")
+        self.assertEqual([what for what, _step in self.changes], ["brightness", "volume"])
+
+    def test_releases_and_other_keys_do_nothing(self):
+        for code in (Codes.KEY_BRIGHTNESSUP, Codes.KEY_VOLUMEUP, Codes.KEY_MUTE):
+            self.assertFalse(self.act(code, 0), code)
+        for code in (Codes.KEY_ENTER, Codes.KEY_LEFTMETA, Codes.KEY_HOME, Codes.KEY_F1):
+            self.assertFalse(self.act(code), code)
+        self.assertFalse(self.act(Codes.KEY_VOLUMEUP, 1, kind=Codes.EV_REL), "not a key at all")
+        self.assertEqual(self.changes, [])
+
+    def test_the_laptops_own_keys_are_left_to_the_kernel_when_it_steps_the_backlight(self):
+        self.kernel_steps = True
+        self.assertFalse(self.act(Codes.KEY_BRIGHTNESSUP, name="Video Bus"))
+        self.assertTrue(self.act(Codes.KEY_BRIGHTNESSUP, name="AT Translated Set 2 keyboard"), "a real keyboard")
+        self.kernel_steps = False
+        self.assertTrue(self.act(Codes.KEY_BRIGHTNESSUP, name="Video Bus"))
+        self.assertEqual(len(self.changes), 2)
+
+    def test_the_queue_runs_actions_in_order_and_survives_a_failure(self):
+        module = self.module
+        ran = []
+
+        def stop():
+            raise Stop
+
+        with mock.patch.object(module, "MEDIA_QUEUE", module.queue.Queue(maxsize=4)), \
+                mock.patch("builtins.print") as printed:
+            module.queue_media(lambda: ran.append(1))
+            module.queue_media(mock.Mock(side_effect=RuntimeError("no default sink")))
+            module.queue_media(lambda: ran.append(2))
+            module.queue_media(stop)
+            module.queue_media(lambda: ran.append("dropped: the queue is full"))
+            with self.assertRaises(Stop):
+                module.apply_media()
+        self.assertEqual(ran, [1, 2])
+        self.assertIn("no default sink", printed.call_args.args[0])
+
+    def watch_media(self, rounds, *, plugged_at=0, name="USB Keyboard", capabilities=(Codes.KEY_ENTER,)):
+        """watch_home() over a keyboard that appears at select round `plugged_at`: rounds[i]
+        lists the (code, value) events select i delivers. Actions run at once, in order.
+
+        Returns the devices select() watched each round."""
+        module = self.module
+        state = {"round": 0}
+        events = []
+        keyboard = SimpleNamespace(name=name, capabilities=lambda: {Codes.EV_KEY: list(capabilities)},
+                                   read=lambda: [key_event(code, value) for code, value in events],
+                                   close=lambda: None)
+        watched = []
+
+        def fake_select(devices, _writable, _errors, _timeout):
+            nonlocal events
+            watched.append(list(devices))
+            if state["round"] >= len(rounds):
+                raise Stop
+            events = rounds[state["round"]]
+            state["round"] += 1
+            return ([keyboard] if events and devices else []), [], []
+
+        def fake_glob(_pattern):
+            return ["/dev/input/event9"] if state["round"] >= plugged_at else []
+
+        with mock.patch.object(module.glob, "glob", side_effect=fake_glob), mock.patch.object(
+            module, "InputDevice", return_value=keyboard
+        ), mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
+            module, "request_home"
+        ) as home, mock.patch.object(module, "request_sleep"), mock.patch.object(
+            module, "queue_media", side_effect=lambda action: action()
+        ):
+            with self.assertRaises(Stop):
+                module.watch_home()
+        home.assert_not_called()
+        return watched
+
+    def test_a_media_keys_only_device_is_watched(self):
+        # Many USB keyboards report these keys from a separate "Consumer Control" device without Super.
+        watched = self.watch_media([[(Codes.KEY_VOLUMEUP, 1), (Codes.KEY_VOLUMEUP, 0)], [(Codes.KEY_MUTE, 1)]],
+                                   name="USB Keyboard Consumer Control",
+                                   capabilities=(Codes.KEY_VOLUMEUP, Codes.KEY_VOLUMEDOWN, Codes.KEY_MUTE))
+        self.assertEqual(len(watched[0]), 1)
+        self.assertEqual(self.changes, [("volume", 5), ("mute", None)])
+
+    def test_a_keyboard_plugged_in_later_is_picked_up(self):
+        watched = self.watch_media([[], [], [(Codes.KEY_BRIGHTNESSUP, 1), (Codes.KEY_BRIGHTNESSUP, 2)]],
+                                   plugged_at=2, capabilities=(Codes.KEY_BRIGHTNESSUP, Codes.KEY_BRIGHTNESSDOWN))
+        self.assertEqual([len(devices) for devices in watched], [0, 0, 1, 1])
+        self.assertEqual(self.changes, [("brightness", 5), ("brightness", 5)])
+
+    def test_apples_fn_layer_sends_the_brightness_keys(self):
+        # hid_apple: Fn+F1/F2 (or F1/F2 alone, depending on fnmode) arrive as the brightness codes.
+        rounds = [[(Codes.KEY_FN, 1), (Codes.KEY_BRIGHTNESSDOWN, 1)], [(Codes.KEY_BRIGHTNESSDOWN, 0), (Codes.KEY_FN, 0)],
+                  [(Codes.KEY_F1, 1), (Codes.KEY_F1, 0)]]
+        self.watch_media(rounds, name="Apple Inc. Magic Keyboard",
+                         capabilities=(Codes.KEY_LEFTMETA, Codes.KEY_FN, Codes.KEY_F1, Codes.KEY_BRIGHTNESSDOWN))
+        self.assertEqual(self.changes, [("brightness", -5)])
 
 
 if __name__ == "__main__":

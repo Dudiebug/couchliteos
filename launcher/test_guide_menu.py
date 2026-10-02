@@ -1,4 +1,5 @@
-"""The Guide / Home menu (ACTIVE APPLICATIONS): resume, close, type into an app, volume, controller mouse."""
+"""The Guide / Home menu (ACTIVE APPLICATIONS): resume, close, type into an app, volume, brightness,
+controller mouse."""
 
 import importlib.util
 import pathlib
@@ -50,7 +51,7 @@ class Screen:
 
 
 class GuideFixture(unittest.TestCase):
-    """Shared fixtures: a temporary /run/couchliteos, fake wlrctl and audio, three apps."""
+    """Shared fixtures: a temporary /run/couchliteos, fake wlrctl, audio and backlight, three apps."""
 
     @classmethod
     def setUpClass(cls):
@@ -68,6 +69,7 @@ class GuideFixture(unittest.TestCase):
         self.flag = self.run_dir / "pointer-mode"
         self.modes = pointer.Modes(self.flag)
         self.volume = module.audio.Volume(40, False)
+        self.brightness = None  # most PCs have no backlight: no BRIGHTNESS row
         self.focus_result = 0
         self.wlrctl = []
 
@@ -88,6 +90,8 @@ class GuideFixture(unittest.TestCase):
             (module.audio, "get_volume", mock.Mock(side_effect=lambda *_args: self.volume)),
             (module.audio, "change_volume", mock.Mock()),
             (module.audio, "toggle_mute", mock.Mock()),
+            (module.brightness, "get_percent", mock.Mock(side_effect=lambda *_args: self.brightness)),
+            (module.brightness, "change", mock.Mock()),
         ):
             patcher = mock.patch.object(target, attribute, value)
             patcher.start()
@@ -299,6 +303,53 @@ class GuideMenuTest(GuideFixture):
             self.module.audio.get_volume.side_effect = error
             screen, _launcher = self.guide([27])
             self.assertEqual(self.rows(screen)[0], "VOLUME  UNAVAILABLE")
+
+    # BRIGHTNESS row
+
+    def test_the_brightness_row_follows_volume_only_when_the_screen_has_a_backlight(self):
+        self.running(self.chrome)
+        screen, _launcher = self.guide([27])
+        rows = self.rows(screen)
+        self.assertEqual(len(rows), 4, rows)
+        self.assertFalse([row for row in rows if row.startswith("BRIGHTNESS")], "nothing to adjust on this PC")
+        self.brightness = 60
+        screen, _launcher = self.guide([27])
+        rows = self.rows(screen)
+        self.assertEqual(rows[1:3], ["VOLUME  40%", "BRIGHTNESS  60%"])
+        self.assertRegex(rows[3], r"^CONTROLLER MOUSE \(GOOGLE CHROME\) +ON$")
+
+    def test_left_and_right_change_the_brightness(self):
+        brightness = self.module.brightness
+        self.brightness = 60
+        down, left, right = self.curses.KEY_DOWN, self.curses.KEY_LEFT, self.curses.KEY_RIGHT
+
+        def step(change):
+            self.brightness += change
+
+        brightness.change.side_effect = step
+        screen, _launcher = self.guide([down, right, right, left, 10, 27])
+        self.assertEqual([call.args for call in brightness.change.call_args_list],
+                         [(brightness.STEP,), (brightness.STEP,), (-brightness.STEP,)])
+        self.assertIn(f"BRIGHTNESS  {60 + brightness.STEP}%", self.rows(screen))
+        self.module.audio.toggle_mute.assert_not_called()
+        self.assertEqual(self.wlrctl, [], "A on the brightness row does nothing")
+
+    def test_the_brightness_row_hint_names_the_buttons(self):
+        self.brightness = 60
+        screen, _launcher = self.guide([self.curses.KEY_DOWN, 27])
+        self.assertIn("LEFT / RIGHT CHANGES THE SCREEN BRIGHTNESS", screen.last())
+
+    def test_a_failed_brightness_change_is_shown(self):
+        self.brightness = 60
+        self.module.brightness.change.side_effect = PermissionError(13, "Permission denied")
+        screen, _launcher = self.guide([self.curses.KEY_DOWN, self.curses.KEY_RIGHT, 27])
+        self.assertIn("BRIGHTNESS NOT CHANGED: PERMISSION DENIED", screen.last())
+
+    def test_the_brightness_row_reads_the_real_backlight(self):
+        with mock.patch.object(self.module.brightness, "get_percent", return_value=None):
+            self.assertIsNone(self.module.Launcher.brightness_row())
+        with mock.patch.object(self.module.brightness, "get_percent", return_value=5):
+            self.assertEqual(self.module.Launcher.brightness_row(), "BRIGHTNESS  5%")
 
     # CONTROLLER MOUSE row
 

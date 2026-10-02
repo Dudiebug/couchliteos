@@ -945,4 +945,26 @@ refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b' scripts/couchliteos-nvidi
 # The tips send people to a row that exists in Settings > STREAMING.
 rg -q '^SMOOTHER_ROW = "SMOOTHER STREAM ' launcher/couchliteos-launcher.py
 
+# Brightness and volume keys: gamepad-nav acts on them and the Guide menu has a BRIGHTNESS row. The
+# backlight is written as group video (udev rule), not by a root service; volume goes through wpctl.
+python3 -m py_compile launcher/couchliteos_brightness.py
+rg -qF 'couchliteos_brightness.py" "$CHROOT/usr/libexec/couchliteos_brightness.py"' build/configure.sh
+rg -q 'couchliteos_brightness.py' launcher/Makefile
+rg -q 'test_brightness.py' launcher/Makefile
+for f in launcher/gamepad-nav.py launcher/couchliteos-launcher.py; do
+  rg -q '^import couchliteos_brightness as brightness$' "$f"
+done
+rg -q '^import couchliteos_audio as audio$' launcher/gamepad-nav.py
+rg -q 'KEY_BRIGHTNESSUP.*KEY_BRIGHTNESSDOWN' launcher/gamepad-nav.py
+rg -q 'KEY_VOLUMEUP.*KEY_VOLUMEDOWN' launcher/gamepad-nav.py
+rg -q '\*SUPER_KEYS, \*MEDIA_KEYS\} & keys' launcher/gamepad-nav.py
+rg -q 'f"BRIGHTNESS  \{percent\}%"' launcher/couchliteos-launcher.py
+rg -q '^ACTION=="add", SUBSYSTEM=="backlight", RUN\+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN\+="/bin/chmod g\+w /sys/class/backlight/%k/brightness"$' \
+  overlay/etc/udev/rules.d/70-couchliteos-backlight.rules
+rg -q '^SupplementaryGroups=.*\bvideo\b' services/couchliteos-gamepad-nav.service
+rg -q '^SupplementaryGroups=.*\bvideo\b' services/couchliteos-launcher.service
+rg -q '^Environment=XDG_RUNTIME_DIR=/run/couchliteos$' services/couchliteos-gamepad-nav.service
+rg -q '^Environment=XDG_RUNTIME_DIR=/run/couchliteos$' services/couchliteos-audio.service
+refute rg -q 'subprocess|shell=True|\bsudo\b|^import (dbus|evdev)' launcher/couchliteos_brightness.py
+
 printf 'Static tests passed.\n'

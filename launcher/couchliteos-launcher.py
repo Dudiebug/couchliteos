@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_display as display
 import couchliteos_audio as audio
+import couchliteos_brightness as brightness
 import couchliteos_support as support
 import couchliteos_bluetooth as bluetooth
 import couchliteos_listview as listview
@@ -1087,6 +1088,12 @@ class Launcher:
             return "VOLUME  UNAVAILABLE"
         return f"VOLUME  {volume.percent}%{'  MUTED' if volume.muted else ''}"
 
+    @staticmethod
+    def brightness_row() -> str | None:
+        """None on PCs without a backlight this user can change (most desktops and TVs)."""
+        percent = brightness.get_percent()
+        return None if percent is None else f"BRIGHTNESS  {percent}%"
+
     def type_into(self, app: apps.Application) -> str | None:
         """Bring `app` to the front and open the on-screen keyboard over it; the text is typed
         into the app when the keyboard closes. None when it worked, else what went wrong."""
@@ -1097,8 +1104,8 @@ class Launcher:
         return None
 
     def active_applications(self) -> None:
-        """The Guide / Home menu: resume or close apps, type into one, change the volume,
-        and turn the controller mouse on or off, without closing what is running."""
+        """The Guide / Home menu: resume or close apps, type into one, change the volume and the
+        screen brightness, and turn the controller mouse on or off, without closing what is running."""
         selected = 0
         status = ""
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
@@ -1110,6 +1117,10 @@ class Launcher:
             rows = [f"{app.name:<32} RUNNING" for app in running]
             volume_index = len(rows)
             rows.append(self.volume_row())
+            brightness_text = self.brightness_row()
+            brightness_index = len(rows) if brightness_text else -1
+            if brightness_text:
+                rows.append(brightness_text)
             mouse_index = len(rows) if front else -1
             if front:
                 on = "ON" if POINTER_MODES.enabled(front) else "OFF"
@@ -1130,6 +1141,8 @@ class Launcher:
                     pass
             if selected == volume_index:
                 hint = ("LEFT / RIGHT CHANGES THE VOLUME  ·  A / CROSS MUTES", "")
+            elif selected == brightness_index:
+                hint = ("LEFT / RIGHT CHANGES THE SCREEN BRIGHTNESS", "")
             elif selected == mouse_index:
                 hint = ("A / CROSS TURNS IT ON OR OFF: LEFT STICK POINTS, A CLICKS, RIGHT STICK SCROLLS", "")
             elif running:
@@ -1171,6 +1184,13 @@ class Launcher:
                         audio.toggle_mute()
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     status = f"VOLUME NOT CHANGED: {error}".upper()
+                continue
+            if selected == brightness_index:
+                if key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                    try:
+                        brightness.change(-brightness.STEP if key == curses.KEY_LEFT else brightness.STEP)
+                    except OSError as error:
+                        status = f"BRIGHTNESS NOT CHANGED: {error.strerror or error}".upper()
                 continue
             if selected == mouse_index:
                 if key in (curses.KEY_ENTER, 10, 13, curses.KEY_LEFT, curses.KEY_RIGHT):

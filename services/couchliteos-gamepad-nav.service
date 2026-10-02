@@ -7,7 +7,9 @@ PartOf=couchliteos-launcher.service
 Type=simple
 User=couchliteos
 Group=couchliteos
-SupplementaryGroups=input
+# video: the keyboard's brightness keys write the backlight (70-couchliteos-backlight.rules).
+SupplementaryGroups=input video
+# The volume keys run wpctl like the launcher does: same user, PipeWire's socket in this directory.
 Environment=XDG_RUNTIME_DIR=/run/couchliteos
 EnvironmentFile=-/run/couchliteos/session.env
 ExecStart=/usr/libexec/couchliteos-gamepad-nav

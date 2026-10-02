@@ -57,6 +57,12 @@ class Codes:
     KEY_PAGEDOWN = 109
     KEY_LEFTMETA = 125
     KEY_RIGHTMETA = 126
+    # Keyboard brightness and volume keys (gamepad-nav acts on them).
+    KEY_MUTE = 113
+    KEY_VOLUMEDOWN = 114
+    KEY_VOLUMEUP = 115
+    KEY_BRIGHTNESSDOWN = 224
+    KEY_BRIGHTNESSUP = 225
     # Keys the kernel's rc-cec keymap reports for a TV remote.
     KEY_OK = 352
     KEY_EXIT = 174

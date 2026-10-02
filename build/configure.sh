@@ -85,6 +85,7 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_netmenu.py" "$CHROOT/usr/libexec/
 install -D -m 0755 "$ROOT/launcher/couchliteos_osk.py" "$CHROOT/usr/libexec/couchliteos-osk"
 install -D -m 0644 "$ROOT/launcher/couchliteos_display.py" "$CHROOT/usr/libexec/couchliteos_display.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_audio.py" "$CHROOT/usr/libexec/couchliteos_audio.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_brightness.py" "$CHROOT/usr/libexec/couchliteos_brightness.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_power.py" "$CHROOT/usr/libexec/couchliteos_power.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_support.py" "$CHROOT/usr/libexec/couchliteos_support.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_bluetooth.py" "$CHROOT/usr/libexec/couchliteos_bluetooth.py"
