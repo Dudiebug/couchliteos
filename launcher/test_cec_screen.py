@@ -222,7 +222,7 @@ class RemoteTestScreenTest(LauncherCase):
         if home_request:
             home.touch()
         for patch in (
-            mock.patch.object(self.module, "time", types.SimpleNamespace(monotonic=lambda: clock[0])),
+            mock.patch.object(self.module, "time", types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda _seconds: None)),
             mock.patch.object(self.module, "HOME_REQUEST", home),
         ):
             patch.start()
