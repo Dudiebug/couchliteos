@@ -160,6 +160,75 @@ class LayoutTest(unittest.TestCase):
                     self.assertIn("Y / SQUARE DELETES", shown, where)  # the controller has a delete button
 
 
+class PanelLayoutTest(unittest.TestCase):
+    """Cage docks the keyboard in the bottom 40% of the screen: about 13 terminal rows."""
+
+    # Screens from 600 px to 4K, with the font couchliteos-foot picks for the keyboard panel.
+    SCREENS = ((800, 600), (1280, 720), (1366, 768), (1920, 1080), (2560, 1440), (3840, 2160))
+
+    def panel_terminals(self):
+        import couchliteos_foot as foot
+
+        for width, height in self.SCREENS:
+            size = foot.panel_font_size(width, height)
+            yield (width, height), foot.grid(width, foot.panel_height(height), size)
+
+    def test_every_part_has_its_own_row_inside_the_panel(self):
+        for height in range(osk.MIN_ROWS, 40):
+            places = osk.layout(height)
+            rows = [places.text, *places.keys, places.hint]
+            self.assertEqual(len(rows), len(set(rows)), height)
+            low, high = (1, height - 1) if places.border else (0, height)
+            self.assertTrue(all(low <= row < high for row in rows), (height, places))
+            self.assertEqual(list(places.keys), sorted(places.keys), height)
+            self.assertLess(places.text, places.keys[0], height)
+            self.assertLess(places.keys[-1], places.hint, height)
+            self.assertEqual(places.title, 0 if places.border else None, height)
+
+    def test_ten_rows_get_the_border_and_title_and_thirteen_get_spacing(self):
+        self.assertEqual(osk.MIN_ROWS, 8)
+        self.assertFalse(osk.layout(9).border)
+        self.assertTrue(osk.layout(10).border)
+        places = osk.layout(13)
+        self.assertEqual(places.keys[0] - places.text, 2)  # a blank line under the text
+        self.assertEqual(places.keys[4] - places.keys[3], 2)  # letters apart from the actions
+        self.assertEqual(places.hint - places.keys[-1], 2)
+        self.assertEqual(places.hint, 11)  # the bottom border is row 12
+
+    def test_below_eight_rows_the_hint_goes_before_any_key(self):
+        places = osk.layout(7)
+        self.assertIsNone(places.hint)
+        self.assertEqual(places.keys[-1], 6)
+
+    def test_the_foot_font_gives_the_panel_room_for_the_whole_layout(self):
+        for screen, (columns, rows) in self.panel_terminals():
+            self.assertGreaterEqual(rows, 12, screen)
+            self.assertLessEqual(rows, 15, screen)
+            self.assertGreaterEqual(columns, 80, screen)
+
+    def test_every_button_is_visible_in_the_docked_panel(self):
+        terminals = [terminal for _screen, terminal in self.panel_terminals()]
+        for columns, rows in (*terminals, (47, 8), (47, 9), (65, 10), (80, 12)):
+            for shift, symbols, masked in ((False, False, False), (True, False, False), (False, True, True)):
+                keyboard = osk.Keyboard()
+                keyboard.shift, keyboard.symbols, keyboard.masked = shift, symbols, masked
+                keyboard.text = "secret"
+                keyboard.row, keyboard.column = 5, 3
+                screen = DrawScreen(rows, columns)
+                osk.draw(screen, keyboard)
+                where = (columns, rows, shift, symbols)
+                self.assertTrue(all(cell[3] for cell in screen.cells), (where, screen.cells))
+                lines = [cell[0] for cell in screen.cells]
+                self.assertEqual(len(lines), len(set(lines)), (where, "two lines share a row"))
+                self.assertLess(max(lines), rows, where)
+                shown = " ".join(cell[2] for cell in screen.cells)
+                for label in osk.ACTIONS:
+                    self.assertIn(label, shown, where)
+                self.assertIn(osk.HINT if columns >= len(osk.HINT) + 2 else osk.SHORT_HINT, shown, where)
+                self.assertIn("******" if masked else "secret", shown, where)
+                self.assertNotIn("secret" if masked else "******", shown, where)
+
+
 class ControllerDeleteTest(unittest.TestCase):
     def test_delete_key_from_the_controller_erases_the_last_character(self):
         # Y/Square reaches the keyboard window as KEY_DC.

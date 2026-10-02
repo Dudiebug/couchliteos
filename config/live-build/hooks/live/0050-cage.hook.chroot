@@ -1,21 +1,30 @@
 #!/bin/bash
-# Rebuild Debian's Cage 0.2.0 with wlr-foreign-toplevel-management.
+# Rebuild Debian's Cage 0.2.0 with wlr-foreign-toplevel-management, the docked
+# on-screen keyboard and the mouse speed setting.
 #
 # Stock Cage 0.2.0 has no way for another program to raise a window, so
 # `wlrctl toplevel focus` (Guide/Home bringing the launcher over a running app,
 # RESUME in Active Applications, the keyboard typing into an app) does nothing.
-# config/cage/ holds the upstream patch backported to 0.2.0; build/configure.sh
-# copies it and the pinned release tarball to /usr/src/couchliteos-cage.
+# It also maximises the on-screen keyboard over the app it types into and never
+# changes libinput's pointer speed. config/cage/ holds the patches, applied in
+# order; build/configure.sh copies them and the pinned release tarball to
+# /usr/src/couchliteos-cage.
 set -Eeuo pipefail
 
 SRC=/usr/src/couchliteos-cage
 TARBALL=$SRC/cage-0.2.0.tar.gz
 TARBALL_SHA256=557c194d18af7202a9ec2e8be6dd7129f6c16d0f4528f4079ba26ccd57b6ef88
-PATCH=$SRC/cage-0.2.0-foreign-toplevel.patch
+PATCHES=(
+  "$SRC/cage-0.2.0-foreign-toplevel.patch"
+  "$SRC/cage-0.2.0-osk-panel.patch"
+  "$SRC/cage-0.2.0-pointer-speed.patch"
+)
 BUILD_DEPS=(meson ninja-build gcc libc6-dev pkgconf patch libwlroots-0.18-dev
-  libwayland-dev wayland-protocols libxkbcommon-dev)
+  libwayland-dev wayland-protocols libxkbcommon-dev libinput-dev)
 
-[[ -f $TARBALL && -f $PATCH ]] || { echo "Cage sources missing from $SRC" >&2; exit 1; }
+for source in "$TARBALL" "${PATCHES[@]}"; do
+  [[ -f $source ]] || { echo "Cage sources missing from $SRC: $source" >&2; exit 1; }
+done
 echo "$TARBALL_SHA256  $TARBALL" | sha256sum --check --quiet - || {
   echo 'Cage release tarball does not match its pinned checksum' >&2
   exit 1
@@ -37,7 +46,9 @@ dpkg-query -W -f '${Package}\n' | sort > "$after"
 tar -xzf "$TARBALL" -C "$work"
 (
   cd "$work/cage-0.2.0"
-  patch -p1 --forward < "$PATCH"
+  for patch in "${PATCHES[@]}"; do
+    patch -p1 --forward < "$patch"
+  done
   # Cage 0.2.0 has no xwayland option: it follows wlroots, and must find Xwayland support.
   meson setup build --buildtype=release | tee "$work/meson.log"
   grep -Eq '^ *xwayland *: *true' "$work/meson.log" || { echo 'Cage was configured without Xwayland' >&2; exit 1; }
@@ -47,6 +58,19 @@ tar -xzf "$TARBALL" -C "$work"
 nm -D --undefined-only "$work/cage-0.2.0/build/cage" > "$work/symbols"
 grep -q wlr_foreign_toplevel_manager_v1_create "$work/symbols" || {
   echo 'Rebuilt Cage does not create a foreign toplevel manager' >&2
+  exit 1
+}
+grep -q libinput_device_config_accel_set_speed "$work/symbols" || {
+  echo 'Rebuilt Cage does not set the mouse speed' >&2
+  exit 1
+}
+grep -aq couchliteos-osk "$work/cage-0.2.0/build/cage" || {
+  echo 'Rebuilt Cage does not dock the on-screen keyboard' >&2
+  exit 1
+}
+# The launcher only sends SIGHUP to a cage whose binary holds this path: stock Cage exits on it.
+grep -aq /var/lib/couchliteos/mouse-speed "$work/cage-0.2.0/build/cage" || {
+  echo 'Rebuilt Cage does not read the mouse speed setting' >&2
   exit 1
 }
 

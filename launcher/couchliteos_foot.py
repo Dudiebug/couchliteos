@@ -7,6 +7,10 @@ cells on a 720p TV but about 197x56 (small text) on a 4K one. This wrapper asks
 the compositor for the screen's mode and passes `--font` so every resolution
 shows about 28 rows. If anything goes wrong foot starts as before, with the
 font in /etc/xdg/foot/foot.ini. COUCHLITEOS_FONT_SIZE (8-96) forces a size.
+
+The on-screen keyboard (`--app-id=couchliteos-osk`) is not full-screen: Cage docks
+it in the bottom 40% of the screen, so its font is capped to give that panel
+OSK_ROWS rows.
 """
 
 from __future__ import annotations
@@ -35,6 +39,12 @@ PAD = 2 * BASE_PAD
 # DejaVu Sans Mono at foot's 96 dpi: a cell is about 0.80 x 1.55 px per point of font size.
 CELL_WIDTH = 0.80
 CELL_HEIGHT = 1.55
+# Cage docks this app-id in the bottom OSK_SHARE of the screen, at least OSK_MIN_HEIGHT
+# pixels (CAGE_OSK_PANEL_SHARE and _MIN_HEIGHT in config/cage/cage-0.2.0-osk-panel.patch).
+OSK_APP_ID = "couchliteos-osk"
+OSK_SHARE = 0.40
+OSK_MIN_HEIGHT = 240
+OSK_ROWS = 13  # couchliteos_osk.draw() needs 8 rows and uses up to 14 for borders and spacing
 
 
 def grid(width: int, height: int, size: int, extra: tuple[int, int] = (0, 0)) -> tuple[int, int]:
@@ -57,6 +67,18 @@ def largest_size(width: int, height: int, extra: tuple[int, int] = (0, 0)) -> in
     by_rows = (height - PAD - 2 * extra[1]) / (MIN_ROWS * CELL_HEIGHT)
     by_columns = (width - PAD - 2 * extra[0]) / (MIN_COLUMNS * CELL_WIDTH)
     return max(MIN_SIZE, int(min(by_rows, by_columns)))
+
+
+def panel_height(height: int) -> int:
+    """Height in pixels of the keyboard panel Cage docks on a `height`-pixel screen."""
+    return min(height, max(OSK_MIN_HEIGHT, int(height * OSK_SHARE)))
+
+
+def panel_font_size(width: int, height: int, extra: tuple[int, int] = (0, 0)) -> int:
+    """The biggest font that gives the keyboard panel OSK_ROWS rows and MIN_COLUMNS columns."""
+    by_rows = (panel_height(height) - PAD - 2 * extra[1]) / (OSK_ROWS * CELL_HEIGHT)
+    by_columns = (width - PAD - 2 * extra[0]) / (MIN_COLUMNS * CELL_WIDTH)
+    return max(MIN_SIZE, min(MAX_SIZE, int(min(by_rows, by_columns))))
 
 
 def target_resolution(outputs: list[display.Output], saved: dict[str, str]) -> tuple[int, int] | None:
@@ -119,11 +141,13 @@ def detect_resolution(run, saved: dict[str, str], sleep) -> tuple[int, int] | No
 
 
 def choose(
-    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep, settings=None
+    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep, settings=None,
+    panel: bool = False,
 ) -> tuple[int | None, tuple[int, int] | None]:
     """The font size (None: keep foot's configured font) and pad (None: keep foot.ini's) to use.
 
     `settings` are the user's screen edges and text size; None is exactly the old behaviour.
+    `panel` is the on-screen keyboard: its font never exceeds panel_font_size().
     """
     forced = environ.get("COUCHLITEOS_FONT_SIZE", "")
     size = int(forced) if re.fullmatch(r"\d{1,2}", forced) and MIN_SIZE <= int(forced) <= MAX_SIZE else None
@@ -140,6 +164,8 @@ def choose(
         size = font_size(*resolution, extra)
         if settings:
             size = min(scaled(size, settings), max(size, largest_size(*resolution, extra)))
+        if panel:
+            size = min(size, panel_font_size(*resolution, extra))
         print(f"couchliteos-foot: {resolution[0]}x{resolution[1]} -> font size {size}", file=sys.stderr)
     if pad:
         print(f"couchliteos-foot: screen edges -> pad {pad[0]}x{pad[1]}", file=sys.stderr)
@@ -147,10 +173,11 @@ def choose(
 
 
 def choose_size(
-    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep
+    environ: dict[str, str], *, run=subprocess.run, saved: dict[str, str] | None = None, sleep=time.sleep,
+    panel: bool = False,
 ) -> int | None:
     """The font size to use, or None to leave foot's configured font alone."""
-    return choose(environ, run=run, saved=saved, sleep=sleep)[0]
+    return choose(environ, run=run, saved=saved, sleep=sleep, panel=panel)[0]
 
 
 def command(size: int | None, arguments: list[str], pad: tuple[int, int] | None = None) -> list[str]:
@@ -162,8 +189,8 @@ def command(size: int | None, arguments: list[str], pad: tuple[int, int] | None 
     ]
 
 
-def plan(environ: dict[str, str]) -> tuple[int | None, tuple[int, int] | None]:
-    """Font size and pad for this start.
+def plan(environ: dict[str, str], panel: bool = False) -> tuple[int | None, tuple[int, int] | None]:
+    """Font size and pad for this start; `panel` for the docked on-screen keyboard.
 
     With no screen settings chosen (the default) this is exactly the old code path, and
     any failure in the new one falls back to it too.
@@ -171,15 +198,15 @@ def plan(environ: dict[str, str]) -> tuple[int | None, tuple[int, int] | None]:
     try:
         settings = load_settings()
         if settings is not None and (settings.edges or settings.text != "auto"):
-            return choose(environ, settings=settings)
+            return choose(environ, settings=settings, panel=panel)
     except Exception:
         pass
-    return choose_size(environ), None
+    return choose_size(environ, panel=panel), None
 
 
 def main(arguments: list[str] | None = None) -> None:
     arguments = sys.argv[1:] if arguments is None else arguments
-    size, pad = plan(dict(os.environ))
+    size, pad = plan(dict(os.environ), f"--app-id={OSK_APP_ID}" in arguments)
     os.execv(FOOT, command(size, arguments, pad))
 
 

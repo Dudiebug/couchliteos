@@ -110,6 +110,39 @@ class ChooseSizeTest(unittest.TestCase):
             )
 
 
+class KeyboardPanelTest(unittest.TestCase):
+    def test_the_panel_is_cages_bottom_forty_percent(self):
+        # Cage: (int) (height * CAGE_OSK_PANEL_SHARE), at least CAGE_OSK_PANEL_MIN_HEIGHT.
+        self.assertEqual([foot.panel_height(h) for h in (480, 600, 720, 1080, 2160)], [240, 240, 288, 432, 864])
+        self.assertEqual(foot.panel_height(200), 200)
+
+    def test_the_keyboard_font_gives_the_panel_about_thirteen_rows(self):
+        self.assertEqual(
+            [foot.panel_font_size(w, h) for w, h in [(1280, 720), (1920, 1080), (3840, 2160)]], [13, 20, 41]
+        )
+        for width, height in FontSizeTest.RESOLUTIONS:
+            columns, rows = foot.grid(width, foot.panel_height(height), foot.panel_font_size(width, height))
+            self.assertGreaterEqual(rows, foot.OSK_ROWS, (width, height))
+            self.assertGreaterEqual(columns, 80, (width, height))
+
+    def test_only_the_keyboard_app_id_gets_the_panel_font(self):
+        with mock.patch.object(foot, "detect_resolution", return_value=(1920, 1080)), mock.patch.object(
+            foot, "load_settings", return_value=None
+        ), mock.patch.object(foot.display, "load_saved_display", return_value={}), mock.patch.object(
+            foot.os, "execv"
+        ) as execv:
+            foot.main(["--app-id=couchliteos-osk", "--title", "COUCHLITEOS KEYBOARD", "--", "/bin/true"])
+            foot.main(["--fullscreen", "--title", "CouchLiteOS Launcher"])
+        self.assertEqual(execv.call_args_list[0][0][1][:3], ["/usr/bin/foot", "--font", "monospace:size=20"])
+        self.assertEqual(execv.call_args_list[1][0][1][:3], ["/usr/bin/foot", "--font", "monospace:size=24"])
+
+    def test_an_unknown_screen_or_a_forced_size_is_left_alone(self):
+        self.assertEqual(foot.choose({}, run=mock.Mock(), saved={}, panel=True, sleep=lambda _s: None)[0], None)
+        with mock.patch.object(foot, "detect_resolution", return_value=(1920, 1080)):
+            self.assertEqual(foot.choose_size({}, saved={}, panel=True), 20)
+            self.assertEqual(foot.choose_size({"COUCHLITEOS_FONT_SIZE": "12"}, saved={}, panel=True), 12)
+
+
 class CommandTest(unittest.TestCase):
     def test_the_font_goes_before_the_callers_arguments(self):
         self.assertEqual(

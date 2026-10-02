@@ -843,7 +843,25 @@ rg -q 'couchliteos_listview.py' build/configure.sh
 
 # foot starts through a wrapper that sizes the font for the screen (720p to 4K).
 rg -qF 'couchliteos_foot.py" "$CHROOT/usr/libexec/couchliteos-foot"' build/configure.sh
-rg -q '/usr/libexec/couchliteos-foot --fullscreen' scripts/couchliteos-osk-session
+rg -q "^/usr/libexec/couchliteos-foot --app-id=couchliteos-osk -o csd.preferred=none --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk$" \
+  scripts/couchliteos-osk-session
+refute rg -q -- '--fullscreen' scripts/couchliteos-osk-session
+# Cage docks that app-id along the bottom 40% (not full-screen), and applies the MOUSE SPEED setting.
+for cage_patch in foreign-toplevel osk-panel pointer-speed; do
+  test -f "config/cage/cage-0.2.0-$cage_patch.patch"
+  rg -qF "  \"\$SRC/cage-0.2.0-$cage_patch.patch\"" config/live-build/hooks/live/0050-cage.hook.chroot
+  rg -qF "install -D -m 0644 \"\$ROOT/config/cage/cage-0.2.0-$cage_patch.patch\" \\" build/configure.sh
+done
+rg -qF 'patch -p1 --forward < "$patch"' config/live-build/hooks/live/0050-cage.hook.chroot
+rg -qF '+#define CAGE_OSK_APP_ID "couchliteos-osk"' config/cage/cage-0.2.0-osk-panel.patch
+rg -qF '+#define CAGE_OSK_PANEL_SHARE 0.40' config/cage/cage-0.2.0-osk-panel.patch
+rg -q '^OSK_APP_ID = "couchliteos-osk"$' launcher/couchliteos_foot.py
+rg -q '^OSK_SHARE = 0\.40 *$' launcher/couchliteos_foot.py
+rg -qF '+#define CAGE_POINTER_SPEED_PATH "/var/lib/couchliteos/mouse-speed"' config/cage/cage-0.2.0-pointer-speed.patch
+rg -qF 'wl_event_loop_add_signal(event_loop, SIGHUP, handle_signal, &server);' config/cage/cage-0.2.0-pointer-speed.patch
+rg -qF "+libinput       = dependency('libinput')" config/cage/cage-0.2.0-pointer-speed.patch
+rg -q 'libxkbcommon-dev libinput-dev\)' config/live-build/hooks/live/0050-cage.hook.chroot
+rg -qF 'grep -aq /var/lib/couchliteos/mouse-speed "$work/cage-0.2.0/build/cage"' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -q '^FOOT = "/usr/libexec/couchliteos-foot"' launcher/couchliteos_app_runner.py
 refute rg -q '/usr/bin/foot' services/couchliteos-launcher.service scripts/couchliteos-osk-session launcher/couchliteos_app_runner.py
 # Upgrade notice: a one-time "what's new" screen, only for people who finished setup on an older version

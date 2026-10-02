@@ -8,7 +8,10 @@ rm -f -- "$request" "$payload"
 touch "$active"
 cleanup() { rm -f -- "$active"; }
 trap cleanup EXIT INT TERM
-/usr/libexec/couchliteos-foot --fullscreen --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk
+# Cage docks this app-id along the bottom of the screen (config/cage/cage-0.2.0-osk-panel.patch),
+# so the app being typed into stays visible above the keyboard. Not full-screen, foot would
+# draw a title bar: the panel has none.
+/usr/libexec/couchliteos-foot --app-id=couchliteos-osk -o csd.preferred=none --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk
 rm -f -- "$active"
 sleep 0.25
 exec /usr/libexec/couchliteos-osk --inject

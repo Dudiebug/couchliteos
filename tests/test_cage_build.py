@@ -1,4 +1,5 @@
-"""Cage rebuilt with wlr-foreign-toplevel-management, and the controller-mouse module, reach the image."""
+"""Cage rebuilt with wlr-foreign-toplevel-management, the docked keyboard and the mouse speed, and the
+controller-mouse module, reach the image."""
 
 import hashlib
 import os
@@ -14,6 +15,9 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOOK = ROOT / "config/live-build/hooks/live/0050-cage.hook.chroot"
 PATCH = ROOT / "config/cage/cage-0.2.0-foreign-toplevel.patch"
+OSK_PATCH = ROOT / "config/cage/cage-0.2.0-osk-panel.patch"
+SPEED_PATCH = ROOT / "config/cage/cage-0.2.0-pointer-speed.patch"
+PATCHES = (PATCH, OSK_PATCH, SPEED_PATCH)  # applied in this order
 CONFIGURE = ROOT / "build/configure.sh"
 SOURCES = ROOT / "build/sources.lock"
 TARBALL = ROOT / "build/downloads/cage-0.2.0.tar.gz"
@@ -62,7 +66,7 @@ class CageHookTest(unittest.TestCase):
         # The check aborts the hook rather than building unverified sources.
         self.assertRegex(text(HOOK), r"sha256sum --check --quiet - \|\| \{[^}]*exit 1")
 
-    def test_the_downloaded_tarball_matches_the_pin_and_takes_the_patch(self):
+    def test_the_downloaded_tarball_matches_the_pin_and_takes_the_patches(self):
         if not TARBALL.exists():
             self.skipTest("run make fetch-apps to download the Cage release")
         self.assertEqual(hashlib.sha256(TARBALL.read_bytes()).hexdigest(), hook_value("TARBALL_SHA256"))
@@ -71,23 +75,35 @@ class CageHookTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with tarfile.open(TARBALL) as archive:
                 archive.extractall(directory, filter="data")
-            result = subprocess.run(
-                ["patch", "-p1", "--forward", "--dry-run", "-i", str(PATCH)],
-                cwd=pathlib.Path(directory) / "cage-0.2.0", capture_output=True, text=True,
-            )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for patch in PATCHES:  # each applies on top of the ones before it, without fuzz
+                result = subprocess.run(
+                    ["patch", "-p1", "--forward", "--fuzz=0", "-i", str(patch)],
+                    cwd=pathlib.Path(directory) / "cage-0.2.0", capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("offset", result.stdout, patch.name)
+
+    def test_the_hook_applies_every_patch_in_order(self):
+        names = re.findall(r'^  "\$SRC/(cage-0\.2\.0-[a-z-]+\.patch)"$', text(HOOK), re.MULTILINE)
+        self.assertEqual(names, [patch.name for patch in PATCHES])
+        self.assertIn('for source in "$TARBALL" "${PATCHES[@]}"; do', text(HOOK))
+        self.assertEqual(sorted(path.name for path in PATCH.parent.glob("*.patch")), sorted(names))
 
     def test_only_debians_cage_0_2_0_is_replaced(self):
         self.assertIn("dpkg-query -W -f '${Version}' cage) == 0.2.0-*", text(HOOK))
 
     def test_the_build_is_checked_for_the_foreign_toplevel_manager(self):
-        self.assertIn('patch -p1 --forward < "$PATCH"', text(HOOK))
+        self.assertIn('for patch in "${PATCHES[@]}"; do\n    patch -p1 --forward < "$patch"\n  done', text(HOOK))
         self.assertIn("nm -D --undefined-only", text(HOOK))
         self.assertIn("grep -q wlr_foreign_toplevel_manager_v1_create", text(HOOK))
         # Cage 0.2.0 has no xwayland option; the hook checks meson's summary instead.
         self.assertNotIn("-Dxwayland", text(HOOK))
         self.assertIn("xwayland *: *true", text(HOOK))
         self.assertIn('> "$work/symbols"', text(HOOK), "nm writes a file: grep -q must not SIGPIPE it")
+        self.assertIn('grep -q libinput_device_config_accel_set_speed "$work/symbols"', text(HOOK))
+        self.assertIn('grep -aq couchliteos-osk "$work/cage-0.2.0/build/cage"', text(HOOK))
+        # The launcher's SIGHUP guard looks for this path in /proc/<pid>/exe.
+        self.assertIn('grep -aq /var/lib/couchliteos/mouse-speed "$work/cage-0.2.0/build/cage"', text(HOOK))
 
     def test_debians_binary_is_diverted_once_not_overwritten(self):
         hook = text(HOOK)
@@ -101,7 +117,7 @@ class CageHookTest(unittest.TestCase):
         hook = text(HOOK)
         deps = re.search(r"BUILD_DEPS=\(([^)]*)\)", hook)
         self.assertIsNotNone(deps)
-        for package in ("meson", "ninja-build", "gcc", "libwlroots-0.18-dev", "wayland-protocols"):
+        for package in ("meson", "ninja-build", "gcc", "libwlroots-0.18-dev", "wayland-protocols", "libinput-dev"):
             self.assertIn(package, deps.group(1).split())
         # Only what the build pulled in is removed: the before/after package lists.
         before = hook.index('sort > "$before"')
@@ -159,7 +175,12 @@ class CagePatchTest(unittest.TestCase):
             self.assertIn(f"+\t\twl_list_remove(&view->{listener}.link);", patch)
 
     def test_hunk_line_counts_match_their_headers(self):
-        lines = text(PATCH).splitlines()
+        for patch, least in ((PATCH, 11), (OSK_PATCH, 5), (SPEED_PATCH, 6)):
+            with self.subTest(patch=patch.name):
+                self.assertGreaterEqual(self.count_hunks(patch), least)
+
+    def count_hunks(self, patch):
+        lines = text(patch).splitlines()
         index = 0
         hunks = 0
         while index < len(lines):
@@ -181,8 +202,70 @@ class CagePatchTest(unittest.TestCase):
                 else:
                     break
                 index += 1
-            self.assertEqual((old, new), (0, 0), f"hunk {hunks} ending near line {index}")
-        self.assertGreater(hunks, 10)
+            self.assertEqual((old, new), (0, 0), f"{patch.name}: hunk {hunks} ending near line {index}")
+        return hunks
+
+
+class OskPanelPatchTest(unittest.TestCase):
+    def test_patch_touches_only_the_view_code(self):
+        self.assertEqual(re.findall(r"^\+\+\+ b/(\S+)", text(OSK_PATCH), re.MULTILINE), ["view.c", "view.h", "xdg_shell.c"])
+
+    def test_the_keyboard_app_id_is_docked_at_the_bottom_forty_percent(self):
+        patch = text(OSK_PATCH)
+        self.assertIn('+#define CAGE_OSK_APP_ID "couchliteos-osk"', patch)
+        self.assertIn("+#define CAGE_OSK_PANEL_SHARE 0.40", patch)
+        self.assertIn("+#define CAGE_OSK_PANEL_MIN_HEIGHT 240", patch)
+        self.assertIn("+\treturn app_id && strcmp(app_id, CAGE_OSK_APP_ID) == 0;", patch)
+        self.assertIn("+\tint height = (int) (layout_box->height * CAGE_OSK_PANEL_SHARE);", patch)
+        self.assertIn("+\tview->ly = layout_box->y + layout_box->height - height;", patch)
+        self.assertIn("+\tview->impl->maximize(view, layout_box->width, height);", patch)
+        self.assertIn("+\tif (view_is_osk(view)) {\n+\t\tview_dock_osk(view, &layout_box);", patch)
+
+    def test_the_keyboard_stays_on_top_with_the_focus_and_ignores_fullscreen(self):
+        patch = text(OSK_PATCH)
+        self.assertIn("+\t\t\twlr_scene_node_raise_to_top(&view->scene_tree->node);", patch)
+        # Mapping or raising another view keeps the keyboard above it and focused.
+        self.assertEqual(patch.count("+\tstruct cg_view *osk = view_raise_osk(view->server);"), 2)
+        self.assertEqual(patch.count("+\tif (osk && osk != view)\n+\t\treturn;\n \tseat_set_focus(view->server->seat, view);"), 2)
+        self.assertIn("+\tif (view_is_osk(&xdg_shell_view->view)) {", patch)
+
+    def test_foot_sizes_its_font_for_the_same_panel(self):
+        foot = text(ROOT / "launcher/couchliteos_foot.py")
+        self.assertIn('OSK_APP_ID = "couchliteos-osk"', foot)
+        self.assertIn("OSK_SHARE = 0.40", foot)
+        self.assertIn("OSK_MIN_HEIGHT = 240", foot)
+        self.assertIn("--app-id=couchliteos-osk", text(ROOT / "scripts/couchliteos-osk-session"))
+
+
+class PointerSpeedPatchTest(unittest.TestCase):
+    def test_patch_touches_the_seat_signals_and_build(self):
+        self.assertEqual(
+            re.findall(r"^\+\+\+ b/(\S+)", text(SPEED_PATCH), re.MULTILINE), ["cage.c", "meson.build", "seat.c", "seat.h"]
+        )
+        self.assertIn("+libinput       = dependency('libinput')", text(SPEED_PATCH))
+        self.assertIn("+    libinput,", text(SPEED_PATCH))
+
+    def test_the_speed_file_is_read_clamped_and_applied_through_libinput(self):
+        patch = text(SPEED_PATCH)
+        self.assertIn('+#define CAGE_POINTER_SPEED_PATH "/var/lib/couchliteos/mouse-speed"', patch)
+        self.assertIn("+\t\t\t*speed = value < -1.0 ? -1.0 : value > 1.0 ? 1.0 : value;", patch)
+        self.assertIn("isfinite(value)", patch)
+        self.assertIn("+\tif (!wlr_input_device_is_libinput(device))", patch)
+        self.assertIn("+\tif (!libinput_device_config_accel_is_available(handle))", patch)
+        self.assertIn("+\t\tspeed = libinput_device_config_accel_get_default_speed(handle);", patch)
+        self.assertIn("libinput_device_config_accel_set_speed(handle, speed)", patch)
+
+    def test_new_pointers_and_sighup_apply_it(self):
+        patch = text(SPEED_PATCH)
+        self.assertIn("+\tpointer_apply_speed(wlr_pointer, have_speed, speed);\n }", patch)
+        self.assertIn("+\twl_list_for_each (pointer, &seat->pointers, link) {", patch)
+        self.assertIn(
+            "+\tstruct wl_event_source *sighup_source = wl_event_loop_add_signal(event_loop, SIGHUP, handle_signal, &server);",
+            patch,
+        )
+        self.assertIn("+\tcase SIGHUP:", patch)
+        self.assertIn("+\t\tif (server->seat)\n+\t\t\tseat_apply_pointer_speed(server->seat);", patch)
+        self.assertIn("+\twl_event_source_remove(sighup_source);", patch)
 
 
 class ImageContentsTest(unittest.TestCase):
@@ -191,8 +274,10 @@ class ImageContentsTest(unittest.TestCase):
         self.assertEqual(hook_value("SRC"), "/usr/src/couchliteos-cage")
         self.assertIn('install -D -m 0644 "$ROOT/build/downloads/cage-0.2.0.tar.gz" '
                       '"$CHROOT/usr/src/couchliteos-cage/cage-0.2.0.tar.gz"', configure)
-        self.assertRegex(configure, r'install -D -m 0644 "\$ROOT/config/cage/cage-0\.2\.0-foreign-toplevel\.patch" '
-                                    r'\\\n\s+"\$CHROOT/usr/src/couchliteos-cage/cage-0\.2\.0-foreign-toplevel\.patch"')
+        for patch in PATCHES:
+            name = re.escape(patch.name)
+            self.assertRegex(configure, rf'install -D -m 0644 "\$ROOT/config/cage/{name}" '
+                                        rf'\\\n\s+"\$CHROOT/usr/src/couchliteos-cage/{name}"')
 
     def test_configure_installs_the_pointer_module_next_to_the_launcher(self):
         configure = text(CONFIGURE)

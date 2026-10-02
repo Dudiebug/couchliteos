@@ -133,10 +133,15 @@ install -D -m 0644 "$ROOT/build/applications.lock" \
   "$CHROOT/usr/share/couchliteos/applications.lock"
 install -D -m 0644 "$ROOT/build/sources.lock" \
   "$CHROOT/usr/share/couchliteos/sources.lock"
-# Rebuilt with foreign-toplevel support by hooks/live/0050-cage.hook.chroot, which deletes them.
+# Rebuilt with foreign-toplevel support, the docked keyboard and the mouse speed by
+# hooks/live/0050-cage.hook.chroot, which deletes them.
 install -D -m 0644 "$ROOT/build/downloads/cage-0.2.0.tar.gz" "$CHROOT/usr/src/couchliteos-cage/cage-0.2.0.tar.gz"
 install -D -m 0644 "$ROOT/config/cage/cage-0.2.0-foreign-toplevel.patch" \
   "$CHROOT/usr/src/couchliteos-cage/cage-0.2.0-foreign-toplevel.patch"
+install -D -m 0644 "$ROOT/config/cage/cage-0.2.0-osk-panel.patch" \
+  "$CHROOT/usr/src/couchliteos-cage/cage-0.2.0-osk-panel.patch"
+install -D -m 0644 "$ROOT/config/cage/cage-0.2.0-pointer-speed.patch" \
+  "$CHROOT/usr/src/couchliteos-cage/cage-0.2.0-pointer-speed.patch"
 for manifest in "$ROOT"/config/apps.d/*.ini; do
   install -D -m 0644 "$manifest" "$CHROOT/usr/share/couchliteos/apps.d/$(basename "$manifest")"
 done

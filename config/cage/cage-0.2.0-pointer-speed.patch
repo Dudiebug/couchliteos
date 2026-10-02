@@ -1,0 +1,180 @@
+Cage: apply the MOUSE SPEED setting to mice and touchpads.
+
+Cage 0.2.0 leaves libinput's pointer acceleration at its default. This reads a
+number from /var/lib/couchliteos/mouse-speed (the launcher writes it), clamps
+it to libinput's -1..1 and sets it as the acceleration speed of every pointer
+device that has one: when the device is added, and again for all pointers on
+SIGHUP, which the launcher sends after the setting changes. A missing or
+malformed file leaves (or puts back) libinput's default speed. Links libinput,
+which wlroots' libinput backend already brings into the image.
+Applied after cage-0.2.0-osk-panel.patch with patch -p1 by
+config/live-build/hooks/live/0050-cage.hook.chroot.
+
+diff -ruN a/cage.c b/cage.c
+--- a/cage.c
++++ b/cage.c
+@@ -216,6 +216,11 @@
+ 	case SIGTERM:
+ 		server_terminate(server);
+ 		return 0;
++	case SIGHUP:
++		/* The mouse speed setting changed: apply it to every pointer. */
++		if (server->seat)
++			seat_apply_pointer_speed(server->seat);
++		return 0;
+ 	default:
+ 		return 0;
+ 	}
+@@ -313,6 +318,7 @@
+ 	struct wl_event_loop *event_loop = wl_display_get_event_loop(server.wl_display);
+ 	struct wl_event_source *sigint_source = wl_event_loop_add_signal(event_loop, SIGINT, handle_signal, &server);
+ 	struct wl_event_source *sigterm_source = wl_event_loop_add_signal(event_loop, SIGTERM, handle_signal, &server);
++	struct wl_event_source *sighup_source = wl_event_loop_add_signal(event_loop, SIGHUP, handle_signal, &server);
+ 
+ 	server.backend = wlr_backend_autocreate(event_loop, &server.session);
+ 	if (!server.backend) {
+@@ -617,6 +623,7 @@
+ 
+ 	wl_event_source_remove(sigint_source);
+ 	wl_event_source_remove(sigterm_source);
++	wl_event_source_remove(sighup_source);
+ 	if (sigchld_source) {
+ 		wl_event_source_remove(sigchld_source);
+ 	}
+diff -ruN a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -39,6 +39,7 @@
+ wayland_protos = dependency('wayland-protocols', version: '>=1.14')
+ wayland_server = dependency('wayland-server')
+ xkbcommon      = dependency('xkbcommon')
++libinput       = dependency('libinput')
+ math           = cc.find_library('m')
+ 
+ wl_protocol_dir = wayland_protos.get_variable('pkgdatadir')
+@@ -144,6 +145,7 @@
+     wayland_server,
+     wlroots,
+     xkbcommon,
++    libinput,
+     math,
+   ],
+   install: true,
+diff -ruN a/seat.c b/seat.c
+--- a/seat.c
++++ b/seat.c
+@@ -11,11 +11,16 @@
+ #include "config.h"
+ 
+ #include <assert.h>
++#include <errno.h>
++#include <libinput.h>
+ #include <linux/input-event-codes.h>
++#include <math.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <wayland-server-core.h>
+ #include <wlr/backend.h>
++#include <wlr/backend/libinput.h>
+ #include <wlr/backend/multi.h>
+ #include <wlr/backend/session.h>
+ #include <wlr/types/wlr_cursor.h>
+@@ -203,6 +208,67 @@
+ 	update_capabilities(seat);
+ }
+ 
++/* Reads the mouse and touchpad speed (libinput acceleration, -1 to 1) chosen in
++   the launcher's settings. False when the file is missing or does not hold a number. */
++static bool
++read_pointer_speed(double *speed)
++{
++	FILE *file = fopen(CAGE_POINTER_SPEED_PATH, "r");
++	if (!file)
++		return false;
++
++	char buffer[32];
++	bool valid = false;
++	if (fgets(buffer, sizeof(buffer), file)) {
++		char *end;
++		errno = 0;
++		double value = strtod(buffer, &end);
++		while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
++			end++;
++		if (end != buffer && *end == '\0' && errno == 0 && isfinite(value)) {
++			*speed = value < -1.0 ? -1.0 : value > 1.0 ? 1.0 : value;
++			valid = true;
++		}
++	}
++	fclose(file);
++	if (!valid)
++		wlr_log(WLR_ERROR, "Ignoring %s: not a number", CAGE_POINTER_SPEED_PATH);
++	return valid;
++}
++
++/* Without a speed setting the device keeps (or goes back to) libinput's default. */
++static void
++pointer_apply_speed(struct wlr_pointer *wlr_pointer, bool have_speed, double speed)
++{
++	struct wlr_input_device *device = &wlr_pointer->base;
++	if (!wlr_input_device_is_libinput(device))
++		return;
++
++	struct libinput_device *handle = wlr_libinput_get_device_handle(device);
++	if (!libinput_device_config_accel_is_available(handle))
++		return;
++
++	if (!have_speed)
++		speed = libinput_device_config_accel_get_default_speed(handle);
++	if (libinput_device_config_accel_set_speed(handle, speed) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
++		wlr_log(WLR_ERROR, "Cannot set pointer speed %.2f on %s", speed, device->name);
++		return;
++	}
++	wlr_log(WLR_INFO, "Pointer speed %.2f on %s", speed, device->name);
++}
++
++void
++seat_apply_pointer_speed(struct cg_seat *seat)
++{
++	double speed = 0.0;
++	bool have_speed = read_pointer_speed(&speed);
++
++	struct cg_pointer *pointer;
++	wl_list_for_each (pointer, &seat->pointers, link) {
++		pointer_apply_speed(pointer->pointer, have_speed, speed);
++	}
++}
++
+ static void
+ handle_new_pointer(struct cg_seat *seat, struct wlr_pointer *wlr_pointer)
+ {
+@@ -221,6 +287,10 @@
+ 	wl_signal_add(&wlr_pointer->base.events.destroy, &pointer->destroy);
+ 
+ 	map_input_device_to_output(seat, &wlr_pointer->base, wlr_pointer->output_name);
++
++	double speed = 0.0;
++	bool have_speed = read_pointer_speed(&speed);
++	pointer_apply_speed(wlr_pointer, have_speed, speed);
+ }
+ 
+ static void
+diff -ruN a/seat.h b/seat.h
+--- a/seat.h
++++ b/seat.h
+@@ -13,6 +13,8 @@
+ 
+ #define DEFAULT_XCURSOR "left_ptr"
+ #define XCURSOR_SIZE 24
++/* Written by the launcher's MOUSE SPEED setting; Cage re-reads it on SIGHUP. */
++#define CAGE_POINTER_SPEED_PATH "/var/lib/couchliteos/mouse-speed"
+ 
+ struct cg_seat {
+ 	struct wlr_seat *seat;
+@@ -92,5 +94,6 @@
+ struct cg_view *seat_get_focus(struct cg_seat *seat);
+ void seat_set_focus(struct cg_seat *seat, struct cg_view *view);
+ void seat_center_cursor(struct cg_seat *seat);
++void seat_apply_pointer_speed(struct cg_seat *seat);
+ 
+ #endif

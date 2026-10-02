@@ -1,9 +1,14 @@
 #!/usr/bin/python3
-"""Full-screen buffered controller keyboard and uinput injector."""
+"""Buffered controller keyboard, docked along the bottom of the screen, and uinput injector.
+
+Cage places the keyboard's foot window (app-id couchliteos-osk) in the bottom 40% of the
+screen, about 13 terminal rows, so the app being typed into stays visible above it.
+"""
 
 from __future__ import annotations
 
 import curses
+import dataclasses
 import json
 import os
 import pathlib
@@ -37,6 +42,11 @@ ACTIONS = (
 )
 # Two rows of at most 45 columns; one row of nine labels needs 88 and is cut off below 1080p.
 ACTION_ROWS = (ACTIONS[:5], ACTIONS[5:])
+TITLE = "COUCHLITEOS KEYBOARD"
+HINT = "A / CROSS SELECTS  -  Y / SQUARE DELETES  -  B / CIRCLE CANCELS"  # ASCII: no locale is set here
+SHORT_HINT = "A SELECT - Y DELETE - B CANCEL"
+# The text line, the six key rows and the hint; borders and spacing are added when there is room.
+MIN_ROWS = 1 + len(LETTERS) + len(ACTION_ROWS) + 1
 
 
 class Keyboard:
@@ -205,13 +215,53 @@ def inject(path: pathlib.Path = PAYLOAD) -> int:
     return 0
 
 
+@dataclasses.dataclass(frozen=True)
+class Layout:
+    """Screen rows of each part of the keyboard; None for a part left out."""
+
+    border: bool
+    title: int | None
+    text: int
+    keys: tuple[int, ...]
+    hint: int | None
+
+
+def layout(height: int) -> Layout:
+    """Where everything goes in a panel `height` lines high.
+
+    The text line, the six key rows and the hint come first (MIN_ROWS lines). Spare lines
+    then go, in order, to a border (two lines, with the title in the top one), a blank line
+    under the text, one above the hint, one between the letters and the actions, and a
+    blank first line; whatever is left over centres the block. Below MIN_ROWS the hint goes,
+    then the bottom key rows are cut.
+    """
+    border = height >= MIN_ROWS + 2
+    top = 1 if border else 0
+    spare = height - 2 * top - MIN_ROWS
+    gaps = [spare > index for index in range(4)]  # after text, before hint, mid keys, leading
+    spare -= sum(gaps)
+    row = top + gaps[3] + max(0, spare) // 2
+    text = row
+    row += 1 + gaps[0]
+    keys = []
+    for index in range(len(LETTERS) + len(ACTION_ROWS)):
+        if index == len(LETTERS):
+            row += gaps[2]
+        keys.append(row)
+        row += 1
+    hint = row + gaps[1] if height >= MIN_ROWS else None
+    return Layout(border=border, title=0 if border else None, text=text, keys=tuple(keys), hint=hint)
+
+
 def draw(screen: curses.window, keyboard: Keyboard) -> None:
     screen.erase()
     height, width = screen.getmaxyx()
-    try:
-        screen.border()
-    except curses.error:
-        pass
+    places = layout(height)
+    if places.border:
+        try:
+            screen.border()
+        except curses.error:
+            pass
 
     def centered(row: int, text: str) -> None:
         try:
@@ -219,18 +269,15 @@ def draw(screen: curses.window, keyboard: Keyboard) -> None:
         except curses.error:
             pass
 
-    centered(2, "COUCHLITEOS KEYBOARD")
+    if places.title is not None:
+        centered(places.title, f" {TITLE} ")
     shown = "*" * len(keyboard.text) if keyboard.masked else keyboard.text
-    centered(4, shown[-max(1, width - 10):] or "_")
-    # Key rows start at 6 and are spaced by 2 lines when the window is tall enough (1080p),
-    # by 1 otherwise (720p and 768p terminals are only 18-19 lines high); the footer stays below.
-    first, footer_row = 6, height - 3
-    gap = 2 if first + 2 * (len(keyboard.rows) - 1) < footer_row - 1 else 1
+    centered(places.text, shown[-max(1, width - 10):] or "_")
     for row_index, row in enumerate(keyboard.rows):
         cells = [f"[{key}]" if (row_index, column) != (keyboard.row, keyboard.column) else f">{key}<" for column, key in enumerate(row)]
-        centered(first + row_index * gap, " ".join(cells))
-    footer = "A / CROSS SELECTS  -  Y / SQUARE DELETES  -  B / CIRCLE CANCELS"  # ASCII: no locale is set here
-    centered(footer_row, footer)
+        centered(places.keys[row_index], " ".join(cells))
+    if places.hint is not None:
+        centered(places.hint, HINT if len(HINT) <= width - 2 else SHORT_HINT)
     screen.refresh()
 
 
