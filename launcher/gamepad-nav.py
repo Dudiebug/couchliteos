@@ -147,6 +147,7 @@ class Pointer:
 
     def close(self) -> None:
         if self.device is None:
+            self.held.clear()  # never sent (no device): forget them or the next press is swallowed
             return
         for button in sorted(self.held):
             self.button(button, False)

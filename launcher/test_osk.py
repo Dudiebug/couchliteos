@@ -1,6 +1,8 @@
 import os
 import pathlib
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -172,6 +174,79 @@ class ControllerDeleteTest(unittest.TestCase):
         ):
             osk.ui(screen)
         self.assertEqual(typed, [("a", False)])
+
+
+class InjectTest(unittest.TestCase):
+    """inject() waits for the compositor to open the new keyboard before typing, and for
+    the last release to be read before the keyboard goes away."""
+
+    def run_inject(self, text, enter=False, payload=True):
+        timeline = []  # ("open"/"write"/"syn"/"close"/"sleep", detail)
+
+        class Device:
+            def __init__(self, capabilities, name):
+                timeline.append(("open", name))
+                self.capabilities = capabilities
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                timeline.append(("close", None))
+
+            def write(self, _kind, code, value):
+                timeline.append(("write", (code, value)))
+
+            def syn(self):
+                timeline.append(("syn", None))
+
+        codes = Codes()
+        codes.EV_KEY = 1
+        fake = types.ModuleType("evdev")
+        fake.UInput = Device
+        fake.ecodes = codes
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "payload.json"
+            if payload:
+                osk.atomic_payload(text, enter, path)
+            with mock.patch.dict(sys.modules, {"evdev": fake}), mock.patch.object(
+                osk.time, "sleep", side_effect=lambda seconds: timeline.append(("sleep", seconds))
+            ):
+                result = osk.inject(path)
+            self.assertFalse(path.exists(), "the payload (maybe a password) is never left behind")
+        return result, timeline, codes
+
+    def test_typing_waits_for_the_new_keyboard_to_settle_first(self):
+        result, timeline, _codes = self.run_inject("ab")
+        self.assertEqual(result, 0)
+        self.assertEqual(timeline[0], ("open", "CouchLiteOS Buffered Keyboard"))
+        self.assertEqual(timeline[1], ("sleep", osk.DEVICE_SETTLE))
+        self.assertGreaterEqual(osk.DEVICE_SETTLE, 0.2, "long enough for udev and libinput")
+        first_write = next(index for index, (kind, _detail) in enumerate(timeline) if kind == "write")
+        self.assertGreater(first_write, 1)
+
+    def test_the_keyboard_stays_a_moment_after_the_last_key(self):
+        _result, timeline, codes = self.run_inject("a", enter=True)
+        self.assertEqual(timeline[-1], ("close", None))
+        self.assertEqual(timeline[-2], ("sleep", 0.1))
+        last_write = max(index for index, (kind, _detail) in enumerate(timeline) if kind == "write")
+        self.assertEqual(timeline[last_write], ("write", (codes.KEY_ENTER, 0)), "Enter is released before the wait")
+        self.assertLess(last_write, len(timeline) - 2)
+
+    def test_every_key_is_pressed_and_released_with_shift_around_capitals(self):
+        _result, timeline, codes = self.run_inject("aA")
+        writes = [detail for kind, detail in timeline if kind == "write"]
+        a = codes.KEY_A
+        self.assertEqual(writes, [(a, 1), (a, 0), (codes.KEY_LEFTSHIFT, 1), (a, 1), (a, 0), (codes.KEY_LEFTSHIFT, 0)])
+        sleeps = [detail for kind, detail in timeline if kind == "sleep"]
+        self.assertEqual(sleeps[0], osk.DEVICE_SETTLE)
+        self.assertEqual(sleeps[-1], 0.1)
+        self.assertEqual(len(sleeps), 4, "settle, one short pause per character, the final wait")
+
+    def test_no_payload_creates_no_device_and_does_not_wait(self):
+        result, timeline, _codes = self.run_inject("", payload=False)
+        self.assertEqual(result, 0)
+        self.assertEqual(timeline, [])
 
 
 class MaskRequestTest(unittest.TestCase):

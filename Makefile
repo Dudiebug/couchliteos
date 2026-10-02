@@ -57,6 +57,7 @@ test:
 	python3 -m unittest -v tests/test_network_ready.py
 	python3 -m unittest -v tests/test_host_address_modes.py
 	python3 -m unittest -v tests/test_bluetoothd_helpers.py
+	python3 -m unittest -v tests/test_cage_build.py
 	$(MAKE) -C launcher test
 
 

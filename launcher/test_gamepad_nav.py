@@ -735,5 +735,529 @@ class GamepadMappingTest(unittest.TestCase):
         self.assertTrue(slept)
 
 
+class FakeMouse:
+    """Stands in for the controller-mouse UInput: records (type, code, value) writes and syns."""
+
+    def __init__(self, fail=False):
+        self.events = []
+        self.syns = 0
+        self.closed = False
+        self.fail = fail
+
+    def write(self, kind, code, value):
+        if self.fail:
+            raise OSError(19, "No such device")
+        self.events.append((kind, code, value))
+
+    def syn(self):
+        self.syns += 1
+
+    def close(self):
+        self.closed = True
+
+
+def key_event(code, value, kind=Codes.EV_KEY):
+    return SimpleNamespace(type=kind, code=code, value=value)
+
+
+class PointerModeTest(unittest.TestCase):
+    """Controller mouse (pointer mode) for apps without controller support, and Super opening Home."""
+
+    @classmethod
+    def setUpClass(cls):
+        fake = types.ModuleType("evdev")
+        fake.InputDevice = object
+        fake.UInput = object
+        fake.ecodes = Codes
+        sys.modules["evdev"] = fake
+        path = pathlib.Path(__file__).with_name("gamepad-nav.py")
+        spec = importlib.util.spec_from_file_location("gamepad_nav_pointer", path)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def run_dir(self, *, app=True, pointer=True, focus=False, osk=False):
+        """Point every marker gamepad-nav reads at a temporary directory with the given ones present."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        run = pathlib.Path(directory)
+        for present, name in ((app, "app-active"), (pointer, "pointer-mode"), (focus, "launcher-focus"),
+                              (osk, "osk-active")):
+            if present:
+                (run / name).touch()
+        for attribute, name in (("APP_ACTIVE", "app-active"), ("POINTER_MODE", "pointer-mode"),
+                                ("LAUNCHER_FOCUS", "launcher-focus"), ("OSK_ACTIVE", "osk-active"),
+                                ("START_OSK", "start-osk"), ("HOME_REQUEST", "home.request")):
+            patcher = mock.patch.object(self.module, attribute, run / name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for attribute, value in (("_last_state_check", -1e9), ("_last_state", False)):
+            patcher = mock.patch.object(self.module, attribute, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return run
+
+    def pads(self, mouse=None):
+        pads = self.module.Pads()
+        mouse = mouse or FakeMouse()
+        pads.pointer = self.module.Pointer(factory=lambda: mouse)
+        return pads, mouse
+
+    def drive(self, script, *, run=None, mouse=None, low=-32768, high=32767):
+        """Pump one pad through [(seconds, [(type, code, value), ...], optional hook(run, pads))].
+
+        Returns (navigation keys pressed as (seconds, key), select timeouts, pads, mouse, pad)."""
+        module = self.module
+        run = run or self.run_dir()
+        pad = ScriptedPad(low, high)
+        pads, mouse = self.pads(mouse)
+        pads.devices = {"/dev/input/event3": pad}
+        clock = {"now": 0.0}
+        pads.clock = lambda: clock["now"]
+        pressed, timeouts = [], []
+        nav = mock.Mock()
+        nav.write.side_effect = lambda _type, code, value: pressed.append((clock["now"], code)) if value == 1 else None
+        pad.grab = mock.Mock()
+        pad.ungrab = mock.Mock()
+
+        def fake_select(devices, _writers, _errors, timeout):
+            timeouts.append(timeout)
+            return (devices if pad.batches else []), [], []
+
+        with mock.patch.object(module.select, "select", side_effect=fake_select):
+            for step in script:
+                clock["now"] = step[0]
+                if len(step) > 2:
+                    step[2](run, pads)
+                    module._last_state_check = -1e9
+                if step[1]:
+                    pad.batches.append([SimpleNamespace(type=t, code=c, value=v) for t, c, v in step[1]])
+                pads.pump(nav)
+        return pressed, timeouts, pads, mouse, pad
+
+    @staticmethod
+    def moved(mouse, code):
+        return sum(value for kind, event_code, value in mouse.events if kind == Codes.EV_REL and event_code == code)
+
+    @staticmethod
+    def clicks(mouse):
+        return [(code, value) for kind, code, value in mouse.events if kind == Codes.EV_KEY]
+
+    # stick_curve
+
+    def test_the_stick_curve_ignores_the_dead_zone_and_is_quadratic_beyond_it(self):
+        curve = self.module.stick_curve
+        for value in (0.0, 0.05, -0.1, 0.149, -0.149):
+            self.assertEqual(curve(value), 0.0, value)
+        self.assertAlmostEqual(curve(1.0), 1.0)
+        self.assertAlmostEqual(curve(-1.0), -1.0)
+        halfway = self.module.POINTER_DEADZONE + (1 - self.module.POINTER_DEADZONE) / 2
+        self.assertAlmostEqual(curve(halfway), 0.25)
+        self.assertAlmostEqual(curve(-halfway), -0.25)
+        self.assertEqual(curve(1.2), 1.0, "a pad reporting past its range does not speed up")
+        self.assertEqual(curve(-1.2), -1.0)
+        samples = [curve(step / 100) for step in range(0, 101)]
+        self.assertEqual(samples, sorted(samples), "a harder push is never slower")
+
+    # Pointer (the virtual mouse)
+
+    def test_the_mouse_device_exists_only_while_open(self):
+        made = []
+        pointer = self.module.Pointer(factory=lambda: made.append(FakeMouse()) or made[-1])
+        self.assertIsNone(pointer.device)
+        pointer.move(5, 5)  # nothing to write to: no error
+        self.assertEqual(made, [])
+        pointer.open()
+        pointer.open()
+        self.assertEqual(len(made), 1, "opening twice makes one device")
+        pointer.close()
+        self.assertTrue(made[0].closed)
+        self.assertIsNone(pointer.device)
+        pointer.close()  # closing again is harmless
+
+    def test_a_mouse_that_cannot_be_created_is_skipped(self):
+        pointer = self.module.Pointer(factory=mock.Mock(side_effect=OSError(13, "Permission denied")))
+        pointer.open()
+        self.assertIsNone(pointer.device)
+        pointer.move(3, 3)
+        pointer.scroll(1, 0)
+        pointer.close()
+
+    def test_move_and_scroll_send_only_the_axes_that_changed_then_one_sync(self):
+        mouse = FakeMouse()
+        pointer = self.module.Pointer(factory=lambda: mouse)
+        pointer.open()
+        pointer.move(7, 0)
+        self.assertEqual(mouse.events, [(Codes.EV_REL, Codes.REL_X, 7)])
+        self.assertEqual(mouse.syns, 1)
+        pointer.move(0, 0)
+        pointer.scroll(0, 0)
+        self.assertEqual(mouse.syns, 1, "no motion means nothing is written")
+        pointer.move(-2, 3)
+        pointer.scroll(1, -1)
+        self.assertEqual(mouse.events[1:], [
+            (Codes.EV_REL, Codes.REL_X, -2), (Codes.EV_REL, Codes.REL_Y, 3),
+            (Codes.EV_REL, Codes.REL_WHEEL, 1), (Codes.EV_REL, Codes.REL_HWHEEL, -1),
+        ])
+        self.assertEqual(mouse.syns, 3)
+
+    def test_buttons_are_sent_once_per_change(self):
+        mouse = FakeMouse()
+        pointer = self.module.Pointer(factory=lambda: mouse)
+        pointer.open()
+        pointer.button(Codes.BTN_LEFT, True)
+        pointer.button(Codes.BTN_LEFT, True)
+        pointer.button(Codes.BTN_LEFT, False)
+        pointer.button(Codes.BTN_LEFT, False)
+        self.assertEqual(self.clicks(mouse), [(Codes.BTN_LEFT, 1), (Codes.BTN_LEFT, 0)])
+
+    def test_closing_releases_held_buttons_so_nothing_stays_pressed(self):
+        mouse = FakeMouse()
+        pointer = self.module.Pointer(factory=lambda: mouse)
+        pointer.open()
+        pointer.button(Codes.BTN_RIGHT, True)
+        pointer.button(Codes.BTN_LEFT, True)
+        pointer.close()
+        self.assertEqual(self.clicks(mouse)[2:], [(Codes.BTN_LEFT, 0), (Codes.BTN_RIGHT, 0)])
+        self.assertTrue(mouse.closed)
+        self.assertEqual(pointer.held, set())
+
+    def test_a_click_held_while_the_mouse_could_not_be_made_is_not_stuck_later(self):
+        # The first open fails (uinput busy); A is pressed and the mode turns off and on again.
+        mouse = FakeMouse()
+        factory = mock.Mock(side_effect=[OSError(16, "Device or resource busy"), mouse])
+        pointer = self.module.Pointer(factory=factory)
+        pointer.open()
+        pointer.button(Codes.BTN_LEFT, True)
+        pointer.close()
+        pointer.open()
+        pointer.button(Codes.BTN_LEFT, True)
+        self.assertEqual(self.clicks(mouse), [(Codes.BTN_LEFT, 1)], "the next press must click")
+
+    def test_a_vanished_mouse_does_not_raise(self):
+        mouse = FakeMouse(fail=True)
+        pointer = self.module.Pointer(factory=lambda: mouse)
+        pointer.open()
+        pointer.move(1, 1)
+        pointer.button(Codes.BTN_LEFT, True)
+        mouse.close = mock.Mock(side_effect=OSError(19, "No such device"))
+        pointer.close()
+        self.assertIsNone(pointer.device)
+
+    # pointer_mode() and open_keyboard()
+
+    def test_pointer_mode_needs_the_flag_and_an_app_holding_the_pad(self):
+        run = self.run_dir()
+        self.assertTrue(self.module.pointer_mode(False))
+        self.assertFalse(self.module.pointer_mode(True), "the on-screen keyboard takes the pad")
+        (run / "launcher-focus").touch()
+        self.assertFalse(self.module.pointer_mode(False), "the launcher in front is driven by arrows")
+        (run / "launcher-focus").unlink()
+        (run / "pointer-mode").unlink()
+        self.assertFalse(self.module.pointer_mode(False), "a game keeps its controller")
+        (run / "pointer-mode").touch()
+        (run / "app-active").unlink()
+        self.assertFalse(self.module.pointer_mode(False), "no app: the flag is stale")
+
+    def test_open_keyboard_asks_for_the_keyboard_once(self):
+        run = self.run_dir()
+        self.module.open_keyboard()
+        self.assertTrue((run / "start-osk").exists())
+        (run / "start-osk").unlink()
+        (run / "osk-active").touch()
+        self.module.open_keyboard()
+        self.assertFalse((run / "start-osk").exists(), "one keyboard at a time")
+
+    def test_open_keyboard_survives_a_missing_run_directory(self):
+        with mock.patch.object(self.module, "START_OSK", pathlib.Path("/nonexistent/couchliteos/start-osk")), \
+                mock.patch.object(self.module, "OSK_ACTIVE", pathlib.Path("/nonexistent/couchliteos/osk-active")):
+            self.module.open_keyboard()
+
+    # Pads in pointer mode
+
+    def test_the_left_stick_moves_the_pointer_at_full_speed_when_pushed_all_the_way(self):
+        speed = self.module.POINTER_SPEED
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, 32767), (Codes.EV_ABS, Codes.ABS_Y, -32768)]), (0.05, [])]
+        pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertEqual(pressed, [], "the stick does not also send arrows")
+        self.assertEqual(self.moved(mouse, Codes.REL_X), int(speed * 0.05))
+        self.assertEqual(self.moved(mouse, Codes.REL_Y), -int(speed * 0.05))
+
+    def test_a_long_gap_between_ticks_does_not_jump_the_pointer(self):
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, 32767)]), (3.0, [])]
+        _pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertEqual(self.moved(mouse, Codes.REL_X), int(self.module.POINTER_SPEED * 0.05))
+
+    def test_a_gentle_push_adds_up_fractions_of_a_pixel(self):
+        # About 1 percent of full speed: 14 px/s, 0.23 px per 1/60 s tick.
+        value = int(32767 * (self.module.POINTER_DEADZONE + 0.1 * (1 - self.module.POINTER_DEADZONE)))
+        ticks = [(i / 60, []) for i in range(1, 61)]
+        _pressed, _timeouts, _pads, mouse, _pad = self.drive([(0.0, [(Codes.EV_ABS, Codes.ABS_X, value)]), *ticks])
+        self.assertIn(self.moved(mouse, Codes.REL_X), range(12, 16), "about 14 pixels in one second")
+
+    def test_a_resting_stick_inside_the_dead_zone_does_not_drift(self):
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, 3000), (Codes.EV_ABS, Codes.ABS_RY, -4000)]), (0.05, []), (0.1, [])]
+        _pressed, timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertEqual(mouse.events, [])
+        self.assertEqual(timeouts[-1], 1.0, "an idle pointer does not wake 60 times a second")
+
+    def test_the_right_stick_scrolls_and_pushing_it_up_scrolls_up(self):
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_RY, -32768)])] + [(0.05 * i, []) for i in range(1, 11)]
+        _pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        expected = int(self.module.SCROLL_SPEED * 0.5)
+        self.assertIn(self.moved(mouse, Codes.REL_WHEEL), (expected - 1, expected))
+        self.assertGreater(self.moved(mouse, Codes.REL_WHEEL), 0)
+        self.assertEqual(self.moved(mouse, Codes.REL_X), 0, "scrolling does not move the pointer")
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_RX, 32767)])] + [(0.05 * i, []) for i in range(1, 11)]
+        _pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertGreater(self.moved(mouse, Codes.REL_HWHEEL), 0)
+
+    def test_letting_go_of_the_stick_stops_at_once_and_forgets_the_leftover_fraction(self):
+        value = int(32767 * 0.5)
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, value)]), (0.01, []), (0.02, [(Codes.EV_ABS, Codes.ABS_X, 0)]),
+                  (0.05, []), (0.1, [])]
+        _pressed, timeouts, pads, mouse, _pad = self.drive(script)
+        self.assertEqual(pads.carry, [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(timeouts[-1], 1.0)
+
+    def test_select_wakes_every_tick_while_the_pointer_moves(self):
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, 32767)]), (0.02, []), (0.04, [])]
+        _pressed, timeouts, _pads, _mouse, _pad = self.drive(script)
+        self.assertEqual(timeouts[0], 1.0, "nothing known yet")
+        self.assertEqual(timeouts[1:], [self.module.POINTER_TICK] * 2)
+
+    def test_a_clicks_left_and_holding_it_drags(self):
+        script = [
+            (0.0, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1)]),
+            (0.1, [(Codes.EV_ABS, Codes.ABS_X, 32767)]),
+            (0.15, []),
+            (0.2, [(Codes.EV_KEY, Codes.BTN_SOUTH, 2)]),  # autorepeat is not another click
+            (0.3, [(Codes.EV_KEY, Codes.BTN_SOUTH, 0)]),
+        ]
+        pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertEqual(pressed, [], "A does not also press Enter")
+        self.assertEqual(self.clicks(mouse), [(Codes.BTN_LEFT, 1), (Codes.BTN_LEFT, 0)])
+        down = mouse.events.index((Codes.EV_KEY, Codes.BTN_LEFT, 1))
+        up = mouse.events.index((Codes.EV_KEY, Codes.BTN_LEFT, 0))
+        self.assertTrue(any(event[0] == Codes.EV_REL for event in mouse.events[down:up]), "moved while held")
+
+    def test_the_west_button_right_clicks(self):
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.1, [(Codes.EV_KEY, Codes.BTN_WEST, 0)])]
+        pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertEqual(pressed, [], "no Delete for the app behind")
+        self.assertEqual(self.clicks(mouse), [(Codes.BTN_RIGHT, 1), (Codes.BTN_RIGHT, 0)])
+
+    def test_the_north_button_opens_the_keyboard_to_type_into_the_page(self):
+        run = self.run_dir()
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_NORTH, 1)]), (0.1, [(Codes.EV_KEY, Codes.BTN_NORTH, 0)])]
+        pressed, _timeouts, _pads, mouse, _pad = self.drive(script, run=run)
+        self.assertTrue((run / "start-osk").exists())
+        self.assertEqual(pressed, [], "no F12 reaches the app")
+        self.assertEqual(mouse.events, [])
+
+    def test_the_other_buttons_are_browser_keys(self):
+        for button, key in ((Codes.BTN_EAST, Codes.KEY_BACK), (Codes.BTN_START, Codes.KEY_SPACE),
+                            (Codes.BTN_SELECT, Codes.KEY_ESC), (Codes.BTN_TL, Codes.KEY_PAGEUP),
+                            (Codes.BTN_TR, Codes.KEY_PAGEDOWN)):
+            script = [(0.0, [(Codes.EV_KEY, button, 1)]), (0.1, [(Codes.EV_KEY, button, 0)]), (2.0, [])]
+            pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+            self.assertEqual(pressed, [(0.0, key)], button)
+            self.assertEqual(mouse.events, [], button)
+
+    def test_the_navigation_keyboard_can_send_the_browser_keys(self):
+        for key in (Codes.KEY_BACK, Codes.KEY_SPACE, Codes.KEY_PAGEUP, Codes.KEY_PAGEDOWN, Codes.KEY_ESC):
+            self.assertIn(key, self.module.KEYS)
+
+    def test_the_dpad_still_sends_arrows_that_repeat(self):
+        delay = self.module.REPEAT_DELAY
+        script = [
+            (0.0, [(Codes.EV_KEY, Codes.BTN_DPAD_DOWN, 1)]),
+            (delay + 0.01, []),
+            (delay + 0.02, [(Codes.EV_KEY, Codes.BTN_DPAD_DOWN, 0)]),
+            (delay + 2, []),
+            (delay + 3, [(Codes.EV_ABS, Codes.ABS_HAT0X, -1)]),
+            (delay + 3.1, [(Codes.EV_ABS, Codes.ABS_HAT0X, 0)]),
+        ]
+        pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DOWN), (delay + 0.01, Codes.KEY_DOWN), (delay + 3, Codes.KEY_LEFT)])
+        self.assertEqual(mouse.events, [])
+
+    def test_pointer_mode_grabs_the_pad_so_the_app_does_not_also_see_it(self):
+        def leave(run, _pads):
+            (run / "pointer-mode").unlink()
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1)]), (0.1, []), (0.2, [], leave)]
+        _pressed, _timeouts, pads, mouse, pad = self.drive(script)
+        pad.grab.assert_called_once_with()
+        pad.ungrab.assert_called_once_with()
+        self.assertEqual(pads.grabbed, set())
+        # The app went: the mouse is gone and A is not left held down.
+        self.assertTrue(mouse.closed)
+        self.assertEqual(self.clicks(mouse), [(Codes.BTN_LEFT, 1), (Codes.BTN_LEFT, 0)])
+        self.assertIsNone(pads.pointer.device)
+        self.assertFalse(pads.pointer_on)
+
+    def test_a_game_without_pointer_mode_gets_the_pad_untouched(self):
+        run = self.run_dir(pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1), (Codes.EV_ABS, Codes.ABS_X, 32767)]), (0.05, [])]
+        pressed, _timeouts, pads, mouse, pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [])
+        self.assertEqual(mouse.events, [])
+        self.assertIsNone(pads.pointer.device, "no mouse device: Cage would show a cursor")
+        pad.grab.assert_not_called()
+
+    def test_the_launcher_in_front_is_driven_with_arrows_even_over_a_browser(self):
+        run = self.run_dir(focus=True)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1)]), (0.05, [])]
+        pressed, _timeouts, pads, mouse, pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_ENTER)])
+        self.assertEqual(mouse.events, [])
+        self.assertIsNone(pads.pointer.device)
+        pad.grab.assert_not_called()
+
+    def test_the_on_screen_keyboard_takes_the_pad_from_the_mouse(self):
+        def keyboard_opens(run, _pads):
+            (run / "osk-active").touch()
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1)]), (0.1, [(Codes.EV_KEY, Codes.BTN_SOUTH, 0)]),
+                  (0.2, [(Codes.EV_KEY, Codes.BTN_SOUTH, 1)], keyboard_opens)]
+        pressed, _timeouts, pads, mouse, pad = self.drive(script)
+        self.assertEqual(pressed, [(0.2, Codes.KEY_ENTER)], "A types on the keyboard")
+        self.assertTrue(mouse.closed)
+        self.assertEqual(pads.grabbed, {"/dev/input/event3"}, "still grabbed, now for the keyboard")
+        pad.ungrab.assert_not_called()
+
+    def test_switching_modes_forgets_held_arrows_and_leftover_motion(self):
+        pads, _mouse = self.pads()
+        pads.hold("/dev/input/event3").press(Codes.BTN_DPAD_DOWN, Codes.KEY_DOWN, 0.0)
+        pads.carry = [0.5, 0.5, 0.5, 0.5]
+        pads.set_pointer(True, 3.0)
+        self.assertEqual(pads.holds, {})
+        self.assertEqual(pads.carry, [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(pads.pointer_tick, 3.0)
+        pads.carry = [0.5, 0.0, 0.0, 0.0]
+        pads.set_pointer(True, 4.0)  # no change: nothing reset
+        self.assertEqual(pads.carry, [0.5, 0.0, 0.0, 0.0])
+        self.assertEqual(pads.pointer_tick, 3.0)
+
+    def test_the_strongest_push_across_pads_wins(self):
+        pads, _mouse = self.pads()
+        pads.sticks = {"a": {Codes.ABS_X: [0.3, 0]}, "b": {Codes.ABS_X: [-0.8, 0]}, "c": {Codes.ABS_Y: [0.9, 0]}}
+        self.assertEqual(pads.stick_value(Codes.ABS_X), -0.8)
+        self.assertEqual(pads.stick_value(Codes.ABS_Y), 0.9)
+        self.assertEqual(pads.stick_value(Codes.ABS_RX), 0.0)
+        self.assertTrue(pads.pointer_moving())
+        pads.sticks = {"a": {Codes.ABS_X: [0.1, 0]}}
+        self.assertFalse(pads.pointer_moving())
+
+    def test_record_axis_needs_a_range_and_scales_both_kinds_of_pad(self):
+        pads, _mouse = self.pads()
+        wide, narrow, broken = ScriptedPad(), ScriptedPad(0, 255), ScriptedPad(0, 0)
+        self.assertTrue(pads.record_axis("w", wide, key_event(Codes.ABS_RX, -32768, Codes.EV_ABS)))
+        self.assertTrue(pads.record_axis("n", narrow, key_event(Codes.ABS_RX, 255, Codes.EV_ABS)))
+        self.assertFalse(pads.record_axis("b", broken, key_event(Codes.ABS_RX, 10, Codes.EV_ABS)))
+        self.assertAlmostEqual(pads.sticks["w"][Codes.ABS_RX][0], -1.0)
+        self.assertAlmostEqual(pads.sticks["n"][Codes.ABS_RX][0], 1.0)
+        self.assertNotIn("b", pads.sticks)
+
+    def test_pointer_mode_with_a_pad_reporting_zero_to_255(self):
+        script = [(0.0, [(Codes.EV_ABS, Codes.ABS_X, 0)]), (0.05, [])]
+        _pressed, _timeouts, _pads, mouse, _pad = self.drive(script, low=0, high=255)
+        self.assertEqual(self.moved(mouse, Codes.REL_X), -int(self.module.POINTER_SPEED * 0.05))
+
+    # SuperTap and watch_home
+
+    def test_a_lone_super_tap_opens_home(self):
+        tap = self.module.SuperTap()
+        for code in (Codes.KEY_LEFTMETA, Codes.KEY_RIGHTMETA):
+            self.assertFalse(tap.feed("kbd", key_event(code, 1)))
+            self.assertFalse(tap.feed("kbd", key_event(code, 2)), "autorepeat while held")
+            self.assertTrue(tap.feed("kbd", key_event(code, 0)))
+
+    def test_super_used_as_a_shortcut_does_not_open_home(self):
+        tap = self.module.SuperTap()
+        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
+        tap.feed("kbd", key_event(Codes.KEY_ENTER, 1))
+        tap.feed("kbd", key_event(Codes.KEY_ENTER, 0))
+        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+
+    def test_a_key_already_held_and_let_go_during_the_tap_does_not_cancel_it(self):
+        tap = self.module.SuperTap()
+        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
+        tap.feed("kbd", key_event(Codes.KEY_ENTER, 0))
+        tap.feed("kbd", key_event(Codes.KEY_ENTER, 2, Codes.EV_REL))  # not a key at all
+        self.assertTrue(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+
+    def test_a_release_without_a_press_and_reset_do_not_open_home(self):
+        tap = self.module.SuperTap()
+        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
+        tap.reset()
+        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+
+    def test_super_taps_are_tracked_per_keyboard(self):
+        tap = self.module.SuperTap()
+        tap.feed("one", key_event(Codes.KEY_LEFTMETA, 1))
+        tap.feed("two", key_event(Codes.KEY_ENTER, 1))  # someone typing on another keyboard
+        self.assertTrue(tap.feed("one", key_event(Codes.KEY_LEFTMETA, 0)))
+        tap.feed("one", key_event(Codes.KEY_LEFTMETA, 1))
+        self.assertFalse(tap.feed("two", key_event(Codes.KEY_LEFTMETA, 0)), "released on a keyboard never pressed")
+
+    def watch_keyboards(self, rounds, capabilities=(Codes.KEY_LEFTMETA, Codes.KEY_ENTER)):
+        """watch_home() over one fake keyboard: rounds[i] lists (code, value) events select i delivers.
+
+        Returns (devices select() watched first, request_home mock)."""
+        module = self.module
+        state = {"round": 0}
+        events = []
+
+        class Keyboard:
+            def capabilities(self):
+                return {Codes.EV_KEY: list(capabilities)}
+
+            def read(self):
+                return [key_event(code, value) for code, value in events]
+
+            def close(self):
+                pass
+
+        keyboard = Keyboard()
+        watched = []
+
+        def fake_select(devices, _writable, _errors, _timeout):
+            nonlocal events
+            watched.append(list(devices))
+            if state["round"] >= len(rounds):
+                raise Stop
+            events = rounds[state["round"]]
+            state["round"] += 1
+            return ([keyboard] if events and devices else []), [], []
+
+        with mock.patch.object(module.glob, "glob", return_value=["/dev/input/event7"]), mock.patch.object(
+            module, "InputDevice", return_value=keyboard
+        ), mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
+            module, "request_home"
+        ) as home, mock.patch.object(module, "request_sleep") as sleep:
+            with self.assertRaises(Stop):
+                module.watch_home()
+        sleep.assert_not_called()
+        return watched[0], home, keyboard
+
+    def test_a_keyboard_with_a_super_key_is_watched_and_a_tap_goes_home(self):
+        watched, home, keyboard = self.watch_keyboards([[(Codes.KEY_LEFTMETA, 1)], [(Codes.KEY_LEFTMETA, 0)]])
+        self.assertEqual(watched, [keyboard])
+        home.assert_called_once_with()
+
+    def test_a_super_shortcut_on_a_keyboard_does_not_go_home(self):
+        _watched, home, _keyboard = self.watch_keyboards(
+            [[(Codes.KEY_LEFTMETA, 1), (Codes.KEY_ENTER, 1)], [(Codes.KEY_ENTER, 0), (Codes.KEY_LEFTMETA, 0)]]
+        )
+        home.assert_not_called()
+
+    def test_a_device_without_home_guide_or_super_is_not_watched(self):
+        watched, home, _keyboard = self.watch_keyboards([[]], capabilities=(Codes.KEY_ENTER,))
+        self.assertEqual(watched, [])
+        home.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
