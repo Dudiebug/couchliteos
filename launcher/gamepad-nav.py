@@ -101,6 +101,8 @@ HOME_COMBOS = {
     inputprefs.HOME_STICKS: (frozenset({ecodes.BTN_THUMBL, ecodes.BTN_THUMBR}), frozenset()),
 }
 HOME_COMBO_CODES = frozenset().union(*(pair | cancel for pair, cancel in HOME_COMBOS.values()))
+# SELECT and START in the launcher: the VIEW and MENU button shortcuts (see PairTaps).
+NAV_TAP_KEYS = {ecodes.BTN_SELECT: ecodes.KEY_F7, ecodes.BTN_START: ecodes.KEY_F8}
 CTRL_KEYS = frozenset({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
 ALT_KEYS = frozenset({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
 
@@ -296,6 +298,7 @@ class Pads:
         self.pointer_tick = 0.0
         self.carry = [0.0, 0.0, 0.0, 0.0]  # x, y, wheel, horizontal wheel not yet sent
         self.combo = HomeCombo()  # the mouse grabs the pads, hiding the Home shortcut from watch_home()
+        self.taps = PairTaps()  # SELECT and START act when let go while they are the Home hold
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -324,6 +327,7 @@ class Pads:
     def drop(self, path: str) -> None:
         self.holds.pop(path, None)
         self.combo.forget(path)
+        self.taps.forget(path)
         self.sticks.pop(path, None)
         for key in [key for key in self.spans if key[0] == path]:
             del self.spans[key]
@@ -396,6 +400,11 @@ class Pads:
                 emit(ui, key)
                 self.hold(path).press(source, key, now)
             return False
+        if event.type == ecodes.EV_KEY and event.code in PairTaps.BUTTONS:
+            tapped = self.taps.feed(path, event)
+            if tapped is not None:
+                emit(ui, NAV_TAP_KEYS[tapped])
+            return False
         key = key_for_event(event)
         if key:
             emit(ui, key)
@@ -425,6 +434,10 @@ class Pads:
             self.pointer.button(POINTER_BUTTONS[event.code], bool(event.value))
         elif event.value == 1 and event.code == ecodes.BTN_NORTH:
             open_keyboard()  # X / Triangle: type into the page
+        elif event.code in PairTaps.BUTTONS:
+            tapped = self.taps.feed(path, event)
+            if tapped is not None:
+                emit(ui, POINTER_KEYS[tapped])
         elif event.value == 1 and event.code in POINTER_KEYS:
             emit(ui, POINTER_KEYS[event.code])
 
@@ -471,6 +484,7 @@ class Pads:
         self.pointer_tick = now
         self.holds.clear()
         self.combo.reset()
+        self.taps.reset()
         self.pointer.open() if on else self.pointer.close()
 
     def update_stick(self, path: str, ui: UInput, now: float) -> None:
@@ -521,6 +535,7 @@ class Pads:
         blocked = navigation_blocked(active_osk) and not pointer
         if blocked:
             self.holds.clear()  # an app owns the controller now; do not keep stepping its menus
+            self.taps.reset()  # nor send a SELECT/START pressed before it on release
         for path, dev in list(self.devices.items()):
             if dev not in readable:
                 continue
@@ -681,13 +696,56 @@ def media_action(event, device):
             return None  # the kernel has already stepped it
         return functools.partial(brightness.change, BRIGHTNESS_KEYS[event.code])
     if event.code in VOLUME_KEYS:
-        return functools.partial(audio.change_volume, VOLUME_KEYS[event.code])
+        # Only sets it: nothing shows the level, and reading it back would double the wpctl calls.
+        return functools.partial(audio.step_volume, VOLUME_KEYS[event.code])
     return audio.toggle_mute if event.value == 1 else None
 
 
 # Key actions run on their own thread: wpctl can be slow, and Home must not wait for it. A key
 # held while a change is stuck queues a few steps, not a long tail.
 MEDIA_QUEUE: queue.Queue = queue.Queue(maxsize=4)
+
+
+class MediaRepeat:
+    """Paces a held brightness or volume key like a held D-pad direction.
+
+    The keyboard autorepeats every ~33 ms, faster than wpctl runs and too fast to stop on the
+    level wanted, so a held key steps after REPEAT_DELAY and then at most every REPEAT_INTERVAL,
+    and not at all while earlier steps are still waiting: letting go stops it at once instead of
+    running on through a backlog. Presses always count. allow() every event, per keyboard.
+    """
+
+    def __init__(self, delay: float = REPEAT_DELAY, interval: float = REPEAT_INTERVAL,
+                 busy: Callable[[], bool] | None = None) -> None:
+        self.delay = delay
+        self.interval = interval
+        self.busy = busy or (lambda: not MEDIA_QUEUE.empty())
+        self.due: dict[tuple[object, int], float] = {}  # (keyboard, key) -> when it may step again
+
+    def allow(self, path: object, event, now: float) -> bool:
+        """False for an autorepeat of a media key that comes too soon (or while steps are queued)."""
+        if event.type != ecodes.EV_KEY or event.code not in MEDIA_KEYS:
+            return True
+        key = (path, event.code)
+        if event.value == 1:
+            self.due[key] = now + self.delay
+        elif event.value == 0:
+            self.due.pop(key, None)
+        elif key not in self.due:
+            self.due[key] = now + self.delay  # held since before this keyboard was watched
+            return False
+        elif now < self.due[key] or self.busy():
+            return False
+        else:
+            self.due[key] = now + self.interval
+        return True
+
+    def forget(self, path: object) -> None:
+        for key in [key for key in self.due if key[0] == path]:
+            del self.due[key]
+
+    def reset(self) -> None:
+        self.due.clear()
 
 
 def queue_media(action) -> None:
@@ -704,6 +762,8 @@ def apply_media() -> None:
             action()
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             print(f"media key not applied: {error}", flush=True)
+
+
 class HomeCombo:
     """Holding SELECT+START (or L3+R3, chosen in Settings > CONTROLS) for 1.5 s opens Home, like Guide.
 
@@ -747,15 +807,31 @@ class HomeCombo:
         elif path not in self.spent:
             self.started.setdefault(path, now)
 
-    def due(self, now: float) -> bool:
-        """True once per hold, when the pair has been held for the threshold."""
+    def due(self, now: float, pressed: Callable[[object], Iterable[int] | None] | None = None) -> bool:
+        """True once per hold, when the pair has been held for the threshold.
+
+        `pressed(path)`: the pad's real key state, checked before a hold counts. The pad may have
+        been grabbed mid-hold, and then the release never arrived here. Holds that overlap (two
+        pads at once) open Home once: every hold under way is spent with the one that fires.
+        """
         combo = self.combo()
         for path, started in list(self.started.items()):
-            if combo is None or not combo[0] <= self.held.get(path, set()):
-                del self.started[path]  # the setting changed under the hold
-            elif now - started >= self.threshold:
-                del self.started[path]
+            if combo is not None and now - started >= self.threshold and pressed is not None:
+                keys = pressed(path)
+                if keys is not None:
+                    held = self.held.setdefault(path, set())
+                    held.clear()
+                    held.update(set(keys) & HOME_COMBO_CODES)
+            held = self.held.get(path, set())
+            if combo is None or not combo[0] <= held:
+                del self.started[path]  # let go unseen, or the setting changed under the hold
+                self.spent.discard(path)
+            elif combo[1] & held:
+                del self.started[path]  # a shoulder went down unseen: Moonlight's quit
                 self.spent.add(path)
+            elif now - started >= self.threshold:
+                self.spent.update(self.started)
+                self.started.clear()
                 return True
         return False
 
@@ -804,6 +880,55 @@ class KeyboardHome:
         self.held.clear()
 
 
+class PairTaps:
+    """SELECT's and START's own keys (F7/F8 in the launcher, Esc/Space for the controller mouse)
+    wait for the button to be let go while SELECT+START is the Home hold.
+
+    Sent on press, starting the hold would first leave full screen, pause the video or launch
+    the button's app. So a button counts only as a tap: let go without the other one having
+    been pressed meanwhile (which also rules out the hold having fired). With another Home
+    shortcut chosen, they act on press as before. Tracked per pad.
+    """
+
+    BUTTONS = frozenset({ecodes.BTN_SELECT, ecodes.BTN_START})
+
+    def __init__(self, deferred: Callable[[], bool] | None = None) -> None:
+        self.deferred = deferred or (lambda: INPUT_SETTINGS.current().home == inputprefs.HOME_SELECT_START)
+        self.down: dict[object, set[int]] = {}
+        self.armed: dict[object, set[int]] = {}  # pressed alone so far: a tap when let go
+
+    def feed(self, path: object, event) -> int | None:
+        """The button (BTN_SELECT or BTN_START) whose own key is due now, or None."""
+        if event.type != ecodes.EV_KEY or event.code not in self.BUTTONS or event.value not in (0, 1):
+            return None
+        down = self.down.setdefault(path, set())
+        armed = self.armed.setdefault(path, set())
+        if event.value:
+            together = bool(down - {event.code})
+            down.add(event.code)
+            if not self.deferred():
+                armed.clear()
+                return event.code
+            if together:
+                armed.clear()  # SELECT+START: the Home hold, or Moonlight's quit, not two taps
+            else:
+                armed.add(event.code)
+            return None
+        down.discard(event.code)
+        if event.code in armed:
+            armed.discard(event.code)
+            return event.code
+        return None
+
+    def forget(self, path: object) -> None:
+        self.down.pop(path, None)
+        self.armed.pop(path, None)
+
+    def reset(self) -> None:
+        self.down.clear()
+        self.armed.clear()
+
+
 def pressed_keys(device) -> list[int] | None:
     """The keys a device has down right now (EVIOCGKEY), or None when it cannot say."""
     try:
@@ -849,7 +974,14 @@ def watch_home() -> None:
     tap = SuperTap()
     combo = HomeCombo()  # SELECT+START or L3+R3 held: watched, never grabbed, so it works over any app
     chord = KeyboardHome()
+    media = MediaRepeat()
     in_game = False  # the hold under way began while an app had the controller
+
+    def pressed(path: object) -> list[int] | None:
+        # EVIOCGKEY answers even while another fd (the controller mouse) has the pad grabbed.
+        device = devices.get(path) if isinstance(path, str) else None
+        return pressed_keys(device) if device is not None else None
+
     while True:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(devices) - paths:
@@ -857,6 +989,7 @@ def watch_home() -> None:
             tap.armed.discard(id(gone))
             combo.forget(path)
             chord.forget(path)
+            media.forget(path)
             gone.close()
             hold.reset()  # the button may have been released while disconnected
         for path in paths - set(devices):
@@ -882,15 +1015,20 @@ def watch_home() -> None:
                         # press itself takes the focus, so later the launcher always "has" it.
                         in_game = app_owns_pad()
                     tapped = tap.feed(id(device), event) and not remote_session_in_front()
+                    # Unlike a Super tap, Ctrl+Alt+H is not passed to a stream or remote desktop in
+                    # front: it is the keyboard's way home from one (Guide is the pad's).
                     if tapped or is_home_event(event) or chord.feed(path, event):
                         request_home()
+                    # Deliberately also during a stream or remote desktop: the volume and
+                    # brightness keys control this box (the TV's sound), not the remote PC.
+                    paced = media.allow(path, event, time.monotonic())
                     action = media_action(event, device)
-                    if action is not None:
+                    if action is not None and paced:
                         queue_media(action)
                     hold.feed(event, time.monotonic())
                     if event.type == ecodes.EV_KEY and event.code in HOME_COMBO_CODES:
                         combo.feed(path, event, time.monotonic(), pressed_keys(device))
-            if combo.due(time.monotonic()):
+            if combo.due(time.monotonic(), pressed):
                 request_home()
             if hold.due(time.monotonic()) and not in_game:
                 request_sleep()
@@ -899,6 +1037,7 @@ def watch_home() -> None:
             tap.reset()
             combo.reset()
             chord.reset()
+            media.reset()
             for device in devices.values():
                 device.close()
             devices.clear()

@@ -1071,12 +1071,15 @@ class PointerModeTest(unittest.TestCase):
         self.assertEqual(mouse.events, [])
 
     def test_the_other_buttons_are_browser_keys(self):
-        for button, key in ((Codes.BTN_EAST, Codes.KEY_BACK), (Codes.BTN_START, Codes.KEY_SPACE),
-                            (Codes.BTN_SELECT, Codes.KEY_ESC), (Codes.BTN_TL, Codes.KEY_PAGEUP),
-                            (Codes.BTN_TR, Codes.KEY_PAGEDOWN)):
+        # START and SELECT act when let go: holding both is the default Home shortcut (see HomeShortcutTest).
+        settings = FixedSettings(self.module.inputprefs.Settings())
+        for button, key, when in ((Codes.BTN_EAST, Codes.KEY_BACK, 0.0), (Codes.BTN_START, Codes.KEY_SPACE, 0.1),
+                                  (Codes.BTN_SELECT, Codes.KEY_ESC, 0.1), (Codes.BTN_TL, Codes.KEY_PAGEUP, 0.0),
+                                  (Codes.BTN_TR, Codes.KEY_PAGEDOWN, 0.0)):
             script = [(0.0, [(Codes.EV_KEY, button, 1)]), (0.1, [(Codes.EV_KEY, button, 0)]), (2.0, [])]
-            pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
-            self.assertEqual(pressed, [(0.0, key)], button)
+            with mock.patch.object(self.module, "INPUT_SETTINGS", settings):
+                pressed, _timeouts, _pads, mouse, _pad = self.drive(script)
+            self.assertEqual(pressed, [(when, key)], button)
             self.assertEqual(mouse.events, [], button)
 
     def test_the_navigation_keyboard_can_send_the_browser_keys(self):
@@ -1493,6 +1496,41 @@ class HomeShortcutTest(unittest.TestCase):
         combo.feed("pad", key_event(Codes.BTN_SELECT, 1), 30.0, pressed=[Codes.BTN_START, Codes.BTN_SELECT])
         self.assertTrue(combo.due(31.5))
 
+    def test_the_real_key_state_is_checked_again_before_the_hold_counts(self):
+        # The pad was grabbed mid-hold (controller mouse): the release never arrived, nor will another event.
+        down = {"pad": [Codes.BTN_SELECT, Codes.BTN_START]}
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+        down["pad"] = [Codes.BTN_START]
+        self.assertFalse(combo.due(1.5, pressed=down.get))
+        self.assertEqual(combo.started, {})
+        self.assertFalse(combo.due(5.0, pressed=down.get))
+        self.hold(combo, Codes.BTN_SELECT, now=6.0)
+        down["pad"] = [Codes.BTN_START, Codes.BTN_SELECT, Codes.BTN_TL]
+        self.assertFalse(combo.due(7.5, pressed=down.get), "a shoulder went down unseen: Moonlight's quit")
+        self.hold(combo, Codes.BTN_TL, Codes.BTN_START, now=8.0, value=0)
+        self.hold(combo, Codes.BTN_START, now=8.1)
+        self.assertTrue(combo.due(9.7, pressed=lambda _path: None), "no answer: the events seen decide")
+
+    def test_the_hold_still_counts_when_the_real_state_agrees(self):
+        combo = self.combo()
+        self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0)
+        self.assertTrue(combo.due(1.5, pressed=lambda _path: [Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_SOUTH]))
+
+    def test_two_pads_holding_at_once_open_home_once(self):
+        for second in (0.0, 0.2):
+            with self.subTest(second=second):
+                combo = self.combo()
+                self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=0.0, pad="one")
+                self.hold(combo, Codes.BTN_SELECT, Codes.BTN_START, now=second, pad="two")
+                self.assertTrue(combo.due(1.5))
+                self.assertFalse(combo.due(1.5), "the same pass: the menu would open and shut again")
+                self.assertFalse(combo.due(1.8))
+                self.assertFalse(combo.due(10.0))
+                self.hold(combo, Codes.BTN_START, now=11.0, pad="two", value=0)
+                self.hold(combo, Codes.BTN_START, now=11.1, pad="two")
+                self.assertTrue(combo.due(12.7), "a fresh hold opens it again")
+
     def test_the_default_choice_is_read_live_from_the_settings(self):
         self.use(home="guide")
         combo = self.module.HomeCombo()
@@ -1553,7 +1591,9 @@ class HomeShortcutTest(unittest.TestCase):
     # watch_home: the same Home request as Guide, from devices it only watches (never grabs)
 
     def watch(self, rounds, capabilities, *, app=True):
-        """watch_home() over one device; rounds[i] = (clock after select i, [(code, value), ...]).
+        """watch_home() over one device; rounds[i] = (clock after select i, [(code, value), ...]),
+        optionally with a third item: buttons let go unseen (another fd grabbed the pad), or an
+        OSError for select i to raise.
 
         An app owns the pad by default: the shortcut must work over it, as Guide does.
         Returns (request_home mock, select timeouts, devices watched)."""
@@ -1591,8 +1631,12 @@ class HomeShortcutTest(unittest.TestCase):
             timeouts.append(timeout)
             if state["round"] >= len(rounds):
                 raise Stop
-            state["now"], events = rounds[state["round"]]
+            step = rounds[state["round"]]
             state["round"] += 1
+            if isinstance(step, OSError):
+                raise step
+            state["now"], events = step[:2]
+            down.difference_update(*step[2:])
             return ([device] if events and devices else []), [], []
 
         with mock.patch.object(module.glob, "glob", return_value=["/dev/input/event5"]), mock.patch.object(
@@ -1652,6 +1696,37 @@ class HomeShortcutTest(unittest.TestCase):
         home, _timeouts, _watched = self.watch(rounds, self.KEYBOARD)
         home.assert_not_called()
 
+    def test_a_hold_let_go_unseen_does_not_open_home_when_its_time_is_up(self):
+        # No event arrives after the release here (the controller mouse grabbed the pad): the timer
+        # alone runs out, and the real key state says the pair is no longer held.
+        self.use(home="select-start")
+        rounds = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (1.0, [], {Codes.BTN_SELECT}), (1.6, []),
+                  (3.0, [])]
+        home, _timeouts, _watched = self.watch(rounds, self.PAD)
+        home.assert_not_called()
+
+    def test_a_read_error_forgets_holds_and_chords_under_way(self):
+        self.use(home="select-start", keyboard_home=True)
+        rounds = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), OSError(19, "No such device"),
+                  (1.6, []), (3.0, [])]
+        home, _timeouts, _watched = self.watch(rounds, self.PAD)
+        home.assert_not_called()
+        rounds = [(0.0, [(Codes.KEY_LEFTCTRL, 1), (Codes.KEY_LEFTALT, 1)]), OSError(19, "No such device"),
+                  (0.1, [(Codes.KEY_H, 1)])]
+        home, _timeouts, _watched = self.watch(rounds, self.KEYBOARD)
+        home.assert_not_called()
+
+    def test_ctrl_alt_h_opens_home_over_a_stream_too(self):
+        # Deliberate: Super goes to the remote PC, Ctrl+Alt+H is the keyboard's way home from it.
+        self.use(keyboard_home=True)
+        with mock.patch.object(self.module, "remote_session_in_front", return_value=True):
+            home, _timeouts, _watched = self.watch(
+                [(0.0, [(Codes.KEY_LEFTCTRL, 1), (Codes.KEY_LEFTALT, 1)]), (0.1, [(Codes.KEY_H, 1)]),
+                 (0.2, [(Codes.KEY_LEFTCTRL, 0), (Codes.KEY_LEFTALT, 0), (Codes.KEY_H, 0)]),
+                 (0.3, [(Codes.KEY_LEFTMETA, 1), (Codes.KEY_LEFTMETA, 0)])],
+                (*self.KEYBOARD, Codes.KEY_LEFTMETA))
+        home.assert_called_once_with()  # Ctrl+Alt+H only: the Super tap was the remote PC's
+
     def test_devices_watched_for_the_shortcuts(self):
         watches = self.module.watches_home
         self.assertTrue(watches({Codes.BTN_SELECT, Codes.BTN_START}))
@@ -1666,9 +1741,11 @@ class HomeShortcutTest(unittest.TestCase):
         self.use(home="select-start")
         run = self.run_dir()
         with mock.patch.object(self.module.subprocess, "run") as run_command:
-            _pressed, timeouts, pads, _mouse, pad = self.drive(
+            pressed, timeouts, pads, _mouse, pad = self.drive(
                 [(0.0, [(Codes.EV_KEY, Codes.BTN_SELECT, 1), (Codes.EV_KEY, Codes.BTN_START, 1)]),
-                 (1.0, []), (1.5, []), (3.0, [])], run=run)
+                 (1.0, []), (1.5, []), (3.0, [(Codes.EV_KEY, Codes.BTN_SELECT, 0), (Codes.EV_KEY, Codes.BTN_START, 0)])],
+                run=run)
+        self.assertEqual(pressed, [], "no Esc (leaves full screen) or Space (pauses) on the way")
         self.assertTrue(pads.pointer_on)
         pad.grab.assert_called()
         self.assertTrue((run / "home.request").exists())
@@ -1685,8 +1762,85 @@ class HomeShortcutTest(unittest.TestCase):
         ):
             run = self.run_dir()
             with mock.patch.object(self.module.subprocess, "run"):
-                self.drive(script, run=run)
+                pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
             self.assertFalse((run / "home.request").exists())
+            self.assertNotIn(Codes.KEY_ESC, [key for _when, key in pressed])
+            self.assertNotIn(Codes.KEY_SPACE, [key for _when, key in pressed])
+
+    # SELECT and START on their own: their keys wait for the release while they are the Home hold.
+
+    def tap_script(self, *steps):
+        return [(when, [(Codes.EV_KEY, code, value) for code, value in events]) for when, events in steps]
+
+    TAPS = (
+        # (script, keys expected in the launcher, in pointer mode)
+        ([(0.0, [(Codes.BTN_SELECT, 1)]), (0.2, [(Codes.BTN_SELECT, 0)])],
+         [(0.2, Codes.KEY_F7)], [(0.2, Codes.KEY_ESC)]),
+        ([(0.0, [(Codes.BTN_START, 1)]), (0.2, [(Codes.BTN_START, 0)])],
+         [(0.2, Codes.KEY_F8)], [(0.2, Codes.KEY_SPACE)]),
+        # SELECT held, START tapped, SELECT let go: neither was a tap.
+        ([(0.0, [(Codes.BTN_SELECT, 1)]), (0.2, [(Codes.BTN_START, 1)]), (0.3, [(Codes.BTN_START, 0)]),
+          (0.5, [(Codes.BTN_SELECT, 0)])], [], []),
+        # The Home hold, let go: no key either side.
+        ([(0.0, [(Codes.BTN_START, 1), (Codes.BTN_SELECT, 1)]), (2.0, []),
+          (3.0, [(Codes.BTN_SELECT, 0), (Codes.BTN_START, 0)])], [], []),
+    )
+
+    def test_select_and_start_act_on_release_and_only_for_a_lone_tap(self):
+        self.use(home="select-start")
+        for index, (steps, launcher, pointer) in enumerate(self.TAPS):
+            for mode, expected in (("launcher", launcher), ("pointer", pointer)):
+                with self.subTest(script=index, mode=mode):
+                    run = self.run_dir(app=mode == "pointer", pointer=mode == "pointer")
+                    with mock.patch.object(self.module.subprocess, "run"):
+                        pressed, _timeouts, pads, _mouse, _pad = self.drive(self.tap_script(*steps), run=run)
+                    self.assertEqual(pads.pointer_on, mode == "pointer")
+                    self.assertEqual(pressed, expected)
+
+    def test_with_another_home_shortcut_select_and_start_act_on_press(self):
+        steps = [(0.0, [(Codes.BTN_SELECT, 1)]), (0.2, [(Codes.BTN_START, 1)]),
+                 (0.3, [(Codes.BTN_START, 0), (Codes.BTN_SELECT, 0)])]
+        for home in ("guide", "l3-r3"):
+            self.use(home=home)
+            for mode, keys in (("launcher", (Codes.KEY_F7, Codes.KEY_F8)), ("pointer", (Codes.KEY_ESC, Codes.KEY_SPACE))):
+                with self.subTest(home=home, mode=mode):
+                    run = self.run_dir(app=mode == "pointer", pointer=mode == "pointer")
+                    pressed, _timeouts, _pads, _mouse, _pad = self.drive(self.tap_script(*steps), run=run)
+                    self.assertEqual(pressed, [(0.0, keys[0]), (0.2, keys[1])])
+
+    def test_pair_taps_are_tracked_per_pad_and_forgotten(self):
+        taps = self.module.PairTaps(deferred=lambda: True)
+        self.assertIsNone(taps.feed("one", key_event(Codes.BTN_SELECT, 1)))
+        self.assertIsNone(taps.feed("two", key_event(Codes.BTN_START, 1)), "another pad's START is no pair")
+        self.assertIsNone(taps.feed("two", key_event(Codes.BTN_START, 2)), "autorepeat is ignored")
+        self.assertEqual(taps.feed("two", key_event(Codes.BTN_START, 0)), Codes.BTN_START)
+        self.assertEqual(taps.feed("one", key_event(Codes.BTN_SELECT, 0)), Codes.BTN_SELECT)
+        self.assertIsNone(taps.feed("one", key_event(Codes.BTN_SOUTH, 1)))
+        taps.feed("one", key_event(Codes.BTN_SELECT, 1))
+        taps.forget("one")
+        self.assertIsNone(taps.feed("one", key_event(Codes.BTN_SELECT, 0)), "a pad gone forgets its press")
+        taps.feed("two", key_event(Codes.BTN_START, 1))
+        taps.reset()
+        self.assertIsNone(taps.feed("two", key_event(Codes.BTN_START, 0)))
+
+    def test_a_button_let_go_while_an_app_had_the_pad_is_forgotten(self):
+        # Home over an app: SELECT goes down in the launcher, the app takes the pad back before it
+        # is let go. That press must neither be sent later nor spoil the next START tap.
+        self.use(home="select-start")
+        run = self.run_dir(app=True, pointer=False, focus=True)
+
+        def app_has_it(run, _pads):
+            (run / "launcher-focus").unlink()
+
+        def launcher_has_it(run, _pads):
+            (run / "launcher-focus").touch()
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_SELECT, 1)]),
+                  (0.2, [(Codes.EV_KEY, Codes.BTN_SELECT, 0)], app_has_it),
+                  (0.4, [(Codes.EV_KEY, Codes.BTN_START, 1)], launcher_has_it),
+                  (0.5, [(Codes.EV_KEY, Codes.BTN_START, 0)])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.5, Codes.KEY_F8)])
 
     def test_leaving_mouse_mode_forgets_a_hold(self):
         pads, _mouse = self.pads()
@@ -1748,7 +1902,7 @@ class MediaKeyTest(unittest.TestCase):
         for target, attribute, value in (
             (module.brightness, "change", lambda step: self.changes.append(("brightness", step))),
             (module.brightness, "kernel_handles_hotkeys", lambda: self.kernel_steps),
-            (module.audio, "change_volume", lambda step: self.changes.append(("volume", step))),
+            (module.audio, "step_volume", lambda step: self.changes.append(("volume", step))),
             (module.audio, "toggle_mute", lambda: self.changes.append(("mute", None))),
         ):
             patcher = mock.patch.object(target, attribute, side_effect=value)
@@ -1813,13 +1967,21 @@ class MediaKeyTest(unittest.TestCase):
         self.assertEqual(ran, [1, 2])
         self.assertIn("no default sink", printed.call_args.args[0])
 
-    def watch_media(self, rounds, *, plugged_at=0, name="USB Keyboard", capabilities=(Codes.KEY_ENTER,)):
+    def watch_media(self, rounds, *, plugged_at=0, name="USB Keyboard", capabilities=(Codes.KEY_ENTER,),
+                    times=None, backlog=None):
         """watch_home() over a keyboard that appears at select round `plugged_at`: rounds[i]
-        lists the (code, value) events select i delivers. Actions run at once, in order.
+        lists the (code, value) events select i delivers, at times[i] seconds when given.
+        Actions run at once, in order, unless `backlog` (a queue nothing drains) is given.
 
         Returns the devices select() watched each round."""
         module = self.module
         state = {"round": 0}
+        clock = mock.patch.object(module.time, "monotonic",
+                                  side_effect=lambda: times[max(0, state["round"] - 1)] if times else 0.0)
+        if backlog is None:
+            queued = mock.patch.object(module, "queue_media", side_effect=lambda action: action())
+        else:
+            queued = mock.patch.object(module, "MEDIA_QUEUE", backlog)
         events = []
         keyboard = SimpleNamespace(name=name, capabilities=lambda: {Codes.EV_KEY: list(capabilities)},
                                    read=lambda: [key_event(code, value) for code, value in events],
@@ -1842,9 +2004,7 @@ class MediaKeyTest(unittest.TestCase):
             module, "InputDevice", return_value=keyboard
         ), mock.patch.object(module.select, "select", side_effect=fake_select), mock.patch.object(
             module, "request_home"
-        ) as home, mock.patch.object(module, "request_sleep"), mock.patch.object(
-            module, "queue_media", side_effect=lambda action: action()
-        ):
+        ) as home, mock.patch.object(module, "request_sleep"), queued, clock:
             with self.assertRaises(Stop):
                 module.watch_home()
         home.assert_not_called()
@@ -1859,10 +2019,73 @@ class MediaKeyTest(unittest.TestCase):
         self.assertEqual(self.changes, [("volume", 5), ("mute", None)])
 
     def test_a_keyboard_plugged_in_later_is_picked_up(self):
-        watched = self.watch_media([[], [], [(Codes.KEY_BRIGHTNESSUP, 1), (Codes.KEY_BRIGHTNESSUP, 2)]],
-                                   plugged_at=2, capabilities=(Codes.KEY_BRIGHTNESSUP, Codes.KEY_BRIGHTNESSDOWN))
-        self.assertEqual([len(devices) for devices in watched], [0, 0, 1, 1])
+        watched = self.watch_media([[], [], [(Codes.KEY_BRIGHTNESSUP, 1)], [(Codes.KEY_BRIGHTNESSUP, 2)]],
+                                   plugged_at=2, capabilities=(Codes.KEY_BRIGHTNESSUP, Codes.KEY_BRIGHTNESSDOWN),
+                                   times=[0.0, 0.0, 0.0, 1.0])
+        self.assertEqual([len(devices) for devices in watched], [0, 0, 1, 1, 1])
         self.assertEqual(self.changes, [("brightness", 5), ("brightness", 5)])
+
+    # A held key: the keyboard autorepeats every ~33 ms, far faster than wpctl runs.
+
+    HELD = 0.033
+
+    def held(self, code, seconds):
+        """Press `code`, autorepeat it every HELD seconds for `seconds`, let go: (rounds, times)."""
+        count = round(seconds / self.HELD)
+        rounds = [[(code, 1)], *([[(code, 2)]] * count), [(code, 0)]]
+        times = [0.0, *(index * self.HELD for index in range(1, count + 1)), seconds + 0.01]
+        return rounds, times
+
+    def test_a_held_key_steps_after_the_repeat_delay_then_at_the_repeat_interval(self):
+        module = self.module
+        self.assertEqual((module.REPEAT_DELAY, module.REPEAT_INTERVAL), (0.4, 0.12))
+        for code, what in ((Codes.KEY_VOLUMEUP, "volume"), (Codes.KEY_BRIGHTNESSDOWN, "brightness")):
+            with self.subTest(what=what):
+                self.changes.clear()
+                rounds, times = self.held(code, 1.2)
+                self.watch_media(rounds, times=times, capabilities=(code,))
+                # The press, then at 0.43, 0.56, 0.69, 0.83, 0.96 and 1.09 s: not 36 autorepeats' worth.
+                self.assertEqual([change[0] for change in self.changes], [what] * 7)
+
+    def test_volume_keys_keep_working_over_a_stream(self):
+        # Deliberate: they set this box's (the TV's) volume, not the remote PC's.
+        with mock.patch.object(self.module, "remote_session_in_front", return_value=True):
+            self.watch_media([[(Codes.KEY_VOLUMEDOWN, 1), (Codes.KEY_VOLUMEDOWN, 0)]],
+                             capabilities=(Codes.KEY_VOLUMEDOWN,))
+        self.assertEqual(self.changes, [("volume", -5)])
+
+    def test_steps_still_waiting_hold_back_the_repeats_so_letting_go_stops_at_once(self):
+        stuck = self.module.queue.Queue(maxsize=4)  # wpctl hangs: nothing takes the steps
+        rounds, times = self.held(Codes.KEY_VOLUMEDOWN, 2.0)
+        self.watch_media(rounds, times=times, backlog=stuck, capabilities=(Codes.KEY_VOLUMEDOWN,))
+        self.assertEqual(stuck.qsize(), 1, "only the press: no tail of queued repeats after letting go")
+
+    def test_the_repeat_pacing(self):
+        busy = {"now": False}
+        pace = self.module.MediaRepeat(busy=lambda: busy["now"])
+
+        def key(value):
+            return key_event(Codes.KEY_VOLUMEUP, value)
+
+        self.assertTrue(pace.allow("kbd", key(1), 0.0), "a press always counts")
+        self.assertFalse(pace.allow("kbd", key(2), 0.39))
+        self.assertTrue(pace.allow("kbd", key(2), 0.4))
+        self.assertFalse(pace.allow("kbd", key(2), 0.5))
+        busy["now"] = True
+        self.assertFalse(pace.allow("kbd", key(2), 0.6), "due, but earlier steps are still queued")
+        self.assertTrue(pace.allow("kbd", key(1), 0.6), "a fresh press is never dropped here")
+        busy["now"] = False
+        self.assertFalse(pace.allow("kbd", key(2), 0.7), "the press restarted the delay")
+        self.assertTrue(pace.allow("kbd", key(2), 1.0))
+        self.assertTrue(pace.allow("other", key(1), 1.0), "paced per keyboard")
+        self.assertTrue(pace.allow("kbd", key(0), 1.1))
+        self.assertFalse(pace.allow("kbd", key(2), 5.0), "held from before it was watched: wait the delay")
+        self.assertTrue(pace.allow("kbd", key(2), 5.4))
+        self.assertTrue(pace.allow("kbd", key_event(Codes.KEY_ENTER, 2), 5.41), "other keys are not paced")
+        pace.forget("other")
+        self.assertEqual(list(pace.due), [("kbd", Codes.KEY_VOLUMEUP)])
+        pace.reset()
+        self.assertEqual(pace.due, {})
 
     def test_apples_fn_layer_sends_the_brightness_keys(self):
         # hid_apple: Fn+F1/F2 (or F1/F2 alone, depending on fnmode) arrive as the brightness codes.

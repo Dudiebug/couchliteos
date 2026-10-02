@@ -73,6 +73,18 @@ class VolumeTest(unittest.TestCase):
             ],
         )
 
+    def test_a_volume_key_step_does_not_read_the_level_back(self):
+        with self.wpctl({"get-volume": "Volume: 0.55\n"}) as run:
+            self.assertIsNone(audio.step_volume(5))
+            audio.step_volume(-5)
+        self.assertEqual(
+            self.commands(run),
+            [
+                ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"],
+                ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%-"],
+            ],
+        )
+
     def test_toggle_mute_reports_the_new_state(self):
         with self.wpctl({"get-volume": "Volume: 0.50 [MUTED]\n"}) as run:
             self.assertTrue(audio.toggle_mute().muted)

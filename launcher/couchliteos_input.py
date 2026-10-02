@@ -53,7 +53,8 @@ ROW_MOUSE_SPEED = "MOUSE SPEED"
 FIELDS = ("home", "keyboard_home", "pad_speed", "mouse_speed")
 HELP = {
     "home": "HOLD THE BUTTONS 1.5 S TO OPEN HOME, LIKE GUIDE",
-    "keyboard_home": "CTRL+ALT+H OPENS HOME FROM A KEYBOARD (SUPER ALWAYS DOES)",
+    # Also over a stream or remote desktop, where a Super tap goes to the remote PC.
+    "keyboard_home": "CTRL+ALT+H OPENS HOME FROM A KEYBOARD, EVEN FROM A STREAM OR REMOTE DESKTOP",
     "pad_speed": "HOW FAST THE STICK MOVES THE POINTER IN BROWSERS",
     "mouse_speed": "FOR MICE AND TOUCHPADS",
 }
