@@ -939,6 +939,63 @@ class LauncherTest(unittest.TestCase):
         guard.filter.assert_called_once()
         self.assertEqual(guard.filter.call_args.args[1], 10)
 
+    def test_ctrl_alt_h_is_home_not_back(self):
+        # foot sends Ctrl+Alt+H as ESC, Ctrl+H; gamepad-nav has left a Home request for it.
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / "home.request"
+            request.touch()
+            screen = Screen([27, 8, 8])
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep") as sleep:
+                self.assertEqual(self.module.read_key(screen), -1)
+                self.assertEqual(self.module.read_key(screen), -1)
+                self.assertEqual(self.module.read_key(screen), 8, "only the chord's own Ctrl+H is dropped")
+            sleep.assert_not_called()
+            self.assertTrue(request.exists(), "the caller's Home check still sees it")
+
+    def test_a_plain_escape_still_goes_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            screen = Screen([27, 8])
+            with mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep") as sleep:
+                self.assertEqual(self.module.read_key(screen), 27)
+                self.assertEqual(self.module.read_key(screen), 8)
+            sleep.assert_called_once_with(self.module.HOME_CHORD_WAIT)
+            self.assertLessEqual(self.module.HOME_CHORD_WAIT, 0.1, "Esc must not feel slow")
+
+    def test_the_keyboard_typing_into_an_app_closes_a_guide_menu_opened_meanwhile(self):
+        # Home while the on-screen keyboard was up opened the Guide menu; closing the keyboard typed
+        # into the app and put it back in front, so the menu closes and the app gets the controller.
+        launcher = self.launcher()
+        launcher.running_applications = mock.Mock(return_value=[])
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            refocused = run / "osk-refocused"
+            refocused.touch()  # left over from an earlier keyboard: ignored
+            calls = []
+
+            class KeyboardClosesScreen(Screen):
+                def getch(self):
+                    calls.append(1)
+                    if len(calls) == 2:
+                        refocused.touch()
+                    if len(calls) > 2:
+                        raise AssertionError("the Guide menu stayed open")
+                    return -1
+
+            launcher.screen = KeyboardClosesScreen()
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "HOME_REQUEST", run / "home.request"
+            ), mock.patch.object(self.module, "LAUNCHER_FOCUS", run / "launcher-focus"), mock.patch.object(
+                self.module, "OSK_REFOCUSED", refocused
+            ), mock.patch.object(self.module, "focus_launcher"):
+                launcher.active_applications()
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(refocused.exists())
+            self.assertFalse((run / "launcher-focus").exists(), "gamepad-nav stops sending keys to the launcher")
+
     def test_settings_contains_sleep_and_screen_and_dispatches_to_it(self):
         self.assertIn("SLEEP & SCREEN", self.module.SETTINGS_MENU)
         settings = self.module.Settings(Screen(), self.launcher())

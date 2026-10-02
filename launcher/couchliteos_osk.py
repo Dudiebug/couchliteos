@@ -31,6 +31,10 @@ DEVICE_SETTLE = 0.5
 # raised the launcher meanwhile): checked every REFOCUS_POLL seconds, REFOCUS_TRIES times.
 REFOCUS_POLL = 0.05
 REFOCUS_TRIES = 20
+# Touched once an app other than the launcher is back in front: a Guide menu opened by Home
+# while the keyboard was up must close and hand the controller back to that app.
+REFOCUSED = pathlib.Path("/run/couchliteos/osk-refocused")
+LAUNCHER_TITLE = "CouchLiteOS Launcher"
 LETTERS = (
     tuple("1234567890"),
     tuple("QWERTYUIOP"),
@@ -270,15 +274,22 @@ def refocus(target: dict[str, str], run: Run = subprocess.run) -> bool:
     return False
 
 
-def inject(path: pathlib.Path = PAYLOAD, target: dict[str, str] | None = None, run: Run = subprocess.run) -> int:
+def inject(path: pathlib.Path = PAYLOAD, target: dict[str, str] | None = None, run: Run = subprocess.run,
+           refocused: pathlib.Path = REFOCUSED) -> int:
     """Types the payload. With a target (the window focused when the keyboard opened) the
     text goes to that window, or nowhere once it has closed; without one, to the focused window."""
     payload = load_payload(path)
     if payload is None:
         return 0
-    if target is not None and not refocus(target, run):
-        print("couchliteos-osk: the window the text was for has closed; nothing typed", file=sys.stderr)
-        return 0
+    if target is not None:
+        if not refocus(target, run):
+            print("couchliteos-osk: the window the text was for has closed; nothing typed", file=sys.stderr)
+            return 0
+        if target.get("title") != LAUNCHER_TITLE:
+            try:
+                refocused.touch()
+            except OSError:
+                pass
     from evdev import UInput, ecodes
 
     events = character_events(*payload, ecodes)

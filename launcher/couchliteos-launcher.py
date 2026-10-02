@@ -50,6 +50,8 @@ RUN = pathlib.Path("/run/couchliteos")
 HOME_REQUEST = RUN / "home.request"
 # Tells gamepad-nav the launcher (not a running app) has focus, so it forwards keys.
 LAUNCHER_FOCUS = RUN / "launcher-focus"
+# couchliteos_osk.REFOCUSED: the keyboard put the app it typed into back in front.
+OSK_REFOCUSED = RUN / "osk-refocused"
 SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
 FIXED_CONTROLS = (
     ("SETTINGS", "settings"), ("SLEEP", "suspend"), ("REBOOT", "reboot"), ("SHUTDOWN", "poweroff"),
@@ -177,9 +179,19 @@ def focus_launcher() -> None:
         pass
 
 
+# Ctrl+Alt+H reaches the launcher as ESC then Ctrl+H while gamepad-nav turns it into a Home
+# request. Home is handled like Guide, so that ESC (back) and Ctrl+H are dropped: an ESC waits
+# this long for the request to show up, and the Ctrl+H is dropped within HOME_CHORD_TAIL.
+HOME_CHORD_WAIT = 0.05
+HOME_CHORD_TAIL = 1.0
+CTRL_H = 8
+_home_chord_until = 0.0
+
+
 def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
     """The next key. F12 (X / Triangle) opens the on-screen keyboard for the launcher unless
     `keyboard` is False: then the caller gets the key and decides where the typing goes."""
+    global _home_chord_until
     key = screen.getch()
     if key != -1:
         display.confirm_restore()
@@ -187,6 +199,15 @@ def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
         key = IDLE_GUARD.filter(screen, key)
     if key == curses.KEY_F12 and keyboard:
         request_osk()
+        return -1
+    if key == 27:
+        if not HOME_REQUEST.exists():
+            time.sleep(HOME_CHORD_WAIT)
+        if HOME_REQUEST.exists():  # left for the caller's Home check, like a Guide press
+            _home_chord_until = time.monotonic() + HOME_CHORD_TAIL
+            return -1
+    elif key == CTRL_H and time.monotonic() < _home_chord_until:
+        _home_chord_until = 0.0
         return -1
     return key
 
@@ -1111,6 +1132,7 @@ class Launcher:
         selected = 0
         status = ""
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
+        OSK_REFOCUSED.unlink(missing_ok=True)
         set_launcher_focus(True)  # the pad drives this menu even with an app (or its mouse) running
         self.woke_up = False
         while True:
@@ -1161,6 +1183,12 @@ class Launcher:
                 return
             if HOME_REQUEST.exists():  # Guide again while the menu is open closes it
                 HOME_REQUEST.unlink(missing_ok=True)
+                return
+            if OSK_REFOCUSED.exists():
+                # Home was pressed while the keyboard was up; closing it typed into the app and
+                # put that app back in front, so the controller goes back to it too.
+                OSK_REFOCUSED.unlink(missing_ok=True)
+                set_launcher_focus(False)
                 return
             if key != -1:
                 status = ""

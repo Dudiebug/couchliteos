@@ -316,10 +316,12 @@ class InjectTest(unittest.TestCase):
             with mock.patch.dict(sys.modules, {"evdev": fake}), mock.patch.object(
                 osk.time, "sleep", side_effect=lambda seconds: timeline.append(("sleep", seconds))
             ):
+                refocused = pathlib.Path(directory) / "osk-refocused"
                 if wlrctl is None:
-                    result = osk.inject(path)
+                    result = osk.inject(path, refocused=refocused)
                 else:
-                    result = osk.inject(path, target, wlrctl)
+                    result = osk.inject(path, target, wlrctl, refocused=refocused)
+                self.refocused = refocused.exists()
             self.assertFalse(path.exists(), "the payload (maybe a password) is never left behind")
         return result, timeline, codes
 
@@ -370,6 +372,15 @@ class InjectTest(unittest.TestCase):
         self.assertLess(focus, active)
         self.assertLess(active, opened, "nothing is typed before the window is back in front")
         self.assertEqual(sum(kind == "write" for kind, _detail in timeline), 4)
+        self.assertTrue(self.refocused, "a Guide menu opened by Home meanwhile hands the controller back")
+
+    def test_typing_back_into_the_launcher_leaves_its_menu_alone(self):
+        wlrctl = FakeWlrctl([CHROME, LAUNCHER])
+        result, _timeline, _codes = self.run_inject("a", target={"app_id": LAUNCHER[0], "title": LAUNCHER[1]},
+                                                    wlrctl=wlrctl)
+        self.assertEqual(result, 0)
+        self.assertEqual(wlrctl.windows[0], LAUNCHER)
+        self.assertFalse(self.refocused)
 
     def test_a_window_whose_title_changed_is_found_by_its_app_id(self):
         wlrctl = FakeWlrctl([LAUNCHER, ("google-chrome", "Inbox - Google Chrome")])
@@ -395,6 +406,7 @@ class InjectTest(unittest.TestCase):
                                                        wlrctl=wlrctl)
         self.assertEqual(result, 0)
         self.assertFalse(any(kind in {"open", "write"} for kind, _detail in timeline))
+        self.assertFalse(self.refocused, "the launcher keeps the controller")
 
     def test_nothing_is_typed_while_the_window_cannot_get_the_focus(self):
         wlrctl = FakeWlrctl([LAUNCHER, CHROME], focusable=False)
@@ -412,6 +424,10 @@ class InjectTest(unittest.TestCase):
         _result, timeline, _codes = self.run_inject("a", target=None, wlrctl=wlrctl)
         self.assertFalse(any(kind == "wlrctl" for kind, _detail in timeline))
         self.assertIn(("open", "CouchLiteOS Buffered Keyboard"), timeline)
+        self.assertFalse(self.refocused)
+
+    def test_the_launcher_watches_the_same_file(self):
+        self.assertEqual(osk.REFOCUSED, pathlib.Path("/run/couchliteos/osk-refocused"))
 
 
 class TargetTest(unittest.TestCase):
