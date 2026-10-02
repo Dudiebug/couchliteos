@@ -15,6 +15,7 @@ instead.
 | Launcher does not appear | See [the black-screen section](#the-screen-stays-black-or-the-launcher-never-appears) |
 | Moonlight returns immediately | `/var/log/couchliteos/moonlight.log`; verify XWayland and VA-API output |
 | chiaki-ng black screen | Try Vulkan then OpenGL; optionally set `gamescope = true`; keep HDR off |
+| Moonlight stream is black | See [Moonlight stream is black](#moonlight-stream-is-black) |
 | No HDMI/DP audio | `wpctl status`, `aplay -l`; select the display sink in Settings > AUDIO OUTPUT. If `aplay -l` lists the HDMI device but `wpctl status` has no HDMI sink, update to 0.2.2 (0.2.1 kept HDA cards on their analog profile); `audio.log` says which HDMI/DP profile was chosen, and the support file has `audio/alsa-cards.txt` and `audio/eld/` |
 | No DHCP | `nmcli device`, `ip route`, cable/switch link, `/var/log/couchliteos/network.log` |
 | USB/IP refused | `couchliteos-usbip list`; confirm exact serial and risky-class policy |
@@ -28,6 +29,31 @@ instead.
 Do not open UDP/41641 unconditionally. Run `tailscale netcheck` and
 `tailscale ping` first. Do not port-forward Sunshine or USB/IP to the public
 internet.
+
+## Moonlight stream is black
+
+First check the support file. If `moonlight.log` shows frames received and
+decoded with few drops, CouchLiteOS is showing exactly what the gaming PC sends:
+the host captured a black picture. Check the host:
+
+- **No monitor on the host.** In Sunshine's log (Web UI > Troubleshooting >
+  Logs), `Currently available display devices: []`, a 1024x768 desktop, and
+  repeated `Failed to collect path source data` mean the GPU has no display.
+  Plug in an HDMI/DisplayPort dummy plug, keep a monitor switched on, or install
+  a virtual display driver; then set Configuration > Audio/Video > Output Name to
+  that display.
+- **A Remote Desktop session holds the screen.** Sign out of RDP, or send the
+  session back to the console (as administrator):
+  `for /f "skip=1 tokens=3" %s in ('query user %USERNAME%') do tscon.exe %s /dest:console`
+- **Lock screen or UAC prompts are black.** Run Sunshine as a service (the
+  default Windows install).
+- **Protected video** (streaming services in a browser) is always black.
+- Try HDR off on the host, and the other capture method (DDX or WGC) in
+  Configuration > Advanced.
+
+No controller input in games on a Windows host: install
+[ViGEmBus](https://github.com/nefarius/ViGEmBus/releases); Sunshine logs
+`ViGEmBus is not installed or running` without it.
 
 ## USB does not boot
 
