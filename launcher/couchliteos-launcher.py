@@ -202,7 +202,6 @@ def home_chord_pending() -> bool:
 def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
     """The next key. F12 (X / Triangle) opens the on-screen keyboard for the launcher unless
     `keyboard` is False: then the caller gets the key and decides where the typing goes."""
-    global _home_chord_until
     key = screen.getch()
     if key != -1:
         display.confirm_restore()
@@ -211,6 +210,13 @@ def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
     if key == curses.KEY_F12 and keyboard:
         request_osk()
         return -1
+    return without_home_chord(key)
+
+
+def without_home_chord(key: int) -> int:
+    """-1 for the ESC, Ctrl+H foot sends for Ctrl+Alt+H (gamepad-nav has left a Home request
+    for it), so the shortcut is not also taken as B / Esc; any other key unchanged."""
+    global _home_chord_until
     if key == 27:
         if not home_chord_pending():
             time.sleep(HOME_CHORD_WAIT)
@@ -221,6 +227,12 @@ def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
         _home_chord_until = 0.0
         return -1
     return key
+
+
+def setup_ui(screen: curses.window) -> setup.CursesUI:
+    """The setup wizard's screens, reading keys without the Ctrl+Alt+H chord: the wizard takes
+    no Home request (as with Guide), and its ESC must not skip a step."""
+    return setup.CursesUI(screen, read_key=lambda: without_home_chord(screen.getch()))
 
 
 def flush_input() -> None:
@@ -1294,7 +1306,7 @@ class Launcher:
             "applications": lambda: f"{len(application_result().applications)} APPLICATIONS CONFIGURED",
         }
         setup.SetupWizard(
-            setup.CursesUI(self.screen), actions, setup.System(),
+            setup_ui(self.screen), actions, setup.System(),
             bluetooth_client=bluetooth.BluetoothClient(), statuses=statuses,
         ).run(force=force)
         self.reload_applications()
@@ -1329,7 +1341,7 @@ class Launcher:
         if app is None or not self.launch_app(app, **options):
             return False
         ready = RUN / f"{app.status_id}-ready"
-        ui = setup.CursesUI(self.screen)
+        ui = setup_ui(self.screen)
         shown = lines or [f"{app.name} IS OPEN.", "CLOSE IT OR PRESS THE HOME BUTTON WHEN YOU ARE DONE."]
         started = time.monotonic()
         closing_since: float | None = None
@@ -3058,7 +3070,7 @@ class StreamingSettings(RemoteDesktopSettings):
             "pair_moonlight": self.launcher.pair_moonlight,
             "wake_pc": self.launcher.wake_message,
         }
-        step = setup.SetupWizard(setup.CursesUI(self.screen), actions, setup.System()).step_streaming()
+        step = setup.SetupWizard(setup_ui(self.screen), actions, setup.System()).step_streaming()
         after = {self.ident(host) for host in stream.load_hosts()}
         if not after - before:
             if step != setup.DONE:  # DONE with nothing new: an already paired PC was picked (USE IT)

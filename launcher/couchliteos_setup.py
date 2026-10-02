@@ -1497,8 +1497,14 @@ def big_lines(text: str, width: int) -> list[str]:
 
 
 class CursesUI:
-    def __init__(self, screen: curses.window) -> None:
+    def __init__(self, screen: curses.window, read_key: Callable[[], int] | None = None) -> None:
+        """`read_key` replaces screen.getch: the launcher passes one that drops the ESC, Ctrl+H
+        foot sends for Ctrl+Alt+H, so the Home shortcut does not skip a step like B / Esc."""
         self.screen = screen
+        self._read_key = read_key
+
+    def read_key(self) -> int:
+        return self._read_key() if self._read_key is not None else self.screen.getch()
 
     def flush(self) -> None:
         curses.flushinp()
@@ -1551,7 +1557,7 @@ class CursesUI:
         self.screen.timeout(1000)
         while True:
             self.draw(title, lines, choices, selected, big, MENU_FOOTER)
-            key = self.screen.getch()
+            key = self.read_key()
             if key == curses.KEY_UP:
                 selected = (selected - 1) % len(choices)
             elif key == curses.KEY_DOWN:
@@ -1576,7 +1582,7 @@ class CursesUI:
                     return False
                 self.draw(title, lines + [f"{SPINNER[frame % len(SPINNER)]}  PLEASE WAIT"], [], None, big, "B / CIRCLE: CANCEL")
                 frame += 1
-                if self.screen.getch() == 27:
+                if self.read_key() == 27:
                     return None
             return True
         finally:

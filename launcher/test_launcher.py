@@ -967,6 +967,26 @@ class LauncherTest(unittest.TestCase):
             sleep.assert_called_once_with(self.module.HOME_CHORD_WAIT)
             self.assertLessEqual(self.module.HOME_CHORD_WAIT, 0.1, "Esc must not feel slow")
 
+    def test_ctrl_alt_h_does_not_skip_a_setup_step(self):
+        # The setup wizard reads its own keys; the chord's ESC must not count as B (skip).
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / "home.request"
+            request.touch()
+            screen = Screen([27, 8, 10])
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep"):
+                choice = self.module.setup_ui(screen).menu("STEP", [], ["FIRST", "SECOND"])
+            self.assertEqual(choice, 0, "Enter picked the first choice; nothing was skipped")
+
+    def test_b_still_skips_a_setup_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            screen = Screen([27])
+            with mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep"):
+                self.assertIsNone(self.module.setup_ui(screen).menu("STEP", [], ["FIRST"]))
+
     def test_guide_pressed_in_settings_does_not_take_b_away(self):
         # Only the main menu answers a Guide press made in Settings; until then B / Esc still go back.
         with tempfile.TemporaryDirectory() as directory:
