@@ -24,8 +24,8 @@ sudo make build PROFILE=nvidia RELEASE=1
 | squashfs compression | zstd level 9: about 9 times faster to make, about 13% larger | xz: smallest |
 | Reuses an installed chroot (`COUCHLITEOS_LB_CACHE`) | yes | never: packages are always installed afresh |
 
-Publish only release builds. The release checklist and `tools/release-gauntlet.sh` assume
-an ISO built with `RELEASE=1`. Test builds are for checking a change. The image kernel
+Publish only release builds: `make release-assets` refuses an ISO whose squashfs is not
+xz. Test builds are for checking a change. The image kernel
 reads zstd squashfs (`CONFIG_SQUASHFS_ZSTD=y` in Debian 13's 6.12 kernel), so a test ISO
 boots and installs the same way as a release ISO.
 

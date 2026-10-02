@@ -795,6 +795,7 @@ rg -Fq '"${cache_options[@]}"' build/build.sh
 rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
 rg -q '^RELEASE \?= 0$' Makefile
 rg -Fq 'sudo make build RELEASE=1' .github/workflows/build.yml
+rg -Fq '[[ $compression == 4 ]]' tools/release-assets.sh
 # apt-cacher-ng: used when it answers, never written into the image.
 rg -Fq 'apt_proxy=${COUCHLITEOS_APT_PROXY-auto}' build/build.sh
 rg -Fq 'proxy_answers http://127.0.0.1:3142' build/build.sh

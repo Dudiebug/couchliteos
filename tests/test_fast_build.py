@@ -417,6 +417,44 @@ class TestGateTest(Temporary):
         self.assertIn("build/.tests-passed", (ROOT / ".gitignore").read_text())
 
 
+@unittest.skipUnless(shutil.which("xorriso") and shutil.which("mksquashfs"), "xorriso and mksquashfs are required")
+class ReleaseAssetsTest(Temporary):
+    def make_iso(self, compression):
+        content = self.base / f"content-{compression}"
+        (content / "etc").mkdir(parents=True)
+        (content / "etc/os-release").write_text("NAME=CouchLiteOS\n")
+        image = self.base / f"image-{compression}"
+        (image / "live").mkdir(parents=True)
+        (image / "boot").write_bytes(os.urandom(100_000))  # the squashfs does not start the image
+        subprocess.run(["mksquashfs", str(content), str(image / "live/filesystem.squashfs"), "-comp", compression,
+                        "-no-progress", "-quiet"], check=True, capture_output=True)
+        out = self.base / f"out-{compression}"
+        out.mkdir()
+        version = (ROOT / "VERSION").read_text().strip()
+        iso = out / f"couchliteos-{version}-amd64.iso"
+        subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-o", str(iso), str(image)], check=True, capture_output=True)
+        return out
+
+    def release_assets(self, out):
+        return subprocess.run([str(ROOT / "tools/release-assets.sh")], capture_output=True, text=True,
+                              env={"PATH": PATH, "COUCHLITEOS_RELEASE_DIR": str(out),
+                                   "COUCHLITEOS_ALLOW_PARTIAL_RELEASE": "1"})
+
+    def test_a_release_build_is_an_asset(self):
+        out = self.make_iso("xz")
+        result = self.release_assets(out)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((out / "SHA256SUMS").is_file())
+
+    def test_a_test_build_is_refused(self):
+        out = self.make_iso("zstd")
+        result = self.release_assets(out)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not a release build (squashfs compression id '6'", result.stderr)
+        self.assertIn("sudo make build RELEASE=1", result.stderr)
+        self.assertFalse((out / "SHA256SUMS").exists())
+
+
 class TimingsTest(Temporary):
     def timed(self, *args):
         return subprocess.run([str(ROOT / "build/timed.sh"), *args], capture_output=True, text=True,
