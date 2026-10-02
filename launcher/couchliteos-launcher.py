@@ -111,6 +111,9 @@ TEXT_SIZE_HELP = "SMALLER FITS MORE ON THE SCREEN  ·  LARGER IS EASIER TO READ"
 SCREEN_CHOICE_HINT = "A / CROSS PICKS  ·  B / CIRCLE GOES BACK"
 SCREEN_RESTART_MESSAGE = "RESTARTING THE LAUNCHER TO APPLY. THIS TAKES A FEW SECONDS."
 SCREEN_NEXT_START_MESSAGE = "SAVED. IT APPLIES THE NEXT TIME COUCHLITEOS STARTS."
+# foot sizes its text for the picture size it starts on, so a new picture size restarts it too.
+PICTURE_RESTART_MESSAGE = "RESTARTING SO THE TEXT FITS THE NEW PICTURE SIZE. THIS TAKES A FEW SECONDS."
+PICTURE_NEXT_START_MESSAGE = "MODE SAVED. THE TEXT SIZE CATCHES UP THE NEXT TIME COUCHLITEOS STARTS."
 # systemd gives up on the launcher after 5 starts a minute (StartLimitBurst), so screen-setting
 # restarts stop at 3 a minute; the marker sends the restarted launcher back to DISPLAY.
 SCREEN_RESTARTS_PER_MINUTE = 3
@@ -227,6 +230,22 @@ def without_home_chord(key: int) -> int:
         _home_chord_until = 0.0
         return -1
     return key
+
+
+def claim_screen_restart(marker: str) -> bool:
+    """Count a restart that applies a screen change, and leave `marker` in RUN for the restarted
+    launcher. False (no restart) past SCREEN_RESTARTS_PER_MINUTE or when RUN cannot be written."""
+    log = RUN / "screen-restarts"
+    try:
+        now = time.time()
+        recent = [stamp for stamp in map(float, log.read_text().split()) if now - 60 < stamp <= now] if log.exists() else []
+        if len(recent) >= SCREEN_RESTARTS_PER_MINUTE:
+            return False
+        log.write_text("".join(f"{stamp}\n" for stamp in [*recent, now]))
+        (RUN / marker).touch()
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def setup_ui(screen: curses.window) -> setup.CursesUI:
@@ -1287,10 +1306,12 @@ class Launcher:
             if not self.can_sleep or confirmation.confirm(self.screen, question):
                 self.request_sleep()
 
-    def setup_wizard(self, *, force: bool = False) -> None:
+    def setup_wizard(self, *, force: bool = False, resume: bool = False) -> None:
+        self.wizard_picture_changed = False
         actions = {
             "text": self.wizard_text,
             "display": self.wizard_display,
+            "picture_saved": self.wizard_picture_saved,
             "tone": lambda: self.launch_and_wait("audio-test"),
             "launch": self.launch_and_wait,
             "pair_moonlight": self.pair_moonlight,
@@ -1308,7 +1329,8 @@ class Launcher:
         setup.SetupWizard(
             setup_ui(self.screen), actions, setup.System(),
             bluetooth_client=bluetooth.BluetoothClient(), statuses=statuses,
-        ).run(force=force)
+        ).run(force=force, resume=resume)
+        HOME_REQUEST.unlink(missing_ok=True)  # setup takes no Home request, as with Guide: drop a leftover one
         self.reload_applications()
 
     def wizard_text(self, title: str, prompt: str, limit: int, *, masked: bool = False) -> str | None:
@@ -1318,13 +1340,30 @@ class Launcher:
     def wizard_display(self, resolution: str, refresh_mhz: int) -> bool:
         """Offer a mode through the existing 15 second preview; True only if it was confirmed."""
         settings = Settings(self.screen, self)
+        settings.in_wizard = True  # setup restarts for a new picture size itself, after saving its progress
         if not settings.refresh_outputs():
             return False
+        before = settings.output.current_mode if settings.output is not None else None
         settings.resolution, settings.refresh_mhz = resolution, refresh_mhz
         settings.apply_preview()
         # Settings overwrites its status text after a rollback, so compare the real mode instead.
         current = settings.output.current_mode if settings.output is not None else None
-        return current is not None and (current.resolution, current.refresh_mhz) == (resolution, refresh_mhz)
+        confirmed = current is not None and (current.resolution, current.refresh_mhz) == (resolution, refresh_mhz)
+        if confirmed and (before is None or before.resolution != resolution):
+            self.wizard_picture_changed = True
+        return confirmed
+
+    def wizard_picture_saved(self) -> None:
+        """Setup saved its picture answer: after a new picture size, restart so foot picks a text
+        size that fits it, and setup carries on at sound. A running app or the rate limit means no restart."""
+        if not getattr(self, "wizard_picture_changed", False):
+            return
+        self.wizard_picture_changed = False
+        if self.any_app_running() or not claim_screen_restart("reopen-setup"):
+            return
+        setup_ui(self.screen).status("DISPLAY AND SOUND", [PICTURE_RESTART_MESSAGE])
+        time.sleep(1)  # long enough to read before the screen goes dark
+        sys.exit(0)
 
     def launch_and_wait(
         self, app_id: str, *, lines: list[str] | None = None, big: str | None = None,
@@ -1408,7 +1447,11 @@ class Launcher:
             self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
         whatsnew.show_once(self.screen, lambda: read_key(self.screen))  # before the wizard: only upgraders see it
-        self.setup_wizard()
+        if (RUN / "reopen-setup").exists():  # restarted for a new picture size during setup
+            (RUN / "reopen-setup").unlink(missing_ok=True)
+            self.setup_wizard(resume=True)
+        else:
+            self.setup_wizard()
         controls.show_once(self.screen)
         if (RUN / "reopen-display").exists():  # restarted to apply SCREEN EDGES / TEXT SIZE
             (RUN / "reopen-display").unlink(missing_ok=True)
@@ -1454,6 +1497,7 @@ class Settings:
         self.original_mode: display.Mode | None = None
         self.resolution = ""
         self.refresh_mhz = 0
+        self.in_wizard = False  # setup's own restart handles a new picture size there
 
     def refresh_outputs(self) -> bool:
         try:
@@ -1693,6 +1737,8 @@ class Settings:
             display.log(f"Confirmed and saved {requested.argument} on {old_output.name}")
             self.status = "DISPLAY MODE CONFIRMED AND SAVED"
             self.refresh_outputs()
+            if (requested.width, requested.height) != (old_mode.width, old_mode.height) and not self.in_wizard:
+                self.restart_for_picture_size()
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             display.log(f"Display confirmation failed: {error}")
             self.rollback(old_output, old_mode)
@@ -1900,6 +1946,16 @@ class Settings:
                 if isinstance(chosen, str):
                     notice = self.change_screen_setting("text", chosen, rows, selected)
 
+    def restart_for_picture_size(self) -> None:
+        """foot sized its text for the old picture size: restart into DISPLAY so it fits the new one."""
+        if self.launcher.any_app_running() or not claim_screen_restart("reopen-display"):
+            self.status = PICTURE_NEXT_START_MESSAGE
+            return
+        self.status = PICTURE_RESTART_MESSAGE
+        self.draw("DISPLAY SETTINGS", [], 0)
+        time.sleep(1)  # long enough to read before the screen goes dark
+        sys.exit(0)
+
     def change_screen_setting(self, field: str, value: object, rows: list[str], selected: int) -> str:
         """Save a screen-edge or text-size choice and apply it; returns what to tell the user.
 
@@ -1915,17 +1971,7 @@ class Settings:
             screenfit.save(changed)
         except (OSError, ValueError) as error:
             return f"NOT SAVED: {error}".upper()
-        if self.launcher.any_app_running():
-            return SCREEN_NEXT_START_MESSAGE
-        log = RUN / "screen-restarts"
-        try:
-            now = time.time()
-            recent = [stamp for stamp in map(float, log.read_text().split()) if now - 60 < stamp <= now] if log.exists() else []
-            if len(recent) >= SCREEN_RESTARTS_PER_MINUTE:
-                return SCREEN_NEXT_START_MESSAGE
-            log.write_text("".join(f"{stamp}\n" for stamp in [*recent, now]))
-            (RUN / "reopen-display").touch()
-        except (OSError, ValueError):
+        if self.launcher.any_app_running() or not claim_screen_restart("reopen-display"):
             return SCREEN_NEXT_START_MESSAGE
         self.status = SCREEN_RESTART_MESSAGE
         self.draw("DISPLAY SETTINGS", rows, selected)

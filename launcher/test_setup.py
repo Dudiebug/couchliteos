@@ -617,6 +617,35 @@ class WizardLifecycleTest(WizardTestCase):
         self.assertFalse(self.wizard(ui).run())
         self.assertEqual(ui.screens, [])
 
+    def resumed(self, *, marker):
+        """Setup that restarted for a new picture size: every step but DISPLAY AND SOUND answered."""
+        if marker:
+            self.marker.write_text("1\n")  # Settings > SETUP WIZARD runs it again after it finished
+        system = FakeSystem(modes=DisplayAndSoundFlowTest.MODES, sink_list=[audio.Sink(2, "HDMI 1")])
+        order = setup.plan_steps(cec_present=system.cec_present(), tv_available=False)
+        position = order.index("display")
+        state = {step: "skipped" for step in order[:position]}
+        setup.save_state({**state, setup.PICTURE: "done"}, self.state_path)
+        ui = FakeUI("YES", *[None] * (len(order) - position - 1), "FINISH")  # heard the tone, skip the rest
+        self.assertTrue(self.wizard(ui, system).run(resume=True))
+        return ui
+
+    def test_a_resumed_setup_goes_straight_to_the_sound_check(self):
+        for marker in (False, True):
+            with self.subTest(marker=marker):
+                ui = self.resumed(marker=marker)
+                self.assertNotIn("WELCOME", " ".join(ui.titles()))
+                self.assertEqual(ui.titles()[-1], "SETUP COMPLETE")
+                self.assertEqual(self.state()["display"], "done")
+                self.assertNotIn(setup.PICTURE, self.state())
+                self.marker.unlink(missing_ok=True)
+
+    def test_resume_with_nothing_left_after_setup_finished_does_nothing(self):
+        self.marker.write_text("1\n")
+        ui = FakeUI()
+        self.assertFalse(self.wizard(ui).run(resume=True))
+        self.assertEqual(ui.screens, [])
+
     def test_welcome_explains_the_wizard_and_skip_setup_writes_the_marker(self):
         ui = FakeUI("SKIP SETUP")
         self.assertTrue(self.wizard(ui).run())
@@ -924,6 +953,34 @@ class DisplayAndSoundFlowTest(WizardTestCase):
     def test_when_nothing_plays_the_step_fails_but_can_continue(self):
         ui = FakeUI("3840x2160", "NO", "NO", "CONTINUE")
         self.assertEqual(self.run_display(ui), "failed")
+
+    def test_the_picture_is_saved_and_reported_before_the_sound_check(self):
+        seen = []
+
+        def picture_saved():
+            seen.append(setup.load_state(self.state_path).get(setup.PICTURE))
+            self.calls.append(("picture_saved",))
+
+        ui = FakeUI("3840x2160", "YES")
+        wizard = self.wizard(ui, FakeSystem(modes=self.MODES, sink_list=[audio.Sink(2, "HDMI 1")]), picture_saved=picture_saved)
+        self.assertEqual(wizard.step_display(), "done")
+        self.assertEqual(seen, ["done"])
+        names = [call[0] for call in self.calls]
+        self.assertLess(names.index("display"), names.index("picture_saved"))
+        self.assertLess(names.index("picture_saved"), names.index("tone"))
+        self.assertNotIn(setup.PICTURE, wizard.state, "the step's own outcome replaces it")
+
+    def test_after_a_restart_the_picture_is_not_asked_again(self):
+        ui = FakeUI("YES")  # only the tone question
+        wizard = self.wizard(ui, FakeSystem(modes=self.MODES, sink_list=[audio.Sink(2, "HDMI 1")]), picture_saved=lambda: self.calls.append(("picture_saved",)))
+        wizard.state = {setup.PICTURE: "skipped"}
+        self.assertEqual(wizard.step_display(), setup.combine("skipped", "done"))
+        self.assertNotIn("display", [call[0] for call in self.calls])
+        self.assertNotIn(("picture_saved",), self.calls)
+
+    def test_the_saved_picture_answer_survives_loading(self):
+        setup.save_state({"network": "done", setup.PICTURE: "done", "bogus": "done"}, self.state_path)
+        self.assertEqual(self.state(), {"network": "done", setup.PICTURE: "done"})
 
     def test_a_rolled_back_mode_returns_to_the_list(self):
         results = iter([False, True])

@@ -37,6 +37,9 @@ import couchliteos_stream as streaming
 
 MARKER = pathlib.Path("/var/lib/couchliteos/setup-complete")
 STATE = pathlib.Path("/var/lib/couchliteos/setup-state.json")
+# The picture half of DISPLAY AND SOUND, saved before the sound half: a new picture size
+# restarts the launcher (foot sizes its text once, at start), and setup resumes at sound.
+PICTURE = "display-picture"
 DONE, SKIPPED, FAILED = "done", "skipped", "failed"
 OUTCOMES = (DONE, SKIPPED, FAILED)
 TITLES = {
@@ -90,7 +93,7 @@ def load_state(path: pathlib.Path = STATE) -> dict[str, str]:
         return {}
     if not isinstance(steps, dict):
         return {}
-    return {key: value for key, value in steps.items() if key in TITLES and value in OUTCOMES}
+    return {key: value for key, value in steps.items() if (key in TITLES or key == PICTURE) and value in OUTCOMES}
 
 
 def first_unfinished(order: Sequence[str], state: dict[str, str]) -> int:
@@ -853,8 +856,9 @@ class SetupWizard:
             self.tell_save_failed()
 
     # the whole run
-    def run(self, *, force: bool = False) -> bool:
-        if self.marker.exists() and not force:
+    def run(self, *, force: bool = False, resume: bool = False) -> bool:
+        """`resume`: the launcher restarted mid-setup (a new picture size); carry on without the welcome."""
+        if self.marker.exists() and not (force or resume):
             return False
         self.state = {} if force else load_state(self.state_path)
         if force:
@@ -863,7 +867,12 @@ class SetupWizard:
             cec_present=self.system.cec_present(), tv_available=callable(self.actions.get("tv"))
         )
         index = first_unfinished(order, self.state)
-        answer = self.welcome(resuming=bool(self.state) and index < len(order), title=TITLES.get(order[index], "") if index < len(order) else "")
+        if resume and self.state and index < len(order):
+            answer = "go"
+        elif self.marker.exists() and not force:
+            return False
+        else:
+            answer = self.welcome(resuming=bool(self.state) and index < len(order), title=TITLES.get(order[index], "") if index < len(order) else "")
         if answer == "exit":
             return True
         if answer == "skip":
@@ -1213,12 +1222,21 @@ class SetupWizard:
         shows, display_reason = display_gate(modes)
         plays, sound_reason = sound_gate(sinks)
         notes = [reason for ok, reason in ((shows, display_reason), (plays, sound_reason)) if not ok]
-        if notes:
-            self.notice("DISPLAY AND SOUND", notes)
-        return combine(
-            self.choose_display(modes) if shows else SKIPPED,
-            self.choose_sound(sinks) if plays else SKIPPED,
-        )
+        picture = self.state.get(PICTURE)
+        if picture is None:  # not answered before a restart
+            if notes:
+                self.notice("DISPLAY AND SOUND", notes)
+            picture = self.choose_display(modes) if shows else SKIPPED
+            self.state[PICTURE] = picture
+            self.save_progress()
+            saved = self.actions.get("picture_saved")
+            if callable(saved):
+                saved()  # the launcher may restart here so the text fits the new picture size
+        elif not plays:  # resumed after a restart: still say why there is no sound check
+            self.notice("DISPLAY AND SOUND", [sound_reason])
+        sound = self.choose_sound(sinks) if plays else SKIPPED
+        self.state.pop(PICTURE, None)  # run() saves the step's outcome next
+        return combine(picture, sound)
 
     def choose_display(self, modes: Sequence[Any]) -> str:
         choices = display_choices(modes)

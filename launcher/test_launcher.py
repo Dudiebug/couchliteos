@@ -551,7 +551,7 @@ class LauncherTest(unittest.TestCase):
             display, "apply_mode"
         ), mock.patch.object(display, "save_display") as save, mock.patch.object(display, "log"), mock.patch.object(
             self.module.curses, "flushinp", side_effect=lambda: events.append("flush"), create=True
-        ):
+        ), mock.patch.object(self.module.Settings, "restart_for_picture_size"):
             settings.apply_preview()
         return events, save
 
@@ -1251,15 +1251,21 @@ class LauncherTest(unittest.TestCase):
             def __init__(self, ui, actions, system, **options):
                 captured.update(ui=ui, actions=actions, system=system, options=options)
 
-            def run(self, force=False):
-                captured["force"] = force
+            def run(self, force=False, resume=False):
+                captured["force"], captured["resume"] = force, resume
+                captured["home_request_seen"] = home_request.exists()
 
         launcher.reload_applications = mock.Mock()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        home_request = pathlib.Path(directory.name) / "home.request"
+        home_request.touch()  # Ctrl+Alt+H pressed during setup, which takes no Home request
         with mock.patch.object(self.module.setup, "SetupWizard", FakeWizard), mock.patch.object(
             self.module.bluetooth, "BluetoothClient"
-        ):
+        ), mock.patch.object(self.module, "HOME_REQUEST", home_request):
             launcher.setup_wizard(**arguments)
         captured["reloaded"] = launcher.reload_applications.called
+        captured["home_request_left"] = home_request.exists()
         return captured
 
     def test_wizard_glue_hands_the_wizard_exactly_the_actions_it_calls(self):
@@ -1267,11 +1273,20 @@ class LauncherTest(unittest.TestCase):
         captured = self.run_wizard_glue(launcher, force=True)
         self.assertEqual(
             set(captured["actions"]),
-            {"text", "display", "tone", "launch", "pair_moonlight", "wake_pc", "applications"},
+            {"text", "display", "picture_saved", "tone", "launch", "pair_moonlight", "wake_pc", "applications"},
         )
         self.assertTrue(captured["force"])
+        self.assertFalse(captured["resume"])
         self.assertTrue(captured["reloaded"])
         self.assertIn("tailscale", captured["options"]["statuses"])
+
+    def test_a_home_request_left_from_setup_does_not_open_active_applications_after_it(self):
+        captured = self.run_wizard_glue(self.launcher())
+        self.assertTrue(captured["home_request_seen"])
+        self.assertFalse(captured["home_request_left"])
+
+    def test_the_wizard_glue_passes_resume_through(self):
+        self.assertTrue(self.run_wizard_glue(self.launcher(), resume=True)["resume"])
 
     def test_wizard_glue_offers_tv_control_only_when_the_screen_exists(self):
         launcher = self.launcher()
@@ -1333,6 +1348,70 @@ class LauncherTest(unittest.TestCase):
             self.assertTrue(launcher.wizard_display("1280x720", 60000))
         self.assertEqual((settings.resolution, settings.refresh_mhz), ("1280x720", 60000))
         settings.apply_preview.assert_called_once_with()
+
+    def test_wizard_display_notes_a_new_picture_size_only_when_confirmed(self):
+        mode = self.module.display.Mode
+        launcher = self.launcher()
+        for after, asked, changed in (
+            (mode(1280, 720, 60000), ("1280x720", 60000), True),
+            (mode(1920, 1080, 60000), ("1280x720", 60000), False),  # rolled back
+            (mode(1920, 1080, 50000), ("1920x1080", 50000), False),  # same size, new refresh rate
+        ):
+            launcher.wizard_picture_changed = False
+            settings = self.display_settings(after)
+            with mock.patch.object(self.module, "Settings", return_value=settings):
+                launcher.wizard_display(*asked)
+            self.assertIs(settings.in_wizard, True, "Settings must leave the restart to setup")
+            self.assertEqual(launcher.wizard_picture_changed, changed, asked)
+
+    def picture_saved(self, launcher, run_dir):
+        with mock.patch.object(self.module, "RUN", run_dir), mock.patch.object(
+            self.module.time, "sleep"
+        ), mock.patch.object(self.module.setup, "CursesUI") as ui:
+            launcher.wizard_picture_saved()
+        return ui
+
+    def test_a_new_picture_size_in_setup_restarts_into_setup(self):
+        launcher = self.launcher()
+        run_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        launcher.wizard_picture_changed = True
+        launcher.any_app_running = mock.Mock(return_value=False)
+        with self.assertRaises(SystemExit) as stop:
+            ui = self.picture_saved(launcher, run_dir)
+        self.assertEqual(stop.exception.code, 0)
+        self.assertTrue((run_dir / "reopen-setup").exists())
+        self.assertEqual(len((run_dir / "screen-restarts").read_text().split()), 1)
+
+    def test_no_restart_in_setup_without_a_new_size_with_an_app_open_or_past_the_limit(self):
+        launcher = self.launcher()
+        run_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        launcher.any_app_running = mock.Mock(return_value=False)
+        launcher.wizard_picture_changed = False
+        self.picture_saved(launcher, run_dir)  # must not exit
+        launcher.wizard_picture_changed = True
+        launcher.any_app_running.return_value = True
+        self.picture_saved(launcher, run_dir)
+        now = self.module.time.time()
+        (run_dir / "screen-restarts").write_text(f"{now - 30}\n{now - 20}\n{now - 10}\n")
+        launcher.wizard_picture_changed, launcher.any_app_running.return_value = True, False
+        self.picture_saved(launcher, run_dir)
+        self.assertFalse((run_dir / "reopen-setup").exists())
+
+    def test_the_restarted_launcher_resumes_setup(self):
+        launcher = self.launcher()
+        run_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (run_dir / "reopen-setup").touch()
+        launcher.setup_wizard = mock.Mock(side_effect=RuntimeError("stop"))
+        with mock.patch.object(self.module, "RUN", run_dir), mock.patch.object(
+            self.module.display, "restore_saved_mode"
+        ), mock.patch.object(launcher.controllers, "start"), mock.patch.object(
+            launcher.pcstatus, "start"
+        ), mock.patch.object(launcher.updates, "start"), mock.patch.object(
+            self.module.curses, "curs_set"
+        ), mock.patch.object(self.module.curses, "use_default_colors"), self.assertRaisesRegex(RuntimeError, "stop"):
+            launcher.run()
+        launcher.setup_wizard.assert_called_once_with(resume=True)
+        self.assertFalse((run_dir / "reopen-setup").exists())
 
     def test_wizard_display_reports_a_rolled_back_mode_as_not_confirmed(self):
         mode = self.module.display.Mode

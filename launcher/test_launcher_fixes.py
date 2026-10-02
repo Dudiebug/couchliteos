@@ -207,14 +207,16 @@ class DisplayConfirmSaveTest(LauncherFixesTest):
     BEFORE = 'DP-1 "Dell Inc. DELL U2723QE ABC123"\n  Enabled: yes\n  Modes:\n    3840x2160 px, 60.000000 Hz (preferred, current)\n    1920x1080 px, 120.000000 Hz\n'
     AFTER = 'DP-1 "Dell Inc. DELL U2723QE ABC123"\n  Enabled: yes\n  Modes:\n    3840x2160 px, 60.000000 Hz (preferred)\n    1920x1080 px, 120.000000 Hz (current)\n'
 
-    def finish(self, save_display, after=None):
+    def finish(self, save_display, after=None, *, before=None, in_wizard=False):
         display = self.module.display
-        old = display.parse_wlr_randr(self.BEFORE)[0]
+        old = display.parse_wlr_randr(before or self.BEFORE)[0]
         new = display.parse_wlr_randr(after or self.AFTER)[0]
         requested = display.Mode(1920, 1080, 120000)
         settings = self.module.Settings(Screen(), self.launcher())
         settings.output, settings.original_mode = old, old.current_mode
         settings.rollback = mock.Mock()
+        settings.restart_for_picture_size = mock.Mock()
+        settings.in_wizard = in_wizard
         with mock.patch.object(display, "valid_output_mode", return_value=(new, requested)), mock.patch.object(
             display, "query_outputs", return_value=[new]
         ), mock.patch.object(display, "save_display", side_effect=save_display) as save, mock.patch.object(
@@ -222,6 +224,45 @@ class DisplayConfirmSaveTest(LauncherFixesTest):
         ) as apply, mock.patch.object(display, "log"):
             settings.finish_preview(old, old.current_mode, requested)
         return settings, save, apply
+
+    def test_a_new_picture_size_restarts_so_the_text_fits_it(self):
+        # 4K -> 1080p: foot still has the text size it picked for 4K.
+        settings, _save, _apply = self.finish(lambda *_args: None)
+        settings.restart_for_picture_size.assert_called_once_with()
+
+    def test_only_a_new_picture_size_outside_setup_restarts(self):
+        same_size = self.BEFORE.replace("3840x2160 px, 60.000000 Hz (preferred, current)", "3840x2160 px, 60.000000 Hz (preferred)").replace(
+            "1920x1080 px, 120.000000 Hz\n", "1920x1080 px, 60.000000 Hz (current)\n  1920x1080 px, 120.000000 Hz\n"
+        )
+        settings, _save, _apply = self.finish(lambda *_args: None, before=same_size)  # refresh rate only
+        settings.restart_for_picture_size.assert_not_called()
+        settings, _save, _apply = self.finish(lambda *_args: None, in_wizard=True)  # setup restarts by itself
+        settings.restart_for_picture_size.assert_not_called()
+
+    def test_an_unsaved_mode_does_not_restart(self):
+        def full(*_args):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        settings, _save, _apply = self.finish(full)
+        settings.restart_for_picture_size.assert_not_called()
+
+    def restart(self, run_dir, *, app_running):
+        launcher = self.launcher()
+        launcher.any_app_running = mock.Mock(return_value=app_running)
+        settings = self.module.Settings(Screen(), launcher)
+        with mock.patch.object(self.module, "RUN", run_dir), mock.patch.object(self.module.time, "sleep"):
+            settings.restart_for_picture_size()
+        return settings
+
+    def test_the_picture_size_restart_reopens_display_unless_an_app_is_open(self):
+        run_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        settings = self.restart(run_dir, app_running=True)
+        self.assertEqual(settings.status, self.module.PICTURE_NEXT_START_MESSAGE)
+        self.assertFalse((run_dir / "reopen-display").exists())
+        with self.assertRaises(SystemExit) as stop:
+            self.restart(run_dir, app_running=False)
+        self.assertEqual(stop.exception.code, 0)
+        self.assertTrue((run_dir / "reopen-display").exists())
 
     def test_saved_mode_is_not_rolled_back(self):
         settings, save, apply = self.finish(lambda *_args: None)

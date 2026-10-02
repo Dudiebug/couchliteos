@@ -1073,14 +1073,14 @@ class LauncherWiringTest(base_stream.LauncherTestCase):
             def __init__(self, ui, actions, system, **options):
                 captured["actions"] = actions
 
-            def run(self, force=False):
+            def run(self, force=False, resume=False):
                 pass
 
         launcher = self.launcher()
         launcher.reload_applications = mock.Mock()
         with mock.patch.object(self.module.setup, "SetupWizard", FakeWizard), mock.patch.object(
             self.module.bluetooth, "BluetoothClient"
-        ):
+        ), mock.patch.object(self.module, "HOME_REQUEST", mock.Mock()):
             launcher.setup_wizard()
         self.assertEqual(captured["actions"]["wake_pc"], launcher.wake_message)
 
