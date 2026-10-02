@@ -935,6 +935,13 @@ rg -q 'test_streamcheck.py' launcher/Makefile
 # The launcher runs as an unprivileged user: ping may not go faster than 0.2 s apart for it.
 rg -q '^PING_INTERVAL = 0\.2$' launcher/couchliteos_streamcheck.py
 refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b' launcher/couchliteos_streamcheck.py
+rg -qF 'scripts/couchliteos-nvidia-firmware" "$CHROOT/usr/libexec/couchliteos-nvidia-firmware"' build/configure.sh
+rg -qF 'third_party/envytools/extract_firmware.py" "$CHROOT/usr/libexec/couchliteos/envytools-extract-firmware.py"' build/configure.sh
+rg -qF 'couchliteos_firmware.py" "$CHROOT/usr/libexec/couchliteos_firmware.py"' build/configure.sh
+rg -q 'couchliteos-nvidia-firmware.path' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q 'test_firmware.py' launcher/Makefile
+rg -q 'tests/test_nvidia_firmware.py' Makefile
+refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b' scripts/couchliteos-nvidia-firmware launcher/couchliteos_firmware.py
 # The tips send people to a row that exists in Settings > STREAMING.
 rg -q '^SMOOTHER_ROW = "SMOOTHER STREAM ' launcher/couchliteos-launcher.py
 

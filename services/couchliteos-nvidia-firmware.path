@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for CouchLiteOS video decoder firmware requests
+
+[Path]
+PathExists=/run/couchliteos/nvidia-firmware.request
+Unit=couchliteos-nvidia-firmware.service
+
+[Install]
+WantedBy=multi-user.target

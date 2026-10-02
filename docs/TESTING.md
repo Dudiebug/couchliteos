@@ -376,6 +376,10 @@ Applications and acceleration:
 - [ ] Moonlight and chiaki-ng keep the controller (no mouse) and Guide still opens the menu mid-stream
 - [ ] Guide menu VOLUME: Left/Right change it and A mutes, matching Settings > AUDIO
 - [ ] After updating from 0.2.2, What's New lists only the 0.2.3 changes, without the rename notice
+- [ ] Remote desktop: a saved RDP connection opens a full-screen window and Guide still opens the menu over it
+- [ ] iMac Late 2013 (nouveau): Moonlight streams with no "hardware accelerated video decoder" warning, even after picking Automatic in Moonlight's settings
+- [ ] iMac Late 2013: Settings > STREAMING > VIDEO DECODER FIRMWARE downloads, reports READY (or SAVED, NOT WORKING YET), and after a restart Moonlight decodes in hardware; REMOVE FIRMWARE returns to software decoding
+- [ ] GENERATE SUPPORT FILE includes `wlr-randr`, `vainfo` and `vulkaninfo` output
 - [ ] Record `vainfo`, `vulkaninfo --summary`, `wpctl status`, and `aplay -l`
 
 Couch features (v0.2.x):

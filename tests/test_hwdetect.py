@@ -125,6 +125,7 @@ class HardwareDetectionTest(unittest.TestCase):
             "COUCHLITEOS_BROADCOM_STA_IDS": str(self.broadcom_ids),
             "COUCHLITEOS_MODPROBE": str(self.modprobe),
             "COUCHLITEOS_UDEVADM": str(self.udevadm),
+            "COUCHLITEOS_FIRMWARE_HELPER": str(self.bin / "nvidia-firmware"),  # absent unless a test writes it
             "FAKE_LOG": str(self.log),
             **(extra_env or {}),
         }
@@ -232,6 +233,29 @@ class HardwareDetectionTest(unittest.TestCase):
         summary = (self.state / "summary.txt").read_text()
         self.assertIn("Moonlight video decode: software H.264", summary)
         self.assertIn("not supported by the installed NVIDIA driver: 10de:0fe9", summary)
+
+    def firmware_helper(self, code):
+        helper = self.bin / "nvidia-firmware"
+        helper.write_text(f'#!/bin/sh\necho "firmware $*" >> "$FAKE_LOG"\nexit {code}\n')
+        helper.chmod(0o755)
+
+    def test_verified_decoder_firmware_lets_moonlight_pick_the_decoder(self):
+        self.nvidia_iso()
+        self.add_device(*KEPLER_NVIDIA, boot_vga=True)
+        self.early()
+        self.firmware_helper(0)
+        self.assertEqual(self.hwdetect("late").returncode, 0)
+        self.assertIn("firmware --boot 10de:0fe9", self.calls())
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_VIDEO_DECODE"], "auto")
+        self.assertIn("Video decoder firmware: NVIDIA's", (self.state / "summary.txt").read_text())
+
+    def test_unverified_decoder_firmware_keeps_software_decoding(self):
+        self.nvidia_iso()
+        self.add_device(*KEPLER_NVIDIA, boot_vga=True)
+        self.early()
+        self.firmware_helper(1)
+        self.assertEqual(self.hwdetect("late").returncode, 0)
+        self.assertEqual(self.hardware_env()["COUCHLITEOS_VIDEO_DECODE"], "software")
 
     def test_nouveau_is_not_loaded_twice(self):
         self.nvidia_iso()

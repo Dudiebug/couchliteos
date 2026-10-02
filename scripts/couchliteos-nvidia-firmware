@@ -1,0 +1,331 @@
+#!/usr/bin/python3 -I
+"""Opt-in video decoder firmware for Kepler-era NVIDIA GPUs on nouveau.
+
+usage: couchliteos-nvidia-firmware            serve /run/couchliteos/nvidia-firmware.request
+       couchliteos-nvidia-firmware --boot ID  point the kernel at the firmware; exit 0 when
+                                              it was verified on the GPU with PCI id ID
+
+nouveau decodes H.264 on these GPUs only with NVIDIA's video firmware, which
+may not be redistributed, so CouchLiteOS never ships it. When the user asks
+(Settings > STREAMING > VIDEO DECODER FIRMWARE) this downloads NVIDIA's 325.15
+driver from nvidia.com, checks its pinned SHA-256, runs envytools'
+extract_firmware.py on it here, and keeps only the three decoder blobs (also
+checked against pinned hashes) on the persistent partition. The kernel loads
+them when a decoder first starts; couchliteos-hwdetect calls --boot on every
+start so the firmware search path covers the persistent copy.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import lzma
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path
+
+ENV = os.environ
+RUN = Path(ENV.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+REQUEST = RUN / "nvidia-firmware.request"
+STATUS = RUN / "nvidia-firmware.status"
+STORE = Path(ENV.get("COUCHLITEOS_FIRMWARE_STORE", "/var/lib/couchliteos/firmware"))
+SYSFS = Path(ENV.get("COUCHLITEOS_SYSFS_ROOT", "/sys"))
+FIRMWARE_PATH_PARAMETER = SYSFS / "module/firmware_class/parameters/path"
+HARDWARE_ENV = Path(ENV.get("COUCHLITEOS_HARDWARE_ENV", "/run/couchliteos-hardware/hardware.env"))
+EXTRACTOR = Path(ENV.get("COUCHLITEOS_FIRMWARE_EXTRACTOR", "/usr/libexec/couchliteos/envytools-extract-firmware.py"))
+VAINFO = ENV.get("COUCHLITEOS_VAINFO", "/usr/bin/vainfo")
+
+VERSION = "325.15"
+DRIVER = f"NVIDIA-Linux-x86-{VERSION}"
+URL = f"https://download.nvidia.com/XFree86/Linux-x86/{VERSION}/{DRIVER}.run"
+DRIVER_SHA256 = "3d790e4bfed24641f7cc76879144ab5d52b12271012ba381b0d33aa1a2e08775"
+DRIVER_MAX_BYTES = 40 * 1024 * 1024
+# The .run is a makeself archive: its xz tarball starts at line PAYLOAD_LINE ("skip=1104").
+PAYLOAD_LINE = 1104
+DRIVER_MEMBERS = ("kernel/nv-kernel.o", f"libnvcuvid.so.{VERSION}")
+# Only the video decoder (BSP, VP, PPP) firmware. Never the PGRAPH fuc409/fuc41a
+# files: nouveau's own graphics firmware works and those would replace it.
+BLOBS = {
+    "nve0_bsp": "68501f94e0d66244a85789979288e3b2974ea8c2a95fe1e9b5c821c3c17905f9",
+    "nve0_vp": "66c2e12418554d136dae6a73005aa1faeddcea5c4818c2fab64f29fa5bc1b851",
+    "nvc0_ppp": "765163c6055d618983b114eb4474099baf190bd9dc2dcf00a36c0af0dcf764be",
+}
+# nouveau asks for nouveau/nvXX_fuc084/085/086 (BSP/VP/PPP) on VP5 chips: GF117/GF119, Kepler.
+VP5_CHIPS = ("nvd7", "nvd9", "nve4", "nve6", "nve7", "nvf0", "nvf1", "nv106", "nv108")
+LINKS = {"fuc084": "nve0_bsp", "fuc085": "nve0_vp", "fuc086": "nvc0_ppp"}
+VERIFIED = "verified"
+
+
+class FirmwareError(Exception):
+    """A step failed; the message is shown on the TV as is."""
+
+
+def write_status(state: str, message: str) -> None:
+    RUN.mkdir(parents=True, exist_ok=True)
+    temporary = STATUS.with_name(f".{STATUS.name}.tmp")
+    temporary.write_text(json.dumps({"state": state, "message": message}) + "\n", encoding="utf-8")
+    temporary.chmod(0o644)
+    os.replace(temporary, STATUS)
+
+
+def hardware() -> dict[str, str]:
+    values = {}
+    try:
+        for line in HARDWARE_ENV.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return values
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def download(destination: Path, progress=lambda done, total: None) -> None:
+    """Fetch the driver over HTTPS; refuse anything but the pinned bytes."""
+    request = urllib.request.Request(URL, headers={"User-Agent": "CouchLiteOS"})
+    digest = hashlib.sha256()
+    done = 0
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as handle:
+            if not response.geturl().startswith("https://"):
+                raise FirmwareError("THE DOWNLOAD WAS REDIRECTED AWAY FROM HTTPS")
+            total = int(response.headers.get("Content-Length") or 0)
+            while block := response.read(1 << 16):
+                done += len(block)
+                if done > DRIVER_MAX_BYTES:
+                    raise FirmwareError("THE DOWNLOAD IS LARGER THAN NVIDIA'S DRIVER")
+                digest.update(block)
+                handle.write(block)
+                progress(done, total)
+    except OSError as error:
+        raise FirmwareError(f"DOWNLOAD FAILED: {error}") from error
+    if digest.hexdigest() != DRIVER_SHA256:
+        raise FirmwareError("THE DOWNLOADED DRIVER DID NOT MATCH ITS CHECKSUM")
+
+
+def payload_offset(handle) -> int:
+    """Byte offset of the makeself payload: the start of line PAYLOAD_LINE."""
+    handle.seek(0)
+    for _ in range(PAYLOAD_LINE - 1):
+        if not handle.readline():
+            raise FirmwareError("THE DRIVER ARCHIVE IS TOO SHORT")
+    return handle.tell()
+
+
+def unpack(run_file: Path, work: Path) -> None:
+    """Pull nv-kernel.o and libnvcuvid out of the driver: nothing else is written."""
+    wanted = {f"./{name}": work / DRIVER / name for name in DRIVER_MEMBERS}
+    try:
+        with run_file.open("rb") as handle:
+            handle.seek(payload_offset(handle))
+            with lzma.open(handle) as payload, tarfile.open(fileobj=payload, mode="r|") as archive:
+                for member in archive:
+                    target = wanted.pop(member.name, None)
+                    if target is None or not member.isfile():
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.extractfile(member) as source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                    if not wanted:
+                        break
+    except (OSError, EOFError, lzma.LZMAError, tarfile.TarError) as error:
+        raise FirmwareError(f"COULD NOT UNPACK THE DRIVER: {error}") from error
+    if wanted:
+        raise FirmwareError("THE DRIVER ARCHIVE IS MISSING " + ", ".join(sorted(name[2:] for name in wanted)).upper())
+
+
+def extract(work: Path) -> None:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", str(EXTRACTOR)], cwd=work, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise FirmwareError(f"THE FIRMWARE EXTRACTOR FAILED: {error}") from error
+    if result.returncode != 0:
+        print(result.stdout, file=sys.stderr)
+        raise FirmwareError(f"THE FIRMWARE EXTRACTOR FAILED (EXIT {result.returncode})")
+
+
+def check_blobs(directory: Path) -> None:
+    for name, expected in BLOBS.items():
+        path = directory / name
+        if not path.is_file() or path.is_symlink() or sha256_file(path) != expected:
+            raise FirmwareError(f"THE EXTRACTED {name.upper()} FIRMWARE DID NOT MATCH ITS CHECKSUM")
+
+
+def installed() -> bool:
+    try:
+        check_blobs(STORE / "nouveau")
+    except (FirmwareError, OSError):
+        return False
+    return True
+
+
+def install(source: Path) -> None:
+    """Swap in STORE/nouveau with the blobs and the names nouveau asks for."""
+    STORE.mkdir(mode=0o755, parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".nouveau-", dir=STORE))
+    try:
+        for name in BLOBS:
+            shutil.copyfile(source / name, staging / name)
+            (staging / name).chmod(0o644)
+        for chip in VP5_CHIPS:
+            for engine, blob in LINKS.items():
+                (staging / f"{chip}_{engine}").symlink_to(blob)
+        check_blobs(staging)
+        staging.chmod(0o755)
+        old = STORE / ".nouveau-old"
+        shutil.rmtree(old, ignore_errors=True)
+        if (STORE / "nouveau").exists():
+            os.replace(STORE / "nouveau", old)
+        os.replace(staging, STORE / "nouveau")
+        shutil.rmtree(old, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def point_kernel_at_store(enabled: bool = True) -> bool:
+    """firmware_class searches this path before /lib/firmware for every later request."""
+    try:
+        FIRMWARE_PATH_PARAMETER.write_text(f"{STORE}\n" if enabled else "\n", encoding="ascii")
+    except OSError as error:
+        print(f"firmware search path not set: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def nouveau_render_node() -> str | None:
+    for node in sorted((SYSFS / "class/drm").glob("renderD*")):
+        try:
+            if (node / "device/driver").resolve().name == "nouveau":
+                return f"/dev/dri/{node.name}"
+        except OSError:
+            continue
+    return None
+
+
+def h264_decode_listed(vainfo_output: str) -> bool:
+    """vainfo lists VAProfileH264*: VAEntrypointVLD only when Mesa could start the BSP engine."""
+    return any(
+        "VAProfileH264" in line and "VAEntrypointVLD" in line for line in vainfo_output.splitlines()
+    )
+
+
+def decoder_works() -> bool:
+    node = nouveau_render_node()
+    if node is None:
+        return False
+    try:
+        result = subprocess.run(
+            [VAINFO, "--display", "drm", "--device", node], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return h264_decode_listed(result.stdout)
+
+
+def verified_ids() -> set[str]:
+    try:
+        return set((STORE / VERIFIED).read_text(encoding="ascii").split())
+    except (OSError, UnicodeDecodeError):
+        return set()
+
+
+def mark_verified(gpu_id: str) -> None:
+    ids = verified_ids() | {gpu_id}
+    (STORE / VERIFIED).write_text("".join(f"{item}\n" for item in sorted(ids)), encoding="ascii")
+
+
+def serve_install() -> str:
+    gpu = hardware()
+    if gpu.get("COUCHLITEOS_GPU_DRIVER") != "nouveau":
+        raise FirmwareError("THIS PC DOES NOT USE THE NOUVEAU DRIVER, SO IT DOES NOT NEED THIS FIRMWARE")
+    if not installed():
+        with tempfile.TemporaryDirectory(prefix="couchliteos-nvfw-") as temporary:
+            work = Path(temporary)
+            run_file = work / f"{DRIVER}.run"
+
+            def progress(done: int, total: int) -> None:
+                if done % (1 << 21) < (1 << 16):  # about every 2 MB
+                    size = f" OF {total / 1048576:.0f} MB" if total else ""
+                    write_status("running", f"DOWNLOADING NVIDIA {VERSION}: {done / 1048576:.0f} MB{size}")
+
+            write_status("running", "DOWNLOADING NVIDIA'S DRIVER FROM NVIDIA.COM")
+            download(run_file, progress)
+            write_status("running", "UNPACKING THE DRIVER")
+            unpack(run_file, work)
+            run_file.unlink()
+            write_status("running", "EXTRACTING THE VIDEO DECODER FIRMWARE")
+            extract(work)
+            check_blobs(work)
+            install(work)
+    point_kernel_at_store()
+    write_status("running", "TESTING THE VIDEO DECODER")
+    if not decoder_works():
+        return ("FIRMWARE SAVED, BUT THE VIDEO DECODER DID NOT START YET. RESTART THE PC, THEN PICK "
+                "VIDEO DECODER FIRMWARE AGAIN TO TEST IT. STREAMING KEEPS USING SOFTWARE DECODING.")
+    mark_verified(gpu.get("COUCHLITEOS_GPU_ID", "unknown"))
+    return "HARDWARE VIDEO DECODING IS READY. RESTART THE PC TO USE IT IN MOONLIGHT."
+
+
+def serve_remove() -> str:
+    shutil.rmtree(STORE, ignore_errors=True)
+    point_kernel_at_store(False)
+    return "FIRMWARE REMOVED. STREAMING GOES BACK TO SOFTWARE DECODING AFTER A RESTART."
+
+
+def serve() -> int:
+    try:
+        action = REQUEST.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        action = ""
+    REQUEST.unlink(missing_ok=True)
+    try:
+        if action == "install":
+            message = serve_install()
+        elif action == "remove":
+            message = serve_remove()
+        else:
+            raise FirmwareError("UNKNOWN REQUEST")
+    except (FirmwareError, OSError) as error:
+        text = str(error) if isinstance(error, FirmwareError) else f"FAILED: {error}".upper()
+        write_status("failed", text)
+        print(text, file=sys.stderr)
+        return 1
+    write_status("done", message)
+    print(message)
+    return 0
+
+
+def boot(gpu_id: str) -> int:
+    if not installed():
+        return 1
+    point_kernel_at_store()
+    return 0 if gpu_id in verified_ids() else 1
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "--boot":
+        return boot(argv[2])
+    if len(argv) == 1:
+        return serve()
+    print(__doc__.split("\n\n")[0], file=sys.stderr)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

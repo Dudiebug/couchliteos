@@ -28,6 +28,7 @@ import couchliteos_rdp as rdp
 import couchliteos_setup as setup
 import couchliteos_stream as stream
 import couchliteos_streamcheck as streamcheck
+import couchliteos_firmware as firmware
 import couchliteos_cec as cec
 import couchliteos_controllers as controllers
 import couchliteos_pcstatus as pcstatus
@@ -2796,6 +2797,7 @@ class StreamingSettings(RemoteDesktopSettings):
             "PAIR ANOTHER GAMING PC" if hosts else "PAIR A GAMING PC",
             streamcheck.TITLE,
             SMOOTHER_ROW,
+            *([f"{firmware.TITLE}  {firmware.state_label()}"] if firmware.applies() else []),
             "BACK",
         ]
 
@@ -2823,6 +2825,8 @@ class StreamingSettings(RemoteDesktopSettings):
                 self.pair_pc()
             elif choice == 6:
                 self.stream_check()
+            elif rows[choice].startswith(firmware.TITLE):
+                self.decoder_firmware()
             else:
                 self.smoother()
 
@@ -3001,6 +3005,49 @@ class StreamingSettings(RemoteDesktopSettings):
             "STILL STUTTERING? PICK SMOOTHER STREAM AGAIN, OR USE A NETWORK CABLE.\n"
             "TO UNDO, PICK OPTIMIZE STREAM SETTINGS."
         )
+
+    def decoder_firmware(self) -> None:
+        """Settings > STREAMING > VIDEO DECODER FIRMWARE (nouveau PCs only): fetch, retest or remove it."""
+        title = firmware.TITLE
+        _height, width = self.screen.getmaxyx()
+        about = [line for part in firmware.ABOUT.split("\n") for line in (textwrap.wrap(part, width=max(8, width - 10)) or [""])]
+        state = firmware.state_label()
+        actions = ["TEST AGAIN", "REMOVE FIRMWARE", "BACK"] if firmware.installed() else ["DOWNLOAD FROM NVIDIA.COM", "BACK"]
+        rows = about + ["", f"NOW: {state}"] + actions
+        choice = self.menu(title, rows, len(rows) - len(actions), len(rows) - len(actions))
+        if choice is None or rows[choice] == "BACK":
+            return
+        action = "remove" if rows[choice] == "REMOVE FIRMWARE" else "install"
+        try:
+            firmware.submit(action, RUN)
+        except OSError as error:
+            self.message(title, f"COULD NOT START: {error}".upper())
+            return
+        self.message(title, self.wait_for_firmware(title))
+
+    def wait_for_firmware(self, title: str) -> str:
+        """Show the helper's progress until it is done; B only hides the wait, the work goes on."""
+        started = time.monotonic()
+        status = None
+        self.screen.timeout(200)
+        try:
+            frame = 0
+            while True:
+                status = firmware.read_status(RUN)
+                if status is not None and status[0] != "running":
+                    return status[1]
+                waited = time.monotonic() - started
+                if status is None and waited > firmware.START_TIMEOUT:
+                    return "THE FIRMWARE SERVICE DID NOT START. RESTART THE PC AND TRY AGAIN."
+                if waited > firmware.RUN_TIMEOUT:
+                    return "STILL WORKING AFTER 20 MINUTES. CHECK BACK IN SETTINGS > STREAMING."
+                message = status[1] if status else "STARTING..."
+                self.draw(title, [f"{message} {SPINNER[frame % len(SPINNER)]}", "", "B / CIRCLE HIDES THIS; IT KEEPS GOING"], None)
+                frame += 1
+                if read_key(self.screen) == 27:
+                    return "STILL WORKING IN THE BACKGROUND. CHECK BACK IN SETTINGS > STREAMING."
+        finally:
+            self.screen.timeout(1000)
 
 
 def register_failure_actions(launcher: Launcher) -> None:

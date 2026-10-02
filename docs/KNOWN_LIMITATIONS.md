@@ -32,7 +32,13 @@
   Ethernet while `wl` is active.
 - Moonlight decodes H.264 in software on nouveau (Kepler has no HEVC decoder,
   nouveau's H.264 decoder needs non-redistributable NVIDIA firmware, and newer
-  cards have no nouveau decoder). nouveau also leaves Kepler at its boot
+  cards have no nouveau decoder), and CouchLiteOS holds Moonlight's decoder at
+  software there so it does not warn about a missing hardware decoder on every
+  stream. On Kepler (and GF117/GF119) Settings > STREAMING > VIDEO DECODER
+  FIRMWARE can fetch NVIDIA's 325.15 driver from nvidia.com and extract the
+  decoder firmware onto the stick; it is experimental, untested on real
+  hardware, and switches Moonlight to automatic decoding only after `vainfo`
+  showed H.264 decoding on that GPU. nouveau also leaves Kepler at its boot
   clocks, so the iMac targets 1080p60.
 - To keep each ISO under GitHub's 2 GiB release-asset limit, neither ISO
   copies firmware packages for the text installer. The live system and the

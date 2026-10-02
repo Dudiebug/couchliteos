@@ -41,6 +41,7 @@ test:
 	python3 -m unittest -v tests/test_migrate.py
 	python3 -m unittest -v tests/test_boot_order.py
 	python3 -m unittest -v tests/test_support.py
+	python3 -m unittest -v tests/test_nvidia_firmware.py
 	python3 -m unittest -v tests/test_tailscale_enrollment.py
 	python3 -m unittest -v tests/test_terminal_apps.py
 	python3 -m unittest -v tests/test_log_limits.py

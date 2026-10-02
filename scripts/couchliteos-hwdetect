@@ -27,6 +27,7 @@ MODULE_DIR = Path(os.environ.get("COUCHLITEOS_MODULE_DIR", f"/lib/modules/{os.un
 NVIDIA_IDS = Path(os.environ.get("COUCHLITEOS_NVIDIA_IDS", "/usr/share/nvidia/nvidia.ids"))
 BROADCOM_IDS = Path(os.environ.get("COUCHLITEOS_BROADCOM_STA_IDS", "/usr/share/broadcom-sta/broadcom-sta.ids"))
 MODPROBE = os.environ.get("COUCHLITEOS_MODPROBE", "/usr/sbin/modprobe")
+FIRMWARE_HELPER = os.environ.get("COUCHLITEOS_FIRMWARE_HELPER", "/usr/libexec/couchliteos-nvidia-firmware")
 UDEVADM = os.environ.get("COUCHLITEOS_UDEVADM", "/usr/bin/udevadm")
 
 STATE_DIR = RUN / "couchliteos-hardware"
@@ -300,6 +301,11 @@ def late():
         # Kepler and older have no usable decoder on nouveau (the H.264 decoder
         # needs non-redistributable firmware); newer chips have none at all.
         decode = "software"
+        # Unless the user fetched NVIDIA's firmware (Settings > STREAMING) and
+        # it was seen decoding on this GPU: the helper also points the kernel at it.
+        if Path(FIRMWARE_HELPER).exists() and run([FIRMWARE_HELPER, "--boot", primary["id"] if primary else "none"]) == 0:
+            decode = "auto"
+            notes.append("Video decoder firmware: NVIDIA's, fetched on this PC and verified on this GPU")
     environment = {
         "COUCHLITEOS_GPU_DRIVER": driver,
         "COUCHLITEOS_GPU_ID": primary["id"] if primary else "none",

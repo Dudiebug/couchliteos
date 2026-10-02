@@ -284,6 +284,15 @@ class BootTimingTest(unittest.TestCase):
         unit = (ROOT / "services/couchliteos-support-export.service").read_text()
         self.assertRegex(unit, r"(?m)^RestrictAddressFamilies=.*\bAF_UNIX\b")
 
+    def test_support_export_can_run_commands_as_the_session_user(self):
+        # NoNewPrivileges made setpriv's setresuid fail, so the display, VA-API and Vulkan
+        # sections of every bundle held only "setresuid failed" (seen in a 0.2.1 bundle).
+        unit = (ROOT / "services/couchliteos-support-export.service").read_text()
+        self.assertNotRegex(unit, r"(?m)^NoNewPrivileges=yes")
+        capabilities = re.search(r"(?m)^CapabilityBoundingSet=(.*)$", unit).group(1).split()
+        self.assertTrue({"CAP_SETUID", "CAP_SETGID"} <= set(capabilities), capabilities)
+        self.assertRegex(unit, r"(?m)^RestrictSUIDSGID=yes")
+
 
 if __name__ == "__main__":
     unittest.main()

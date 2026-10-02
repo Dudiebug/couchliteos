@@ -114,25 +114,35 @@ class MoonlightPrefsTest(unittest.TestCase):
         self.assertEqual(self.conf.read_text(), first)
         self.assertEqual(first.count("videocfg"), 1)
 
-    def test_a_choice_made_in_moonlight_after_the_seed_is_kept(self):
+    def test_a_choice_made_in_moonlight_is_kept_on_a_hardware_pc(self):
         self.prefs("software", codec="H.264", decoder="software")
         self.write_conf("[General]\nvideocfg=2\nvideodec=1\n")  # HEVC, hardware
-        for hint in ("software", "auto", "software"):
-            decode = ("H.264", "software") if hint == "software" else ("auto", "auto")
-            self.prefs(hint, *decode)
-            self.assertEqual(self.pair(), ("2", "1"), hint)
+        self.prefs("auto")
+        self.assertEqual(self.pair(), ("2", "1"))
 
-    def test_automatic_chosen_in_moonlight_after_the_seed_is_kept_on_a_software_pc(self):
-        self.prefs("software", codec="H.264", decoder="software")
-        self.write_conf("[General]\nvideocfg=0\nvideodec=0\n")
-        self.prefs("software", codec="H.264", decoder="software")
-        self.assertEqual(self.pair(), AUTO)
+    def test_a_hardware_or_automatic_decoder_is_undone_on_a_software_pc(self):
+        # The user's report: Moonlight set back to automatic on a nouveau iMac, so
+        # streams opened with "no functioning hardware accelerated video decoder".
+        for decoder in ("0", "1"):
+            self.prefs("software", codec="H.264", decoder="software")
+            self.write_conf(f"[General]\nvideocfg=0\nvideodec={decoder}\n")
+            self.prefs("software", codec="H.264", decoder="software")
+            self.assertEqual(self.pair(), SOFTWARE_H264, decoder)
+            self.assertEqual(tuple(self.marker.read_text().split()), SOFTWARE_H264)
 
-    def test_settings_of_unknown_origin_are_never_rewritten(self):
-        # No marker: CouchLiteOS did not write these, so a later PC must not undo them.
+    def test_a_codec_chosen_with_software_decoding_is_kept_on_a_software_pc(self):
+        self.prefs("software", codec="H.264", decoder="software")
+        self.write_conf("[General]\nvideocfg=2\nvideodec=2\n")  # HEVC, software
+        self.assertEqual(self.prefs("software", codec="H.264", decoder="software").stdout, "")
+        self.assertEqual(self.pair(), ("2", "2"))
+
+    def test_settings_of_unknown_origin(self):
+        # No marker: a PC without a decoder still gets the software decoder ...
         self.write_conf("[General]\nvideocfg=2\nvideodec=1\n")
         self.prefs("software", codec="H.264", decoder="software")
-        self.assertEqual(self.pair(), ("2", "1"))
+        self.assertEqual(self.pair(), SOFTWARE_H264)
+        # ... but a PC with one never undoes settings CouchLiteOS did not write.
+        self.marker.unlink()
         self.write_conf("[General]\nvideocfg=1\nvideodec=2\n")
         self.prefs("auto")
         self.assertEqual(self.pair(), SOFTWARE_H264)

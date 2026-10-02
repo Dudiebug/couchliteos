@@ -9,10 +9,14 @@ HINT    "software" when couchliteos-hwdetect found no usable hardware decoder
         on THIS PC and the launcher's codec/decoder are automatic; else "auto".
 CODEC DECODER  The launcher's settings (auto|H.264|HEVC|AV1, auto|software|hardware).
 
-A missing file is seeded once when a codec or decoder is forced. An existing
-file is changed only while it still holds exactly what the marker says we
-wrote (or automatic/automatic with no marker), so a choice made in Moonlight is
-kept, and settings CouchLiteOS did not write are never undone.
+A missing file is seeded once when a codec or decoder is forced. On a PC
+with no usable hardware decoder (HINT "software") the decoder is held at
+software: an automatic or hardware decoder picked in Moonlight would only bring
+up Moonlight's "no functioning hardware accelerated video decoder" warning on
+every stream. A codec picked in Moonlight with the software decoder is kept.
+Elsewhere an existing file is changed only while it still holds exactly what
+the marker says we wrote, so a choice made in Moonlight is kept, and settings
+CouchLiteOS did not write are never undone.
 """
 
 import os
@@ -91,12 +95,15 @@ def sync(path, marker, hint, width, height, fps, codec, decoder):
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     current = get_pair(lines)
     tracked = read_marker(marker)
-    if tracked is not None and current != tracked:
-        return ""  # changed in Moonlight since CouchLiteOS wrote it: the user's now
-    if hint == "software" and tracked is None and current == AUTO:
+    if hint == "software":
+        if current[1] == DECODERS["software"]:
+            return ""  # already software; a codec chosen in Moonlight stays
         write_file(path, "\n".join(set_pair(lines, SOFTWARE_H264)) + "\n")
         write_file(marker, "%d %d\n" % SOFTWARE_H264)
-        return "Moonlight video settings: software H.264 (this PC has no hardware video decoder)\n"
+        return ("Moonlight video settings: software H.264 (this PC has no working hardware video decoder; "
+                "Settings > STREAMING > VIDEO DECODER FIRMWARE can add one on Kepler-era NVIDIA GPUs)\n")
+    if tracked is not None and current != tracked:
+        return ""  # changed in Moonlight since CouchLiteOS wrote it: the user's now
     if hint != "software" and tracked is not None:
         write_file(path, "\n".join(set_pair(lines, AUTO)) + "\n")
         marker.unlink(missing_ok=True)
