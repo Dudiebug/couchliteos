@@ -188,6 +188,10 @@ def focus_launcher() -> None:
 # Only a request this fresh counts: one left by a Guide press in Settings (which only the
 # main menu answers) must not swallow every later B / Esc.
 HOME_CHORD_WAIT = 0.05
+# Setup ignores Home, so there a missed chord skips a step: wait longer (the request has been
+# seen arriving about 0.1 s after foot's bytes). B is Esc too, so only setup pays for this.
+HOME_CHORD_SETUP_WAIT = 0.3
+HOME_CHORD_POLL = 0.02
 HOME_CHORD_FRESH = 0.5
 HOME_CHORD_TAIL = 1.0
 CTRL_H = 8
@@ -216,13 +220,17 @@ def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
     return without_home_chord(key)
 
 
-def without_home_chord(key: int) -> int:
+def without_home_chord(key: int, wait: float = HOME_CHORD_WAIT) -> int:
     """-1 for the ESC, Ctrl+H foot sends for Ctrl+Alt+H (gamepad-nav has left a Home request
-    for it), so the shortcut is not also taken as B / Esc; any other key unchanged."""
+    for it), so the shortcut is not also taken as B / Esc; any other key unchanged. An ESC
+    waits up to `wait` seconds for the request."""
     global _home_chord_until
     if key == 27:
-        if not home_chord_pending():
-            time.sleep(HOME_CHORD_WAIT)
+        waited = 0.0
+        while waited < wait and not home_chord_pending():
+            step = min(HOME_CHORD_POLL, wait - waited)
+            time.sleep(step)
+            waited += step
         if home_chord_pending():  # left for the caller's Home check, like a Guide press
             _home_chord_until = time.monotonic() + HOME_CHORD_TAIL
             return -1
@@ -251,7 +259,7 @@ def claim_screen_restart(marker: str) -> bool:
 def setup_ui(screen: curses.window) -> setup.CursesUI:
     """The setup wizard's screens, reading keys without the Ctrl+Alt+H chord: the wizard takes
     no Home request (as with Guide), and its ESC must not skip a step."""
-    return setup.CursesUI(screen, read_key=lambda: without_home_chord(screen.getch()))
+    return setup.CursesUI(screen, read_key=lambda: without_home_chord(screen.getch(), HOME_CHORD_SETUP_WAIT))
 
 
 def flush_input() -> None:

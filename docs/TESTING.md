@@ -383,6 +383,8 @@ Applications and acceleration:
 - [ ] MOUSE SPEED changes a USB mouse and a touchpad at once, without a restart; CONTROLLER MOUSE SPEED changes the stick pointer
 - [ ] The on-screen keyboard over Chrome is a bottom panel: the page stays visible above it, and B closes it
 - [ ] After updating from 0.2.3, What's New lists only the 0.2.4 changes; from 0.2.1 it also says EARLIER CHANGES: SEE THE RELEASE NOTES
+- [ ] 4K TV: picking 1080p in the setup wizard restarts the launcher with text that fits, and setup carries on at the sound check; the same from Settings > DISPLAY returns to DISPLAY
+- [ ] Ctrl+Alt+H in the setup wizard does not skip a step, and finishing setup does not open ACTIVE APPLICATIONS
 - [ ] Remote desktop: a saved RDP connection opens a full-screen window and Guide still opens the menu over it
 - [ ] iMac Late 2013 (nouveau): Moonlight streams with no "hardware accelerated video decoder" warning, even after picking Automatic in Moonlight's settings
 - [ ] iMac Late 2013: Settings > STREAMING > VIDEO DECODER FIRMWARE downloads, reports READY (or SAVED, NOT WORKING YET), and after a restart Moonlight decodes in hardware; REMOVE FIRMWARE returns to software decoding

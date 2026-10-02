@@ -964,8 +964,28 @@ class LauncherTest(unittest.TestCase):
                     mock.patch.object(self.module.time, "sleep") as sleep:
                 self.assertEqual(self.module.read_key(screen), 27)
                 self.assertEqual(self.module.read_key(screen), 8)
-            sleep.assert_called_once_with(self.module.HOME_CHORD_WAIT)
+            waited = sum(call.args[0] for call in sleep.call_args_list)
+            self.assertAlmostEqual(waited, self.module.HOME_CHORD_WAIT)
             self.assertLessEqual(self.module.HOME_CHORD_WAIT, 0.1, "Esc must not feel slow")
+
+    def test_a_late_home_request_still_counts_in_setup(self):
+        # Seen in a VM: gamepad-nav wrote the request about 0.1 s after foot's ESC, Ctrl+H.
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / "home.request"
+            waited = []
+
+            def sleep(seconds):
+                waited.append(seconds)
+                if sum(waited) >= 0.1:
+                    request.touch()
+
+            screen = Screen([27, 8, 10])
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep", side_effect=sleep):
+                choice = self.module.setup_ui(screen).menu("STEP", [], ["FIRST", "SECOND"])
+            self.assertEqual(choice, 0, "the chord did not skip the step")
+            self.assertLess(sum(waited), self.module.HOME_CHORD_SETUP_WAIT, "stopped once the request appeared")
 
     def test_ctrl_alt_h_does_not_skip_a_setup_step(self):
         # The setup wizard reads its own keys; the chord's ESC must not count as B (skip).
@@ -984,8 +1004,11 @@ class LauncherTest(unittest.TestCase):
             screen = Screen([27])
             with mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), \
                     mock.patch.object(self.module, "_home_chord_until", 0.0), \
-                    mock.patch.object(self.module.time, "sleep"):
+                    mock.patch.object(self.module.time, "sleep") as sleep:
                 self.assertIsNone(self.module.setup_ui(screen).menu("STEP", [], ["FIRST"]))
+            waited = sum(call.args[0] for call in sleep.call_args_list)
+            self.assertAlmostEqual(waited, self.module.HOME_CHORD_SETUP_WAIT)
+            self.assertLessEqual(self.module.HOME_CHORD_SETUP_WAIT, 0.5, "B in setup must not feel slow")
 
     def test_guide_pressed_in_settings_does_not_take_b_away(self):
         # Only the main menu answers a Guide press made in Settings; until then B / Esc still go back.
