@@ -622,8 +622,8 @@ def request_sleep() -> None:
 
 
 def request_home() -> None:
-    HOME_REQUEST.touch()
     try:
+        HOME_REQUEST.touch()
         subprocess.run(
             ["wlrctl", "toplevel", "focus", "title:CouchLiteOS Launcher"],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,

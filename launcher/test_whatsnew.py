@@ -314,6 +314,8 @@ class ContentTest(unittest.TestCase):
         self.assertTrue(whatsnew.notes("0.2.3", "")[0])  # no marker: from before the rename
         # A release without its own notes shows the newest notes it includes.
         self.assertEqual(whatsnew.notes("0.2.4", "0.2.3")[1], [whatsnew.RELEASES[0]])
+        # A pre-release of 0.2.3 already shows the 0.2.3 notes.
+        self.assertEqual(whatsnew.notes("0.2.3-rc.1", "0.2.2")[1], [whatsnew.RELEASES[0]])
         # A future version's notes are not shown on an older system.
         self.assertEqual(whatsnew.notes("0.2.2", "0.2.1")[1][0][0], "0.2.2")
 

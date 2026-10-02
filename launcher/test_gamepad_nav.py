@@ -1170,8 +1170,34 @@ class PointerModeTest(unittest.TestCase):
         tap = self.module.SuperTap()
         for code in (Codes.KEY_LEFTMETA, Codes.KEY_RIGHTMETA):
             self.assertFalse(tap.feed("kbd", key_event(code, 1)))
-            self.assertFalse(tap.feed("kbd", key_event(code, 2)), "autorepeat while held")
             self.assertTrue(tap.feed("kbd", key_event(code, 0)))
+
+    def test_super_held_until_it_repeats_is_not_a_tap(self):
+        tap = self.module.SuperTap()
+        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
+        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 2)))
+        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+
+    def test_guide_still_goes_home_while_the_mouse_has_grabbed_the_pad(self):
+        # The grab hides the pad from watch_home(), so the pointer path must ask for home itself.
+        run = self.run_dir()
+        with mock.patch.object(self.module.subprocess, "run") as run_command:
+            _pressed, _timeouts, pads, _mouse, pad = self.drive(
+                [(0.0, [(Codes.EV_KEY, Codes.BTN_MODE, 1)]), (0.1, [(Codes.EV_KEY, Codes.BTN_MODE, 0)])], run=run)
+        self.assertTrue(pads.pointer_on)
+        pad.grab.assert_called()
+        self.assertTrue((run / "home.request").exists())
+        self.assertEqual(run_command.call_count, 1, "one press, one request")
+        self.assertIn("title:CouchLiteOS Launcher", run_command.call_args[0][0])
+
+    def test_leaving_mouse_mode_forgets_the_sticks(self):
+        pads, _mouse = self.pads()
+        pads.sticks = {"/dev/input/event3": {Codes.ABS_RY: [-0.9, 0]}}
+        pads.set_pointer(True, 0.0)
+        self.assertEqual(pads.sticks, {})
+        pads.sticks = {"/dev/input/event3": {Codes.ABS_RY: [-0.9, 0]}}
+        pads.set_pointer(False, 1.0)
+        self.assertEqual(pads.sticks, {})
 
     def test_super_used_as_a_shortcut_does_not_open_home(self):
         tap = self.module.SuperTap()

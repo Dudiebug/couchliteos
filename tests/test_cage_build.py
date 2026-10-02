@@ -84,7 +84,10 @@ class CageHookTest(unittest.TestCase):
         self.assertIn('patch -p1 --forward < "$PATCH"', text(HOOK))
         self.assertIn("nm -D --undefined-only", text(HOOK))
         self.assertIn("grep -q wlr_foreign_toplevel_manager_v1_create", text(HOOK))
-        self.assertIn("-Dxwayland=enabled", text(HOOK))
+        # Cage 0.2.0 has no xwayland option; the hook checks meson's summary instead.
+        self.assertNotIn("-Dxwayland", text(HOOK))
+        self.assertIn("xwayland *: *true", text(HOOK))
+        self.assertIn('> "$work/symbols"', text(HOOK), "nm writes a file: grep -q must not SIGPIPE it")
 
     def test_debians_binary_is_diverted_once_not_overwritten(self):
         hook = text(HOOK)
@@ -132,6 +135,8 @@ class CagePatchTest(unittest.TestCase):
     def test_activate_raises_and_focuses_and_close_reaches_both_shells(self):
         patch = text(PATCH)
         self.assertIn("handle_surface_request_activate", patch)
+        # Raised views move to the front so closing the keyboard refocuses them.
+        self.assertIn("+\twl_list_insert(&view->server->views, &view->link);", patch)
         self.assertIn("+\tseat_set_focus(view->server->seat, view);", patch)
         self.assertIn("wlr_xdg_toplevel_send_close", patch)
         self.assertIn("wlr_xwayland_surface_close", patch)
@@ -140,12 +145,18 @@ class CagePatchTest(unittest.TestCase):
         self.assertEqual(patch.count("wlr_foreign_toplevel_handle_v1_set_title("), 2)
         self.assertEqual(patch.count("wlr_foreign_toplevel_handle_v1_set_app_id("), 2)
 
+    def test_handle_calls_are_guarded_for_unmapped_views(self):
+        patch = text(PATCH)
+        self.assertIn("+\tif (view->foreign_toplevel_handle)\n+\t\twlr_foreign_toplevel_handle_v1_set_activated", patch)
+        self.assertIn("+\tif (xdg_shell_view->xdg_toplevel->title)", patch)
+        self.assertIn("+\tif (xwayland_view->xwayland_surface->class)", patch)
+
     def test_listeners_added_on_map_are_removed_on_unmap(self):
         patch = text(PATCH)
         for listener in ("request_activate", "request_close"):
             self.assertIn(f"wl_signal_add(&view->foreign_toplevel_handle->events.{listener}, &view->{listener});",
                           patch)
-            self.assertIn(f"+\twl_list_remove(&view->{listener}.link);", patch)
+            self.assertIn(f"+\t\twl_list_remove(&view->{listener}.link);", patch)
 
     def test_hunk_line_counts_match_their_headers(self):
         lines = text(PATCH).splitlines()
