@@ -24,6 +24,12 @@ RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE
 # What each release added, newest first: one line per feature, at most 66 columns (the screen wraps longer ones at 80x24).
 # An upgrade shows every release newer than the one last seen, newest first.
 RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("0.2.4", (
+        "BRIGHTNESS AND VOLUME KEYS WORK; BRIGHTNESS IS IN THE GUIDE MENU",
+        "HOME FROM ANY PAD: HOLD SELECT+START. KEYBOARD: CTRL+ALT+H",
+        "MOUSE AND CONTROLLER MOUSE SPEED: SETTINGS > CONTROLS",
+        "THE ON-SCREEN KEYBOARD NO LONGER HIDES THE APP YOU TYPE INTO",
+    )),
     ("0.2.3", (
         "TYPE INTO AN APP: GUIDE, PICK IT, PRESS X (XBOX) / TRIANGLE (PS)",
         "CONTROLLER MOUSE IN BROWSERS: LEFT STICK POINTS, A CLICKS",
@@ -50,6 +56,7 @@ RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 FEATURES = RELEASES[0][1]  # the newest release
 MORE = "AND MORE: SEE THE RELEASE NOTES"
+EARLIER = "EARLIER CHANGES: SEE THE RELEASE NOTES"
 FOOTER = "PRESS A OR B TO CONTINUE"
 # gamepad-nav sends Enter for A and Esc for B.
 DISMISS_KEYS = (curses.KEY_ENTER, 10, 13, 27)
@@ -67,21 +74,28 @@ def should_show(seen_text: str, current: str, setup_complete: bool) -> bool:
 def notes(version: str, seen: str = "") -> tuple[bool, list[tuple[str, tuple[str, ...]]]]:
     """(show the rename notice, [(release, features)]) for an upgrade from `seen` to `version`.
 
-    Releases newer than `seen` up to `version`, newest first; a missing or damaged `seen`
-    counts as an upgrade from before the rename. A version with no notes of its own (a
-    point release) still shows the newest notes it includes."""
+    Only the notes of `version` itself, never an earlier release's: a version without notes
+    of its own shows none. A missing or damaged `seen` counts as an upgrade from before the rename."""
     now = update.parse_version(version)
     before = update.parse_version(seen)
     releases = [
         (release, features) for release, features in RELEASES
         # By release number, so a pre-release (0.2.3-rc.1) already shows the 0.2.3 notes.
-        if (now is None or update.parse_version(release)[0] <= now[0])
+        if now is not None and update.parse_version(release)[0] == now[0]
         and (before is None or update.parse_version(release) > before)
-    ]
-    if not releases:
-        releases = [next(((r, f) for r, f in RELEASES if now is None or update.parse_version(r)[0] <= now[0]), RELEASES[-1])]
+    ][:1]
     renamed = before is None or before < update.parse_version(RENAMED_IN)
     return renamed, releases
+
+
+def skipped_releases(version: str, seen: str = "") -> bool:
+    """True when releases between `seen` and `version` had notes the screen does not show."""
+    now = update.parse_version(version)
+    before = update.parse_version(seen)
+    return now is not None and any(
+        update.parse_version(release)[0] < now[0] and (before is None or update.parse_version(release) > before)
+        for release, _features in RELEASES
+    )
 
 
 def read_seen(path: pathlib.Path) -> str:
@@ -143,6 +157,8 @@ def draw(screen: curses.window, version: str, seen: str = "") -> None:
             textwrap.wrap(feature, width=max(8, width - 12), initial_indent="- ", subsequent_indent="  ")
             for feature in features
         )
+    if skipped_releases(version, seen):
+        wrapped.append([EARLIER])
     if row + sum(map(len, wrapped)) > footer_row:  # too much for the screen: newest first, then a pointer
         room = max(0, footer_row - row - 1)
         kept: list[list[str]] = []
@@ -190,6 +206,8 @@ def show_once(
     for path in stale:
         mark_seen(path, version)
     if len(stale) < len(markers) or not setup_was_completed(setup_marker):
+        return False
+    if notes(version, seen) == (False, []):  # nothing new to say for this version
         return False
     read_key = read_key or screen.getch
     while True:
