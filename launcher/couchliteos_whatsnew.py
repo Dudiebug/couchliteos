@@ -73,11 +73,12 @@ def notes(version: str, seen: str = "") -> tuple[bool, list[tuple[str, tuple[str
     before = update.parse_version(seen)
     releases = [
         (release, features) for release, features in RELEASES
-        if (now is None or update.parse_version(release) <= now)
+        # By release number, so a pre-release (0.2.3-rc.1) already shows the 0.2.3 notes.
+        if (now is None or update.parse_version(release)[0] <= now[0])
         and (before is None or update.parse_version(release) > before)
     ]
     if not releases:
-        releases = [next(((r, f) for r, f in RELEASES if now is None or update.parse_version(r) <= now), RELEASES[-1])]
+        releases = [next(((r, f) for r, f in RELEASES if now is None or update.parse_version(r)[0] <= now[0]), RELEASES[-1])]
     renamed = before is None or before < update.parse_version(RENAMED_IN)
     return renamed, releases
 

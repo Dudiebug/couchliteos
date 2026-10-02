@@ -38,10 +38,14 @@ tar -xzf "$TARBALL" -C "$work"
 (
   cd "$work/cage-0.2.0"
   patch -p1 --forward < "$PATCH"
-  meson setup build --buildtype=release -Dxwayland=enabled
+  # Cage 0.2.0 has no xwayland option: it follows wlroots, and must find Xwayland support.
+  meson setup build --buildtype=release | tee "$work/meson.log"
+  grep -Eq '^ *xwayland *: *true' "$work/meson.log" || { echo 'Cage was configured without Xwayland' >&2; exit 1; }
   ninja -C build
 )
-nm -D --undefined-only "$work/cage-0.2.0/build/cage" | grep -q wlr_foreign_toplevel_manager_v1_create || {
+# To a file first: grep -q closing the pipe early would SIGPIPE nm under pipefail.
+nm -D --undefined-only "$work/cage-0.2.0/build/cage" > "$work/symbols"
+grep -q wlr_foreign_toplevel_manager_v1_create "$work/symbols" || {
   echo 'Rebuilt Cage does not create a foreign toplevel manager' >&2
   exit 1
 }

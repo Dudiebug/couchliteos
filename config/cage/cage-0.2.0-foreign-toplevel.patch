@@ -1,8 +1,13 @@
 Cage: add wlr-foreign-toplevel-management (wlrctl toplevel focus/close).
 
 Backport of upstream commit af0a3cf8 (cage-kiosk/cage, Dec 2025, in v0.3.0) to
-Cage 0.2.0 / wlroots 0.18 as shipped by Debian 13. Only change from upstream:
-0.2.0 names the handler handle_xdg_shell_surface_request_fullscreen.
+Cage 0.2.0 / wlroots 0.18 as shipped by Debian 13. Differences from upstream:
+- 0.2.0 names the handler handle_xdg_shell_surface_request_fullscreen.
+- Every handle call is guarded: the handle exists only while the view is mapped,
+  and 0.2.0 delivers request_fullscreen before map (foot --fullscreen).
+- Title, app_id and class are set only when present (wlroots strdup()s them).
+- A view raised through the protocol moves to the front of server->views, so
+  closing a window (the on-screen keyboard) focuses the one raised last.
 CouchLiteOS needs it so Guide/Home brings the launcher over a running app.
 Applied with patch -p1 by config/live-build/hooks/live/0050-cage.hook.chroot.
 
@@ -54,27 +59,30 @@ diff -ruN a/view.c b/view.c
  #include <wlr/types/wlr_output.h>
  #include <wlr/types/wlr_scene.h>
  
-@@ -50,6 +51,7 @@
+@@ -50,6 +51,8 @@
  view_activate(struct cg_view *view, bool activate)
  {
  	view->impl->activate(view, activate);
-+	wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel_handle, activate);
++	if (view->foreign_toplevel_handle)
++		wlr_foreign_toplevel_handle_v1_set_activated(view->foreign_toplevel_handle, activate);
  }
  
  static bool
-@@ -115,6 +117,11 @@
+@@ -115,6 +118,13 @@
  {
  	wl_list_remove(&view->link);
  
-+	wl_list_remove(&view->request_activate.link);
-+	wl_list_remove(&view->request_close.link);
-+	wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel_handle);
-+	view->foreign_toplevel_handle = NULL;
++	if (view->foreign_toplevel_handle) {
++		wl_list_remove(&view->request_activate.link);
++		wl_list_remove(&view->request_close.link);
++		wlr_foreign_toplevel_handle_v1_destroy(view->foreign_toplevel_handle);
++		view->foreign_toplevel_handle = NULL;
++	}
 +
  	wlr_scene_node_destroy(&view->scene_tree->node);
  
  	view->wlr_surface->data = NULL;
-@@ -122,13 +129,27 @@
+@@ -122,13 +132,29 @@
  }
  
  void
@@ -83,6 +91,8 @@ diff -ruN a/view.c b/view.c
 +	struct cg_view *view = wl_container_of(listener, view, request_activate);
 +
 +	wlr_scene_node_raise_to_top(&view->scene_tree->node);
++	wl_list_remove(&view->link);
++	wl_list_insert(&view->server->views, &view->link);
 +	seat_set_focus(view->server->seat, view);
 +}
 +
@@ -106,7 +116,7 @@ diff -ruN a/view.c b/view.c
  	view->scene_tree->node.data = view;
  
  	view->wlr_surface = surface;
-@@ -144,7 +165,21 @@
+@@ -144,7 +170,21 @@
  	}
  
  	wl_list_insert(&view->server->views, &view->link);
@@ -179,7 +189,7 @@ diff -ruN a/xdg_shell.c b/xdg_shell.c
  
  	/**
  	 * Certain clients do not like figuring out their own window geometry if they
-@@ -196,9 +205,8 @@
+@@ -196,9 +205,9 @@
  	struct wlr_box layout_box;
  	wlr_output_layout_get_box(xdg_shell_view->view.server->output_layout, NULL, &layout_box);
  	wlr_xdg_toplevel_set_size(xdg_shell_view->xdg_toplevel, layout_box.width, layout_box.height);
@@ -187,22 +197,29 @@ diff -ruN a/xdg_shell.c b/xdg_shell.c
 -	wlr_xdg_toplevel_set_fullscreen(xdg_shell_view->xdg_toplevel,
 -					xdg_shell_view->xdg_toplevel->requested.fullscreen);
 +	wlr_xdg_toplevel_set_fullscreen(xdg_shell_view->xdg_toplevel, fullscreen);
-+	wlr_foreign_toplevel_handle_v1_set_fullscreen(xdg_shell_view->view.foreign_toplevel_handle, fullscreen);
++	if (xdg_shell_view->view.foreign_toplevel_handle)
++		wlr_foreign_toplevel_handle_v1_set_fullscreen(xdg_shell_view->view.foreign_toplevel_handle, fullscreen);
  }
  
  static void
-@@ -217,6 +225,10 @@
+@@ -217,6 +226,16 @@
  	struct cg_view *view = &xdg_shell_view->view;
  
  	view_map(view, xdg_shell_view->xdg_toplevel->base->surface);
 +
-+	wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel_handle, xdg_shell_view->xdg_toplevel->title);
-+	wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel_handle, xdg_shell_view->xdg_toplevel->app_id);
++	if (!view->foreign_toplevel_handle)
++		return;
++	if (xdg_shell_view->xdg_toplevel->title)
++		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel_handle, xdg_shell_view->xdg_toplevel->title);
++	if (xdg_shell_view->xdg_toplevel->app_id)
++		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel_handle, xdg_shell_view->xdg_toplevel->app_id);
++	wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel_handle,
++						      xdg_shell_view->xdg_toplevel->current.fullscreen);
 +	/* Activation state will be set by seat_set_focus */
  }
  
  static void
-@@ -257,6 +269,7 @@
+@@ -257,6 +276,7 @@
  	.activate = activate,
  	.maximize = maximize,
  	.destroy = destroy,
@@ -221,7 +238,7 @@ diff -ruN a/xwayland.c b/xwayland.c
  #include <wlr/util/log.h>
  #include <wlr/xwayland.h>
  
-@@ -103,11 +104,20 @@
+@@ -103,11 +104,21 @@
  }
  
  static void
@@ -237,23 +254,31 @@ diff -ruN a/xwayland.c b/xwayland.c
  	struct cg_xwayland_view *xwayland_view = wl_container_of(listener, xwayland_view, request_fullscreen);
  	struct wlr_xwayland_surface *xwayland_surface = xwayland_view->xwayland_surface;
  	wlr_xwayland_surface_set_fullscreen(xwayland_view->xwayland_surface, xwayland_surface->fullscreen);
-+	wlr_foreign_toplevel_handle_v1_set_fullscreen(xwayland_view->view.foreign_toplevel_handle,
-+						      xwayland_surface->fullscreen);
++	if (xwayland_view->view.foreign_toplevel_handle)
++		wlr_foreign_toplevel_handle_v1_set_fullscreen(xwayland_view->view.foreign_toplevel_handle,
++							      xwayland_surface->fullscreen);
  }
  
  static void
-@@ -131,6 +141,10 @@
+@@ -131,6 +142,17 @@
  	}
  
  	view_map(view, xwayland_view->xwayland_surface->surface);
 +
-+	wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel_handle, xwayland_view->xwayland_surface->title);
-+	wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel_handle,
-+						  xwayland_view->xwayland_surface->class);
++	if (!view->foreign_toplevel_handle)
++		return;
++	if (xwayland_view->xwayland_surface->title)
++		wlr_foreign_toplevel_handle_v1_set_title(view->foreign_toplevel_handle,
++							 xwayland_view->xwayland_surface->title);
++	if (xwayland_view->xwayland_surface->class)
++		wlr_foreign_toplevel_handle_v1_set_app_id(view->foreign_toplevel_handle,
++							  xwayland_view->xwayland_surface->class);
++	wlr_foreign_toplevel_handle_v1_set_fullscreen(view->foreign_toplevel_handle,
++						      xwayland_view->xwayland_surface->fullscreen);
  }
  
  static void
-@@ -154,6 +168,7 @@
+@@ -154,6 +176,7 @@
  	.activate = activate,
  	.maximize = maximize,
  	.destroy = destroy,

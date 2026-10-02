@@ -1181,7 +1181,7 @@ class Launcher:
                 if self.focus_app(app):
                     self.status = f"RESUMED {app.name}"
                     return
-                status = f"COULD NOT FOCUS {app.name}: PRESS X TO CLOSE IT, THEN START IT AGAIN"
+                status = f"COULD NOT FOCUS {app.name}: PRESS {CLOSE_BUTTON} TO CLOSE IT, THEN START IT AGAIN"
             elif key in (curses.KEY_DC, ord("x")):
                 (RUN / f"close-{app.status_id}").touch()
                 status = f"CLOSING {app.name}"

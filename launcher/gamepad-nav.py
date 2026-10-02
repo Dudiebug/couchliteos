@@ -142,7 +142,7 @@ class Pointer:
         if self.device is None:
             try:
                 self.device = self.factory()
-            except OSError:
+            except Exception:  # OSError, or evdev's UInputError: the pad simply stays a pad
                 self.device = None
 
     def close(self) -> None:
@@ -367,7 +367,10 @@ class Pads:
             return
         if event.type != ecodes.EV_KEY:
             return
-        if event.code in POINTER_BUTTONS and event.value in (0, 1):
+        if is_home_event(event):
+            # The grab hides the pad from watch_home(): Guide must still bring up the menu.
+            request_home()
+        elif event.code in POINTER_BUTTONS and event.value in (0, 1):
             self.pointer.button(POINTER_BUTTONS[event.code], bool(event.value))
         elif event.value == 1 and event.code == ecodes.BTN_NORTH:
             open_keyboard()  # X / Triangle: type into the page
@@ -410,6 +413,7 @@ class Pads:
             return
         self.pointer_on = on
         self.carry = [0.0, 0.0, 0.0, 0.0]
+        self.sticks.clear()  # a stick held across the switch must not keep moving or scrolling
         self.pointer_tick = now
         self.holds.clear()
         self.pointer.open() if on else self.pointer.close()
@@ -591,6 +595,8 @@ class SuperTap:
         if event.code in SUPER_KEYS:
             if event.value == 1:
                 self.armed.add(path)
+            elif event.value == 2:
+                self.armed.discard(path)  # held down: not a tap
             elif event.value == 0 and path in self.armed:
                 self.armed.discard(path)
                 return True
