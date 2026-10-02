@@ -64,7 +64,9 @@ class SharedBuildCacheTest(unittest.TestCase):
         first = self.key()
         self.assertRegex(first, r"^[0-9a-f]{32}$")
         self.assertEqual(self.key(), first, "the mirror's Date line must not matter")
-        self.assertNotEqual(self.key(SOURCE_DATE_EPOCH="2000"), first)
+        # Tarball builds take SOURCE_DATE_EPOCH from the clock; it only sets BUILD_ID,
+        # which every restore rewrites, so it must not make every build a miss.
+        self.assertEqual(self.key(SOURCE_DATE_EPOCH="2000"), first)
         self.assertNotEqual(self.key(FAKE_RELEASE="two"), first)
         self.write_bootstrap_config("http://other.example/debian/")
         self.assertNotEqual(self.key(), first)
@@ -73,6 +75,12 @@ class SharedBuildCacheTest(unittest.TestCase):
         first = self.key()
         (self.work / "config/common").write_text('LB_SYSTEM="live"\nDEBOOTSTRAP_OPTIONS="--include=nano"\n')
         self.assertNotEqual(self.key(), first)
+
+    def test_key_ignores_how_packages_are_fetched(self):
+        first = self.key()
+        with (self.work / "config/common").open("a") as common:
+            common.write('LB_CACHE_PACKAGES="false"\nLB_APT_HTTP_PROXY="http://127.0.0.1:3142"\n')
+        self.assertEqual(self.key(), first)
 
     def test_no_key_when_the_package_indices_cannot_be_read(self):
         for broken in ("lb_cache_fetch() { return 22; }", "lb_cache_fetch() { :; }",
@@ -126,18 +134,26 @@ class SharedBuildCacheTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("restored", result.stderr)
         root = self.work / "cache/bootstrap"
-        self.assertEqual((root / "etc/os-release").read_text(), "BUILD_ID=x\n")
+        # BUILD_ID is this build's (SOURCE_DATE_EPOCH=1000), not the saved root's.
+        self.assertEqual((root / "etc/os-release").read_text(), "BUILD_ID=19700101T001640Z\n")
         self.assertEqual((root / "etc/os-release").stat().st_mode & 0o777, 0o640)
         self.assertTrue((root / "bin").is_symlink())
         self.assertFalse((self.work / "cache/bootstrap").is_symlink(), "live-build must get its own copy")
 
     def test_changed_inputs_do_not_restore_and_a_stale_local_root_is_dropped(self):
         self.run_script(f'lb_cache_prepare "{self.shared}"\nmake_root\nlb_cache_save_bootstrap "{self.shared}"')
-        for change in ({"SOURCE_DATE_EPOCH": "2000"}, {"FAKE_RELEASE": "two"}):
-            result = self.run_script(f'mkdir -p cache/bootstrap\nlb_cache_prepare "{self.shared}"', **change)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((self.work / "cache/bootstrap").exists(), change)
-            self.assertIn("bootstrapping normally", result.stderr)
+        result = self.run_script(f'mkdir -p cache/bootstrap\nlb_cache_prepare "{self.shared}"', FAKE_RELEASE="two")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.work / "cache/bootstrap").exists())
+        self.assertIn("bootstrapping normally", result.stderr)
+
+    def test_a_new_source_date_still_restores_with_its_own_build_id(self):
+        self.run_script(f'lb_cache_prepare "{self.shared}"\nmake_root\nlb_cache_save_bootstrap "{self.shared}"')
+        subprocess.run(["rm", "-rf", str(self.work / "cache")], check=True)
+        result = self.run_script(f'lb_cache_prepare "{self.shared}"', SOURCE_DATE_EPOCH="1790000000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("restored", result.stderr)
+        self.assertEqual((self.work / "cache/bootstrap/etc/os-release").read_text(), "BUILD_ID=20260921T141320Z\n")
 
     def test_unreadable_indices_leave_the_local_root_alone_and_save_nothing(self):
         script = (f'lb_cache_fetch() {{ return 22; }}\nmake_root\nlb_cache_prepare "{self.shared}"\n'
@@ -180,10 +196,17 @@ class SharedBuildCacheTest(unittest.TestCase):
         build = (ROOT / "build/build.sh").read_text()
         self.assertRegex(build, r'(?m)^source "\$ROOT/build/lb-cache\.sh"$')
         self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n  lb_cache_prepare "\$COUCHLITEOS_LB_CACHE"\nfi$')
+        self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n'
+                                r'  timed chroot lb_cache_chroot_stage "\$COUCHLITEOS_LB_CACHE" \$\(\(release \? 0 : 1\)\)\n'
+                                r'else\n  timed chroot lb chroot\nfi$')
         self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n  lb_cache_save_bootstrap "\$COUCHLITEOS_LB_CACHE"\nfi$')
-        self.assertEqual(len(re.findall("COUCHLITEOS_LB_CACHE", build)), 4)
-        # Order: lb config, then prepare, then lb build, then save.
-        order = [build.index(marker) for marker in ("lb config noauto", "lb_cache_prepare", "\nlb build\n", "lb_cache_save_bootstrap")]
+        self.assertEqual(len(re.findall(r'(?m)^[^#\n]*COUCHLITEOS_LB_CACHE', build)), 6)
+        self.assertNotRegex(build, r'(?m)^\s*lb build\b', "the stages run one by one")
+        # Order: lb config, prepare, the five stages `lb build` runs, save.
+        markers = ("lb config noauto", "lb_cache_prepare", "timed bootstrap lb bootstrap", "timed chroot ",
+                   "timed installer lb installer", "timed binary lb_binary", "timed source lb source",
+                   "lb_cache_save_bootstrap")
+        order = [build.index(marker) for marker in markers]
         self.assertEqual(order, sorted(order))
         subprocess.run(["bash", "-n", str(ROOT / "build/build.sh")], check=True)
         subprocess.run(["bash", "-n", str(LB_CACHE)], check=True)

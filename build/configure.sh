@@ -55,6 +55,13 @@ for profile_dir in "${profile_dirs[@]}"; do
     cp -a "$profile_dir/overlay/." "$CHROOT/"
   fi
 done
+# Hold every `package=version` of the package lists through live-build's upgrade passes
+# (build/apt-pins.sh); live-build removes these files from the image's apt configuration.
+pins=$("$ROOT/build/apt-pins.sh" "$WORK"/config/package-lists/*.list.chroot)
+if [[ -n $pins ]]; then
+  printf '%s\n' "$pins" > "$WORK/config/archives/couchliteos-pins.pref.chroot"
+  printf '%s\n' "$pins" > "$WORK/config/archives/couchliteos-pins.pref.binary"
+fi
 install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/couchliteos/profile.conf"
 printf '%s\n' "$PROFILE" > "$WORK/profile"
 install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \

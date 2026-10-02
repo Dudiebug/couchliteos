@@ -786,6 +786,44 @@ rg -Fq '"systemd-analyze", "--no-pager", "critical-chain", "couchliteos-launcher
 rg -q '^source "\$ROOT/build/lb-cache\.sh"$' build/build.sh
 rg -q 'COUCHLITEOS_LB_CACHE' build/build.sh
 
+# Faster builds (docs/BUILDING.md). Release ISOs keep xz; test ISOs use zstd.
+rg -Fq -- '--release) release=1 ;;' build/build.sh
+rg -Fq "squashfs_options=(--chroot-squashfs-compression-type xz)" build/build.sh
+rg -q 'squashfs_options=\(--chroot-squashfs-compression-type zstd --chroot-squashfs-compression-level [0-9]+\)' build/build.sh
+rg -Fq '"${squashfs_options[@]}"' build/build.sh
+rg -Fq '"${cache_options[@]}"' build/build.sh
+rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
+rg -q '^RELEASE \?= 0$' Makefile
+rg -Fq 'sudo make build RELEASE=1' .github/workflows/build.yml
+# apt-cacher-ng: used when it answers, never written into the image.
+rg -Fq 'apt_proxy=${COUCHLITEOS_APT_PROXY-auto}' build/build.sh
+rg -Fq 'proxy_answers http://127.0.0.1:3142' build/build.sh
+rg -Fq 'export http_proxy=$apt_proxy' build/build.sh
+rg -Fq 'cache_options=(--cache-packages false)' build/build.sh
+refute rg -q -- '--apt-http-proxy|Acquire::http::Proxy' build/build.sh build/configure.sh config/live-build
+rg -Fq "grep -rIEin '^[^#]*(proxy|:3142)' \"\$image_root/root\"" build/build.sh
+rg -Fq 'unsquashfs -q -n -d "$image_root/root" binary/live/filesystem.squashfs etc/apt etc/environment' build/build.sh
+rg -q '^BindAddress: 127\.0\.0\.1$' tools/setup-apt-cacher-ng.sh
+# Cached packages are checked before a build that uses them.
+rg -Fq 'timed verify-cache lb_cache_verify_debs cache/packages.bootstrap cache/packages.chroot cache/packages.binary' build/build.sh
+rg -Fq 'dpkg-deb --fsys-tarfile' build/lb-cache.sh
+# The ISO is hard-linked into build/out, not copied.
+rg -Fq 'ln -- "$built_iso" "$ISO" 2>/dev/null || install -m 0644 "$built_iso" "$ISO"' build/build.sh
+# Stage times, and no second test run for a tree make test already passed.
+for stage in bootstrap chroot installer binary source checks; do
+  rg -q "^timed $stage |^  timed $stage " build/build.sh
+done
+rg -Fq './build/timed.sh tests ./build/test-gate.sh run' Makefile
+rg -q '^\t\./build/test-gate\.sh mark$' Makefile
+rg -q '^build/\.tests-passed$' .gitignore
+rg -Fq 'python3 -m unittest -v tests/test_fast_build.py' Makefile
+# Every package=version in the lists is pinned while the image is built, not in the image.
+rg -Fq 'couchliteos-pins.pref.chroot' build/configure.sh
+rg -Fq 'couchliteos-pins.pref.binary' build/configure.sh
+for script in build/timed.sh build/test-gate.sh build/apt-pins.sh tools/setup-apt-cacher-ng.sh; do
+  [[ -x $script ]] || { echo "$script is not executable" >&2; exit 1; }
+done
+
 # First-boot wizard (launcher/couchliteos_setup.py): every module it imports ships in the image.
 for module in $(rg -o --no-filename '^import (couchliteos_[a-z_]+)' -r '$1' launcher/couchliteos_setup.py); do
   rg -q "launcher/$module.py" build/configure.sh

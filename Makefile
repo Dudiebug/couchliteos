@@ -8,6 +8,9 @@ export PROFILE
 VERSION := $(shell cat VERSION)
 ISO_SUFFIX := $(shell . config/profiles/$(PROFILE)/profile.conf 2>/dev/null && printf '%s' "$$ISO_SUFFIX")
 ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso
+# RELEASE=1 builds a release ISO (xz squashfs, packages always installed afresh).
+# Without it `make build` makes a test ISO (zstd squashfs; docs/BUILDING.md).
+RELEASE ?= 0
 
 .PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet release-assets clean
 
@@ -15,7 +18,7 @@ help:
 	@printf '%s\n' \
 	  'make fetch-apps  Download pinned application images' \
 	  'make configure   Prepare the live-build work tree' \
-	  'sudo make build  Build the Debian 13 hybrid ISO (PROFILE=general|nvidia|intel|imac2013)' \
+	  'sudo make build  Build a test ISO (PROFILE=general|nvidia|intel|imac2013; RELEASE=1 for a release ISO)' \
 	  'make test         Run source/static tests' \
 	  'make qemu-smoke   Boot the ISO and wait for the appliance marker' \
 	  'make qemu-persistence-smoke  Verify live persistence and recovery boot' \
@@ -32,8 +35,15 @@ fetch-apps:
 configure: fetch-apps
 	./build/configure.sh
 
-build: configure
-	./build/build.sh
+# Tests (skipped when `make test` already passed for this exact tree), configure, build;
+# then the time each stage took.
+build: export COUCHLITEOS_TIMINGS := $(CURDIR)/build/out/build-times.txt
+build:
+	@mkdir -p build/out && : > build/out/build-times.txt
+	./build/timed.sh tests ./build/test-gate.sh run
+	./build/timed.sh configure $(MAKE) configure
+	./build/build.sh $(if $(filter 1,$(RELEASE)),--release)
+	@./build/timed.sh --summary
 
 test:
 	./tests/test-static.sh
@@ -51,6 +61,7 @@ test:
 	python3 -m unittest -v tests/test_hwdetect.py
 	python3 -m unittest -v tests/test_faster.py
 	python3 -m unittest -v tests/test_lb_cache.py
+	python3 -m unittest -v tests/test_fast_build.py
 	python3 -m unittest -v tests/test_moonlight_prefs.py
 	python3 -m unittest -v tests/test_display_failed.py
 	python3 -m unittest -v tests/test_run_app.py
@@ -60,7 +71,7 @@ test:
 	python3 -m unittest -v tests/test_bluetoothd_helpers.py
 	python3 -m unittest -v tests/test_cage_build.py
 	$(MAKE) -C launcher test
-
+	./build/test-gate.sh mark
 
 qemu-smoke:
 	./tests/qemu-smoke.sh "$(ISO)"

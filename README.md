@@ -105,9 +105,14 @@ On Debian 13 x86_64:
 sudo apt update
 sudo apt install --yes make git live-build curl ca-certificates xorriso \
   squashfs-tools grub-pc-bin grub-efi-amd64-bin mtools dosfstools
-sudo make build                    # general ISO
-make configure PROFILE=nvidia && sudo make build PROFILE=nvidia   # NVIDIA ISO
+sudo make build RELEASE=1          # general ISO
+sudo make build PROFILE=nvidia RELEASE=1   # NVIDIA ISO
 ```
+
+Without `RELEASE=1`, `make build` makes a faster test ISO (zstd squashfs). Repeat builds
+get much faster with apt-cacher-ng (`sudo tools/setup-apt-cacher-ng.sh`) and a shared
+cache (`COUCHLITEOS_LB_CACHE=/var/cache/couchliteos-lb`). The build prints the time of
+every stage. See [Building](docs/BUILDING.md).
 
 `make` runs the build, `curl` downloads the pinned application payloads,
 `squashfs-tools` (`unsquashfs`) extracts them, and `git` stamps the source

@@ -35,7 +35,7 @@ jobs:
         run: make test
       - name: Build ISO
         run: |
-          sudo make build
+          sudo make build RELEASE=1
           sudo chown -R "$(id -u):$(id -g)" build/out
       - name: Final release gauntlet
         run: make release-gauntlet
