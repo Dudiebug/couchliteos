@@ -53,6 +53,10 @@ test:
 	python3 -m unittest -v tests/test_moonlight_prefs.py
 	python3 -m unittest -v tests/test_display_failed.py
 	python3 -m unittest -v tests/test_run_app.py
+	python3 -m unittest -v tests/test_run_app_errors.py
+	python3 -m unittest -v tests/test_network_ready.py
+	python3 -m unittest -v tests/test_host_address_modes.py
+	python3 -m unittest -v tests/test_bluetoothd_helpers.py
 	$(MAKE) -C launcher test
 
 
