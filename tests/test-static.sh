@@ -944,6 +944,17 @@ rg -q 'tests/test_nvidia_firmware.py' Makefile
 refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b' scripts/couchliteos-nvidia-firmware launcher/couchliteos_firmware.py
 # The tips send people to a row that exists in Settings > STREAMING.
 rg -q '^SMOOTHER_ROW = "SMOOTHER STREAM ' launcher/couchliteos-launcher.py
+# Settings > CONTROLS (Home shortcut, pointer speeds): the launcher saves, gamepad-nav re-reads, Cage gets the mouse speed.
+rg -qF 'couchliteos_input.py" "$CHROOT/usr/libexec/couchliteos_input.py"' build/configure.sh
+rg -q '^import couchliteos_input as inputprefs$' launcher/couchliteos-launcher.py
+rg -q '^import couchliteos_input as inputprefs$' launcher/gamepad-nav.py
+rg -q '^import couchliteos_input as inputprefs$' launcher/couchliteos_controls.py
+rg -q 'couchliteos_input.py .*gamepad-nav.py' launcher/Makefile
+rg -q 'test_input.py' launcher/Makefile
+rg -q '^MOUSE_SPEED_FILE = pathlib.Path\("/var/lib/couchliteos/mouse-speed"\)$' launcher/couchliteos_input.py
+rg -q '^INPUT_SETTINGS = inputprefs.Watcher\(\)$' launcher/gamepad-nav.py
+rg -q '^HOME_HOLD_SECONDS = 1\.5$' launcher/couchliteos_input.py
+refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b|pkill|killall' launcher/couchliteos_input.py
 
 # Brightness and volume keys: gamepad-nav acts on them and the Guide menu has a BRIGHTNESS row. The
 # backlight is written as group video (udev rule), not by a root service; volume goes through wpctl.

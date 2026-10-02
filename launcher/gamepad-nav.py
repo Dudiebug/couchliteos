@@ -11,6 +11,7 @@ import select
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Iterable
 
 from evdev import InputDevice, UInput, ecodes
 
@@ -18,6 +19,7 @@ import couchliteos_power as power
 import couchliteos_cec as cec
 import couchliteos_audio as audio
 import couchliteos_brightness as brightness
+import couchliteos_input as inputprefs
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
@@ -89,6 +91,18 @@ VOLUME_KEYS = {ecodes.KEY_VOLUMEUP: audio.VOLUME_STEP, ecodes.KEY_VOLUMEDOWN: -a
 MEDIA_KEYS = frozenset({*BRIGHTNESS_KEYS, *VOLUME_KEYS, ecodes.KEY_MUTE})
 # The ACPI device a laptop's own brightness keys arrive from; see brightness.kernel_handles_hotkeys.
 ACPI_VIDEO_KEYS = "Video Bus"
+# Settings > CONTROLS (the launcher saves them in config.ini): re-read when the file changes.
+INPUT_SETTINGS = inputprefs.Watcher()
+# The Home shortcut's held pair, and the buttons that cancel it: Moonlight quits a stream on
+# Select+Start+L1+R1, so SELECT+START with a shoulder button held is left to Moonlight.
+HOME_COMBOS = {
+    inputprefs.HOME_SELECT_START: (frozenset({ecodes.BTN_SELECT, ecodes.BTN_START}),
+                                   frozenset({ecodes.BTN_TL, ecodes.BTN_TR})),
+    inputprefs.HOME_STICKS: (frozenset({ecodes.BTN_THUMBL, ecodes.BTN_THUMBR}), frozenset()),
+}
+HOME_COMBO_CODES = frozenset().union(*(pair | cancel for pair, cancel in HOME_COMBOS.values()))
+CTRL_KEYS = frozenset({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
+ALT_KEYS = frozenset({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
 
 
 def app_active() -> bool:
@@ -148,6 +162,11 @@ def stick_curve(value: float) -> float:
         return 0.0
     scaled = min(1.0, (magnitude - POINTER_DEADZONE) / (1 - POINTER_DEADZONE))
     return scaled * scaled * (1 if value > 0 else -1)
+
+
+def pointer_speed() -> float:
+    """Pixels per second at full deflection: POINTER_SPEED scaled by Settings > CONTROLLER MOUSE SPEED."""
+    return POINTER_SPEED * inputprefs.PAD_SPEEDS.get(INPUT_SETTINGS.current().pad_speed, 1.0)
 
 
 class Pointer:
@@ -276,6 +295,7 @@ class Pads:
         self.pointer_on = False
         self.pointer_tick = 0.0
         self.carry = [0.0, 0.0, 0.0, 0.0]  # x, y, wheel, horizontal wheel not yet sent
+        self.combo = HomeCombo()  # the mouse grabs the pads, hiding the Home shortcut from watch_home()
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -303,6 +323,7 @@ class Pads:
 
     def drop(self, path: str) -> None:
         self.holds.pop(path, None)
+        self.combo.forget(path)
         self.sticks.pop(path, None)
         for key in [key for key in self.spans if key[0] == path]:
             del self.spans[key]
@@ -396,6 +417,7 @@ class Pads:
             return
         if event.type != ecodes.EV_KEY:
             return
+        self.combo.feed(path, event, now)
         if is_home_event(event):
             # The grab hides the pad from watch_home(): Guide must still bring up the menu.
             request_home()
@@ -418,9 +440,10 @@ class Pads:
         """Send the motion and scrolling the sticks asked for since the last tick."""
         elapsed = min(0.05, max(0.0, now - self.pointer_tick))
         self.pointer_tick = now
+        speed = pointer_speed()
         rates = (
-            stick_curve(self.stick_value(ecodes.ABS_X)) * POINTER_SPEED,
-            stick_curve(self.stick_value(ecodes.ABS_Y)) * POINTER_SPEED,
+            stick_curve(self.stick_value(ecodes.ABS_X)) * speed,
+            stick_curve(self.stick_value(ecodes.ABS_Y)) * speed,
             -stick_curve(self.stick_value(ecodes.ABS_RY)) * SCROLL_SPEED,  # pushed up scrolls up
             stick_curve(self.stick_value(ecodes.ABS_RX)) * SCROLL_SPEED,
         )
@@ -447,6 +470,7 @@ class Pads:
         self.sticks.clear()  # a stick held across the switch must not keep moving or scrolling
         self.pointer_tick = now
         self.holds.clear()
+        self.combo.reset()
         self.pointer.open() if on else self.pointer.close()
 
     def update_stick(self, path: str, ui: UInput, now: float) -> None:
@@ -472,6 +496,7 @@ class Pads:
         """How long select() may sleep: a second when idle, less when a repeat is due sooner
         or a stick is moving the pointer."""
         moving = [POINTER_TICK] if self.pointer_on and self.pointer_moving() else []
+        moving += [self.combo.timeout(now)] if self.pointer_on and self.combo.started else []
         return min([1.0, *moving,
                     *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None)])
 
@@ -515,6 +540,8 @@ class Pads:
                 self.update_stick(path, ui, now)
         if pointer:
             self.tick_pointer(now)
+            if self.combo.due(now):
+                request_home()
         if not blocked:
             for hold in self.holds.values():
                 key = hold.repeat(now)
@@ -677,6 +704,121 @@ def apply_media() -> None:
             action()
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             print(f"media key not applied: {error}", flush=True)
+class HomeCombo:
+    """Holding SELECT+START (or L3+R3, chosen in Settings > CONTROLS) for 1.5 s opens Home, like Guide.
+
+    For pads without a usable Guide button. A tap does nothing, letting go of either button
+    early cancels, and a hold that has SELECT+START plus L1 or R1 is Moonlight's quit and never
+    counts (nor does it once the shoulder is let go: the pair has to be pressed afresh). Tracked
+    per pad: feed() every key event, due() each time round the event loop (open Home when it
+    returns True), timeout() for the select() wait, forget()/reset() when a pad goes away.
+    """
+
+    def __init__(self, threshold: float = inputprefs.HOME_HOLD_SECONDS,
+                 choice: Callable[[], str] | None = None) -> None:
+        self.threshold = threshold
+        self.choice = choice or (lambda: INPUT_SETTINGS.current().home)
+        self.held: dict[object, set[int]] = {}
+        self.started: dict[object, float] = {}
+        self.spent: set[object] = set()  # pads whose current hold may not open Home
+
+    def combo(self) -> tuple[frozenset[int], frozenset[int]] | None:
+        return HOME_COMBOS.get(self.choice())
+
+    def feed(self, path: object, event, now: float, pressed: Iterable[int] | None = None) -> None:
+        """`pressed`: the pad's real key state when it is known (it may have been held while grabbed)."""
+        if event.type != ecodes.EV_KEY or event.code not in HOME_COMBO_CODES or event.value not in (0, 1):
+            return
+        held = self.held.setdefault(path, set())
+        if pressed is not None:
+            held.clear()
+            held.update(set(pressed) & HOME_COMBO_CODES)
+        if event.value:
+            held.add(event.code)
+        else:
+            held.discard(event.code)
+        combo = self.combo()
+        if combo is None or not combo[0] <= held:
+            self.started.pop(path, None)
+            self.spent.discard(path)
+        elif combo[1] & held:
+            self.started.pop(path, None)
+            self.spent.add(path)
+        elif path not in self.spent:
+            self.started.setdefault(path, now)
+
+    def due(self, now: float) -> bool:
+        """True once per hold, when the pair has been held for the threshold."""
+        combo = self.combo()
+        for path, started in list(self.started.items()):
+            if combo is None or not combo[0] <= self.held.get(path, set()):
+                del self.started[path]  # the setting changed under the hold
+            elif now - started >= self.threshold:
+                del self.started[path]
+                self.spent.add(path)
+                return True
+        return False
+
+    def timeout(self, now: float, default: float = 1.0) -> float:
+        if not self.started:
+            return default
+        return max(0.0, min(default, self.threshold - (now - min(self.started.values()))))
+
+    def forget(self, path: object) -> None:
+        self.held.pop(path, None)
+        self.started.pop(path, None)
+        self.spent.discard(path)
+
+    def reset(self) -> None:
+        self.held.clear()
+        self.started.clear()
+        self.spent.clear()
+
+
+class KeyboardHome:
+    """Ctrl+Alt+H opens Home (either Ctrl, either Alt, all on one keyboard); Settings > CONTROLS can turn it off."""
+
+    def __init__(self, enabled: Callable[[], bool] | None = None) -> None:
+        self.enabled = enabled or (lambda: INPUT_SETTINGS.current().keyboard_home)
+        self.held: dict[object, set[int]] = {}
+
+    def feed(self, path: object, event) -> bool:
+        """True when this event is the H of Ctrl+Alt+H; `path` names the keyboard."""
+        if event.type != ecodes.EV_KEY:
+            return False
+        if event.code in CTRL_KEYS or event.code in ALT_KEYS:
+            if event.value == 1:
+                self.held.setdefault(path, set()).add(event.code)
+            elif event.value == 0:
+                self.held.get(path, set()).discard(event.code)
+            return False
+        if event.code != ecodes.KEY_H or event.value != 1:
+            return False
+        held = self.held.get(path, set())
+        return bool(held & CTRL_KEYS and held & ALT_KEYS) and self.enabled()
+
+    def forget(self, path: object) -> None:
+        self.held.pop(path, None)
+
+    def reset(self) -> None:
+        self.held.clear()
+
+
+def pressed_keys(device) -> list[int] | None:
+    """The keys a device has down right now (EVIOCGKEY), or None when it cannot say."""
+    try:
+        return list(device.active_keys())
+    except (AttributeError, OSError):
+        return None
+
+
+def watches_home(keys: set[int]) -> bool:
+    """watch_home() reads devices with Home/Guide, Super, a Home shortcut pair, Ctrl+Alt+H,
+    or brightness/volume keys."""
+    pairs = (pair for pair, _cancel in HOME_COMBOS.values())
+    return bool({ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *SUPER_KEYS, *MEDIA_KEYS} & keys) or any(
+        pair <= keys for pair in pairs
+    ) or (ecodes.KEY_H in keys and bool(CTRL_KEYS & keys) and bool(ALT_KEYS & keys))
 
 
 def is_hold_press(event) -> bool:
@@ -705,46 +847,58 @@ def watch_home() -> None:
     devices: dict[str, InputDevice] = {}
     hold = HomeHold()
     tap = SuperTap()
+    combo = HomeCombo()  # SELECT+START or L3+R3 held: watched, never grabbed, so it works over any app
+    chord = KeyboardHome()
     in_game = False  # the hold under way began while an app had the controller
     while True:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(devices) - paths:
             gone = devices.pop(path)
             tap.armed.discard(id(gone))
+            combo.forget(path)
+            chord.forget(path)
             gone.close()
             hold.reset()  # the button may have been released while disconnected
         for path in paths - set(devices):
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *SUPER_KEYS, *MEDIA_KEYS} & keys:
+                if watches_home(keys):
                     devices[path] = device
                 else:
                     device.close()
             except OSError:
                 pass
         try:
+            now = time.monotonic()
             readable, _writable, _errors = select.select(
-                list(devices.values()), [], [], hold.timeout(time.monotonic())
+                list(devices.values()), [], [], min(hold.timeout(now), combo.timeout(now))
             )
             for device in readable:
+                path = next((key for key, value in devices.items() if value is device), id(device))
                 for event in device.read():
                     if is_hold_press(event):
                         # Looked at before request_home() brings the launcher forward: the Guide
                         # press itself takes the focus, so later the launcher always "has" it.
                         in_game = app_owns_pad()
                     tapped = tap.feed(id(device), event) and not remote_session_in_front()
-                    if tapped or is_home_event(event):
+                    if tapped or is_home_event(event) or chord.feed(path, event):
                         request_home()
                     action = media_action(event, device)
                     if action is not None:
                         queue_media(action)
                     hold.feed(event, time.monotonic())
+                    if event.type == ecodes.EV_KEY and event.code in HOME_COMBO_CODES:
+                        combo.feed(path, event, time.monotonic(), pressed_keys(device))
+            if combo.due(time.monotonic()):
+                request_home()
             if hold.due(time.monotonic()) and not in_game:
                 request_sleep()
         except OSError:
             hold.reset()
             tap.reset()
+            combo.reset()
+            chord.reset()
             for device in devices.values():
                 device.close()
             devices.clear()

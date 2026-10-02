@@ -40,6 +40,7 @@ import couchliteos_netmenu as netmenu
 import couchliteos_confirm as confirmation
 import couchliteos_whatsnew as whatsnew
 import couchliteos_controls as controls
+import couchliteos_input as inputprefs
 import couchliteos_padcheck as padcheck
 import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
@@ -75,7 +76,7 @@ SETTINGS_MENU = (
     "TV CONTROL",
     "SOFTWARE UPDATE",
     "CHECK FOR UPDATES",
-    "CONTROLLER BUTTONS",
+    "CONTROLS",
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
@@ -98,6 +99,7 @@ CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / CIRCLE CANCEL"
 # Hints name controller buttons (A / CROSS is Enter, B / CIRCLE is Esc), never keyboard keys.
 LIST_HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
+CONTROLS_HINT = "LEFT/RIGHT OR A / CROSS CHANGES  ·  B / CIRCLE GOES BACK"
 BUTTONS_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE BACK"
 FORM_HINT = "A / CROSS EDITS  ·  LEFT/RIGHT TOGGLES  ·  B / CIRCLE BACK"
 DONE_HINT = "A / CROSS OR B / CIRCLE"
@@ -1774,7 +1776,7 @@ class Settings:
             "TV CONTROL": self.run_tv_control,
             "SOFTWARE UPDATE": self.run_software_update,
             "CHECK FOR UPDATES": self.toggle_updates,
-            "CONTROLLER BUTTONS": lambda: controls.show(self.screen),
+            "CONTROLS": self.run_controls,
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launch("system-diagnostics"),
@@ -1958,6 +1960,28 @@ class Settings:
                     result = "MUTED" if audio.toggle_mute().muted else "UNMUTED"
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 result = f"VOLUME NOT CHANGED: {error}"
+
+    def run_controls(self) -> None:
+        """The Home shortcut and pointer speeds (LEFT/RIGHT or A changes one), and the button help."""
+        selected = 0
+        notice = ""  # what the last change did, shown until the next press
+        while True:
+            settings = inputprefs.load_settings()
+            rows = [*inputprefs.rows(settings), controls.TITLE, "BACK"]
+            field = inputprefs.FIELDS[selected] if selected < len(inputprefs.FIELDS) else ""
+            status = self.status
+            self.status = notice or inputprefs.HELP.get(field) or status
+            self.draw("CONTROLS", rows, selected, CONTROLS_HINT)
+            self.status, notice = status, ""
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
+                return
+            if key in ENTER_KEYS and selected == len(rows) - 2:
+                controls.show(self.screen)
+            elif selected < len(inputprefs.FIELDS) and key in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
+                step = -1 if key == curses.KEY_LEFT else 1
+                _settings, notice = inputprefs.change(settings, inputprefs.FIELDS[selected], step)
 
     def run_sleep_settings(self) -> None:
         settings = power.load_settings()  # as saved: its sleep value may belong to another PC

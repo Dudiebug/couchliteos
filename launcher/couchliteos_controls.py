@@ -1,4 +1,4 @@
-"""The controller buttons help screen: Settings > CONTROLLER BUTTONS, and once after setup.
+"""The controller buttons help screen: Settings > CONTROLS > CONTROLLER BUTTONS, and once after setup.
 
 The text must describe what gamepad-nav does (launcher/gamepad-nav.py key_for_event), which
 test_controls.py checks against the real mapping. Pad names come from /proc/bus/input/devices.
@@ -11,6 +11,7 @@ import itertools
 import pathlib
 import textwrap
 
+import couchliteos_input as inputprefs
 import couchliteos_setup as setup
 
 PROC_INPUT = pathlib.Path("/proc/bus/input/devices")
@@ -83,8 +84,13 @@ def detect_family(path: pathlib.Path = PROC_INPUT) -> str:
         return "generic"
 
 
-def table(kind: str, can_sleep: bool) -> list[tuple[list[str], str]]:
-    """(button label lines, what the button does) for each row."""
+def table(
+    kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: bool = True,
+) -> list[tuple[list[str], str]]:
+    """(button label lines, what the button does) for each row.
+
+    `home` and `keyboard` are the Settings > CONTROLS Home shortcut choices (gamepad-nav HomeCombo).
+    """
     south, east, north, west, left, right, view, menu, guide = FAMILY_NAMES[kind]
     shortcuts = [f"{left}  {right}  {view}  {menu}"]
     if len(shortcuts[0]) > 24:  # both names per button: two lines
@@ -98,14 +104,22 @@ def table(kind: str, can_sleep: bool) -> list[tuple[list[str], str]]:
         (shortcuts, "APP SHORTCUTS (SET IN SETTINGS > APPLICATIONS)"),
         ([guide], "OPEN ACTIVE APPLICATIONS FROM ANY APP OR GAME STREAM"),
     ]
+    held = f"HELD {inputprefs.HOME_HOLD_SECONDS:g} S"
+    if home == inputprefs.HOME_SELECT_START:
+        rows.append(([f"{view} + {menu}", held], f"SAME AS {guide}, BUT NOT WITH {left} OR {right} HELD"))
+    elif home == inputprefs.HOME_STICKS:
+        rows.append((["L3 + R3 (BOTH STICKS IN)", held], f"SAME AS {guide}"))
+    rows.append((["KEYBOARD: SUPER", "OR CTRL+ALT+H"] if keyboard else ["KEYBOARD: SUPER"], f"SAME AS {guide}"))
     if can_sleep:
         rows.append(([f"HOLD {guide} {SLEEP_HOLD_SECONDS} S"], "SLEEP"))
     return rows
 
 
-def rows(kind: str, can_sleep: bool) -> list[str]:
+def rows(
+    kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: bool = True,
+) -> list[str]:
     """The table as text lines of at most WIDTH columns; long descriptions wrap."""
-    cells = table(kind, can_sleep)
+    cells = table(kind, can_sleep, home, keyboard)
     column = max(len(line) for label, _text in cells for line in label) + 2
     return [
         f"{label:<{column}}{text}".rstrip()
@@ -138,10 +152,14 @@ def put(screen: curses.window, row: int, column: int, text: str) -> None:
             pass
 
 
-def show(screen: curses.window, can_sleep: bool | None = None, proc: pathlib.Path = PROC_INPUT) -> None:
+def show(
+    screen: curses.window, can_sleep: bool | None = None, proc: pathlib.Path = PROC_INPUT,
+    config: pathlib.Path | None = None,
+) -> None:
     """Draw the help for the connected pad until A or B (Enter or Esc) is pressed."""
     kind = detect_family(proc)
-    lines = rows(kind, sleep_supported() if can_sleep is None else can_sleep)
+    shortcut = inputprefs.load_settings(config)
+    lines = rows(kind, sleep_supported() if can_sleep is None else can_sleep, shortcut.home, shortcut.keyboard_home)
     while True:
         screen.erase()
         height, width = screen.getmaxyx()
