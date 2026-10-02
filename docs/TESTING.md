@@ -376,6 +376,13 @@ Applications and acceleration:
 - [ ] Moonlight and chiaki-ng keep the controller (no mouse) and Guide still opens the menu mid-stream
 - [ ] Guide menu VOLUME: Left/Right change it and A mutes, matching Settings > AUDIO
 - [ ] After updating from 0.2.2, What's New lists only the 0.2.3 changes, without the rename notice
+- [ ] Laptop: brightness keys change the backlight in the launcher and in Moonlight; the Guide menu BRIGHTNESS row matches
+- [ ] Volume and mute keys change the volume in the launcher and in a running app; holding a volume key does not overshoot
+- [ ] Holding SELECT+START (and L3+R3 when chosen) for 1.5 s goes Home from the launcher, Chrome and Moonlight; a quick SELECT or START tap still does its own action
+- [ ] Ctrl+Alt+H goes Home from any app; turning KEYBOARD HOME SHORTCUT OFF stops it
+- [ ] MOUSE SPEED changes a USB mouse and a touchpad at once, without a restart; CONTROLLER MOUSE SPEED changes the stick pointer
+- [ ] The on-screen keyboard over Chrome is a bottom panel: the page stays visible above it, and B closes it
+- [ ] After updating from 0.2.3, What's New lists only the 0.2.4 changes; from 0.2.1 it also says EARLIER CHANGES: SEE THE RELEASE NOTES
 - [ ] Remote desktop: a saved RDP connection opens a full-screen window and Guide still opens the menu over it
 - [ ] iMac Late 2013 (nouveau): Moonlight streams with no "hardware accelerated video decoder" warning, even after picking Automatic in Moonlight's settings
 - [ ] iMac Late 2013: Settings > STREAMING > VIDEO DECODER FIRMWARE downloads, reports READY (or SAVED, NOT WORKING YET), and after a restart Moonlight decodes in hardware; REMOVE FIRMWARE returns to software decoding
