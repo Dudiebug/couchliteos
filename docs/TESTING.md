@@ -370,6 +370,12 @@ Applications and acceleration:
 - [ ] Ctrl+C in Terminal, nmtui, diagnostics, and Tailscale does not interrupt the launcher
 - [ ] X (Xbox) / Triangle (PlayStation) or F12 opens the buffered keyboard in launcher text fields
 - [ ] TYPE and TYPE + ENTER inject expected text after focus returns
+- [ ] Guide over Chrome, pick Chrome, X / Triangle: the keyboard opens over Chrome and the text lands in the focused field, first letter included
+- [ ] Guide and a lone Super key tap open ACTIVE APPLICATIONS over a running app, and RESUME brings that app back to the front
+- [ ] Controller mouse in Chrome and Firefox: left stick points, A clicks, right stick scrolls, X opens the keyboard, B goes back; turning it OFF in the Guide menu gives the pad back to the app
+- [ ] Moonlight and chiaki-ng keep the controller (no mouse) and Guide still opens the menu mid-stream
+- [ ] Guide menu VOLUME: Left/Right change it and A mutes, matching Settings > AUDIO
+- [ ] After updating from 0.2.2, What's New lists only the 0.2.3 changes, without the rename notice
 - [ ] Record `vainfo`, `vulkaninfo --summary`, `wpctl status`, and `aplay -l`
 
 Couch features (v0.2.x):

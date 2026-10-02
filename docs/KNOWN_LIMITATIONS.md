@@ -80,8 +80,15 @@
   the documented Steam manifest is groundwork for a future supported install.
 - The controller keyboard is a full-screen buffered utility, not a compositor overlay.
   From a controller it opens in launcher text fields (X on Xbox pads, Triangle
-  on PlayStation pads); the global Guide+X chord was removed in v0.1.10.
-  Physical controller and text-injection validation remains required.
+  on PlayStation pads). To type into a running app, press Guide, pick the app
+  and press X / Triangle (or press X / Triangle while the controller mouse is
+  on); the text is typed into the app after the keyboard closes. Physical
+  controller and text-injection validation remains required.
+- The controller mouse (browsers and web apps) has no on-screen speed setting,
+  and the ON/OFF choice made in the Guide menu lasts until the launcher restarts.
+- The image carries Debian's Cage 0.2.0 rebuilt with a backported patch for
+  window switching (wlr-foreign-toplevel-management, upstream in Cage 0.3.0);
+  Debian's binary is kept as `/usr/bin/cage.debian`.
 - Custom command applications must already exist on the filesystem.
 - Google Chrome is tested for startup in QEMU, but Disney+ does not officially
   support ordinary Linux distributions; Chrome therefore does not guarantee playback.

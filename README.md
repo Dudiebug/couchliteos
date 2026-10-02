@@ -59,7 +59,11 @@ PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md
   root-only saved passwords, certificate pinning on first use, and pinnable
   launcher buttons with controller shortcuts
 - Named-device Bluetooth discovery and PipeWire output selection
-- Home/Guide managed application resume and close controls
+- Home/Guide (or a tap of the Super key) opens a menu over running apps: resume,
+  close, type into an app with the on-screen keyboard, volume, and the
+  controller mouse
+- a controller mouse for browsers and web apps (left stick points, A clicks,
+  right stick scrolls), on by default for them and switchable per app
 - Standard Firefox EME/Widevine readiness and safe diagnostics
 - Mesa Vulkan and VA-API
 - Cage as the direct DRM/KMS Wayland kiosk compositor; no desktop environment
@@ -78,7 +82,7 @@ PCs. Details and the per-machine decisions are in [HARDWARE.md](docs/HARDWARE.md
   picture
 - manifest-driven system, custom command, and custom web applications
 - isolated full-screen Terminal, Tailscale, network, and diagnostics processes
-- a full-screen buffered keyboard for launcher text fields (X on Xbox pads, Triangle on PlayStation pads, or F12)
+- a full-screen buffered keyboard for launcher text fields and running apps (X on Xbox pads, Triangle on PlayStation pads, or F12)
 - broader controller device rules from Debian's `steam-devices` package; Steam itself is not installed
 - Bluetooth controller input through evdev and opt-in Bluetooth audio through PipeWire/WirePlumber
 - controller-friendly display settings based only on modes advertised by Cage/wlroots
