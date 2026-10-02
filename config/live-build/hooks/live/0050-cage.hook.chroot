@@ -1,0 +1,61 @@
+#!/bin/bash
+# Rebuild Debian's Cage 0.2.0 with wlr-foreign-toplevel-management.
+#
+# Stock Cage 0.2.0 has no way for another program to raise a window, so
+# `wlrctl toplevel focus` (Guide/Home bringing the launcher over a running app,
+# RESUME in Active Applications, the keyboard typing into an app) does nothing.
+# config/cage/ holds the upstream patch backported to 0.2.0; build/configure.sh
+# copies it and the pinned release tarball to /usr/src/couchliteos-cage.
+set -Eeuo pipefail
+
+SRC=/usr/src/couchliteos-cage
+TARBALL=$SRC/cage-0.2.0.tar.gz
+TARBALL_SHA256=557c194d18af7202a9ec2e8be6dd7129f6c16d0f4528f4079ba26ccd57b6ef88
+PATCH=$SRC/cage-0.2.0-foreign-toplevel.patch
+BUILD_DEPS=(meson ninja-build gcc libc6-dev pkgconf patch libwlroots-0.18-dev
+  libwayland-dev wayland-protocols libxkbcommon-dev)
+
+[[ -f $TARBALL && -f $PATCH ]] || { echo "Cage sources missing from $SRC" >&2; exit 1; }
+echo "$TARBALL_SHA256  $TARBALL" | sha256sum --check --quiet - || {
+  echo 'Cage release tarball does not match its pinned checksum' >&2
+  exit 1
+}
+# Cage is built against the wlroots the image runs.
+[[ $(dpkg-query -W -f '${Version}' cage) == 0.2.0-* ]] || {
+  echo "Expected Debian's cage 0.2.0, found $(dpkg-query -W -f '${Version}' cage)" >&2
+  exit 1
+}
+
+before=$(mktemp)
+after=$(mktemp)
+work=$(mktemp -d)
+trap 'rm -rf -- "$before" "$after" "$work"' EXIT
+dpkg-query -W -f '${Package}\n' | sort > "$before"
+DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends "${BUILD_DEPS[@]}"
+dpkg-query -W -f '${Package}\n' | sort > "$after"
+
+tar -xzf "$TARBALL" -C "$work"
+(
+  cd "$work/cage-0.2.0"
+  patch -p1 --forward < "$PATCH"
+  meson setup build --buildtype=release -Dxwayland=enabled
+  ninja -C build
+)
+nm -D --undefined-only "$work/cage-0.2.0/build/cage" | grep -q wlr_foreign_toplevel_manager_v1_create || {
+  echo 'Rebuilt Cage does not create a foreign toplevel manager' >&2
+  exit 1
+}
+
+if [[ $(dpkg-divert --truename /usr/bin/cage) != /usr/bin/cage.debian ]]; then
+  dpkg-divert --local --rename --divert /usr/bin/cage.debian --add /usr/bin/cage
+fi
+install -m 0755 "$work/cage-0.2.0/build/cage" /usr/bin/cage
+
+# Remove exactly what the build pulled in; everything else was there before.
+added=$(comm -13 "$before" "$after")
+if [[ -n $added ]]; then
+  # shellcheck disable=SC2086 # one package name per word
+  DEBIAN_FRONTEND=noninteractive apt-get purge --yes $added
+fi
+rm -rf -- "$SRC"
+/usr/bin/cage -v

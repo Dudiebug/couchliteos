@@ -17,11 +17,15 @@ import couchliteos_cec as cec
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
-        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8]
+        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8,
+        # controller mouse (pointer mode): browser back, play/pause, page up/down
+        ecodes.KEY_BACK, ecodes.KEY_SPACE, ecodes.KEY_PAGEUP, ecodes.KEY_PAGEDOWN]
 OSK_ACTIVE = pathlib.Path("/run/couchliteos/osk-active")
 START_OSK = pathlib.Path("/run/couchliteos/start-osk")
 HOME_REQUEST = pathlib.Path("/run/couchliteos/home.request")
 APP_ACTIVE = pathlib.Path("/run/couchliteos/app-active")
+# Written by the launcher for apps without controller support (browsers, web apps): the pad drives a mouse.
+POINTER_MODE = pathlib.Path("/run/couchliteos/pointer-mode")
 # Touched by the launcher while it holds focus (Home pressed) even though an app runs.
 LAUNCHER_FOCUS = pathlib.Path("/run/couchliteos/launcher-focus")
 CONTROLLER_ID = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
@@ -56,6 +60,24 @@ STICK_AXES = {
     ecodes.ABS_X: (ecodes.KEY_LEFT, ecodes.KEY_RIGHT),
     ecodes.ABS_Y: (ecodes.KEY_UP, ecodes.KEY_DOWN),
 }
+# Pointer mode: the left stick moves the pointer, the right stick scrolls.
+POINTER_AXES = (ecodes.ABS_X, ecodes.ABS_Y, ecodes.ABS_RX, ecodes.ABS_RY)
+POINTER_DEADZONE = 0.15
+POINTER_SPEED = 1400.0  # pixels per second at full deflection
+SCROLL_SPEED = 14.0  # wheel steps per second at full deflection
+POINTER_TICK = 1 / 60
+POINTER_BUTTONS = {
+    ecodes.BTN_SOUTH: ecodes.BTN_LEFT,  # A / Cross clicks (hold to drag)
+    ecodes.BTN_WEST: ecodes.BTN_RIGHT,  # Y on Xbox pads, Square on PlayStation pads
+}
+POINTER_KEYS = {
+    ecodes.BTN_EAST: ecodes.KEY_BACK,  # B / Circle: back a page
+    ecodes.BTN_START: ecodes.KEY_SPACE,  # play / pause
+    ecodes.BTN_SELECT: ecodes.KEY_ESC,  # leave full screen, close a pop-up
+    ecodes.BTN_TL: ecodes.KEY_PAGEUP,
+    ecodes.BTN_TR: ecodes.KEY_PAGEDOWN,
+}
+SUPER_KEYS = frozenset({ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHTMETA})
 
 
 def app_active() -> bool:
@@ -76,6 +98,87 @@ def app_owns_pad() -> bool:
 def navigation_blocked(active_osk: bool) -> bool:
     """An app owns the controller, unless the launcher was brought back with Home."""
     return app_active() and not active_osk and not LAUNCHER_FOCUS.exists()
+
+
+def pointer_mode(active_osk: bool) -> bool:
+    """The app in front has no controller support and the pad drives a mouse for it."""
+    return not active_osk and POINTER_MODE.exists() and app_owns_pad()
+
+
+def open_keyboard() -> None:
+    """Open the buffered keyboard over the app in front; it types into that app when it closes."""
+    if OSK_ACTIVE.exists():
+        return
+    try:
+        START_OSK.touch()
+    except OSError:
+        pass
+
+
+def stick_curve(value: float) -> float:
+    """-1.0..1.0 of full deflection to a pointer speed factor: nothing in the dead zone,
+    then quadratic so small pushes are precise and a full push crosses the screen quickly."""
+    magnitude = abs(value)
+    if magnitude < POINTER_DEADZONE:
+        return 0.0
+    scaled = min(1.0, (magnitude - POINTER_DEADZONE) / (1 - POINTER_DEADZONE))
+    return scaled * scaled * (1 if value > 0 else -1)
+
+
+class Pointer:
+    """A virtual mouse, present only while pointer mode is on: Cage shows a cursor
+    whenever a pointer device exists, and the launcher should never have one."""
+
+    def __init__(self, factory=None) -> None:
+        self.factory = factory or (lambda: UInput(
+            {ecodes.EV_REL: [ecodes.REL_X, ecodes.REL_Y, ecodes.REL_WHEEL, ecodes.REL_HWHEEL],
+             ecodes.EV_KEY: [ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE]},
+            name="CouchLiteOS Controller Mouse",
+        ))
+        self.device = None
+        self.held: set[int] = set()
+
+    def open(self) -> None:
+        if self.device is None:
+            try:
+                self.device = self.factory()
+            except OSError:
+                self.device = None
+
+    def close(self) -> None:
+        if self.device is None:
+            return
+        for button in sorted(self.held):
+            self.button(button, False)
+        try:
+            self.device.close()
+        except OSError:
+            pass
+        self.device = None
+
+    def write(self, *events: tuple[int, int, int]) -> None:
+        if self.device is None or not events:
+            return
+        try:
+            for event in events:
+                self.device.write(*event)
+            self.device.syn()
+        except OSError:
+            pass
+
+    def move(self, dx: int, dy: int) -> None:
+        self.write(*[(ecodes.EV_REL, code, value) for code, value in
+                     ((ecodes.REL_X, dx), (ecodes.REL_Y, dy)) if value])
+
+    def scroll(self, vertical: int, horizontal: int) -> None:
+        self.write(*[(ecodes.EV_REL, code, value) for code, value in
+                     ((ecodes.REL_WHEEL, vertical), (ecodes.REL_HWHEEL, horizontal)) if value])
+
+    def button(self, code: int, pressed: bool) -> None:
+        if pressed == (code in self.held):
+            return
+        self.held.add(code) if pressed else self.held.discard(code)
+        self.write((ecodes.EV_KEY, code, int(pressed)))
 
 
 def is_gamepad(dev: InputDevice) -> bool:
@@ -143,6 +246,10 @@ class Pads:
         self.holds: dict[str, Hold] = {}
         self.sticks: dict[str, dict[int, list]] = {}  # path -> axis -> [-1.0..1.0, -1/0/+1 held]
         self.spans: dict[tuple[str, int], tuple[int, int] | None] = {}
+        self.pointer = Pointer()
+        self.pointer_on = False
+        self.pointer_tick = 0.0
+        self.carry = [0.0, 0.0, 0.0, 0.0]  # x, y, wheel, horizontal wheel not yet sent
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -216,16 +323,20 @@ class Pads:
     def hold(self, path: str) -> Hold:
         return self.holds.setdefault(path, Hold())
 
+    def record_axis(self, path: str, dev: InputDevice, event) -> bool:
+        """Store a stick axis as -1.0..1.0 of full deflection; False when the pad gives no range."""
+        span = self.axis_span(path, dev, event.code)
+        if span is None:
+            return False
+        low, high = span
+        value = (event.value - (low + high) / 2) / ((high - low) / 2)
+        self.sticks.setdefault(path, {}).setdefault(event.code, [0.0, 0])[0] = value
+        return True
+
     def handle(self, path: str, dev: InputDevice, event, ui: UInput, now: float) -> bool:
         """Translate one event; True when a left-stick axis moved (judged once per batch)."""
         if event.type == ecodes.EV_ABS and event.code in STICK_AXES:
-            span = self.axis_span(path, dev, event.code)
-            if span is None:
-                return False
-            low, high = span
-            value = (event.value - (low + high) / 2) / ((high - low) / 2)
-            self.sticks.setdefault(path, {}).setdefault(event.code, [0.0, 0])[0] = value
-            return True
+            return self.record_axis(path, dev, event)
         arrow = arrow_for_event(event)
         if arrow is not None:
             source, key = arrow
@@ -239,6 +350,69 @@ class Pads:
         if key:
             emit(ui, key)
         return False
+
+    def handle_pointer(self, path: str, dev: InputDevice, event, ui: UInput, now: float) -> None:
+        """Pointer mode: sticks move and scroll, A and Y click, the D-pad still sends arrows."""
+        if event.type == ecodes.EV_ABS and event.code in POINTER_AXES:
+            self.record_axis(path, dev, event)
+            return
+        arrow = arrow_for_event(event)
+        if arrow is not None:
+            source, key = arrow
+            if key is None:
+                self.hold(path).release(source, now)
+            else:
+                emit(ui, key)
+                self.hold(path).press(source, key, now)
+            return
+        if event.type != ecodes.EV_KEY:
+            return
+        if event.code in POINTER_BUTTONS and event.value in (0, 1):
+            self.pointer.button(POINTER_BUTTONS[event.code], bool(event.value))
+        elif event.value == 1 and event.code == ecodes.BTN_NORTH:
+            open_keyboard()  # X / Triangle: type into the page
+        elif event.value == 1 and event.code in POINTER_KEYS:
+            emit(ui, POINTER_KEYS[event.code])
+
+    def stick_value(self, code: int) -> float:
+        """The strongest push on one axis across every pad."""
+        values = [axes[code][0] for axes in self.sticks.values() if code in axes]
+        return max(values, key=abs, default=0.0)
+
+    def pointer_moving(self) -> bool:
+        return any(stick_curve(self.stick_value(code)) for code in POINTER_AXES)
+
+    def tick_pointer(self, now: float) -> None:
+        """Send the motion and scrolling the sticks asked for since the last tick."""
+        elapsed = min(0.05, max(0.0, now - self.pointer_tick))
+        self.pointer_tick = now
+        rates = (
+            stick_curve(self.stick_value(ecodes.ABS_X)) * POINTER_SPEED,
+            stick_curve(self.stick_value(ecodes.ABS_Y)) * POINTER_SPEED,
+            -stick_curve(self.stick_value(ecodes.ABS_RY)) * SCROLL_SPEED,  # pushed up scrolls up
+            stick_curve(self.stick_value(ecodes.ABS_RX)) * SCROLL_SPEED,
+        )
+        steps = []
+        for index, rate in enumerate(rates):
+            if not rate:
+                self.carry[index] = 0.0
+                steps.append(0)
+                continue
+            self.carry[index] += rate * elapsed
+            whole = int(self.carry[index])
+            self.carry[index] -= whole
+            steps.append(whole)
+        self.pointer.move(steps[0], steps[1])
+        self.pointer.scroll(steps[2], steps[3])
+
+    def set_pointer(self, on: bool, now: float) -> None:
+        if on == self.pointer_on:
+            return
+        self.pointer_on = on
+        self.carry = [0.0, 0.0, 0.0, 0.0]
+        self.pointer_tick = now
+        self.holds.clear()
+        self.pointer.open() if on else self.pointer.close()
 
     def update_stick(self, path: str, ui: UInput, now: float) -> None:
         axes = self.sticks.get(path, {})
@@ -260,8 +434,11 @@ class Pads:
                 self.hold(path).press(code, key, now)
 
     def repeat_timeout(self, now: float) -> float:
-        """How long select() may sleep: a second when idle, less when a repeat is due sooner."""
-        return min([1.0, *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None)])
+        """How long select() may sleep: a second when idle, less when a repeat is due sooner
+        or a stick is moving the pointer."""
+        moving = [POINTER_TICK] if self.pointer_on and self.pointer_moving() else []
+        return min([1.0, *moving,
+                    *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None)])
 
     def pump(self, ui: UInput) -> None:
         """Wait up to a second for input from any pad and translate it."""
@@ -275,8 +452,11 @@ class Pads:
             return
         now = self.clock()
         active_osk = OSK_ACTIVE.exists()
-        self.sync_grab(active_osk)
-        blocked = navigation_blocked(active_osk)
+        pointer = pointer_mode(active_osk)
+        self.set_pointer(pointer, now)
+        # The keyboard and the mouse grab every pad so the app never also sees the presses.
+        self.sync_grab(active_osk or pointer)
+        blocked = navigation_blocked(active_osk) and not pointer
         if blocked:
             self.holds.clear()  # an app owns the controller now; do not keep stepping its menus
         for path, dev in list(self.devices.items()):
@@ -285,7 +465,9 @@ class Pads:
             stick_moved = False
             try:
                 for event in dev.read():
-                    if not blocked:
+                    if pointer:
+                        self.handle_pointer(path, dev, event, ui, now)
+                    elif not blocked:
                         stick_moved = self.handle(path, dev, event, ui, now) or stick_moved
             except BlockingIOError:
                 pass
@@ -294,6 +476,8 @@ class Pads:
                 continue
             if stick_moved:
                 self.update_stick(path, ui, now)
+        if pointer:
+            self.tick_pointer(now)
         if not blocked:
             for hold in self.holds.values():
                 key = hold.repeat(now)
@@ -391,6 +575,34 @@ class HomeHold:
         self.pressed.clear()
 
 
+class SuperTap:
+    """The Super (Windows) key pressed and let go on its own opens Home, like Guide.
+
+    Super held with another key (a shortcut) does not; tracked per keyboard.
+    """
+
+    def __init__(self) -> None:
+        self.armed: set[object] = set()
+
+    def feed(self, path: object, event) -> bool:
+        """True when this event completes a lone Super tap; `path` names the keyboard."""
+        if event.type != ecodes.EV_KEY:
+            return False
+        if event.code in SUPER_KEYS:
+            if event.value == 1:
+                self.armed.add(path)
+            elif event.value == 0 and path in self.armed:
+                self.armed.discard(path)
+                return True
+            return False
+        if event.value == 1:
+            self.armed.discard(path)
+        return False
+
+    def reset(self) -> None:
+        self.armed.clear()
+
+
 def is_hold_press(event) -> bool:
     return event.type == ecodes.EV_KEY and event.value == 1 and event.code in HomeHold.CODES
 
@@ -416,17 +628,20 @@ def request_home() -> None:
 def watch_home() -> None:
     devices: dict[str, InputDevice] = {}
     hold = HomeHold()
+    tap = SuperTap()
     in_game = False  # the hold under way began while an app had the controller
     while True:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(devices) - paths:
-            devices.pop(path).close()
+            gone = devices.pop(path)
+            tap.armed.discard(id(gone))
+            gone.close()
             hold.reset()  # the button may have been released while disconnected
         for path in paths - set(devices):
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE} & keys:
+                if {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *SUPER_KEYS} & keys:
                     devices[path] = device
                 else:
                     device.close()
@@ -442,13 +657,14 @@ def watch_home() -> None:
                         # Looked at before request_home() brings the launcher forward: the Guide
                         # press itself takes the focus, so later the launcher always "has" it.
                         in_game = app_owns_pad()
-                    if is_home_event(event):
+                    if tap.feed(id(device), event) or is_home_event(event):
                         request_home()
                     hold.feed(event, time.monotonic())
             if hold.due(time.monotonic()) and not in_game:
                 request_sleep()
         except OSError:
             hold.reset()
+            tap.reset()
             for device in devices.values():
                 device.close()
             devices.clear()

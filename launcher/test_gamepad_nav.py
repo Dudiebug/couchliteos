@@ -12,7 +12,11 @@ from unittest import mock
 
 class Codes:
     EV_KEY = 1
+    EV_REL = 2
     EV_ABS = 3
+    BTN_LEFT = 272
+    BTN_RIGHT = 273
+    BTN_MIDDLE = 274
     BTN_GAMEPAD = 304
     BTN_SOUTH = 304
     BTN_EAST = 305
@@ -29,6 +33,12 @@ class Codes:
     BTN_DPAD_RIGHT = 547
     ABS_X = 0
     ABS_Y = 1
+    ABS_RX = 3
+    ABS_RY = 4
+    REL_X = 0
+    REL_Y = 1
+    REL_HWHEEL = 6
+    REL_WHEEL = 8
     ABS_HAT0X = 16
     ABS_HAT0Y = 17
     KEY_UP = 103
@@ -45,6 +55,12 @@ class Codes:
     KEY_F7 = 65
     KEY_F8 = 66
     KEY_F12 = 88
+    KEY_BACK = 158
+    KEY_SPACE = 57
+    KEY_PAGEUP = 104
+    KEY_PAGEDOWN = 109
+    KEY_LEFTMETA = 125
+    KEY_RIGHTMETA = 126
 
 
 class Stop(Exception):

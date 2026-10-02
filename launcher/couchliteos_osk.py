@@ -17,6 +17,8 @@ PAYLOAD = pathlib.Path("/run/couchliteos/osk-payload.json")
 # Written by the launcher when the keyboard is opened for a password field.
 MASK_REQUEST = pathlib.Path("/run/couchliteos/osk-masked")
 MAX_TEXT = 512
+# Seconds a new virtual keyboard needs before the compositor sees its keys.
+DEVICE_SETTLE = 0.5
 LETTERS = (
     tuple("1234567890"),
     tuple("QWERTYUIOP"),
@@ -186,6 +188,9 @@ def inject(path: pathlib.Path = PAYLOAD) -> int:
     events = character_events(*payload, ecodes)
     capabilities = {ecodes.EV_KEY: sorted({code for code, _shift in events} | {ecodes.KEY_LEFTSHIFT})}
     with UInput(capabilities, name="CouchLiteOS Buffered Keyboard") as device:
+        # The compositor only reads a new input device once udev has announced it and
+        # libinput has opened it; keys written before then are lost (the first letters).
+        time.sleep(DEVICE_SETTLE)
         for code, shifted in events:
             if shifted:
                 device.write(ecodes.EV_KEY, ecodes.KEY_LEFTSHIFT, 1)
@@ -196,6 +201,7 @@ def inject(path: pathlib.Path = PAYLOAD) -> int:
                 device.write(ecodes.EV_KEY, ecodes.KEY_LEFTSHIFT, 0)
             device.syn()
             time.sleep(0.004)
+        time.sleep(0.1)  # let the last release be read before the device goes away
     return 0
 
 

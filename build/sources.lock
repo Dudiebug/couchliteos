@@ -1,3 +1,4 @@
 # name|version-or-date|url|download filename
 tailscale-archive-keyring|2026-08-20|https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg|tailscale-archive-keyring.gpg
 google-linux-signing-key|EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796|https://dl.google.com/linux/linux_signing_key.pub|google-linux-signing-key.asc
+cage|0.2.0|https://github.com/cage-kiosk/cage/releases/download/v0.2.0/cage-0.2.0.tar.gz|cage-0.2.0.tar.gz

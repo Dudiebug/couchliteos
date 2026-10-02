@@ -40,6 +40,7 @@ import couchliteos_whatsnew as whatsnew
 import couchliteos_controls as controls
 import couchliteos_padcheck as padcheck
 import couchliteos_screenfit as screenfit
+import couchliteos_pointer as pointer
 
 
 RUN = pathlib.Path("/run/couchliteos")
@@ -158,6 +159,8 @@ def rdp_log(message: str) -> None:
 
 # Set by Launcher: blanks the screen when idle and swallows the key that wakes it.
 IDLE_GUARD: power.IdleGuard | None = None
+# Which running apps the controller drives as a mouse (browsers, web apps).
+POINTER_MODES = pointer.Modes()
 
 
 def focus_launcher() -> None:
@@ -170,13 +173,15 @@ def focus_launcher() -> None:
         pass
 
 
-def read_key(screen: curses.window) -> int:
+def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
+    """The next key. F12 (X / Triangle) opens the on-screen keyboard for the launcher unless
+    `keyboard` is False: then the caller gets the key and decides where the typing goes."""
     key = screen.getch()
     if key != -1:
         display.confirm_restore()
     if IDLE_GUARD is not None:
         key = IDLE_GUARD.filter(screen, key)
-    if key == curses.KEY_F12:
+    if key == curses.KEY_F12 and keyboard:
         request_osk()
         return -1
     return key
@@ -944,6 +949,7 @@ class Launcher:
                 return False
         ready.unlink(missing_ok=True)
         state.unlink(missing_ok=True)
+        POINTER_MODES.apply(app)
         set_launcher_focus(False)  # the starting app takes the controller
         if app.kind == "request":
             self.request(app.request)
@@ -1047,6 +1053,7 @@ class Launcher:
             except (OSError, subprocess.SubprocessError):
                 return False
             if result.returncode == 0:
+                POINTER_MODES.apply(app)
                 set_launcher_focus(False)
                 return True
         return False
@@ -1071,14 +1078,41 @@ class Launcher:
                 running.append(rdp_application(connection))
         return running
 
+    @staticmethod
+    def volume_row() -> str:
+        try:
+            volume = audio.get_volume()
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return "VOLUME  UNAVAILABLE"
+        return f"VOLUME  {volume.percent}%{'  MUTED' if volume.muted else ''}"
+
+    def type_into(self, app: apps.Application) -> str | None:
+        """Bring `app` to the front and open the on-screen keyboard over it; the text is typed
+        into the app when the keyboard closes. None when it worked, else what went wrong."""
+        if not self.focus_app(app):
+            return f"COULD NOT FOCUS {app.name}: PRESS {CLOSE_BUTTON} TO CLOSE IT, THEN START IT AGAIN"
+        request_osk()
+        self.status = f"TYPING INTO {app.name}"
+        return None
+
     def active_applications(self) -> None:
+        """The Guide / Home menu: resume or close apps, type into one, change the volume,
+        and turn the controller mouse on or off, without closing what is running."""
         selected = 0
-        status = f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK"
+        status = ""
         HOME_REQUEST.unlink(missing_ok=True)  # a Guide press made before this screen opened
         self.woke_up = False
         while True:
             running = self.running_applications()
-            rows = [f"{app.name:<32} RUNNING" for app in running] + ["RETURN TO MAIN LAUNCHER"]
+            front = next((app for app in running if app.id == POINTER_MODES.front), running[0] if running else None)
+            rows = [f"{app.name:<32} RUNNING" for app in running]
+            volume_index = len(rows)
+            rows.append(self.volume_row())
+            mouse_index = len(rows) if front else -1
+            if front:
+                on = "ON" if POINTER_MODES.enabled(front) else "OFF"
+                rows.append(f"{'CONTROLLER MOUSE (' + front.name + ')':<32} {on}")
+            rows.append("RETURN TO MAIN LAUNCHER")
             selected = min(selected, len(rows) - 1)
             self.screen.erase()
             height, width = self.screen.getmaxyx()
@@ -1092,18 +1126,54 @@ class Launcher:
                     self.screen.addnstr(first + index, left, f"{marker}  {row}", width - left - 1)
                 except curses.error:
                     pass
-            add_centered(self.screen, height - 3, status if running else "NO MANAGED APPLICATIONS ARE RUNNING")
+            if selected == volume_index:
+                hint = ("LEFT / RIGHT CHANGES THE VOLUME  ·  A / CROSS MUTES", "")
+            elif selected == mouse_index:
+                hint = ("A / CROSS TURNS IT ON OR OFF: LEFT STICK POINTS, A CLICKS, RIGHT STICK SCROLLS", "")
+            elif running:
+                hint = (f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK",
+                        "X (XBOX) / TRIANGLE (PS) OPENS THE KEYBOARD AND TYPES INTO THE APP")
+            else:
+                hint = ("NO MANAGED APPLICATIONS ARE RUNNING", "")
+            add_centered(self.screen, height - 4, "" if status else hint[1])
+            add_centered(self.screen, height - 3, status or hint[0])
             self.screen.refresh()
-            key = read_key(self.screen)
+            key = read_key(self.screen, keyboard=False)
             if self.woke_up:  # the box slept and woke while this menu was open
                 self.woke_up = False
                 return
             if HOME_REQUEST.exists():  # Guide again while the menu is open closes it
                 HOME_REQUEST.unlink(missing_ok=True)
                 return
+            if key != -1:
+                status = ""
             selected = move_selection(selected, key, len(rows))
-            if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(running)):
+            if key == 27 or (key in (curses.KEY_ENTER, 10, 13) and selected == len(rows) - 1):
                 return
+            if key == curses.KEY_F12:
+                target = running[selected] if selected < len(running) else front
+                if target is None:
+                    request_osk()  # nothing to type into but the launcher
+                    continue
+                problem = self.type_into(target)
+                if problem is None:
+                    return
+                status = problem
+                continue
+            if selected == volume_index:
+                try:
+                    if key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                        audio.change_volume(-audio.VOLUME_STEP if key == curses.KEY_LEFT else audio.VOLUME_STEP)
+                    elif key in (curses.KEY_ENTER, 10, 13):
+                        audio.toggle_mute()
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                    status = f"VOLUME NOT CHANGED: {error}".upper()
+                continue
+            if selected == mouse_index:
+                if key in (curses.KEY_ENTER, 10, 13, curses.KEY_LEFT, curses.KEY_RIGHT):
+                    on = POINTER_MODES.toggle(front)
+                    status = f"CONTROLLER MOUSE {'ON' if on else 'OFF'} FOR {front.name}"
+                continue
             if selected >= len(running):
                 continue
             app = running[selected]
