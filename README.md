@@ -29,7 +29,9 @@ It is built on Debian 13 and is not a general-purpose desktop.
 - **Sleep and wake:** hold Guide or PS to sleep, wake the gaming PC over the
   network, and turn the TV on and off with the box.
 - **Updates from the couch:** Settings > SOFTWARE UPDATE downloads the new
-  version and keeps your settings and pairings.
+  version and keeps your settings and pairings. Older boxes whose Settings has
+  no SOFTWARE UPDATE, including MoonlightOS, reinstall once from the latest ISO;
+  see [Updating](https://github.com/Dudiebug/couchliteos/wiki/Updating).
 - Optional Tailscale and USB/IP for playing away from home or sharing USB devices
   with the gaming PC.
 
