@@ -4,7 +4,8 @@
 # it changes no settings. Run it as root (sudo) so dmidecode can read the serial.
 set -uo pipefail
 
-EXPECTED_SERIAL=${COUCHLITEOS_EXPECTED_SERIAL:-DCPM5026FQPG}
+# Set COUCHLITEOS_EXPECTED_SERIAL to check the serial against a known machine.
+EXPECTED_SERIAL=${COUCHLITEOS_EXPECTED_SERIAL:-}
 out=${1:-}
 if [[ -z $out ]]; then
   directory=/var/log/couchliteos
@@ -40,6 +41,8 @@ report() {
   esac
   if [[ -z $serial ]]; then
     echo 'SERIAL UNKNOWN: run as root'
+  elif [[ -z $EXPECTED_SERIAL ]]; then
+    echo "SERIAL: $serial"
   elif [[ $serial == "$EXPECTED_SERIAL" ]]; then
     echo "SERIAL OK: $serial"
   else

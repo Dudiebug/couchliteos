@@ -8,7 +8,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 # Words that belong in the maintainer's notes, not in public release notes or docs.
-INTERNAL='testing status|testing\.md|release-spec|-plan\.md|\bqemu\b|\bvm\b|unit tests?|static tests?|review pass|\bgates?\b|\bagents?\b|\bcodex\b|\bclaude\b|build took|build time|\bci\b|not yet tested|draft'
+INTERNAL='testing status|testing\.md|release-spec|-plan\.md|\bqemu\b|\bvm\b|unit tests?|static tests?|review pass|\bgates?\b|\bagents?\b|\bcodex\b|\bclaude\b|build took|build time|\bci\b|not yet tested|draft|not (yet )?(been )?tried|were not checked|had not yet been'
 
 failed=0
 fail() { printf 'release-check: %s\n' "$*" >&2; failed=1; }
