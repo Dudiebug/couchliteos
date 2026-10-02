@@ -820,7 +820,7 @@ rg -q '^build/\.tests-passed$' .gitignore
 rg -Fq 'python3 -m unittest -v tests/test_fast_build.py' Makefile
 # Every package=version in the lists is pinned while the image is built, not in the image.
 rg -Fq 'couchliteos-pins.pref.chroot' build/configure.sh
-rg -Fq 'couchliteos-pins.pref.binary' build/configure.sh
+refute rg -q 'couchliteos-pins\.pref(\.binary)?"' build/configure.sh
 for script in build/timed.sh build/test-gate.sh build/apt-pins.sh tools/setup-apt-cacher-ng.sh; do
   [[ -x $script ]] || { echo "$script is not executable" >&2; exit 1; }
 done

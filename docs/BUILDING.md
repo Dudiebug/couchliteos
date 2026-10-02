@@ -153,6 +153,7 @@ including once more in the binary stage after the squashfs is made. That is why 
 and 0.2.3 build logs show `tailscale 1.102.4`, while the images shipped the listed 1.102.3.
 
 `build/configure.sh` turns every `package=version` line into an apt pin with priority 1001
-(`build/apt-pins.sh`). The pin applies only while the image is built: live-build removes it
-from the image's apt configuration. The installed system follows Tailscale's repository
-as before.
+(`build/apt-pins.sh`). The pin applies only while the chroot is built: it is installed as a
+`.pref.chroot` file, which live-build removes afterwards, and the image check fails the
+build if `/etc/apt/preferences.d/couchliteos-pins` is in the image. The installed system
+follows Tailscale's repository as before.

@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -222,7 +223,7 @@ class RemoteTestScreenTest(LauncherCase):
         if home_request:
             home.touch()
         for patch in (
-            mock.patch.object(self.module, "time", types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda _seconds: None)),
+            mock.patch.object(self.module, "time", types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda _seconds: None, time=time.time)),
             mock.patch.object(self.module, "HOME_REQUEST", home),
         ):
             patch.start()

@@ -14,7 +14,7 @@ MARKER=$ROOT/build/.tests-passed
 
 tree_files() {
   find . \( -path ./.git -o -path ./.claude -o -path ./build/work -o -path ./build/out \
-    -o -path ./build/downloads -o -path ./build/.tests-passed -o -path ./graphify-out \
+    -o -path ./build/downloads -o -path './build/.tests-passed*' -o -path ./graphify-out \
     -o -name __pycache__ -o -name '*.pyc' \) -prune -o "$@"
 }
 
@@ -25,12 +25,20 @@ tree_hash() {
     python3 --version 2>&1 || true
     tree_files -printf '%y %m %p %l\n' | LC_ALL=C sort
     tree_files -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+    # tests/test_cage_build.py skips its patch checks without the Cage tarball: a pass
+    # made before it was downloaded does not count once it is there.
+    sha256sum build/downloads/cage-0.2.0.tar.gz 2>/dev/null || echo 'no cage tarball'
   } | sha256sum | cut -d' ' -f1
 }
 
 case ${1:-} in
   mark)
-    tree_hash > "$MARKER"
+    # Written beside the old marker and renamed over it, so a marker left by a root
+    # (`sudo make build`) run never stops a later unprivileged `make test`.
+    temporary=$(mktemp "$MARKER.XXXXXX")
+    tree_hash > "$temporary"
+    chmod 0644 "$temporary"
+    mv -f -- "$temporary" "$MARKER"
     ;;
   check)
     [[ -f $MARKER && $(< "$MARKER") == "$(tree_hash)" ]]
@@ -41,6 +49,16 @@ case ${1:-} in
       exit 0
     fi
     rm -f -- "$MARKER"
+    if [[ $EUID == 0 && -n ${SUDO_UID:-} ]]; then
+      # Under sudo the suites run as root; hand what they create (the marker, Python caches)
+      # back to the developer, whose own `make test` must still be able to rewrite them.
+      give_back() {
+        find "$ROOT" \( -path "$ROOT/.git" -o -path "$ROOT/build/work" \) -prune -o \
+          \( -name __pycache__ -o -path "$MARKER" \) -user 0 \
+          -exec chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" {} + 2>/dev/null || true
+      }
+      trap give_back EXIT
+    fi
     make -C "$ROOT" test
     ;;
   *)

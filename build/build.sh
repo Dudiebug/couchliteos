@@ -63,7 +63,10 @@ lb_step_seconds() {
   from=$(sed -n -E "s/^\[([0-9: -]+)\] lb $1( .*)?$/\1/p; T; q" lb-binary.log) || return 0
   to=$(sed -n -E "s/^\[([0-9: -]+)\] lb $2( .*)?$/\1/p; T; q" lb-binary.log) || return 0
   [[ -n $from && -n $to ]] || return 0
-  "$ROOT/build/timed.sh" --record "binary/$3" $(($(date -d "$to" +%s) - $(date -d "$from" +%s)))
+  local seconds=$(($(date -d "$to" +%s) - $(date -d "$from" +%s)))
+  # Local timestamps can run backwards (a DST change); a timing never fails the build.
+  ((seconds >= 0)) || seconds=0
+  "$ROOT/build/timed.sh" --record "binary/$3" "$seconds" || true
 }
 
 # Debian packages through a local caching proxy. live-build hands http_proxy to debootstrap,
@@ -192,6 +195,11 @@ image_checks() {
     fi
   done
   grep -E 'updates/dkms/(wl|nvidia-current)[^/]*\.ko' "$listing" || true
+  # The build's version pins (build/apt-pins.sh) would hold back the installed system's updates.
+  if grep -E '/etc/apt/preferences\.d/couchliteos-pins' "$listing"; then
+    echo 'The image ships the build-time apt pins (above); they must stay out of it' >&2
+    exit 1
+  fi
 
   # The build-time apt proxy must not reach the image's apt configuration.
   image_root=$(mktemp -d)

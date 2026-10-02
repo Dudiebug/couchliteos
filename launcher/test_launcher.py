@@ -1,6 +1,8 @@
 import importlib.util
+import os
 import pathlib
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -964,6 +966,21 @@ class LauncherTest(unittest.TestCase):
                 self.assertEqual(self.module.read_key(screen), 8)
             sleep.assert_called_once_with(self.module.HOME_CHORD_WAIT)
             self.assertLessEqual(self.module.HOME_CHORD_WAIT, 0.1, "Esc must not feel slow")
+
+    def test_guide_pressed_in_settings_does_not_take_b_away(self):
+        # Only the main menu answers a Guide press made in Settings; until then B / Esc still go back.
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / "home.request"
+            request.touch()
+            old = time.time() - 5
+            os.utime(request, (old, old))
+            screen = Screen([27, 27])
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep"):
+                self.assertEqual(self.module.read_key(screen), 27)
+                self.assertEqual(self.module.read_key(screen), 27)
+            self.assertTrue(request.exists(), "the main menu still opens the Guide menu for it")
 
     def test_the_keyboard_typing_into_an_app_closes_a_guide_menu_opened_meanwhile(self):
         # Home while the on-screen keyboard was up opened the Guide menu; closing the keyboard typed

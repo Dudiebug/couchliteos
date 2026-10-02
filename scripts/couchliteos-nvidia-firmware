@@ -352,9 +352,14 @@ def boot(gpu_id: str) -> int:
     if gpu_id not in verified_ids():
         return 1
     pending = STORE / DECODER_PENDING
-    if pending.exists():
-        allow_hardware_decoder()
-        pending.unlink(missing_ok=True)
+    try:
+        # Only a config.ini older than the marker can have lost the edit; a newer one was
+        # saved afterwards (the edit itself, or a decoder the user picked since).
+        if CONFIG.stat().st_mtime < pending.stat().st_mtime:
+            allow_hardware_decoder()
+    except OSError:
+        pass
+    pending.unlink(missing_ok=True)
     return 0
 
 

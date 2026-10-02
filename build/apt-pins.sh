@@ -8,9 +8,10 @@
 # squashfs is made, which moved tailscale=1.102.3 to the repository's newer 1.102.4 in
 # the 0.2.2 and 0.2.3 build logs and work trees (the squashfs itself kept 1.102.3).
 # A reused chroot (build/lb-cache.sh) is upgraded the same way. configure.sh installs this
-# output as config/archives/couchliteos-pins.pref.{chroot,binary}: live-build puts
-# those in /etc/apt/preferences.d only while it builds and removes them afterwards,
-# so the pin never ships in the image.
+# output as config/archives/couchliteos-pins.pref.chroot, which live-build puts in
+# /etc/apt/preferences.d only during the chroot stage. Not .pref.binary: live-build copies
+# that one into the image for good, holding the installed system's updates back. The
+# binary stage's upgrade runs after the squashfs is made, so it cannot change the image.
 set -Eeuo pipefail
 
 sed -n -E 's/^[[:space:]]*([a-z0-9][a-z0-9+.-]+)=([0-9A-Za-z.+~:-]+)[[:space:]]*(#.*)?$/\1 \2/p' "$@" \

@@ -56,11 +56,11 @@ for profile_dir in "${profile_dirs[@]}"; do
   fi
 done
 # Hold every `package=version` of the package lists through live-build's upgrade passes
-# (build/apt-pins.sh); live-build removes these files from the image's apt configuration.
+# (build/apt-pins.sh). Only as .pref.chroot: live-build removes those after the chroot
+# stage, but copies .pref and .pref.binary into the image's /etc/apt/preferences.d.
 pins=$("$ROOT/build/apt-pins.sh" "$WORK"/config/package-lists/*.list.chroot)
 if [[ -n $pins ]]; then
   printf '%s\n' "$pins" > "$WORK/config/archives/couchliteos-pins.pref.chroot"
-  printf '%s\n' "$pins" > "$WORK/config/archives/couchliteos-pins.pref.binary"
 fi
 install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/couchliteos/profile.conf"
 printf '%s\n' "$PROFILE" > "$WORK/profile"

@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import lzma
+import os
 import pathlib
 import re
 import subprocess
@@ -179,11 +180,30 @@ class HelperTest(unittest.TestCase):
             self.request("install")
             self.assertEqual(nvfw.serve(), 0)
         config.write_text("[moonlight]\ndecoder = software\n")  # the launcher replaced the file meanwhile
+        marker = self.store / nvfw.DECODER_PENDING
+        saved = marker.stat().st_mtime - 60  # during the download, before the marker
+        os.utime(config, (saved, saved))
         self.assertEqual(nvfw.boot("10de:0fe9"), 0)
         self.assertEqual(config.read_text(), "[moonlight]\ndecoder = auto\n")
+        self.assertFalse(marker.exists())
         config.write_text("[moonlight]\ndecoder = software\n")  # later the user picks software on purpose
         self.assertEqual(nvfw.boot("10de:0fe9"), 0)
         self.assertEqual(config.read_text(), "[moonlight]\ndecoder = software\n")
+
+    def test_a_decoder_picked_after_the_install_is_kept_at_boot(self):
+        config = self.base / "config.ini"
+        config.write_text("[moonlight]\ndecoder = software\n")
+        nvfw.install(self.blobs_in(self.base / "out"))
+        with mock.patch.object(nvfw, "decoder_works", return_value=True):
+            self.request("install")
+            self.assertEqual(nvfw.serve(), 0)
+        marker = self.store / nvfw.DECODER_PENDING
+        later = marker.stat().st_mtime + 60
+        config.write_text("[moonlight]\ndecoder = software\n")  # picked in Settings before the restart
+        os.utime(config, (later, later))
+        self.assertEqual(nvfw.boot("10de:0fe9"), 0)
+        self.assertEqual(config.read_text(), "[moonlight]\ndecoder = software\n")
+        self.assertFalse(marker.exists())
 
     def test_an_unexpected_error_still_ends_the_wait(self):
         with mock.patch.object(nvfw, "download", side_effect=RuntimeError("boom")):

@@ -354,9 +354,10 @@ class AptPinsTest(Temporary):
         configure = (ROOT / "build/configure.sh").read_text()
         self.assertIn('build/apt-pins.sh" "$WORK"/config/package-lists/*.list.chroot', configure)
         self.assertIn('"$WORK/config/archives/couchliteos-pins.pref.chroot"', configure)
-        self.assertIn('"$WORK/config/archives/couchliteos-pins.pref.binary"', configure)
-        # A plain .pref would be copied into the image's apt configuration.
-        self.assertNotRegex(configure, r"couchliteos-pins\.pref\"")
+        # A plain .pref or a .pref.binary would be copied into the image's apt configuration.
+        self.assertNotRegex(configure, r"couchliteos-pins\.pref(\.binary)?\"")
+        self.assertIn(r"/etc/apt/preferences\.d/couchliteos-pins", (ROOT / "build/build.sh").read_text(),
+                      "the image check fails a build that ships the pins")
 
 
 class TestGateTest(Temporary):
@@ -408,6 +409,21 @@ class TestGateTest(Temporary):
         self.assertEqual(self.gate("run").returncode, 0)
         self.assertEqual((self.tree / "ran").read_text(), "ran\nran\n")
         self.assertFalse((self.tree / "build/.tests-passed").exists(), "run never writes the marker itself")
+
+    def test_a_marker_the_user_cannot_write_is_still_replaced(self):
+        # A `sudo make build` run leaves a root-owned marker; the next `make test` renames over it.
+        marker = self.tree / "build/.tests-passed"
+        marker.write_text("stale\n")
+        marker.chmod(0o444)
+        self.assertEqual(self.gate("mark").returncode, 0)
+        self.assertEqual(self.gate("check").returncode, 0)
+        self.assertEqual([path.name for path in (self.tree / "build").glob(".tests-passed*")], [".tests-passed"])
+
+    def test_the_cage_tarball_arriving_runs_the_suites_again(self):
+        self.gate("mark")
+        (self.tree / "build/downloads").mkdir()
+        (self.tree / "build/downloads/cage-0.2.0.tar.gz").write_bytes(b"cage")
+        self.assertNotEqual(self.gate("check").returncode, 0, "the Cage patch checks were skipped before")
 
     def test_make_test_marks_and_make_build_checks(self):
         makefile = (ROOT / "Makefile").read_text()

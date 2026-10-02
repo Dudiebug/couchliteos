@@ -182,10 +182,21 @@ def focus_launcher() -> None:
 # Ctrl+Alt+H reaches the launcher as ESC then Ctrl+H while gamepad-nav turns it into a Home
 # request. Home is handled like Guide, so that ESC (back) and Ctrl+H are dropped: an ESC waits
 # this long for the request to show up, and the Ctrl+H is dropped within HOME_CHORD_TAIL.
+# Only a request this fresh counts: one left by a Guide press in Settings (which only the
+# main menu answers) must not swallow every later B / Esc.
 HOME_CHORD_WAIT = 0.05
+HOME_CHORD_FRESH = 0.5
 HOME_CHORD_TAIL = 1.0
 CTRL_H = 8
 _home_chord_until = 0.0
+
+
+def home_chord_pending() -> bool:
+    try:
+        written = HOME_REQUEST.stat().st_mtime
+    except OSError:
+        return False
+    return abs(time.time() - written) < HOME_CHORD_FRESH
 
 
 def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
@@ -201,9 +212,9 @@ def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
         request_osk()
         return -1
     if key == 27:
-        if not HOME_REQUEST.exists():
+        if not home_chord_pending():
             time.sleep(HOME_CHORD_WAIT)
-        if HOME_REQUEST.exists():  # left for the caller's Home check, like a Guide press
+        if home_chord_pending():  # left for the caller's Home check, like a Guide press
             _home_chord_until = time.monotonic() + HOME_CHORD_TAIL
             return -1
     elif key == CTRL_H and time.monotonic() < _home_chord_until:
