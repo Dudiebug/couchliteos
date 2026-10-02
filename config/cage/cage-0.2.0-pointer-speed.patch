@@ -5,11 +5,12 @@ number from /var/lib/couchliteos/mouse-speed (the launcher writes it), clamps
 it to libinput's -1..1 and sets it as the acceleration speed of every pointer
 device that has one: when the device is added, and again for all pointers on
 SIGHUP, which the launcher sends after the setting changes. A missing or
-malformed file leaves (or puts back) libinput's default speed. Links libinput,
-which wlroots' libinput backend already brings into the image.
+malformed file leaves (or puts back) libinput's default speed, and so does
+gamepad-nav's "CouchLiteOS Controller Mouse", which has its own CONTROLLER
+MOUSE SPEED setting. Links libinput, which wlroots' libinput backend already
+brings into the image.
 Applied after cage-0.2.0-osk-panel.patch with patch -p1 by
 config/live-build/hooks/live/0050-cage.hook.chroot.
-
 diff -ruN a/cage.c b/cage.c
 --- a/cage.c
 +++ b/cage.c
@@ -80,7 +81,7 @@ diff -ruN a/seat.c b/seat.c
  #include <wlr/backend/multi.h>
  #include <wlr/backend/session.h>
  #include <wlr/types/wlr_cursor.h>
-@@ -203,6 +208,67 @@
+@@ -203,6 +208,70 @@
  	update_capabilities(seat);
  }
  
@@ -124,6 +125,9 @@ diff -ruN a/seat.c b/seat.c
 +	if (!libinput_device_config_accel_is_available(handle))
 +		return;
 +
++	/* The controller's mouse has its own speed setting: keep libinput's default. */
++	if (device->name && strcmp(device->name, CAGE_CONTROLLER_MOUSE_NAME) == 0)
++		have_speed = false;
 +	if (!have_speed)
 +		speed = libinput_device_config_accel_get_default_speed(handle);
 +	if (libinput_device_config_accel_set_speed(handle, speed) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
@@ -148,7 +152,7 @@ diff -ruN a/seat.c b/seat.c
  static void
  handle_new_pointer(struct cg_seat *seat, struct wlr_pointer *wlr_pointer)
  {
-@@ -221,6 +287,10 @@
+@@ -221,6 +290,10 @@
  	wl_signal_add(&wlr_pointer->base.events.destroy, &pointer->destroy);
  
  	map_input_device_to_output(seat, &wlr_pointer->base, wlr_pointer->output_name);
@@ -162,16 +166,18 @@ diff -ruN a/seat.c b/seat.c
 diff -ruN a/seat.h b/seat.h
 --- a/seat.h
 +++ b/seat.h
-@@ -13,6 +13,8 @@
+@@ -13,6 +13,10 @@
  
  #define DEFAULT_XCURSOR "left_ptr"
  #define XCURSOR_SIZE 24
 +/* Written by the launcher's MOUSE SPEED setting; Cage re-reads it on SIGHUP. */
 +#define CAGE_POINTER_SPEED_PATH "/var/lib/couchliteos/mouse-speed"
++/* gamepad-nav's virtual mouse, moved at its own CONTROLLER MOUSE SPEED: left at libinput's default. */
++#define CAGE_CONTROLLER_MOUSE_NAME "CouchLiteOS Controller Mouse"
  
  struct cg_seat {
  	struct wlr_seat *seat;
-@@ -92,5 +94,6 @@
+@@ -92,5 +96,6 @@
  struct cg_view *seat_get_focus(struct cg_seat *seat);
  void seat_set_focus(struct cg_seat *seat, struct cg_view *view);
  void seat_center_cursor(struct cg_seat *seat);

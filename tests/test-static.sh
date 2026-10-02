@@ -846,6 +846,9 @@ rg -qF 'couchliteos_foot.py" "$CHROOT/usr/libexec/couchliteos-foot"' build/confi
 rg -q "^/usr/libexec/couchliteos-foot --app-id=couchliteos-osk -o csd.preferred=none --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk$" \
   scripts/couchliteos-osk-session
 refute rg -q -- '--fullscreen' scripts/couchliteos-osk-session
+# Typed text goes to the window the keyboard was opened for, not whatever is in front when it closes.
+rg -qF 'target=$(/usr/libexec/couchliteos-osk --target) || target=' scripts/couchliteos-osk-session
+rg -qF 'exec /usr/libexec/couchliteos-osk --inject "$target"' scripts/couchliteos-osk-session
 # Cage docks that app-id along the bottom 40% (not full-screen), and applies the MOUSE SPEED setting.
 for cage_patch in foreign-toplevel osk-panel pointer-speed; do
   test -f "config/cage/cage-0.2.0-$cage_patch.patch"
@@ -855,6 +858,9 @@ done
 rg -qF 'patch -p1 --forward < "$patch"' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -qF '+#define CAGE_OSK_APP_ID "couchliteos-osk"' config/cage/cage-0.2.0-osk-panel.patch
 rg -qF '+#define CAGE_OSK_PANEL_SHARE 0.40' config/cage/cage-0.2.0-osk-panel.patch
+# The open keyboard keeps the focus whatever asks for it: one guard in seat_set_focus.
+rg -qF '+	struct cg_view *osk = view_find_osk(server);' config/cage/cage-0.2.0-osk-panel.patch
+rg -qF '+#define CAGE_CONTROLLER_MOUSE_NAME "CouchLiteOS Controller Mouse"' config/cage/cage-0.2.0-pointer-speed.patch
 rg -q '^OSK_APP_ID = "couchliteos-osk"$' launcher/couchliteos_foot.py
 rg -q '^OSK_SHARE = 0\.40 *$' launcher/couchliteos_foot.py
 rg -qF '+#define CAGE_POINTER_SPEED_PATH "/var/lib/couchliteos/mouse-speed"' config/cage/cage-0.2.0-pointer-speed.patch
