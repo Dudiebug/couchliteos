@@ -86,6 +86,13 @@ How the build uses the proxy:
 | `off` | Always downloads directly. |
 | `http://host:port` | Uses that proxy. The build fails if it does not answer. |
 
+If the chroot stage fails with many `503  Connection closed, check DlMaxRetries
+[IP: 127.0.0.1 3142]` lines, apt-cacher-ng lost its connection to the Debian mirror. This
+happened once during the 0.2.4 release build (682 packages failed). The mirror is
+probably reachable again. Check with `curl -I --proxy http://127.0.0.1:3142
+http://deb.debian.org/debian/dists/trixie/InRelease`, then run the build again. If it
+fails the same way twice, build with `COUCHLITEOS_APT_PROXY=off`.
+
 Without a proxy, live-build caches the downloaded packages itself. Before each build,
 every cached `.deb` is unpacked (`dpkg-deb --fsys-tarfile`, in parallel), and any that do
 not unpack are deleted and reported. A truncated download then cannot stop the build at
