@@ -19,6 +19,10 @@ import tempfile
 import time
 from typing import Any, Callable
 
+try:
+    import couchliteos_theme as theme
+except Exception:  # the keyboard works without theme changes
+    theme = None
 
 APP_ID = "couchliteos-osk"  # set by couchliteos-osk-session; Cage docks it
 PAYLOAD = pathlib.Path("/run/couchliteos/osk-payload.json")
@@ -387,13 +391,28 @@ def consume_mask_request(path: pathlib.Path = MASK_REQUEST) -> bool:
     return requested
 
 
+def sync_theme(seen: str | None, terminal: int = 1) -> str | None:
+    """Copy a new theme OSC string from the launcher (theme.OSK_FILE) to this terminal; returns
+    the string now shown, so a theme picked while the keyboard is open recolours it."""
+    try:
+        text = theme.read_osc()
+        if text and text != seen:
+            os.write(terminal, text.encode("ascii"))
+            return text
+    except Exception:
+        pass
+    return seen
+
+
 def ui(screen: curses.window) -> None:
     keyboard = Keyboard()
+    shown_theme: str | None = None
     keyboard.masked = consume_mask_request()
     curses.curs_set(0)
     curses.set_escdelay(25)  # B sends a bare Esc; don't wait 1 s for an escape sequence
     screen.keypad(True)
     while True:
+        shown_theme = sync_theme(shown_theme)
         draw(screen, keyboard)
         key = screen.get_wch()
         if isinstance(key, str) and key not in {"\n", "\r", "\x1b", "\x7f", "\b"}:

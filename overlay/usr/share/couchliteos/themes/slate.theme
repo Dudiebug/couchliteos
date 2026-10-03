@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: dark gray, amber accent.
+[theme]
+name = SLATE
+background = #1e2124
+surface = #2b2f33
+text = #f2f2f2
+muted = #a0a4a8
+accent = #f59e0b
+focus = #4a5058
+warning = #fbbf24
+error = #f87171

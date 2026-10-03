@@ -28,6 +28,11 @@ try:
 except Exception:  # boot path: without the module (or with a broken one) foot starts as before
     screenfit = None
 
+try:
+    import couchliteos_theme as theme
+except Exception:  # boot path: without the module foot starts with foot.ini's colours
+    theme = None
+
 FOOT = "/usr/bin/foot"
 MIN_SIZE = 8
 MAX_SIZE = 96
@@ -180,13 +185,25 @@ def choose_size(
     return choose(environ, run=run, saved=saved, sleep=sleep, panel=panel)[0]
 
 
-def command(size: int | None, arguments: list[str], pad: tuple[int, int] | None = None) -> list[str]:
+def command(
+    size: int | None, arguments: list[str], pad: tuple[int, int] | None = None, colors: list[str] | None = None,
+) -> list[str]:
     return [
         FOOT,
         *(["--font", f"monospace:size={size}"] if size else []),
         *(["-o", f"main.pad={pad[0]}x{pad[1]}"] if pad else []),
+        *(colors or []),
         *arguments,
     ]
+
+
+def theme_options() -> list[str]:
+    """The `-o colors.*` options of the chosen theme; none (foot.ini's colours) without a theme file."""
+    try:
+        chosen = theme.chosen()
+        return theme.foot_options(chosen) if chosen else []
+    except Exception:
+        return []
 
 
 def plan(environ: dict[str, str], panel: bool = False) -> tuple[int | None, tuple[int, int] | None]:
@@ -207,7 +224,7 @@ def plan(environ: dict[str, str], panel: bool = False) -> tuple[int | None, tupl
 def main(arguments: list[str] | None = None) -> None:
     arguments = sys.argv[1:] if arguments is None else arguments
     size, pad = plan(dict(os.environ), f"--app-id={OSK_APP_ID}" in arguments)
-    os.execv(FOOT, command(size, arguments, pad))
+    os.execv(FOOT, command(size, arguments, pad, theme_options()))
 
 
 if __name__ == "__main__":

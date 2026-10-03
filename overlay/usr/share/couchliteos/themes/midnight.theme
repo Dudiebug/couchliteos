@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: the default. Dark, blue accent.
+[theme]
+name = MIDNIGHT
+background = #0b1020
+surface = #161d33
+text = #f1f5f9
+muted = #94a3b8
+accent = #3b82f6
+focus = #1d4ed8
+warning = #fbbf24
+error = #f87171
