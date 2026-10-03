@@ -7,6 +7,10 @@ SCREENSHOT=${COUCHLITEOS_QEMU_SCREENSHOT:-/tmp/couchliteos-qemu-smoke.ppm}
 # Slow hosts (for example nested software emulation) may stretch every timeout.
 SCALE=${COUCHLITEOS_QEMU_TIMEOUT_SCALE:-1}
 [[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'COUCHLITEOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
+# Seconds from kernel start to the launcher in an earlier run; above it by more than 25%
+# fails the test.
+BASELINE=${COUCHLITEOS_BOOT_BASELINE:-}
+[[ -z $BASELINE || $BASELINE =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo 'COUCHLITEOS_BOOT_BASELINE must be a number of seconds' >&2; exit 64; }
 command -v qemu-system-x86_64 >/dev/null || { echo 'qemu-system-x86_64 is required' >&2; exit 127; }
 [[ -f "$ISO" ]] || { echo "ISO not found: $ISO" >&2; exit 66; }
 
@@ -163,6 +167,12 @@ fail() {
 
 wait_for_marker 'COUCHLITEOS_LAUNCHER_READY' 180 || fail 'Launcher did not become ready.'
 capture_screen
+wait_for_marker 'COUCHLITEOS_BOOT_SECONDS=[0-9]' 30 || fail 'The boot time was not reported.'
+boot_seconds=$(grep -ao 'COUCHLITEOS_BOOT_SECONDS=[0-9.]*' "$log" | head -n 1 | cut -d= -f2)
+echo "Boot to launcher: $boot_seconds s${BASELINE:+ (baseline $BASELINE s)}"
+if [[ -n $BASELINE ]] && awk -v n="$boot_seconds" -v b="$BASELINE" 'BEGIN { exit !(n > b * 1.25) }'; then
+  fail "Boot to launcher took $boot_seconds s, more than 25% over the $BASELINE s baseline."
+fi
 wait_for_marker 'COUCHLITEOS_SMOKE_HWDETECT_READY' 30 || fail 'Hardware detection did not run, or a module failed to load.'
 wait_for_marker 'COUCHLITEOS_SMOKE_CONFIGURED_PLATFORM_READY' 30 || fail 'Configured applications, OSK, or setup-ready ordering failed.'
 wait_for_marker 'COUCHLITEOS_SMOKE_USBIP_READY' 30 || fail 'USB/IP daemon did not remain active.'

@@ -988,6 +988,27 @@ rg -q '^WantedBy=multi-user.target$' services/couchliteos-boot-success.service
 refute rg -q 'boot-success' services/couchliteos-launcher.service
 rg -q '^systemctl enable couchliteos-boot-success.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 
+# Boot time: recorded once the launcher is ready, reported on the serial port, checked by
+# the QEMU smoke test and included in support bundles.
+python3 -m py_compile scripts/couchliteos-boot-time
+[[ $(head -1 scripts/couchliteos-boot-time) == '#!/usr/bin/python3 -I' ]]
+[[ -x scripts/couchliteos-boot-time ]]
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-boot-time" "$CHROOT/usr/libexec/couchliteos-boot-time"' build/configure.sh
+rg -q '^systemctl enable couchliteos-boot-time.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^After=couchliteos-launcher.service$' services/couchliteos-boot-time.service
+rg -q '^ConditionPathExists=/run/couchliteos/launcher-ready$' services/couchliteos-boot-time.service
+rg -q '^ExecStart=-/usr/libexec/couchliteos-boot-time$' services/couchliteos-boot-time.service
+rg -q '^User=couchliteos$' services/couchliteos-boot-time.service
+rg -q '^StandardOutput=journal\+console$' services/couchliteos-boot-time.service
+rg -q '^WantedBy=multi-user.target$' services/couchliteos-boot-time.service
+refute rg -q '^Type=oneshot$' services/couchliteos-boot-time.service
+rg -Fq 'print(f"COUCHLITEOS_BOOT_SECONDS={ready:.1f}", flush=True)' scripts/couchliteos-boot-time
+rg -Fq 'LOG = pathlib.Path("/var/log/couchliteos/boot-time.log")' scripts/couchliteos-boot-time
+rg -Fq "wait_for_marker 'COUCHLITEOS_BOOT_SECONDS=[0-9]'" tests/qemu-smoke.sh
+rg -Fq 'COUCHLITEOS_BOOT_BASELINE' tests/qemu-smoke.sh
+rg -Fq '(n > b * 1.25)' tests/qemu-smoke.sh
+rg -Fq 'log_dir / "boot-time.log"' scripts/couchliteos-support-export
+
 # Screen edges and text size: the launcher saves them, the foot wrapper (boot path) reads them.
 rg -qF 'couchliteos_screenfit.py" "$CHROOT/usr/libexec/couchliteos_screenfit.py"' build/configure.sh
 rg -q '^import couchliteos_screenfit as screenfit' launcher/couchliteos-launcher.py
