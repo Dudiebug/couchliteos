@@ -222,6 +222,14 @@ class CheckTest(UiTest):
         self.assertIn("THIS RELEASE HAS NO FILE FOR THIS BOX", self.screen.frames[-1])
         self.assertNotIn("INSTALL UPDATE", self.screen.frames[-1])
 
+    def test_a_release_whose_nvidia_iso_is_not_out_yet_says_so(self):
+        self.fetch_result = release()  # only the general ISO: the NVIDIA one is published later
+        self.script = [ENTER, ESC]
+        self.make(profile={"PROFILE_NAME": "nvidia", "ISO_SUFFIX": "nvidia", "RELEASE": "1"}).run()
+        self.assertIn("THE NVIDIA VERSION OF 0.2.2 IS NOT READY YET. TRY AGAIN LATER.", flat(self.screen.frames[-1]))
+        self.assertNotIn("THIS RELEASE HAS NO FILE FOR THIS BOX", self.screen.frames[-1])
+        self.assertNotIn("INSTALL UPDATE", self.screen.frames[-1])
+
     def test_the_profile_picks_which_file_is_needed(self):
         self.fetch_result = release()  # only the general ISO
         self.script = [ENTER, ESC]

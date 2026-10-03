@@ -217,7 +217,7 @@ class SoftwareUpdate:
             asset = update.pick_iso(release, self.profile.get("ISO_SUFFIX", ""))
             update.sums_asset(release)  # the service verifies the download against it
         except update.UpdateError:
-            self.result = NO_FILE
+            self.result = update.not_ready(release, self.profile) or NO_FILE
             return
         self.release, self.asset = release, asset
         self.result = f"COUCHLITEOS {release.version} IS AVAILABLE"
