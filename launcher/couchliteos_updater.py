@@ -4,6 +4,12 @@
 Installed as /usr/libexec/couchliteos-updater. The launcher (user couchliteos) only touches
 request files below /run/couchliteos; couchliteos-update.service runs `run` as root.
 
+Root never works by path inside a directory that user owns (/run/couchliteos, /var/lib/couchliteos,
+/var/log/couchliteos): mount points, filter files and the lock are in root's own WORK_DIR
+(/run/couchliteos-update, checked by couchliteos_safefile.root_dir), the log is in
+/var/log/couchliteos-update, and the files root leaves for the launcher (the status, installs.json,
+config.ini, whatsnew-seen) are written through a descriptor of their directory (safefile.write_atomic).
+
     run [--no-snapshot]                       check, download, verify, save, install, reboot
     apply-iso PATH [--force] [--no-reboot] [--no-snapshot]
                                               install from an ISO file or device (offline updates)
@@ -59,14 +65,16 @@ from collections.abc import Callable, Iterable, Iterator
 
 import couchliteos_snapshot as snapshot
 import couchliteos_browser as browser
+import couchliteos_safefile as safefile
 import couchliteos_update as update
 
 RUN_DIR = pathlib.Path("/run/couchliteos")
+WORK_DIR = pathlib.Path("/run/couchliteos-update")  # root's own: mount points, filter files, the lock
 CACHE_DIR = pathlib.Path("/var/cache/couchliteos/update")
 STATUS_NAME = "update-status.json"
 CANCEL_NAME = "update-cancel"
 LOCK_NAME = "update.lock"
-LOG_REL = "var/log/couchliteos/update.log"
+LOG_REL = "var/log/couchliteos-update/update.log"
 MANIFEST_REL = "var/lib/couchliteos-update/etc-manifest"
 UPDATER_REL = "usr/libexec/couchliteos-updater"
 VERSION_REL = "etc/couchliteos-version"
@@ -88,8 +96,8 @@ MSG_NETWORK = "COULD NOT REACH GITHUB: CHECK SETTINGS > NETWORK"
 MSG_LIVE = "UPDATES NEED COUCHLITEOS INSTALLED TO A DISK"
 MSG_LAYOUT = "UNSUPPORTED DISK LAYOUT"
 MSG_OTHER_BOX = "THIS ISO IS FOR A DIFFERENT KIND OF BOX"
-MSG_GENERIC = "UPDATE FAILED: SEE /var/log/couchliteos/update.log"
-MSG_INSTALL = "INSTALL FAILED: SEE /var/log/couchliteos/update.log"
+MSG_GENERIC = "UPDATE FAILED: SEE /var/log/couchliteos-update/update.log"
+MSG_INSTALL = "INSTALL FAILED: SEE /var/log/couchliteos-update/update.log"
 MSG_BOOT_MENU = (
     "INSTALL FAILED WHILE SETTING UP THE BOOT MENU. IF THE BOX WILL NOT START, "
     "REINSTALL FROM THE ISO."
@@ -126,11 +134,17 @@ VAR_EXCLUDES = (
 RSYNC_BASE = ("rsync", "-aHAX", "--numeric-ids", "--delay-updates")
 STATE_REL = "var/lib/couchliteos"   # the launcher's settings, pairings and home: a restore brings them back
 WHATSNEW_REL = "var/lib/couchliteos/whatsnew-seen"
-# Root's own: /run/couchliteos and the snapshot's parent belong to the launcher's user.
-RESTORE_DIR = pathlib.Path("/run/couchliteos-restore")
+RESTORE_NAME = "restore"  # below WORK_DIR
 HELD_REL = "var/lib/couchliteos-update/restore.squashfs"
 MSG_NO_SAVED = "THERE IS NO SAVED VERSION TO RESTORE, OR IT IS DAMAGED"
-MSG_RESTORE = "RESTORE FAILED: SEE /var/log/couchliteos/update.log"
+MSG_RESTORE = "RESTORE FAILED: SEE /var/log/couchliteos-update/update.log"
+MSG_RESTORE_RETRY = "THE RESTORE STOPPED PART WAY. THE BOX TRIES AGAIN AT THE NEXT START."
+MSG_RESTORE_GAVE_UP = (
+    "THE RESTORE FAILED TWICE AND WILL NOT BE TRIED AGAIN. THE BOX MAY NEED REINSTALLING FROM THE ISO, "
+    "OR CHOOSE THE RESTORE ENTRY IN THE BOOT MENU."
+)
+MSG_NO_ROOM_OLD_CALLER = "NOT ENOUGH FREE SPACE TO SAVE THE CURRENT VERSION: UPDATING WITHOUT A SAVED COPY"
+RESTORE_ATTEMPTS = 2        # restores that stopped part way before the request is dropped
 RESTORE_FAILED_PAUSE = 30   # seconds the boot screen shows why a restore failed
 REMAP_DIRS = ("var/lib", "var/log", "var/cache", "var/spool", "home", "root")
 ACCOUNT_FILES = ("passwd", "group", "shadow", "gshadow")
@@ -144,6 +158,14 @@ class UpdateFailed(Exception):
         self.message = message
 
 
+class NoRoomToSave(UpdateFailed):
+    """Too little free space to save the box first (couchliteos_snapshot.NoRoom)."""
+
+
+class RestoreIncomplete(UpdateFailed):
+    """The restore stopped after it began writing the box: it may be half old, half new."""
+
+
 class Cancelled(Exception):
     """The owner cancelled during the download."""
 
@@ -152,16 +174,14 @@ class Cancelled(Exception):
 
 
 class Log:
-    """Append-only update log; never raises."""
+    """Append-only update log in root's own directory, never through a symlink; never raises."""
 
     def __init__(self, path: pathlib.Path) -> None:
         self.path = path
 
     def __call__(self, text: str) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8", errors="replace") as stream:
-                stream.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+            safefile.append_line(self.path, f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}")
         except OSError:
             pass
 
@@ -200,13 +220,28 @@ class Env:
     clock: Callable[[], float] = time.monotonic
     euid: Callable[[], int] = os.geteuid
     log: Callable[[str], None] | None = None
-    restore_dir: pathlib.Path = RESTORE_DIR
+    work_dir: pathlib.Path = WORK_DIR
     wall_clock: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
     def note(self, text: str) -> None:
         if self.log:
             self.log(text)
+
+
+def own_dir(env: Env, *names: str) -> pathlib.Path:
+    """WORK_DIR (or a directory below it), made or checked as root's own (0700, no symlink).
+
+    Mount points and work files never go below /run/couchliteos, which the launcher's user owns.
+    """
+    try:
+        path = safefile.root_dir(env.work_dir, os.geteuid())
+        for name in names:
+            path = safefile.root_dir(path / name, os.geteuid())
+    except OSError as error:
+        env.note(f"work directory refused: {error}")
+        raise UpdateFailed(MSG_GENERIC) from error
+    return path
 
 
 class Status:
@@ -239,38 +274,23 @@ class Status:
 
 def read_status(path: pathlib.Path) -> dict:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(snapshot._read_plain(path))  # never through a symlink
+    except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def write_atomic(path: pathlib.Path, text: str, mode: int, owner: tuple[int, int] | None = None,
-                 chown: Callable[[str, int, int], None] = os.chown) -> None:
-    """Write `text` to `path` so that readers see the old or the new file, never half of it."""
-    path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, mode)
-        if owner is not None:
-            chown(temporary, *owner)
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+write_atomic = safefile.write_atomic  # readers see the old or the new file; never through a symlink
 
 
 @contextlib.contextmanager
 def acquire_lock(path: pathlib.Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+") as stream:
+    """`path` is in root's own directory (own_dir); the file is never opened through a symlink."""
+    try:
+        stream = safefile.open_lock(path)
+    except OSError as error:
+        raise UpdateFailed(f"{MSG_GENERIC} ({error.strerror or error})") from error
+    with stream:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
@@ -817,7 +837,7 @@ def rsync_steps(
     `system` and `dpkg`, and those only after the copy and never what the protect filter names.
 
     A restore adds a fifth, `state`: the launcher's settings as they were when the image was saved
-    (deleting what came later), except the snapshot itself."""
+    (deleting what came later). The snapshot is not below it (couchliteos_snapshot.SNAP_REL)."""
 
     def excludes(patterns: Iterable[str]) -> list[str]:
         return [f"--exclude={pattern}" for pattern in patterns]
@@ -831,7 +851,7 @@ def rsync_steps(
         ("dpkg", [*base, "--delete-after", f"--filter=merge {filter_dpkg}", "--exclude=/status",
                   _rsync_dir(image, "/var/lib/dpkg/"), _rsync_dir(target, "/var/lib/dpkg/")]),
     ] + ([
-        ("state", [*base, "--delete-after", "--exclude=/snapshot/",
+        ("state", [*base, "--delete-after",
                    _rsync_dir(image, f"/{STATE_REL}/"), _rsync_dir(target, f"/{STATE_REL}/")]),
     ] if restore else [])
 
@@ -929,7 +949,14 @@ def apply_root(
     log(f"{kind} to {new_version} from {_read_version(target / VERSION_REL)} (force={force}, save={save_first})")
     if save_first:
         # Inside the new image the default log is on its read-only squashfs: note into the box's log.
-        (save or save_snapshot)(dataclasses.replace(env, log=log), status, target)
+        try:
+            (save or save_snapshot)(dataclasses.replace(env, log=log), status, target)
+        except NoRoomToSave as error:
+            # The caller is an updater older than 0.3.0: its box has no SAVE BEFORE UPDATE switch to
+            # turn off, so refusing here would leave it unable to ever update. Go on without a copy.
+            log(f"snapshot: {error.message}")
+            log(MSG_NO_ROOM_OLD_CALLER)
+            status.set("installing", MSG_NO_ROOM_OLD_CALLER)
 
     def step(message: str, percent: int) -> None:
         log(message)
@@ -943,8 +970,7 @@ def apply_root(
     extras = {} if restore else extra_packages(box_packages, image_packages)
     log(f"packages only the box has: {len(extras)}")
     protected = protected_paths(target, image, extras)
-    env.run_dir.mkdir(parents=True, exist_ok=True)
-    work = pathlib.Path(tempfile.mkdtemp(prefix="update-filter-", dir=env.run_dir))
+    work = pathlib.Path(tempfile.mkdtemp(prefix="update-filter-", dir=own_dir(env)))
     try:
         filter_system, filter_dpkg = work / "system.rules", work / "dpkg.rules"
         outside = [path for path in protected if not path.startswith(("/etc/", "/var/"))]
@@ -1002,10 +1028,11 @@ def apply_root(
 
 def _after_restore(target: pathlib.Path, version: str, env: Env, log: Callable[[str], None]) -> None:
     """Pause the automatic update check for a week (it would offer the same update at once) and
-    mark the restored version's What's New as seen. Both files are the launcher's own."""
+    mark the restored version's What's New as seen. Both files are the launcher's own, in its own
+    directory: written through a descriptor of it (safefile.write_atomic), owned by that user."""
     until = int(env.wall_clock() + update.PAUSE_SECONDS)
     snapshot.set_option("paused_until", str(until), target)
-    state = os.stat(target / STATE_REL)
+    state = os.lstat(target / STATE_REL)
     write_atomic(target / WHATSNEW_REL, f"{version}\n", 0o644, (state.st_uid, state.st_gid), env.chown)
     log(f"restore: update check paused until {time.strftime('%Y-%m-%d %H:%M', time.gmtime(until))} UTC")
 
@@ -1061,6 +1088,8 @@ def save_snapshot(env: Env, status: Status, root: pathlib.Path | None = None) ->
         return
     try:
         snapshot.create(env, status, root)
+    except snapshot.NoRoom as error:
+        raise NoRoomToSave(error.message) from error
     except snapshot.SnapshotFailed as error:
         raise UpdateFailed(error.message) from error
 
@@ -1111,10 +1140,7 @@ def apply_iso(
     status.set("installing", "INSTALLING THE UPDATE... KEEP THE BOX PLUGGED IN.")
     refuse_live(env)
     refuse_layout(env)
-    work = env.run_dir / "update"
-    iso_dir, new = work / "iso", work / "root"
-    for directory in (iso_dir, new):
-        directory.mkdir(parents=True, exist_ok=True)
+    iso_dir, new = own_dir(env, "update", "iso"), own_dir(env, "update", "root")
 
     with contextlib.ExitStack() as stack:
         def mount(argv: list[str], mountpoint: pathlib.Path) -> None:
@@ -1146,7 +1172,7 @@ def apply_iso(
 
 # This program and the modules it imports, copied out so the snapshot's python3 runs today's logic.
 TOOL = (pathlib.Path(__file__), pathlib.Path(update.__file__), pathlib.Path(snapshot.__file__),
-        pathlib.Path(browser.__file__))
+        pathlib.Path(browser.__file__), pathlib.Path(safefile.__file__))
 
 
 def load_squashfs(env: Env) -> None:
@@ -1173,7 +1199,8 @@ def restore(env: Env, status: Status) -> str:
     """Put the saved version back over this box; returns its version. The caller restarts.
 
     The image is mounted from root's own hard link of it (snapshot.hold), and today's updater is
-    copied to root's own directory in /run, which the chroot sees through its bind of /run.
+    copied to root's own directory in /run (WORK_DIR/restore), which the chroot sees through its
+    bind of /run. A failure once that chroot runs raises RestoreIncomplete: files may be written.
     """
     refuse_live(env)
     refuse_layout(env)
@@ -1185,13 +1212,12 @@ def restore(env: Env, status: Status) -> str:
         raise UpdateFailed(MSG_NO_SAVED)
     status.version = saved.version
     env.note(f"restore: {saved.version} saved {saved.date}")
-    work = env.restore_dir
+    work = own_dir(env, RESTORE_NAME)
     new, tool = work / "root", work / "tool"
     try:
-        work.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.rmtree(tool, ignore_errors=True)
         for directory in (new, tool):
-            directory.mkdir(exist_ok=True)
+            safefile.root_dir(directory, os.geteuid())
         for source in TOOL:
             name = "couchliteos_updater.py" if source == TOOL[0] else source.name
             shutil.copyfile(source, tool / name)
@@ -1208,7 +1234,7 @@ def restore(env: Env, status: Status) -> str:
             if code != 0:
                 reported = read_status(status.path)
                 failed = reported.get("message") if reported.get("phase") == "failed" else None
-                raise UpdateFailed(failed if isinstance(failed, str) and failed else MSG_RESTORE)
+                raise RestoreIncomplete(failed if isinstance(failed, str) and failed else MSG_RESTORE)
     finally:
         shutil.rmtree(tool, ignore_errors=True)
         with contextlib.suppress(OSError):
@@ -1218,18 +1244,47 @@ def restore(env: Env, status: Status) -> str:
 
 def restore_at_boot(env: Env, status: Status) -> int:
     """couchliteos-restore.service: restore, drop the request, restart. On failure say why and let
-    the start go on; the request is dropped then too, so a restore that cannot work does not block
-    every start (a power cut leaves it, and the next start finishes the restore)."""
+    the start go on (a power cut leaves the request, and the next start finishes the restore).
+
+    A failure before anything was written drops the request, so a restore that cannot work does
+    not block every start. One after the copy began (RestoreIncomplete: the box may be half old,
+    half new) keeps it for the next start, counted next to it; after RESTORE_ATTEMPTS such tries it
+    is dropped and the screen says the box may need reinstalling."""
     status.echo = status.echo or (lambda text: print(text, flush=True))
     status.echo("RESTORING THE SAVED VERSION. KEEP THE BOX PLUGGED IN.")
     done: list[str] = []
-    code = _guarded(env, status, lambda: done.append(restore(env, status)))
-    with contextlib.suppress(OSError):
-        snapshot.clear_request(env, env.root)
+    incomplete: list[RestoreIncomplete] = []
+
+    def attempt() -> None:
+        try:
+            done.append(restore(env, status))
+        except RestoreIncomplete as error:
+            incomplete.append(error)
+            raise
+
+    code = _guarded(env, status, attempt)
+    retry = False
+    if incomplete and snapshot.requested(env.root):
+        try:
+            tries = snapshot.count_attempt(env, env.root)
+        except OSError as error:
+            env.note(f"restore: could not count the try: {error}")
+            tries = RESTORE_ATTEMPTS
+        env.note(f"restore: stopped part way, try {tries} of {RESTORE_ATTEMPTS}")
+        retry = 0 < tries < RESTORE_ATTEMPTS
+    if not retry:
+        with contextlib.suppress(OSError):
+            snapshot.clear_request(env, env.root)
     if code == 0:
         status.echo(f"RESTORED COUCHLITEOS {done[0]}. RESTARTING...")
         sh(env, ["sync"])
         reboot(env)
+    elif retry:
+        status.echo(MSG_RESTORE_RETRY)
+        env.sleep(RESTORE_FAILED_PAUSE)
+    elif incomplete:
+        status.echo(MSG_RESTORE_GAVE_UP)
+        env.sleep(RESTORE_FAILED_PAUSE)
     else:
         status.echo("THE BOX STARTS AS IT IS. TRY AGAIN FROM SETTINGS > SOFTWARE UPDATE OR THE BOOT MENU.")
         env.sleep(RESTORE_FAILED_PAUSE)
@@ -1316,10 +1371,9 @@ def find_installs(env: Env) -> list[Install]:
             walk(node.get("children"), name if kind == "disk" else disk)
 
     walk(tree, "")
-    probe = env.run_dir / PROBE_DIR
+    probe = own_dir(env, PROBE_DIR) if candidates else None
     found = []
     for device, fstype, disk in candidates:
-        probe.mkdir(parents=True, exist_ok=True)
         if sh(env, ["mount", "-o", _probe_options(fstype), device, str(probe)]).returncode != 0:
             continue
         try:
@@ -1375,8 +1429,10 @@ def legacy_conflicts(target: pathlib.Path) -> list[str]:
 def move_legacy_dirs(target: pathlib.Path, log: Callable[[str], None]) -> None:
     """Rename /var/{lib,log}/moonlightos to the couchliteos names; safe to run again.
 
-    The new directory may already exist (the snapshot and this update's log made it): its entries
-    join the old tree first, so the moved directory keeps the owner and mode the box gave it.
+    The new directory may already exist (something made it before the move; the snapshot and the
+    update log are in root's own -update directories, not here): its entries join the old tree
+    first, so the moved directory keeps the owner and mode the box gave it. A name in both stops
+    the move part way with every file still in one of the two trees (legacy_conflicts finds it).
     """
     for old, new in LEGACY_PATHS:
         source, destination = target / old, target / new
@@ -1477,7 +1533,7 @@ def apply_disk(
     status.set("installing", "OPENING THE INSTALLED SYSTEM...")
     if not update.is_live(env.root / "run/live/medium", env.root / "proc/cmdline"):
         raise UpdateFailed(MSG_NOT_LIVE)
-    target, image = env.run_dir / DISK_DIR, env.run_dir / DISK_IMAGE_DIR
+    target, image = own_dir(env, DISK_DIR), own_dir(env, DISK_IMAGE_DIR)
     with contextlib.ExitStack() as stack:
         def mount(argv: list[str], mountpoint: pathlib.Path, message: str) -> None:
             mountpoint.mkdir(parents=True, exist_ok=True)
@@ -1637,7 +1693,7 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
 
     status = Status(env.run_dir / STATUS_NAME)
     try:
-        with acquire_lock(env.run_dir / LOCK_NAME):
+        with acquire_lock(own_dir(env) / LOCK_NAME):
             if args.command == "delete-snapshot":  # leaves the update status alone: no update ran
                 try:
                     return 0 if snapshot.delete(env, env.root) else 1

@@ -99,6 +99,8 @@ class StatusTest(TmpCase):
     def test_an_unwritable_status_file_never_stops_the_update(self):
         (self.tmp / "dir").write_text("a file where the directory should be")
         updater.Status(self.tmp / "dir" / "s.json").set("checking", "X")  # must not raise
+        self.assertEqual((self.tmp / "dir").read_text(), "a file where the directory should be")
+        self.assertEqual(sorted(path.name for path in self.tmp.iterdir()), ["dir"], "no temporary file left")
 
     def test_percent_is_clamped(self):
         path = self.tmp / "s.json"
@@ -729,7 +731,7 @@ SUMS = f"{ISO_SHA}  {ISO_NAME}\n{'0' * 64}  couchliteos-0.2.2-nvidia-amd64.iso\n
 
 def make_env(tmp, **overrides):
     values = dict(
-        runner=Runner(), root=tmp / "root", run_dir=tmp / "run", cache_dir=tmp / "cache",
+        runner=Runner(), root=tmp / "root", run_dir=tmp / "run", work_dir=tmp / "work", cache_dir=tmp / "cache",
         opener=Net(), free_bytes=lambda _path: 100 * GIB, lchown=lambda *a: None, chown=lambda *a: None,
         clock=Clock(), euid=lambda: 0,
     )
@@ -814,6 +816,32 @@ class DownloadTest(TmpCase):
         self.assertEqual(self.download(), self.iso)
         self.assertEqual(self.net.requests[0][1], "bytes=4000-")
         self.assertEqual(self.iso.read_bytes(), ISO_BYTES)
+
+    def test_a_partial_file_the_server_answers_416_for_is_thrown_away_and_fetched_again(self):
+        self.env.cache_dir.mkdir(parents=True)
+        self.part.write_bytes(b"\xff" * 4000)  # left over from a file of another size
+        seen = []
+
+        def opener(request, timeout=None):
+            seen.append(request.get_header("Range"))
+            if request.get_header("Range"):
+                raise urllib.error.HTTPError(request.full_url, 416, "Range Not Satisfiable", {}, None)
+            return Response(ISO_BYTES)
+
+        self.env.opener = opener
+        self.assertEqual(self.download(), self.iso)
+        self.assertEqual(seen, ["bytes=4000-", None])
+        self.assertEqual(self.iso.read_bytes(), ISO_BYTES)
+        self.assertFalse(self.part.exists())
+
+    def test_a_second_416_is_a_failed_download(self):
+        def opener(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 416, "Range Not Satisfiable", {}, None)
+
+        self.env.opener = opener
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            self.download()
+        self.assertEqual(caught.exception.message, "DOWNLOAD FAILED: CHECK THE NETWORK AND TRY AGAIN")
 
     def test_a_server_that_ignores_range_restarts_from_zero(self):
         self.net.honour_range = False
@@ -964,9 +992,114 @@ class RefusalTest(TmpCase):
             updater.refuse_layout(env)
 
 
+class GuardedTest(TmpCase):
+    def setUp(self):
+        super().setUp()
+        self.logged = []
+        self.env = make_env(self.tmp, log=self.logged.append)
+        self.status = RecordingStatus(self.tmp / "s.json")
+
+    def test_a_cancel_is_the_cancelled_phase_and_exit_0(self):
+        def cancel():
+            raise updater.Cancelled
+
+        self.assertEqual(updater._guarded(self.env, self.status, cancel), 0)
+        self.assertEqual(self.status.history[-1], ("cancelled", "UPDATE CANCELLED", None))
+
+    def test_an_unexpected_exception_is_a_plain_failure_and_its_traceback_goes_to_the_log(self):
+        def crash():
+            raise KeyError("secret detail")
+
+        self.assertEqual(updater._guarded(self.env, self.status, crash), 1)
+        self.assertEqual(self.status.history[-1], ("failed", updater.MSG_GENERIC, None))
+        self.assertNotIn("secret detail", json.dumps(updater.read_status(self.status.path)))
+        self.assertTrue(any("KeyError" in line and "Traceback" in line for line in self.logged))
+
+
+class RootPlacesTest(TmpCase):
+    """Root's work never goes through /run/couchliteos, /var/lib/couchliteos or /var/log/couchliteos."""
+
+    def test_the_documented_root_places(self):
+        self.assertEqual(updater.WORK_DIR, pathlib.Path("/run/couchliteos-update"))
+        self.assertEqual(updater.Env().work_dir, pathlib.Path("/run/couchliteos-update"))
+        self.assertEqual(updater.LOG_REL, "var/log/couchliteos-update/update.log")
+        for message in (updater.MSG_GENERIC, updater.MSG_INSTALL, updater.MSG_RESTORE):
+            self.assertIn("/var/log/couchliteos-update/update.log", message)
+
+    def test_own_dir_makes_root_only_directories(self):
+        env = make_env(self.tmp)
+        path = updater.own_dir(env, "update", "iso")
+        self.assertEqual(path, self.tmp / "work/update/iso")
+        for directory in (self.tmp / "work", self.tmp / "work/update", path):
+            found = os.lstat(directory)
+            self.assertEqual((found.st_uid, stat.S_IMODE(found.st_mode)), (os.geteuid(), 0o700), directory)
+
+    def test_own_dir_refuses_a_symlink_or_a_file(self):
+        env = make_env(self.tmp, log=[].append)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (self.tmp / "work").symlink_to(elsewhere)
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.own_dir(env)
+        self.assertEqual(caught.exception.message, updater.MSG_GENERIC)
+        (self.tmp / "work").unlink()
+        (self.tmp / "work").mkdir()
+        (self.tmp / "work/probe").write_text("")
+        with self.assertRaises(updater.UpdateFailed):
+            updater.own_dir(env, "probe")
+
+    @unittest.skipUnless(os.geteuid() == 0, "needs root to give the directory away")
+    def test_own_dir_refuses_a_directory_the_launchers_user_made(self):
+        env = make_env(self.tmp, log=[].append)
+        (self.tmp / "work").mkdir(mode=0o700)
+        os.chown(self.tmp / "work", 1000, 1000)
+        with self.assertRaises(updater.UpdateFailed):
+            updater.own_dir(env, "update")
+        self.assertFalse((self.tmp / "work/update").exists())
+
+    def test_apply_iso_refuses_a_symlinked_mount_point_before_mounting_anything(self):
+        env = make_env(self.tmp, log=[].append)
+        put(env.root, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=general\n")
+        elsewhere = self.tmp / "etc"
+        elsewhere.mkdir()
+        (self.tmp / "work/update").mkdir(parents=True)
+        (self.tmp / "work/update/iso").symlink_to(elsewhere)
+        with self.assertRaises(updater.UpdateFailed):
+            updater.apply_iso(self.tmp / "x.iso", env, RecordingStatus(self.tmp / "s.json"), save_first=False)
+        self.assertEqual(env.runner.commands("mount"), [])
+
+    def test_the_log_never_follows_a_symlink(self):
+        secret = put(self.tmp, "shadow", "root:x\n")
+        link(self.tmp, "var/log/couchliteos-update/update.log", secret)
+        updater.Log(self.tmp / LOG)("evil")  # never raises
+        self.assertEqual(secret.read_text(), "root:x\n")
+
+    def test_the_log_refuses_a_directory_others_own_or_a_symlinked_one(self):
+        user = self.tmp / "user-log"
+        user.mkdir()
+        link(self.tmp, "var/log/couchliteos-update", user)
+        updater.Log(self.tmp / LOG)("evil")
+        self.assertEqual(os.listdir(user), [])
+
+    def test_the_status_never_writes_through_a_symlink(self):
+        secret = put(self.tmp, "shadow", "root:x\n")
+        link(self.tmp, "run/update-status.json", secret)
+        updater.Status(self.tmp / "run/update-status.json").set("checking", "X")
+        self.assertEqual(secret.read_text(), "root:x\n")
+        self.assertEqual(updater.read_status(self.tmp / "run/update-status.json")["phase"], "checking")
+
+    def test_read_status_never_follows_a_symlink(self):
+        secret = put(self.tmp, "secret.json", '{"phase": "failed", "message": "ROOT ONLY"}')
+        link(self.tmp, "run/update-status.json", secret)
+        self.assertEqual(updater.read_status(self.tmp / "run/update-status.json"), {})
+
+
+LOG = "var/log/couchliteos-update/update.log"
+
+
 class LockTest(TmpCase):
     def test_a_second_holder_is_refused_and_the_lock_is_released_afterwards(self):
-        path = self.tmp / "run" / "update.lock"
+        path = updater.own_dir(make_env(self.tmp)) / "update.lock"
         with updater.acquire_lock(path):
             with self.assertRaises(updater.UpdateFailed) as caught:
                 with updater.acquire_lock(path):
@@ -1130,7 +1263,7 @@ class RunTest(TmpCase):
 
         self.assertEqual(self.run_update(apply=crashing), 1)
         self.assertEqual(self.final()["phase"], "failed")
-        self.assertEqual(self.final()["message"], "UPDATE FAILED: SEE /var/log/couchliteos/update.log")
+        self.assertEqual(self.final()["message"], "UPDATE FAILED: SEE /var/log/couchliteos-update/update.log")
         self.assertNotIn("secret", json.dumps(self.final()))
 
     def test_the_box_is_saved_after_the_download_and_before_the_install(self):
@@ -1182,7 +1315,7 @@ class ApplyIsoTest(TmpCase):
         self.env = make_env(self.tmp)
         put(self.env.root, "etc/couchliteos-version", "0.2.1\n")
         put(self.env.root, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=general\nISO_SUFFIX=\n")
-        self.work = self.env.run_dir / "update"
+        self.work = self.env.work_dir / "update"
         self.new = self.work / "root"  # where the (mocked) mount of the squashfs shows the new image
         put(self.new, "usr/libexec/couchliteos-updater", "#!/usr/bin/python3\n")
         put(self.new, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=general\n")
@@ -1332,7 +1465,7 @@ class ApplyIsoTest(TmpCase):
         self.env.runner = Runner(lambda argv: (1, "") if argv[0] == "chroot" else None)
         with self.assertRaises(updater.UpdateFailed) as caught:
             self.apply()
-        self.assertEqual(caught.exception.message, "INSTALL FAILED: SEE /var/log/couchliteos/update.log")
+        self.assertEqual(caught.exception.message, "INSTALL FAILED: SEE /var/log/couchliteos-update/update.log")
 
 
 # ---------------------------------------------------------------- apply_root (inside the new image)
@@ -1418,7 +1551,7 @@ class ApplyRootTest(TmpCase):
     def test_without_the_callers_snapshot_the_target_is_saved_before_anything_is_written(self):
         self.apply()
         self.assertEqual(self.saved, [(self.target, 0, TARGET_PASSWD)], "saved first, accounts still the box's")
-        self.assertIn("saved", self.read("var/log/couchliteos/update.log"), "notes go to the box's own log")
+        self.assertIn("saved", self.read("var/log/couchliteos-update/update.log"), "notes go to the box's own log")
 
     def test_with_the_callers_snapshot_nothing_is_saved_again(self):
         self.apply(save_first=False)
@@ -1452,7 +1585,38 @@ class ApplyRootTest(TmpCase):
             self.apply(save=None, force=True)
         env, _status, root = create.call_args.args
         self.assertEqual(root, self.target)
-        self.assertEqual(env.log.path, self.target / "var/log/couchliteos/update.log")
+        self.assertEqual(env.log.path, self.target / "var/log/couchliteos-update/update.log")
+
+    def test_an_old_caller_with_too_little_room_to_save_still_gets_the_update(self):
+        # A 0.2.x updater runs this apply-root without --snapshot-done: its box has no switch to turn
+        # saving off, so too little room for the copy must not block the update forever.
+        self.env.free_bytes = lambda _path: 4 * GIB  # enough to install, too little to save first
+        self.env.euid = os.geteuid
+        self.apply(save=None)
+        self.assertEqual(self.read("etc/couchliteos-version"), "0.2.2\n")
+        self.assertIn(updater.MSG_NO_ROOM_OLD_CALLER, [message for _phase, message, _ in self.status.history])
+        log = self.read("var/log/couchliteos-update/update.log")
+        self.assertIn(updater.MSG_NO_ROOM_OLD_CALLER, log)
+        self.assertIn("NOT ENOUGH FREE SPACE TO SAVE THE CURRENT VERSION: NEED", log)
+        self.assertIsNone(updater.snapshot.info(self.target))
+        self.assertEqual(self.status.phases()[-1], "restarting")
+
+    def test_an_old_caller_still_stops_for_any_other_failed_save(self):
+        self.save_error = updater.UpdateFailed(updater.snapshot.MSG_FAILED)
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            self.apply()
+        self.assertEqual(caught.exception.message, updater.snapshot.MSG_FAILED)
+        self.assertEqual(self.runner.commands("rsync"), [])
+
+    def test_a_0_3_0_caller_with_too_little_room_is_refused_and_told_about_the_switch(self):
+        self.env.free_bytes = lambda _path: 4 * GIB
+        self.env.euid = os.geteuid
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.save_snapshot(self.env, self.status, self.target)
+        self.assertIsInstance(caught.exception, updater.NoRoomToSave)
+        self.assertIn("TURN OFF SAVE BEFORE UPDATE", caught.exception.message)
+        # run and apply-iso call save_snapshot themselves, outside apply_root, so the refusal stands.
+        self.assertTrue(issubclass(updater.NoRoomToSave, updater.UpdateFailed))
 
     def after_rsync(self):
         calls = self.runner.calls
@@ -1521,7 +1685,7 @@ class ApplyRootTest(TmpCase):
         self.assertFalse([line for line in system if "/var/lib/dpkg" in line])
         self.assertEqual(sorted(self.filters["var/lib/dpkg"].splitlines()),
                          ["P /info/grub-efi-amd64.list", "P /info/grub-efi-amd64.md5sums"])
-        self.assertEqual(list(self.env.run_dir.glob("update-filter-*")), [], "temporary filter files are removed")
+        self.assertEqual(list(self.env.work_dir.glob("update-filter-*")), [], "temporary filter files are removed")
 
     def test_the_etc_manifest_is_written_for_the_next_update(self):
         self.apply()
@@ -1539,7 +1703,7 @@ class ApplyRootTest(TmpCase):
 
     def test_every_step_is_logged_in_the_targets_update_log(self):
         self.apply()
-        log = (self.target / "var/log/couchliteos/update.log").read_text()
+        log = (self.target / "var/log/couchliteos-update/update.log").read_text()
         for word in ("rsync", "update-grub", "0.2.1", "0.2.2"):
             self.assertIn(word, log)
 
@@ -1581,7 +1745,7 @@ class ApplyRootTest(TmpCase):
         self.assertTrue(caught.exception.message.startswith("INSTALL FAILED WHILE SETTING UP THE BOOT MENU"))
         self.assertEqual(len(self.runner.commands("umount")), 4)
         self.assertEqual(self.read("etc/couchliteos-version"), "0.2.1\n")
-        self.assertIn("update-initramfs: failed", (self.target / "var/log/couchliteos/update.log").read_text())
+        self.assertIn("update-initramfs: failed", (self.target / "var/log/couchliteos-update/update.log").read_text())
 
     def test_a_failing_update_grub_is_a_boot_menu_failure(self):
         self.fail = {"update-grub": (1, "")}
@@ -1686,6 +1850,30 @@ class MainTest(TmpCase):
         with mock.patch.object(updater.snapshot, "delete", return_value=False):
             self.assertEqual(self.main("delete-snapshot"), 1)
 
+    def test_delete_snapshot_that_hits_a_disk_error_exits_1_and_says_why_in_the_log(self):
+        logged = []
+        self.env.log = logged.append
+        with mock.patch.object(updater.snapshot, "delete", side_effect=PermissionError("read-only")):
+            self.assertEqual(self.main("delete-snapshot"), 1)
+        self.assertIn("snapshot: delete failed: read-only", logged)
+        self.assertFalse(self.status_path.exists())
+
+    def test_the_lock_is_in_roots_work_directory(self):
+        with mock.patch.object(updater, "run", return_value=0):
+            self.assertEqual(self.main("run"), 0)
+        self.assertTrue((self.env.work_dir / "update.lock").is_file())
+        self.assertEqual(stat.S_IMODE(os.lstat(self.env.work_dir).st_mode), 0o700)
+        self.assertFalse((self.env.run_dir / "update.lock").exists())
+
+    def test_a_symlinked_lock_is_refused(self):
+        secret = put(self.tmp, "shadow", "root:x\n")
+        updater.own_dir(self.env)
+        (self.env.work_dir / "update.lock").symlink_to(secret)
+        with mock.patch.object(updater, "run", return_value=0) as run:
+            self.assertEqual(self.main("run"), 1)
+        run.assert_not_called()
+        self.assertEqual(secret.read_text(), "root:x\n")
+
     def test_apply_root_needs_a_status_file_and_passes_force(self):
         with mock.patch.object(updater, "apply_root") as apply:
             self.assertEqual(self.main("apply-root", "/mnt", "--status", "/run/couchliteos/s.json", "--force"), 0)
@@ -1718,7 +1906,7 @@ class MainTest(TmpCase):
         self.assertFalse(self.status_path.exists())
 
     def test_a_second_update_while_one_runs_changes_nothing(self):
-        with updater.acquire_lock(self.env.run_dir / "update.lock"):
+        with updater.acquire_lock(updater.own_dir(self.env) / "update.lock"):
             with mock.patch.object(updater, "run") as run:
                 self.assertEqual(self.main("run"), 1)
         run.assert_not_called()
@@ -1729,7 +1917,7 @@ class MainTest(TmpCase):
             self.assertEqual(self.main("restore"), 0)
         env, status = restore.call_args.args
         self.assertEqual(status.path, self.status_path)
-        with updater.acquire_lock(self.env.run_dir / "update.lock"):
+        with updater.acquire_lock(updater.own_dir(self.env) / "update.lock"):
             with mock.patch.object(updater, "restore_at_boot") as restore:
                 self.assertEqual(self.main("restore"), 1)
             restore.assert_not_called()
@@ -1774,9 +1962,13 @@ class RestoreStepsTest(unittest.TestCase):
 
     def test_the_state_step_brings_the_launchers_state_back_but_never_the_snapshot(self):
         argv = dict(self.steps(True))["state"]
-        self.assertEqual(argv, [*BASE, "--delete-after", "--exclude=/snapshot/",
-                                "/var/lib/couchliteos/", "/mnt/var/lib/couchliteos/"])
+        self.assertEqual(argv, [*BASE, "--delete-after", "/var/lib/couchliteos/", "/mnt/var/lib/couchliteos/"])
         self.assertIn("/lib/couchliteos/", updater.VAR_EXCLUDES, "only the state step touches it")
+        # The snapshot is root's own, outside the launcher's state, and no step copies over it.
+        self.assertFalse(updater.snapshot.SNAP_REL.startswith(updater.STATE_REL + "/"))
+        self.assertTrue(updater.snapshot.SNAP_REL.startswith("var/lib/couchliteos-update/"))
+        self.assertIn("/lib/couchliteos-update/", updater.VAR_EXCLUDES)
+        self.assertIn("/var/", updater.SYSTEM_EXCLUDES)
 
 
 class ApplyRootRestoreTest(TmpCase):
@@ -1829,9 +2021,26 @@ class ApplyRootRestoreTest(TmpCase):
         self.assertEqual(self.read("var/lib/couchliteos/whatsnew-seen"), "0.2.0\n")
         self.assertEqual(update.paused_until(self.target / "var/lib/couchliteos/config.ini"), 1_790_604_800)
 
+    def test_a_restore_whose_courtesies_fail_still_finishes_and_says_so_in_the_log(self):
+        with mock.patch.object(updater.snapshot, "set_option", side_effect=PermissionError("read-only")):
+            self.restore()
+        self.assertEqual(self.read("etc/couchliteos-version"), "0.2.0\n")
+        self.assertIsNone(self.read("var/lib/couchliteos/whatsnew-seen"))
+        self.assertIn("restore: could not pause the update check or mark What's New: read-only",
+                      self.read("var/log/couchliteos-update/update.log"))
+        self.assertEqual(self.status.phases()[-1], "restarting")
+
+    def test_whats_new_is_written_through_the_directory_never_a_planted_link(self):
+        secret = put(self.tmp, "shadow", "root:x\n")
+        link(self.target, "var/lib/couchliteos/whatsnew-seen", secret)
+        self.restore()
+        self.assertEqual(secret.read_text(), "root:x\n")
+        self.assertFalse((self.target / "var/lib/couchliteos/whatsnew-seen").is_symlink())
+        self.assertEqual(self.read("var/lib/couchliteos/whatsnew-seen"), "0.2.0\n")
+
     def test_the_log_says_restore(self):
         self.restore()
-        log = self.read("var/log/couchliteos/update.log")
+        log = self.read("var/log/couchliteos-update/update.log")
         self.assertIn("restore to 0.2.0 from 0.2.1", log)
         self.assertIn("restore to 0.2.0 done", log)
         self.assertEqual(self.status.phases()[-1], "restarting")
@@ -1860,7 +2069,7 @@ class EchoStatusTest(TmpCase):
 
 
 def make_snapshot(root, version="0.2.0", image=b"saved image"):
-    directory = pathlib.Path(root) / "var/lib/couchliteos/snapshot"
+    directory = pathlib.Path(root) / "var/lib/couchliteos-update/snapshot"
     directory.mkdir(parents=True)
     directory.chmod(0o711)
     (directory / "previous.squashfs").write_bytes(image)
@@ -1881,7 +2090,7 @@ class RestoreTest(TmpCase):
         self.fail = {}
         self.seen = {}
         self.runner = Runner(self.script)
-        self.env = make_env(self.tmp, runner=self.runner, euid=os.geteuid, restore_dir=self.tmp / "restore",
+        self.env = make_env(self.tmp, runner=self.runner, euid=os.geteuid,
                             sleep=self.slept)
         self.sleeps = []
         put(self.env.root, "etc/couchliteos-version", "0.2.1\n")
@@ -1896,7 +2105,7 @@ class RestoreTest(TmpCase):
         if argv[0] == "mount" and "squashfs" in argv:
             self.seen["mounted"] = pathlib.Path(argv[-2]).read_bytes()
         if argv[0] == "chroot":
-            tool = self.tmp / "restore/tool"
+            tool = self.tmp / "work/restore/tool"
             self.seen["tool"] = sorted(path.name for path in tool.iterdir())
         for key, reply in self.fail.items():
             if key in " ".join(argv):
@@ -1908,7 +2117,7 @@ class RestoreTest(TmpCase):
 
     def test_the_whole_restore_in_order(self):
         self.assertEqual(updater.restore(self.env, self.status), "0.2.0")
-        r = str(self.tmp / "restore/root")
+        r = str(self.tmp / "work/restore/root")
         self.assertEqual(self.mounts(), [
             ["modprobe", "-a", "squashfs", "loop"],
             ["mount", "-t", "squashfs", "-o", "ro,loop", str(self.held), r],
@@ -1917,7 +2126,7 @@ class RestoreTest(TmpCase):
             ["mount", "--rbind", "/sys", f"{r}/sys"], ["mount", "--make-rslave", f"{r}/sys"],
             ["mount", "--rbind", "/dev", f"{r}/dev"], ["mount", "--make-rslave", f"{r}/dev"],
             ["mount", "--bind", "/run", f"{r}/run"], ["mount", "--make-rslave", f"{r}/run"],
-            ["chroot", r, "python3", f"{self.tmp}/restore/tool/couchliteos_updater.py", "apply-root", "/mnt",
+            ["chroot", r, "python3", f"{self.tmp}/work/restore/tool/couchliteos_updater.py", "apply-root", "/mnt",
              "--status", str(self.status.path), "--force", "--snapshot-done", "--restore"],
             ["umount", "-R", f"{r}/run"], ["umount", "-R", f"{r}/dev"], ["umount", "-R", f"{r}/sys"],
             ["umount", "-R", f"{r}/proc"], ["umount", "-R", f"{r}/mnt"], ["umount", "-R", r],
@@ -1932,9 +2141,10 @@ class RestoreTest(TmpCase):
 
     def test_todays_updater_and_its_modules_run_inside_and_are_removed_afterwards(self):
         updater.restore(self.env, self.status)
-        self.assertEqual(self.seen["tool"], ["couchliteos_browser.py", "couchliteos_snapshot.py",
-                                             "couchliteos_update.py", "couchliteos_updater.py"])
-        self.assertFalse((self.tmp / "restore/tool").exists())
+        self.assertEqual(self.seen["tool"], ["couchliteos_browser.py", "couchliteos_safefile.py",
+                                             "couchliteos_snapshot.py", "couchliteos_update.py",
+                                             "couchliteos_updater.py"])
+        self.assertFalse((self.tmp / "work/restore/tool").exists())
 
     def test_the_copied_tool_is_everything_the_updater_imports(self):
         import ast
@@ -1983,7 +2193,7 @@ class RestoreTest(TmpCase):
         with self.assertRaises(updater.UpdateFailed) as caught:
             updater.restore(self.env, self.status)
         self.assertEqual(caught.exception.message, "INSTALL FAILED WHILE COPYING FILES (STATE).")
-        self.assertEqual(self.runner.calls[-1], ["umount", "-R", str(self.tmp / "restore/root")])
+        self.assertEqual(self.runner.calls[-1], ["umount", "-R", str(self.tmp / "work/restore/root")])
         self.assertFalse(os.path.lexists(self.held))
 
     def test_at_boot_success_drops_the_request_and_restarts(self):
@@ -1997,16 +2207,77 @@ class RestoreTest(TmpCase):
         self.assertEqual(said[-1], "RESTORED COUCHLITEOS 0.2.0. RESTARTING...")
         self.assertEqual(self.sleeps, [])
 
-    def test_at_boot_a_failure_says_why_drops_the_request_and_lets_the_box_start(self):
+    def test_at_boot_a_failure_before_any_write_says_why_drops_the_request_and_lets_the_box_start(self):
         self.assertTrue(updater.snapshot.request(self.env, self.env.root))
-        self.fail["chroot"] = (1, "")
+        self.fail["squashfs"] = (32, "")  # the saved image cannot be mounted: nothing was written
         said = []
         self.status.echo = said.append
         self.assertEqual(updater.restore_at_boot(self.env, self.status), 1)
         self.assertFalse(updater.snapshot.requested(self.env.root))
+        self.assertFalse((self.snap / updater.snapshot.ATTEMPTS).exists())
+        self.assertNotIn("chroot", [call[0] for call in self.runner.calls])
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+        self.assertIn("COULD NOT OPEN THE SAVED VERSION", said)
+        self.assertEqual(said[-1], "THE BOX STARTS AS IT IS. TRY AGAIN FROM SETTINGS > SOFTWARE UPDATE OR THE BOOT MENU.")
+        self.assertEqual(self.sleeps, [updater.RESTORE_FAILED_PAUSE])
+
+    def test_at_boot_a_failure_during_the_copy_keeps_the_request_for_one_more_start(self):
+        self.assertTrue(updater.snapshot.request(self.env, self.env.root))
+        self.fail["chroot"] = (1, "")  # the copy inside ran and failed: the box may be half written
+        said = []
+        self.status.echo = said.append
+        self.assertEqual(updater.restore_at_boot(self.env, self.status), 1)
+        self.assertTrue(updater.snapshot.requested(self.env.root), "the next start tries again")
+        attempts = self.snap / updater.snapshot.ATTEMPTS
+        self.assertEqual(attempts.read_text(), "1\n")
+        self.assertEqual(stat.S_IMODE(attempts.stat().st_mode), 0o600)
         self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
         self.assertIn(updater.MSG_RESTORE, said)
+        self.assertEqual(said[-1], updater.MSG_RESTORE_RETRY)
         self.assertEqual(self.sleeps, [updater.RESTORE_FAILED_PAUSE])
+
+        said.clear()  # the second start fails the same way: the request goes, the screen says why
+        self.assertEqual(updater.restore_at_boot(self.env, self.status), 1)
+        self.assertFalse(updater.snapshot.requested(self.env.root))
+        self.assertFalse(attempts.exists())
+        self.assertEqual(said[-1], updater.MSG_RESTORE_GAVE_UP)
+        self.assertIn("REINSTALLING", updater.MSG_RESTORE_GAVE_UP)
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+
+    def test_at_boot_a_retry_that_works_drops_the_request_and_its_count(self):
+        self.status.echo = [].append
+        self.assertTrue(updater.snapshot.request(self.env, self.env.root))
+        self.fail["chroot"] = (1, "")
+        updater.restore_at_boot(self.env, self.status)
+        self.assertTrue((self.snap / updater.snapshot.ATTEMPTS).exists())
+        del self.fail["chroot"]
+        self.assertEqual(updater.restore_at_boot(self.env, self.status), 0)
+        self.assertFalse(updater.snapshot.requested(self.env.root))
+        self.assertFalse((self.snap / updater.snapshot.ATTEMPTS).exists())
+        self.assertEqual(self.runner.calls[-1], ["systemctl", "reboot"])
+
+    def test_at_boot_from_the_boot_menu_without_a_request_nothing_is_counted(self):
+        self.status.echo = [].append
+        self.fail["chroot"] = (1, "")
+        self.assertEqual(updater.restore_at_boot(self.env, self.status), 1)
+        self.assertFalse(updater.snapshot.requested(self.env.root))
+        self.assertFalse((self.snap / updater.snapshot.ATTEMPTS).exists())
+
+    def test_the_work_directory_is_roots_own_and_a_symlink_there_is_refused(self):
+        updater.restore(self.env, self.status)
+        work = self.env.work_dir
+        self.assertEqual(stat.S_IMODE(os.lstat(work).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.lstat(work / "restore").st_mode), 0o700)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        shutil.rmtree(work / "restore")
+        (work / "restore").symlink_to(elsewhere)
+        self.runner.calls.clear()
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.restore(self.env, self.status)
+        self.assertEqual(caught.exception.message, updater.MSG_GENERIC)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertNotIn("mount", [call[0] for call in self.runner.calls])
 
     def test_settings_request_needs_a_snapshot_and_then_restarts(self):
         updater.request_restore(self.env, self.status)
@@ -2043,7 +2314,7 @@ class RealRsyncRestoreTest(TmpCase):
         put(self.target, "var/lib/couchliteos/config.ini", "[qemu-smoke]\ncold_boot = verified\nafter = yes\n")
         put(self.target, "var/lib/couchliteos/added-later.json", "{}")
         make_snapshot(self.target)
-        put(self.target, "var/lib/couchliteos/snapshot/restore-request")
+        put(self.target, "var/lib/couchliteos-update/snapshot/restore-request")
         put(self.target, "boot/couchliteos-previous/vmlinuz", "saved kernel")
         put(self.target, "usr/bin/new-only", "0.3.0")
         put(self.target, "etc/fstab", "UUID=box / ext4\n")
@@ -2069,9 +2340,26 @@ class RealRsyncRestoreTest(TmpCase):
         self.assertIn("paused_until = ", read("var/lib/couchliteos/config.ini"))
         self.assertEqual(read("var/lib/couchliteos/home/.config/moonlight/hosts"), "old pairing")
         self.assertFalse((self.target / "var/lib/couchliteos/added-later.json").exists())
-        self.assertTrue((self.target / "var/lib/couchliteos/snapshot/previous.squashfs").exists())
-        self.assertTrue((self.target / "var/lib/couchliteos/snapshot/restore-request").exists())
+        self.assertTrue((self.target / "var/lib/couchliteos-update/snapshot/previous.squashfs").exists())
+        self.assertTrue((self.target / "var/lib/couchliteos-update/snapshot/restore-request").exists())
         self.assertEqual(read("etc/fstab"), "UUID=box / ext4\n", "the box's own /etc files stay")
+
+
+class GrubInstallTest(unittest.TestCase):
+    def test_a_bios_box_whose_disk_cannot_be_found_is_refused(self):
+        for reply in ((1, ""), (0, ""), (0, "sda\n")):
+            env = make_env(pathlib.Path("/nonexistent"), runner=Runner(lambda _argv, reply=reply: reply))
+            with self.assertRaises(updater.UpdateFailed) as caught:
+                updater.grub_install_argv(env, "/dev/sda2", "")
+            self.assertEqual(caught.exception.message, updater.MSG_DISK_LAYOUT, reply)
+            self.assertEqual(env.runner.calls, [["lsblk", "-n", "-p", "-o", "PKNAME", "/dev/sda2"]])
+
+    def test_a_bios_box_gets_its_whole_disk_and_uefi_needs_no_lookup(self):
+        env = make_env(pathlib.Path("/nonexistent"), runner=Runner(lambda _argv: (0, "/dev/sda\n")))
+        self.assertEqual(updater.grub_install_argv(env, "/dev/sda2", ""), ["grub-install", "--target=i386-pc", "/dev/sda"])
+        env.runner.calls.clear()
+        self.assertEqual(updater.grub_install_argv(env, "/dev/sda2", "UUID=ABCD")[1], "--target=x86_64-efi")
+        self.assertEqual(env.runner.calls, [])
 
 
 class DefaultsTest(unittest.TestCase):

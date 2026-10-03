@@ -90,6 +90,7 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_home.py" "$CHROOT/usr/libexec/cou
 install -D -m 0644 "$ROOT/launcher/couchliteos_update.py" "$CHROOT/usr/libexec/couchliteos_update.py"
 install -D -m 0755 "$ROOT/launcher/couchliteos_updater.py" "$CHROOT/usr/libexec/couchliteos-updater"
 install -D -m 0644 "$ROOT/launcher/couchliteos_snapshot.py" "$CHROOT/usr/libexec/couchliteos_snapshot.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_safefile.py" "$CHROOT/usr/libexec/couchliteos_safefile.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_softwareupdate.py" "$CHROOT/usr/libexec/couchliteos_softwareupdate.py"
 install -D -m 0755 "$ROOT/launcher/couchliteos_browser.py" "$CHROOT/usr/libexec/couchliteos-browser"
 install -D -m 0644 "$ROOT/launcher/couchliteos_browser.py" "$CHROOT/usr/libexec/couchliteos_browser.py"
