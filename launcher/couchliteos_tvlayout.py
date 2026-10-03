@@ -33,6 +33,7 @@ KEY_ACTIONS = {
     "Delete": "close", "KP_Delete": "close",
     "Home": "home",
     "F12": "keyboard",
+    "F9": "hold-y",  # gamepad-nav sends F9 while Y / Square is held (CHANGE ARTWORK)
     "F5": "shortcut:lb", "F6": "shortcut:rb", "F7": "shortcut:view", "F8": "shortcut:menu",
 }
 HOME_HINT = "A / CROSS OR ENTER OPENS  ·  B / CIRCLE OR ESC GOES BACK"

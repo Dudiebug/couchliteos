@@ -148,6 +148,7 @@ rg -q 'debian-security trixie-security main$' overlay/usr/share/couchliteos/apt/
 # The tool's Chrome source is the one the image's /etc/apt gets.
 chrome_source=$(cat overlay/usr/share/couchliteos/apt/sources.list.d/google-chrome.list)
 rg -Fq "$chrome_source" config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'python3 -m compileall -q /usr/libexec/couchliteos_*.py' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -Fq 'Dir::Etc::sourcelist={APT_DIR}/sources.list' launcher/couchliteos_browser.py
 rg -Fq 'Dir::Etc::sourceparts={APT_DIR}/sources.list.d' launcher/couchliteos_browser.py
 rg -Fq 'APT_DIR = "/usr/share/couchliteos/apt"' launcher/couchliteos_browser.py
@@ -830,6 +831,37 @@ rg -q '^ExecStart=/usr/libexec/couchliteos-updater delete-snapshot$' services/co
 rg -q '^systemctl enable couchliteos-snapshot-delete.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -q 'test -s /var/lib/couchliteos/snapshot/previous.squashfs' scripts/couchliteos-qemu-smoke
 refute rg -n 'shell=True|os\.system' launcher/couchliteos_snapshot.py
+# RESTORE PREVIOUS VERSION: Settings asks through a path unit, a boot service restores before the
+# launcher, and a boot menu entry starts the saved kernel with couchliteos.restore=1.
+rg -q '^PathExists=/run/couchliteos/restore-request$' services/couchliteos-restore-request.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/restore-request$' services/couchliteos-restore-request.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater request-restore$' services/couchliteos-restore-request.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater restore$' services/couchliteos-restore.service
+rg -q '^ConditionKernelCommandLine=\|couchliteos\.restore=1$' services/couchliteos-restore.service
+rg -q '^ConditionPathExists=\|/var/lib/couchliteos/snapshot/restore-request$' services/couchliteos-restore.service
+rg -q '^Before=couchliteos-launcher\.service' services/couchliteos-restore.service
+rg -q '^systemctl enable couchliteos-restore-request.path couchliteos-restore.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"' build/configure.sh
+rg -q '^  restore-apply\)$' scripts/couchliteos-qemu-smoke
+rg -q '^  restore-check\)$' scripts/couchliteos-qemu-smoke
+rg -q '^boot_and_wait restore-apply COUCHLITEOS_SMOKE_RESTORE_REQUESTED$' tests/qemu-install-smoke.sh
+rg -q '^boot_and_wait restore-check COUCHLITEOS_SMOKE_RESTORE_READY$' tests/qemu-install-smoke.sh
+# The live USB updates an older install on the disk (apply-disk): found by a root service, requested
+# by the launcher through a path unit, proven in QEMU by tests/qemu-legacy-smoke.sh.
+rg -q '^ConditionKernelCommandLine=boot=live$' services/couchliteos-find-installs.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater find-installs$' services/couchliteos-find-installs.service
+rg -q '^PathExists=/run/couchliteos/disk-update$' services/couchliteos-disk-update.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/disk-update$' services/couchliteos-disk-update.service
+rg -q 'couchliteos-updater apply-disk --found$' services/couchliteos-disk-update.service
+rg -q '^systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path$' \
+  config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q 'UPDATE THE INSTALLED SYSTEM \(KEEPS PAIRINGS AND SETTINGS\)' launcher/couchliteos_softwareupdate.py
+rg -q 'test_apply_disk.py' launcher/Makefile
+rg -q '^  disk-update\)$' scripts/couchliteos-qemu-smoke
+rg -q '^  disk-update-check\)$' scripts/couchliteos-qemu-smoke
+rg -q '^boot_and_wait disk-update COUCHLITEOS_SMOKE_DISK_UPDATED 2700$' tests/qemu-legacy-smoke.sh
+rg -q '^boot_and_wait disk-update-check COUCHLITEOS_SMOKE_DISK_UPDATE_READY 240$' tests/qemu-legacy-smoke.sh
+bash -n tests/qemu-legacy-smoke.sh
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh
@@ -844,11 +876,11 @@ refute rg -n 'show_message\("SUPPORT EXPORT' launcher/couchliteos-launcher.py
 
 # Boot speed: an installed system boots straight in (Shift/Esc shows the menu); the live
 # ISO keeps the menu its binary hook writes; the launcher never waits for the network.
-# Boot speed: an installed system boots straight in (3 s hidden window; Shift/Esc shows the
+# Boot speed: an installed system boots straight in (1 s hidden window; Shift/Esc shows the
 # menu); the live ISO keeps the menu its binary hook writes; the launcher never waits for the
 # network.
 rg -q '^GRUB_TIMEOUT_STYLE=hidden$' overlay/etc/default/grub.d/20-couchliteos.cfg
-rg -q '^GRUB_TIMEOUT=3$' overlay/etc/default/grub.d/20-couchliteos.cfg
+rg -q '^GRUB_TIMEOUT=1$' overlay/etc/default/grub.d/20-couchliteos.cfg
 refute rg -q 'hidden|GRUB_TIMEOUT' config/live-build/hooks/live/0100-autoboot.hook.binary
 refute rg -q 'network-online|wait-online|network-ready|tailscale|usbip|firewall' services/couchliteos-launcher.service
 rg -Fq 'systemd-analyze --no-pager critical-chain couchliteos-launcher.service' scripts/couchliteos-diagnostics
@@ -1287,6 +1319,18 @@ rg -q 'couchliteos_phone.py' launcher/Makefile
 rg -q 'test_phone.py' launcher/Makefile
 rg -q 'hmac.compare_digest' launcher/couchliteos_phone.py
 rg -q 'secrets.token_urlsafe\(16\)' launcher/couchliteos_phone.py
+# Artwork lookup (0.3.0): HTTPS allow-list, 5 MB cap, GdkPixbuf re-encode imported only when used, key 0600
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_artwork.py" "\$CHROOT/usr/libexec/couchliteos_artwork.py"$' build/configure.sh
+rg -q '^import couchliteos_artwork as artwork$' launcher/couchliteos-launcher.py
+rg -q '^import couchliteos_artwork as artwork$' launcher/couchliteos-tv.py
+rg -q 'couchliteos_artwork.py' launcher/Makefile
+rg -q 'test_artwork.py' launcher/Makefile
+rg -q '^MAX_IMAGE = 5 \* 1024 \* 1024$' launcher/couchliteos_artwork.py
+rg -q 'parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS' launcher/couchliteos_artwork.py
+rg -q '_write\(path, key.encode\("ascii"\), 0o600\)' launcher/couchliteos_artwork.py
+refute rg -q '^(import|from) gi\b' launcher/couchliteos_artwork.py
+refute rg -q '(print|log)\(.*\bkey\b' launcher/couchliteos_artwork.py
+python3 -m py_compile launcher/couchliteos_artwork.py
 # Upgrade notice: a one-time "what's new" screen, only for people who finished setup on an older version
 rg -q 'couchliteos_whatsnew.py' build/configure.sh
 rg -q '^import couchliteos_whatsnew as whatsnew' launcher/couchliteos-launcher.py
@@ -1297,7 +1341,7 @@ rg -q 'test_whatsnew.py' launcher/Makefile
 rg -Uq 'whatsnew\.show_once\(self\.screen, lambda: read_key\(self\.screen\)\)[^\n]*\n\s+if \(RUN / "reopen-setup"\)\.exists\(\):[^\n]*\n[^\n]*\n\s+self\.setup_wizard\(resume=True\)\n\s+else:\n\s+self\.setup_wizard\(\)' launcher/couchliteos-launcher.py
 # Its version and state come from the same places as the update check and the setup marker.
 rg -q 'update\.VERSION_FILES' launcher/couchliteos_whatsnew.py
-rg -q 'setup\.MARKER\.parent / "whatsnew-seen"' launcher/couchliteos_whatsnew.py
+rg -q 'SETUP_MARKER\.parent / "whatsnew-seen"' launcher/couchliteos_whatsnew.py
 # The notice names the old product once, on a line the rename script leaves alone.
 test "$(rg -c 'MOONLIGHTOS IS NOW CALLED COUCHLITEOS\. SAME SYSTEM.*# rename:keep$' launcher/couchliteos_whatsnew.py)" = 1  # rename:keep
 # Easier everyday use: gaming PC status line under the title (the probe runs in a thread)
@@ -1339,6 +1383,18 @@ rg -q 'test_tvscreens.py' launcher/Makefile
 refute rg -q '^\s*(import|from) gi\b' launcher/couchliteos_tvscreens.py
 rg -q '^FOOT = os.environ.get\("COUCHLITEOS_FOOT", "/usr/libexec/couchliteos-foot"\)$' launcher/couchliteos_tvscreens.py
 refute rg -q 'setup-complete' scripts/couchliteos-session
+# Quick menu, prompt bar, toasts and sounds (0.3.0 G4): plain Python next to the GTK window.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_quick.py" "\$CHROOT/usr/libexec/couchliteos_quick.py"$' build/configure.sh
+rg -q '^import couchliteos_quick as quick$' launcher/couchliteos-tv.py
+rg -q '^import couchliteos_quick as quick$' launcher/couchliteos-launcher.py
+rg -q 'test_quick.py' launcher/Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_quick.py
+for sound in move select back; do
+  [[ -f overlay/usr/share/couchliteos/sounds/$sound.wav ]]
+done
+rg -q '"pw-play"' launcher/couchliteos_quick.py
+rg -q '^pipewire$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q 'HOME_REQUEST.write_text\("guide\\n" if guide else "shortcut\\n"' launcher/gamepad-nav.py
 
 # Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)
 rg -q 'couchliteos_pads.py' build/configure.sh

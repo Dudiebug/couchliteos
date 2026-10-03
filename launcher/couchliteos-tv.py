@@ -3,15 +3,17 @@
 
 One full-screen window holding a stack of screens: HOME (top bar, GAMES, APPS and SYSTEM
 rows, prompt bar), STARTING / WAITING, a message screen (a failure, a question) and ACTIVE
-APPLICATIONS (Guide / Home with apps running); SETTINGS (two panes), POWER, WHAT'S NEW and
-the SOFTWARE UPDATE progress come from couchliteos_tvscreens. A Settings screen the TV
-interface does not draw itself, the setup wizard and a Remote Desktop start run as the
-classic curses screen in a foot window on top (`couchliteos-launcher --screen <name>`);
-the rows are read again when it closes.
+APPLICATIONS (a held Home shortcut with apps running); SETTINGS (two panes), POWER, WHAT'S
+NEW and the SOFTWARE UPDATE progress come from couchliteos_tvscreens. Over them: the quick
+menu (a Guide tap), toasts and the blank screen. A Settings screen the TV interface does
+not draw itself, the setup wizard and a Remote Desktop start run as the classic curses
+screen in a foot window on top (`couchliteos-launcher --screen <name>`); the rows are read
+again when it closes.
 
-The rows come from couchliteos_home.HomeModel; starting, resuming and closing
-apps is couchliteos_session's, the same code the classic launcher runs. Sizes, colours,
-keys and blanking are couchliteos_tvlayout's.
+The rows come from couchliteos_home.HomeModel; starting, resuming and closing apps is
+couchliteos_session's, the same code the classic launcher runs. Sizes, colours, keys and
+blanking are couchliteos_tvlayout's; the quick menu, prompt bar texts, toasts and sounds
+are couchliteos_quick's.
 
 Keys are the ones gamepad-nav sends (arrows, Enter, Esc, Delete, F5-F8, F12), so a
 controller, a TV remote and a keyboard all work. Guide / Home arrives as home.request.
@@ -27,14 +29,19 @@ import argparse
 import os
 import pathlib
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_apps as apps
+import couchliteos_artwork as artwork
 import couchliteos_controllers as controllers
+import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_home as home
+import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
+import couchliteos_quick as quick
 import couchliteos_session as session
 import couchliteos_stream as stream
 import couchliteos_theme as theme
@@ -63,6 +70,10 @@ RELOAD_SECONDS = 5  # how often the rows are read again (pairing, apps added in 
 AUTOSTREAM_SECONDS = 5
 REPO_THEMES = pathlib.Path(__file__).resolve().parents[1] / "overlay/usr/share/couchliteos/themes"
 BACK_HINT = "B / CIRCLE OR ESC GOES BACK"
+TOAST_TICK_MS = 250
+KEY_HOME_SECONDS = 1.0  # the Home key reaches the window and gamepad-nav: one press, not two
+ART_COLUMNS = 6
+ART_HINT = "A / CROSS OR ENTER CHOOSES  ·  B / CIRCLE OR ESC GOES BACK"
 
 
 def visible_applications() -> apps.LoadResult:
@@ -430,14 +441,16 @@ class Screens:
 
     def screens_tick(self) -> None:
         """The 1 s tick while a classic screen is on top or an update runs: nothing else happens."""
+        # Guide / Home (a tap or a held shortcut) does nothing else here: the quick menu cannot be
+        # drawn over a classic screen's window, and an update cannot be left. The press is taken (so
+        # it does not open the quick menu later) and a classic screen is put back in front.
+        pressed = quick.take_request(self.home_request) is not None
         if self.mode == "update" and self.progress is not None:
             self.update_tick()
         if self.child_pid is not None:
             self.idle.keep_awake()  # the classic screen blanks the screen itself
-            if self.home_request.exists():
-                # Guide brought this window up: the screen is still open, put it back in front. The
-                # Home press stays and is answered when the screen closes, as in classic Settings.
-                session.focus_launcher(tvscreens.CHILD_TITLE)
+            if pressed:
+                session.focus_launcher(tvscreens.CHILD_TITLE)  # gamepad-nav raised this window
 
     # ------------------------------------------------------------------ the start
 
@@ -492,6 +505,7 @@ class Tv(Screens, session.Session):
         )
         self.css = Gtk.CssProvider()
         self.init_screens()
+        self.init_quick()
 
     # ------------------------------------------------------------------ building
 
@@ -503,6 +517,7 @@ class Tv(Screens, session.Session):
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         overlay.set_child(self.stack)
+        self.build_quick(overlay)
         self.blank = Gtk.Box()
         self.blank.add_css_class("tv-blank")
         self.blank.set_visible(False)
@@ -596,6 +611,7 @@ class Tv(Screens, session.Session):
         colours = current_theme()
         self.css.load_from_data((tvlayout.stylesheet(colours, self.layout)
                                  + tvscreens.stylesheet(colours, self.layout)).encode(), -1)
+        self.relayout_quick()
         layout = self.layout
         for page in (self.home_page, self.active_page, *(entry[0] for entry in self.pages.values()),
                      *self.screen_pages):
@@ -622,8 +638,11 @@ class Tv(Screens, session.Session):
             box.add_css_class("tv-focused")
         box.set_size_request(layout.tile_width, layout.tile_height(row))
         if row != home.SYSTEM:
-            # A generated title card: the PC's initial on a game, the app's own on an app.
-            mark = label(tvlayout.initial(item.detail or item.label), "tv-initial", xalign=0.5)
+            # A game's cover art when there is some, else a generated title card: the PC's
+            # initial on a game, the app's own on an app.
+            mark = self.art_picture(self.cover(item)) if row == home.GAMES else None
+            if mark is None:
+                mark = label(tvlayout.initial(item.detail or item.label), "tv-initial", xalign=0.5)
             mark.set_vexpand(True)
             box.append(mark)
         name = label(item.label, "tv-name", xalign=0.5 if row == home.SYSTEM else 0.0)
@@ -660,6 +679,7 @@ class Tv(Screens, session.Session):
         self.bar_update.set_label(f"UPDATE {status.update}" if status.update else "")
         self.bar_update.set_visible(bool(status.update))
         self.home_status.set_label(self.status)
+        self.home_prompt.set_label(quick.prompt(self.family, quick.HOME_PROMPT))
 
     def show(self, name: str) -> None:
         self.mode = name
@@ -676,14 +696,16 @@ class Tv(Screens, session.Session):
     def render_active(self) -> None:
         clear(self.active_list)
         running = self.running_applications()
-        rows = [f"{app.name}  RUNNING" for app in running] + ["BACK TO HOME"]
+        rows = [f"{app.name}  RUNNING" for app in running] + ["QUICK MENU", "BACK TO HOME"]
         self.active_index = min(self.active_index, len(rows) - 1)
         for index, text in enumerate(rows):
-            item = label(text, "tv-item", xalign=0.5)
+            item = label(text, "tv-item", xalign=0.5, ellipsize=False)  # centred: its own width
             if index == self.active_index:
                 item.add_css_class("tv-focused")
             self.active_list.append(item)
-        self.active_hint.set_label(self.status or (tvlayout.ACTIVE_HINT if running else BACK_HINT))
+        on_app = self.active_index < len(running)
+        self.active_hint.set_label(self.status or quick.prompt(
+            self.family, quick.ACTIVE_PROMPT if on_app else quick.QUICK_PROMPT[:1] + quick.ACTIVE_PROMPT[-1:]))
 
     # ------------------------------------------------------------------ the main loop's own loops
 
@@ -697,7 +719,7 @@ class Tv(Screens, session.Session):
 
     def draw_launching(self, label_text: str, frame: str) -> None:
         self.show_text("busy", f"STARTING {label_text}  {frame}", "PLEASE WAIT",
-                       "HOLD SELECT+START (VIEW+MENU) TO COME BACK TO THE LAUNCHER")
+                       "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE")
 
     def launch_wait_begin(self) -> None:
         self.busy_depth += 1
@@ -811,11 +833,15 @@ class Tv(Screens, session.Session):
         if self.busy_depth and self.mode != "message":
             self.busy_pressed = True
             return True
+        self.sounds.for_key(name)
+        if self.mode not in ("message", "update") and (name == "home" or self.quick_open):
+            self.quick_key_or_open(name)  # a question on screen keeps Home as its NO
+            return True
         if self.status and self.mode == "home":
             self.status = ""  # a press dismisses the last result
             self.home_status.set_label("")
         handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key,
-                   **self.screen_keys()}.get(self.mode)
+                   "art": self.art_key, **self.screen_keys()}.get(self.mode)
         if handler is not None:
             handler(name)
         return True
@@ -844,6 +870,8 @@ class Tv(Screens, session.Session):
             self.run_action(model.activate())
         elif name == "home":
             self.open_active()
+        elif name == "hold-y":
+            self.change_artwork()
         elif name.startswith("shortcut:"):
             tag = name.split(":", 1)[1]
             app = next((item for item in visible_applications().applications if item.shortcut == tag), None)
@@ -856,11 +884,16 @@ class Tv(Screens, session.Session):
 
     def active_key(self, name: str) -> None:
         running = self.running_applications()
-        count = len(running) + 1
+        count = len(running) + 2  # QUICK MENU, BACK TO HOME
         if name in ("up", "down"):
             self.active_index = max(0, min(count - 1, self.active_index + (1 if name == "down" else -1)))
             self.status = ""
-        elif name in ("back", "home") or (name == "activate" and self.active_index >= len(running)):
+        elif name == "activate" and self.active_index == len(running):
+            self.status = ""
+            self.show("home")
+            self.open_quick()
+            return
+        elif name in ("back", "home") or (name == "activate" and self.active_index > len(running)):
             self.status = ""
             self.show("home")
             self.render_home()
@@ -953,17 +986,12 @@ class Tv(Screens, session.Session):
             session.focus_launcher()
             self.show("home")
             self.autostream()
-        if self.take_home_request():
+        kind = quick.take_request(self.home_request)
+        if kind is not None:
             self.idle.keep_awake()
             self.blank.set_visible(False)
             session.focus_launcher()
-            if self.mode == "active":
-                self.show("home")
-            elif self.running_applications():
-                self.open_active()
-            else:
-                self.set_launcher_focus(True)
-                self.show("home")
+            self.home_request_arrived(kind)
         action = self.idle.tick()
         if action == power.BLANK:
             self.blank.set_visible(True)
@@ -984,9 +1012,12 @@ class Tv(Screens, session.Session):
             if self.mode == "home":
                 self.render_home()
         self.was_running = running
+        self.tick_quick()
         if self.mode == "home":
+            self.art_tick()
             self.render_bar()
-            self.offer_update()
+            if not self.quick_open:
+                self.offer_update()
         elif self.mode == "active":
             self.render_active()
 
@@ -1001,6 +1032,358 @@ class Tv(Screens, session.Session):
             self.open_view("software-update")
         else:
             self.show("home")
+
+    # ------------------------------------------------------------------ quick menu, toasts, sounds
+
+    def init_quick(self) -> None:
+        self.family = controls.detect_family()
+        self.quick_open = False
+        self.quick_front = ""  # the app Guide was tapped over: B / Esc goes back to it
+        self.key_home_at = float("-inf")
+        self.quick = quick.QuickMenu(
+            quick.Sources.system(
+                battery=self.controllers.line, network=home.link_status,
+                running=lambda: len(self.running_applications()), can_sleep=lambda: self.can_sleep,
+            ),
+            extra=self.quick_stream_items,
+        )
+        self.toasts = quick.Toasts()
+        self.pcstatus = pcstatus.Monitor()
+        self.toast_feed = quick.ToastFeed(
+            self.toasts, pads=lambda: controls.pad_names(controls.PROC_INPUT.read_text(errors="replace")),
+            low=self.controllers.low, pc_line=self.pcstatus.line, update=self.updates.available,
+        )
+        self.sounds = quick.Sounds(muted=self.apps_running)
+        self.quick_css = Gtk.CssProvider()
+
+    def quick_stream_items(self) -> list[quick.Item]:
+        """Rows at the top of the quick menu while a stream runs (R1: the preset and SHOW STATS)."""
+        return []
+
+    def quick_extra_action(self, action: tuple) -> None:
+        """A quick_stream_items row was chosen (R1)."""
+
+    def build_quick(self, overlay: "Gtk.Overlay") -> None:
+        """The quick menu panel (right edge) and the toast card (top right), over every screen."""
+        panel = self.quick_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        panel.add_css_class("tv-quick")
+        panel.set_halign(Gtk.Align.END)
+        panel.set_valign(Gtk.Align.FILL)
+        panel.append(label("QUICK MENU", "tv-title"))
+        self.quick_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.quick_rows.set_vexpand(True)
+        panel.append(self.quick_rows)
+        self.quick_prompt = label("", "tv-prompt", wrap=True)
+        panel.append(self.quick_prompt)
+        panel.set_visible(False)
+        overlay.add_overlay(panel)
+        toast = self.toast = label("", "tv-toast", ellipsize=False, wrap=True)
+        toast.set_halign(Gtk.Align.END)
+        toast.set_valign(Gtk.Align.START)
+        toast.set_hexpand(False)
+        toast.set_focusable(False)  # a toast never takes focus, and the pointer passes through it
+        toast.set_can_target(False)
+        toast.set_visible(False)
+        overlay.add_overlay(toast)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self.quick_css, Gtk.STYLE_PROVIDER_PRIORITY_USER,
+        )
+
+    def relayout_quick(self) -> None:
+        layout = self.layout
+        self.quick_css.load_from_data(quick.stylesheet(current_theme(), layout).encode(), -1)
+        self.quick_width = max(1, round(layout.width * 0.34))
+        self.quick_panel.set_size_request(self.quick_width, -1)
+        self.quick_panel.set_spacing(layout.px(16))
+        self.toast.set_margin_top(layout.margin_y)
+        self.toast.set_max_width_chars(40)
+        self.place_toast()
+
+    def place_toast(self) -> None:
+        """Top right, or left of the quick menu while it is open, so it never covers a row."""
+        self.toast.set_margin_end(self.layout.margin_x + (self.quick_width if self.quick_open else 0))
+
+    def render_quick(self) -> None:
+        clear(self.quick_rows)
+        for index, item in enumerate(self.quick.items):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            row.add_css_class("tv-quick-row")
+            if not item.selectable:
+                row.add_css_class("tv-info")
+            if index == self.quick.index:
+                row.add_css_class("tv-focused")
+            row.append(label(item.label))
+            if item.value:
+                value = label(item.value, xalign=1.0, ellipsize=False)
+                value.set_hexpand(False)
+                row.append(value)
+            self.quick_rows.append(row)
+        self.quick_prompt.set_label(self.quick.prompt(self.family))
+
+    def open_quick(self) -> None:
+        self.quick_front = quick.front_app_id(self.run_dir) if self.apps_running() else ""
+        self.set_launcher_focus(True)  # gamepad-nav forwards the pad's keys to this menu over an app
+        self.quick_open = True
+        self.quick.open()
+        self.render_quick()
+        self.quick_panel.set_visible(True)
+        self.place_toast()
+
+    def close_quick(self, resume: bool = True) -> None:
+        """Close the menu. `resume`: back to the app Guide was tapped over, if it still runs."""
+        self.quick_open = False
+        self.quick_panel.set_visible(False)
+        self.place_toast()
+        front, self.quick_front = self.quick_front, ""
+        if resume and front:
+            app = next((item for item in self.running_applications() if item.id == front), None)
+            if app is not None and self.focus_app(app):
+                return
+        if self.mode == "home":
+            self.render_home()
+
+    def home_request_arrived(self, kind: str) -> None:
+        """Guide / Home through gamepad-nav: a tap opens or closes the quick menu, a held shortcut goes Home."""
+        if kind == quick.GUIDE and time.monotonic() - self.key_home_at < KEY_HOME_SECONDS:
+            return  # the Home key this window already acted on
+        target = quick.home_target(kind, self.quick_open, self.mode, bool(self.running_applications()))
+        if target == "quick":
+            self.open_quick()
+        elif target == "close":
+            self.close_quick()
+        else:
+            if self.quick_open:
+                self.close_quick(resume=False)
+            if target == "active":
+                self.open_active()
+            else:
+                self.set_launcher_focus(True)
+                self.show("home")
+                self.render_home()
+
+    def quick_key_or_open(self, name: str) -> None:
+        if name == "home":  # the keyboard's Home key: a Guide tap
+            self.key_home_at = time.monotonic()
+            self.home_request.unlink(missing_ok=True)
+            if self.quick_open:
+                self.close_quick()
+            else:
+                self.open_quick()
+            return
+        menu = self.quick
+        if name in ("up", "down"):
+            menu.move(1 if name == "down" else -1)
+        elif name in ("left", "right"):
+            menu.adjust(1 if name == "right" else -1)
+        elif name == "back":
+            self.close_quick()
+            return
+        elif name == "activate":
+            self.quick_action(menu.activate())
+        if self.quick_open:
+            self.render_quick()
+
+    def quick_action(self, action: tuple) -> None:
+        if not action:
+            return
+        if action == ("active",):
+            self.close_quick(resume=False)
+            self.open_active()
+        elif action == ("home",):
+            self.close_quick(resume=False)
+            self.show("home")
+            self.render_home()
+        elif action[0] == "power":
+            self.close_quick(resume=False)
+            request = action[1]
+            question = quick.POWER_QUESTIONS.get(request)
+            if question is not None:
+                answer = self.ask(*question, tvlayout.QUESTION_HINT)
+                self.show("home")
+                if answer != "yes":
+                    return
+            try:
+                self.request(request)  # couchliteos-<request>.path does the root work
+            except OSError as error:
+                self.status = f"COULD NOT ASK FOR {question[0] if question else 'SLEEP'}: {error}".upper()
+                self.render_bar()
+        else:
+            self.quick_extra_action(action)
+
+    def tick_quick(self) -> None:
+        """Once a second: the pad family for the prompts, new toasts, and the open menu's values."""
+        self.family = controls.detect_family()
+        self.toast_feed.poll()
+        if self.quick_open:
+            self.quick.refresh()
+            self.render_quick()
+
+    def render_toast(self) -> bool:
+        try:
+            text = self.toasts.current()
+            if self.toast.get_label() != text:
+                self.toast.set_label(text)
+            self.toast.set_visible(bool(text))
+        except Exception as error:  # noqa: BLE001 - toasts must never stop the home screen
+            display.log(f"tv toast failed: {error!r}", session.LOG)
+        return True  # keep the timeout
+
+    # ------------------------------------------------------------------ artwork
+
+    def art_worker(self) -> artwork.Worker:
+        """The background cover lookup, made on first use."""
+        worker = getattr(self, "_art_worker", None)
+        if worker is None:
+            worker = self._art_worker = artwork.Worker()
+        return worker
+
+    def cover(self, item: home.Tile) -> pathlib.Path | None:
+        """A game tile's cover file (picked, Moonlight's, or looked up), None for the title card."""
+        if not item.action or item.action[0] != "stream":
+            return None
+        _kind, host, app = item.action
+        try:
+            return self.art_worker().art(host.uuid or host.name, app, host.app_id(app), host.label)
+        except Exception as error:  # noqa: BLE001 - no art is never a reason to lose the home screen
+            display.log(f"tv artwork failed: {error!r}", session.LOG)
+            return None
+
+    def art_picture(self, path: pathlib.Path | None, width: int = -1, height: int = -1) -> "Gtk.Picture | None":
+        """A picture of a cover file; textures are kept until the file changes."""
+        if path is None:
+            return None
+        textures = self.__dict__.setdefault("_art_textures", {})
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        texture = textures.get(str(path), (None, None))
+        if texture[0] != stamp:
+            try:
+                texture = (stamp, Gdk.Texture.new_from_filename(str(path)))
+            except GLib.Error:
+                return None
+            if len(textures) > 64:
+                textures.clear()
+            textures[str(path)] = texture
+        picture = Gtk.Picture.new_for_paintable(texture[1])
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_can_shrink(True)
+        picture.set_size_request(width, height)
+        return picture
+
+    def art_tick(self) -> None:
+        if self.art_worker().take_changed():
+            self.render_home()
+
+    def change_artwork(self) -> None:
+        """Hold Y on a game: up to 12 covers to pick from, RESET and TITLE CARD."""
+        item = self.model.focused()
+        if item is None or not item.action or item.action[0] != "stream":
+            return
+        _kind, host, app = item.action
+        worker = self.art_worker()
+        found: list[pathlib.Path] = []
+        done = threading.Event()
+
+        def look() -> None:
+            try:
+                if artwork.lookup_enabled():  # with LOOKUP OFF no name leaves the box
+                    found.extend(worker.choices(app))
+            except Exception:  # noqa: BLE001 - no covers still leaves RESET and TITLE CARD
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=look, name="artwork-choices", daemon=True).start()
+        self.busy_depth += 1
+        self.busy_pressed = False
+        try:
+            while not done.is_set():
+                if self.wait_tick(f"LOOKING FOR COVERS FOR {item.label}", "PLEASE WAIT"):
+                    self.status = "CHANGE ARTWORK CANCELLED"
+                    self.show("home")
+                    self.render_home()
+                    return
+        finally:
+            self.busy_depth -= 1
+        self.art_choice = (host, app, item.label, [*found, None, artwork.TITLE_CARD])
+        self.art_index = 0
+        if not found:
+            self.status = "NO COVERS FOUND" if artwork.lookup_enabled() else "ARTWORK LOOKUP IS OFF IN SETTINGS > APPEARANCE"
+        self.render_art()
+        self.show("art")
+
+    def render_art(self) -> None:
+        """CHANGE ARTWORK: covers in rows of ART_COLUMNS, then RESET and TITLE CARD."""
+        if "art" not in self.pages:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box.set_valign(Gtk.Align.CENTER)
+            title = label("", "tv-title", xalign=0.5, wrap=True)
+            grid = Gtk.Grid()
+            grid.set_halign(Gtk.Align.CENTER)
+            hint = label("", "tv-prompt", xalign=0.5, wrap=True)
+            for widget in (title, grid, hint):
+                box.append(widget)
+            self.stack.add_named(box, "art")
+            self.pages["art"] = (box, title, grid, hint)
+        box, title, grid, hint = self.pages["art"]
+        layout = self.layout
+        box.set_margin_start(layout.margin_x)
+        box.set_margin_end(layout.margin_x)
+        box.set_margin_top(layout.margin_y)
+        box.set_margin_bottom(layout.margin_y)
+        box.set_spacing(layout.px(16))
+        grid.set_row_spacing(layout.gap)
+        grid.set_column_spacing(layout.gap)
+        _host, _app, name, choices = self.art_choice
+        title.set_label(f"CHANGE ARTWORK: {name}")
+        hint.set_label(self.status or ART_HINT)
+        while (child := grid.get_first_child()) is not None:
+            grid.remove(child)
+        width = max(1, min(layout.px(180), (layout.width - 2 * layout.margin_x) // ART_COLUMNS - layout.gap))
+        covers = len(choices) - 2
+        for index, choice in enumerate(choices):
+            cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            cell.add_css_class("tv-tile")
+            if index == self.art_index:
+                cell.add_css_class("tv-focused")
+            picture = self.art_picture(choice, width, width * 3 // 2) if index < covers else None
+            if picture is not None:
+                cell.append(picture)
+            else:
+                text = "RESET" if choice is None else "TITLE CARD" if choice == artwork.TITLE_CARD else "NO PREVIEW"
+                cell.set_size_request(width, -1)
+                cell.append(label(text, "tv-name", xalign=0.5, ellipsize=False))
+            if index < covers:
+                grid.attach(cell, index % ART_COLUMNS, index // ART_COLUMNS, 1, 1)
+            else:  # RESET and TITLE CARD share the last row
+                grid.attach(cell, (index - covers) * 3, (covers + ART_COLUMNS - 1) // ART_COLUMNS, 3, 1)
+
+    def art_key(self, name: str) -> None:
+        host, app, _name, choices = self.art_choice
+        last = len(choices) - 1
+        if name in ("left", "right"):
+            self.art_index = max(0, min(last, self.art_index + (1 if name == "right" else -1)))
+        elif name in ("up", "down"):
+            self.art_index = max(0, min(last, self.art_index + (ART_COLUMNS if name == "down" else -ART_COLUMNS)))
+        elif name in ("back", "home"):
+            self.status = ""
+            self.show("home")
+            self.render_home()
+            return
+        elif name == "activate":
+            choice = choices[self.art_index]
+            try:
+                self.art_worker().pick(host.uuid or host.name, app, choice)
+                self.status = {None: "ARTWORK RESET", artwork.TITLE_CARD: "TITLE CARD CHOSEN"}.get(choice, "ARTWORK CHANGED")
+            except OSError as error:
+                self.status = f"NOT SAVED: {error}".upper()
+            self.show("home")
+            self.render_home()
+            return
+        self.status = ""
+        self.render_art()
 
     # ------------------------------------------------------------------ start
 
@@ -1031,8 +1414,10 @@ class Tv(Screens, session.Session):
         self.prepare_session()
         self.controllers.start()
         self.updates.start()
+        self.pcstatus.start()
         self.build()
         GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
+        GLib.timeout_add(TOAST_TICK_MS, self.render_toast)
 
 
 def main(argv: list[str] | None = None) -> int:

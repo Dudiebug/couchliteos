@@ -10,6 +10,10 @@ request files below /run/couchliteos; couchliteos-update.service runs `run` as r
     apply-root TARGET --status FILE [--force] [--snapshot-done] [--no-snapshot]
                                               the install step itself
     delete-snapshot                           remove the saved previous version (Settings)
+    request-restore                           ask for a restore at the next start, then restart (Settings)
+    restore                                   put the saved previous version back, then restart (boot)
+    find-installs                             live USB: list the installed systems on the disks
+    apply-disk DEVICE|--found [--force]       live USB: update the installed system on DEVICE
 
 Before anything is written, `run` and `apply-iso` save the running system as the one snapshot
 (couchliteos_snapshot) unless --no-snapshot is given or config.ini says [update] snapshot = off.
@@ -21,6 +25,9 @@ from 0.2.x to this version can be undone too.
 `apply-root /mnt` inside a chroot of it (the running disk is bind-mounted at /mnt), so the logic
 that does the install is always the newest one. `apply-root` is a stable interface forever.
 Progress goes to a small JSON status file the launcher polls.
+
+`restore` works the same way the other way round: it mounts the saved image and runs THIS program's
+`apply-root /mnt --restore` inside a chroot of it, so the newest logic puts the old files back.
 
 Standard library only; every system effect goes through Env so tests can use temp directories.
 """
@@ -117,6 +124,14 @@ VAR_EXCLUDES = (
     "/lib/dpkg/",  # has its own run with delete and the protect filter
 )
 RSYNC_BASE = ("rsync", "-aHAX", "--numeric-ids", "--delay-updates")
+STATE_REL = "var/lib/couchliteos"   # the launcher's settings, pairings and home: a restore brings them back
+WHATSNEW_REL = "var/lib/couchliteos/whatsnew-seen"
+# Root's own: /run/couchliteos and the snapshot's parent belong to the launcher's user.
+RESTORE_DIR = pathlib.Path("/run/couchliteos-restore")
+HELD_REL = "var/lib/couchliteos-update/restore.squashfs"
+MSG_NO_SAVED = "THERE IS NO SAVED VERSION TO RESTORE, OR IT IS DAMAGED"
+MSG_RESTORE = "RESTORE FAILED: SEE /var/log/couchliteos/update.log"
+RESTORE_FAILED_PAUSE = 30   # seconds the boot screen shows why a restore failed
 REMAP_DIRS = ("var/lib", "var/log", "var/cache", "var/spool", "home", "root")
 ACCOUNT_FILES = ("passwd", "group", "shadow", "gshadow")
 
@@ -185,6 +200,9 @@ class Env:
     clock: Callable[[], float] = time.monotonic
     euid: Callable[[], int] = os.geteuid
     log: Callable[[str], None] | None = None
+    restore_dir: pathlib.Path = RESTORE_DIR
+    wall_clock: Callable[[], float] = time.time
+    sleep: Callable[[float], None] = time.sleep
 
     def note(self, text: str) -> None:
         if self.log:
@@ -192,11 +210,16 @@ class Env:
 
 
 class Status:
-    """The JSON file the launcher polls: {"phase", "percent", "message", "version"}."""
+    """The JSON file the launcher polls: {"phase", "percent", "message", "version"}.
 
-    def __init__(self, path: pathlib.Path, version: str = "") -> None:
+    With `echo` each new message is also printed (a restore at boot shows its progress that way).
+    """
+
+    def __init__(self, path: pathlib.Path, version: str = "", echo: Callable[[str], None] | None = None) -> None:
         self.path = pathlib.Path(path)
         self.version = version
+        self.echo = echo
+        self._said = ""
 
     def set(self, phase: str, message: str, percent: int | None = None) -> None:
         if phase not in PHASES:
@@ -204,6 +227,10 @@ class Status:
         if percent is not None:
             percent = max(0, min(100, int(percent)))
         text = json.dumps({"phase": phase, "percent": percent, "message": message, "version": self.version})
+        if self.echo and message != self._said:
+            self._said = message
+            with contextlib.suppress(Exception):
+                self.echo(message)
         try:  # best effort: a status that cannot be written must not stop the update
             write_atomic(self.path, text + "\n", 0o644)
         except OSError:
@@ -554,11 +581,13 @@ def _members(row: list[str]) -> list[str]:
     return [name for name in row[3].split(",") if name]
 
 
-def merge_accounts(image: dict[str, str], target: dict[str, str]) -> Accounts:
+def merge_accounts(image: dict[str, str], target: dict[str, str], renames: dict[str, str] | None = None) -> Accounts:
     """The image's users and groups, plus everything only the box has (maintenance user, its groups).
 
     Passwords stay as the box has them. A box-only account whose id the image now uses is skipped.
+    `renames` maps an old group name to the image's new one: its files get the new gid (apply-disk).
     """
+    renames = renames or {}
     skipped: list[str] = []
     image_users, box_users = _rows(image["passwd"], 7, (2,)), _rows(target["passwd"], 7, (2,))
     users = [list(row) for row in image_users]
@@ -593,6 +622,13 @@ def merge_accounts(image: dict[str, str], target: dict[str, str]) -> Accounts:
     for row in box_groups:
         gid = int(row[2])
         if row[0] in gids:
+            continue
+        renamed = renames.get(row[0])
+        if renamed in gids:
+            gid_map.setdefault(gid, gids[renamed])
+            new_row = next(group for group in groups if group[0] == renamed)
+            members = _members(new_row) + [name for name in _members(row) if name not in _members(new_row)]
+            new_row[3] = ",".join(name for name in members if name in names)
             continue
         if gid in taken_gids:
             skipped.append(f"group {row[0]} (gid {gid} is taken)")
@@ -774,10 +810,14 @@ def _rsync_dir(base: pathlib.Path, rel: str) -> str:
 
 
 def rsync_steps(
-    image: pathlib.Path, target: pathlib.Path, filter_system: pathlib.Path, filter_dpkg: pathlib.Path
+    image: pathlib.Path, target: pathlib.Path, filter_system: pathlib.Path, filter_dpkg: pathlib.Path,
+    restore: bool = False,
 ) -> list[tuple[str, list[str]]]:
     """The four rsync runs, source = the image, destination = the box. Nothing deletes except
-    `system` and `dpkg`, and those only after the copy and never what the protect filter names."""
+    `system` and `dpkg`, and those only after the copy and never what the protect filter names.
+
+    A restore adds a fifth, `state`: the launcher's settings as they were when the image was saved
+    (deleting what came later), except the snapshot itself."""
 
     def excludes(patterns: Iterable[str]) -> list[str]:
         return [f"--exclude={pattern}" for pattern in patterns]
@@ -790,7 +830,10 @@ def rsync_steps(
         ("var", [*base, *excludes(VAR_EXCLUDES), _rsync_dir(image, "/var/"), _rsync_dir(target, "/var/")]),
         ("dpkg", [*base, "--delete-after", f"--filter=merge {filter_dpkg}", "--exclude=/status",
                   _rsync_dir(image, "/var/lib/dpkg/"), _rsync_dir(target, "/var/lib/dpkg/")]),
-    ]
+    ] + ([
+        ("state", [*base, "--delete-after", "--exclude=/snapshot/",
+                   _rsync_dir(image, f"/{STATE_REL}/"), _rsync_dir(target, f"/{STATE_REL}/")]),
+    ] if restore else [])
 
 
 # ------------------------------------------------------------------ apply-root
@@ -800,19 +843,30 @@ def _read_version(path: pathlib.Path) -> str:
     return update.installed_version([path])
 
 
-def preflight(target: pathlib.Path, image: pathlib.Path, env: Env, force: bool) -> str:
-    """Refuse before anything is written; returns the version being installed."""
-    installed = _read_version(target / VERSION_REL)
-    if not installed:
-        raise UpdateFailed("THIS DISK IS NOT A COUCHLITEOS BOX")
+def preflight(target: pathlib.Path, image: pathlib.Path, env: Env, force: bool, legacy: bool = False) -> str:
+    """Refuse before anything is written; returns the version being installed.
+
+    `legacy` (apply-disk) also takes a box of 0.2.0 or older: MoonlightOS names, or no version file.
+    """
+    if legacy:
+        found = box_identity(target)
+        if found is None:
+            raise UpdateFailed(MSG_NO_INSTALL)
+        installed, theirs = found
+        if legacy_conflicts(target):
+            raise UpdateFailed(MSG_DISK_LAYOUT)
+    else:
+        installed = _read_version(target / VERSION_REL)
+        if not installed:
+            raise UpdateFailed("THIS DISK IS NOT A COUCHLITEOS BOX")
+        theirs = update.read_profile(target / PROFILE_REL).get("PROFILE_NAME")
     new = _read_version(image / VERSION_REL)
     if not new:
         raise UpdateFailed("THIS UPDATE HAS NO VERSION")
     ours = update.read_profile(image / PROFILE_REL).get("PROFILE_NAME")
-    theirs = update.read_profile(target / PROFILE_REL).get("PROFILE_NAME")
     if not ours or ours != theirs:
         raise UpdateFailed(MSG_OTHER_BOX)
-    if not force and not update.is_newer(new, installed):
+    if not force and installed and not update.is_newer(new, installed):
         raise UpdateFailed("THIS UPDATE IS NOT NEWER THAN THE BOX")
     if env.free_bytes(target) < SPACE_FOR_INSTALL:
         raise UpdateFailed(f"NOT ENOUGH FREE SPACE: NEED {SPACE_FOR_INSTALL // GIB} GB")
@@ -850,17 +904,29 @@ def unmount(env: Env, mountpoint: str, log: Callable[[str], None] | None = None)
 def apply_root(
     target: pathlib.Path, status: Status, env: Env, *, force: bool = False, image: pathlib.Path = pathlib.Path("/"),
     save_first: bool = True, save: Callable[..., None] | None = None,
+    legacy: bool = False, grub_install: list[str] | None = None, restore: bool = False,
 ) -> None:
     """Replace the system files of the box at `target` with those of the image at `image`.
 
     With `save_first` (the caller did not save the box: an updater older than 0.3.0), `target` is
-    saved as the snapshot before anything of it is written.
+    saved as the snapshot before anything of it is written. `legacy` and `grub_install` are for
+    apply-disk: a box of 0.2.0 or older is moved to the new names first (`migrate_legacy`), and
+    `grub_install` (a command run in the target) puts the boot loader back too.
+
+    With `restore` the image is the saved snapshot: any version goes, the launcher's state comes
+    back too (the `state` step), and the box ends up as it was, so nothing only the box has is
+    kept (the snapshot already holds what the installer added). /etc files in ETC_KEEP stay as they
+    are now. Then the automatic update check pauses and What's New counts as seen. A restore is
+    never `legacy`: the snapshot was saved by 0.3.0 or later, so the box already has the new names.
     """
+    if restore and legacy:
+        raise ValueError("a restore is never a legacy update")
     target, image = pathlib.Path(target), pathlib.Path(image)
-    new_version = preflight(target, image, env, force)
+    new_version = preflight(target, image, env, force or restore, legacy)
     log = Log(target / LOG_REL)
     status.version = new_version
-    log(f"update to {new_version} from {_read_version(target / VERSION_REL)} (force={force}, save={save_first})")
+    kind = "restore" if restore else "update"
+    log(f"{kind} to {new_version} from {_read_version(target / VERSION_REL)} (force={force}, save={save_first})")
     if save_first:
         # Inside the new image the default log is on its read-only squashfs: note into the box's log.
         (save or save_snapshot)(dataclasses.replace(env, log=log), status, target)
@@ -870,9 +936,11 @@ def apply_root(
         status.set("installing", message, percent)
 
     step("PREPARING THE UPDATE...", 2)
+    if legacy:
+        migrate_legacy(target, log, env.chown)
     image_packages = parse_dpkg_status(_read(image / "var/lib/dpkg/status"))
     box_packages = parse_dpkg_status(_read(target / "var/lib/dpkg/status"))
-    extras = extra_packages(box_packages, image_packages)
+    extras = {} if restore else extra_packages(box_packages, image_packages)
     log(f"packages only the box has: {len(extras)}")
     protected = protected_paths(target, image, extras)
     env.run_dir.mkdir(parents=True, exist_ok=True)
@@ -886,7 +954,7 @@ def apply_root(
 
         # Accounts first, while every file still carries the ids the box had; the copy below then
         # gives image-owned files the new ids, and running this again after a failure changes nothing.
-        accounts = merge_accounts(read_accounts(image), read_accounts(target))
+        accounts = merge_accounts(read_accounts(image), read_accounts(target), LEGACY_GROUPS if legacy else None)
         for line in accounts.skipped:
             log(f"accounts: skipped {line}")
         step("KEEPING YOUR ACCOUNTS...", 5)
@@ -897,21 +965,29 @@ def apply_root(
         messages = {
             "system": ("COPYING SYSTEM FILES...", 10), "etc": ("UPDATING SETTINGS FILES...", 60),
             "var": ("UPDATING SYSTEM DATA...", 70), "dpkg": ("UPDATING THE PACKAGE LIST...", 75),
+            "state": ("RESTORING YOUR SETTINGS...", 80),
         }
-        for name, argv in rsync_steps(image, target, filter_system, filter_dpkg):
+        for name, argv in rsync_steps(image, target, filter_system, filter_dpkg, restore):
             step(*messages[name])
             if sh(env, argv, log).returncode not in RSYNC_OK:
                 raise UpdateFailed(f"INSTALL FAILED WHILE COPYING FILES ({name.upper()}). {MSG_INSTALL[15:]}")
             if name == "etc":
                 _tidy_etc(target, image, log)
+                if legacy:
+                    remove_legacy_units(target, log)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
     write_atomic(
         target / "var/lib/dpkg/status",
         merge_dpkg_status(_read(image / "var/lib/dpkg/status"), list(extras.values())), 0o644)
-    _boot_menu(target, env, log, step)
+    _boot_menu(target, env, log, step, grub_install)
     write_atomic(target / VERSION_REL, new_version + "\n", 0o644)
+    if restore:
+        try:
+            _after_restore(target, new_version, env, log)
+        except OSError as error:  # the files are back; only the courtesies are missing
+            log(f"restore: could not pause the update check or mark What's New: {error}")
     # Browsers are not in the image (the box installed them), so they are kept as extras;
     # couchliteos-browser-refresh.service installs them again on the new system at the next start.
     packages = {item.package for item in browser.BROWSERS.values()}
@@ -920,8 +996,18 @@ def apply_root(
         log("browsers installed: refresh marked for the next start")
     step("SAVING TO THE DISK...", 98)
     sh(env, ["sync"], log)
-    log(f"update to {new_version} done")
+    log(f"{kind} to {new_version} done")
     status.set("restarting", "RESTARTING...", 100)
+
+
+def _after_restore(target: pathlib.Path, version: str, env: Env, log: Callable[[str], None]) -> None:
+    """Pause the automatic update check for a week (it would offer the same update at once) and
+    mark the restored version's What's New as seen. Both files are the launcher's own."""
+    until = int(env.wall_clock() + update.PAUSE_SECONDS)
+    snapshot.set_option("paused_until", str(until), target)
+    state = os.stat(target / STATE_REL)
+    write_atomic(target / WHATSNEW_REL, f"{version}\n", 0o644, (state.st_uid, state.st_gid), env.chown)
+    log(f"restore: update check paused until {time.strftime('%Y-%m-%d %H:%M', time.gmtime(until))} UTC")
 
 
 def _read(path: pathlib.Path) -> str:
@@ -941,7 +1027,8 @@ def _tidy_etc(target: pathlib.Path, image: pathlib.Path, log: Callable[[str], No
     write_manifest(manifest_path, etc_manifest(image / "etc"))
 
 
-def _boot_menu(target: pathlib.Path, env: Env, log: Callable[[str], None], step) -> None:
+def _boot_menu(target: pathlib.Path, env: Env, log: Callable[[str], None], step,
+               grub_install: list[str] | None = None) -> None:
     kernels = sorted(path.name.removeprefix("vmlinuz-") for path in (target / "boot").glob("vmlinuz-*"))
     if not kernels:
         log("no kernel in /boot after the copy")
@@ -952,6 +1039,8 @@ def _boot_menu(target: pathlib.Path, env: Env, log: Callable[[str], None], step)
         for kernel in kernels:
             mode = "-u" if (target / "boot" / f"initrd.img-{kernel}").exists() else "-c"
             commands.append(["update-initramfs", mode, "-k", kernel])
+        if grub_install:  # apply-disk on a box whose GRUB predates the boot check
+            commands.append(grub_install)
         commands.append(["update-grub"])
         for command in commands:
             if sh(env, ["chroot", str(target), *command], log).returncode != 0:
@@ -977,6 +1066,25 @@ def save_snapshot(env: Env, status: Status, root: pathlib.Path | None = None) ->
 
 
 # ------------------------------------------------------------------ apply-iso (the handover)
+
+
+def _mount(env: Env, stack: contextlib.ExitStack, argv: list[str], mountpoint: pathlib.Path, message: str,
+           rslave: bool = False) -> None:
+    """Mount and register the unmount on `stack`; a failure raises UpdateFailed(message)."""
+    if sh(env, ["mount", *argv, str(mountpoint)]).returncode != 0:
+        raise UpdateFailed(message)
+    stack.callback(unmount, env, str(mountpoint))
+    if rslave and sh(env, ["mount", "--make-rslave", str(mountpoint)]).returncode != 0:
+        raise UpdateFailed(message)
+
+
+def _enter(env: Env, stack: contextlib.ExitStack, new: pathlib.Path, message: str) -> None:
+    """Make the image mounted at `new` a chroot whose /mnt is this box."""
+    _mount(env, stack, ["--bind", "/"], new / "mnt", message, rslave=True)
+    _mount(env, stack, ["-t", "proc", "proc"], new / "proc", message)
+    _mount(env, stack, ["--rbind", "/sys"], new / "sys", message, rslave=True)
+    _mount(env, stack, ["--rbind", "/dev"], new / "dev", message, rslave=True)
+    _mount(env, stack, ["--bind", "/run"], new / "run", message, rslave=True)
 
 
 def is_block_device(path: pathlib.Path) -> bool:
@@ -1009,12 +1117,8 @@ def apply_iso(
         directory.mkdir(parents=True, exist_ok=True)
 
     with contextlib.ExitStack() as stack:
-        def mount(argv: list[str], mountpoint: pathlib.Path, rslave: bool = False) -> None:
-            if sh(env, ["mount", *argv, str(mountpoint)]).returncode != 0:
-                raise UpdateFailed("COULD NOT OPEN THE UPDATE FILE")
-            stack.callback(unmount, env, str(mountpoint))
-            if rslave and sh(env, ["mount", "--make-rslave", str(mountpoint)]).returncode != 0:
-                raise UpdateFailed("COULD NOT OPEN THE UPDATE FILE")
+        def mount(argv: list[str], mountpoint: pathlib.Path) -> None:
+            _mount(env, stack, argv, mountpoint, "COULD NOT OPEN THE UPDATE FILE")
 
         mount(["-o", "ro" if is_block_device(source) else "ro,loop", str(source)], iso_dir)
         mount(["-t", "squashfs", "-o", "ro,loop", str(iso_dir / "live/filesystem.squashfs")], new)
@@ -1026,11 +1130,7 @@ def apply_iso(
         if save_first:
             (save or save_snapshot)(env, status)
             status.set("installing", "INSTALLING THE UPDATE... KEEP THE BOX PLUGGED IN.")
-        mount(["--bind", "/"], new / "mnt", rslave=True)
-        mount(["-t", "proc", "proc"], new / "proc")
-        mount(["--rbind", "/sys"], new / "sys", rslave=True)
-        mount(["--rbind", "/dev"], new / "dev", rslave=True)
-        mount(["--bind", "/run"], new / "run", rslave=True)
+        _enter(env, stack, new, "COULD NOT OPEN THE UPDATE FILE")
         argv = ["chroot", str(new), f"/{UPDATER_REL}", "apply-root", "/mnt", "--status", str(status.path)]
         if force:
             argv.append("--force")
@@ -1040,6 +1140,382 @@ def apply_iso(
             reported = read_status(status.path)
             message = reported.get("message") if reported.get("phase") == "failed" else None
             raise UpdateFailed(message if isinstance(message, str) and message else MSG_INSTALL)
+
+
+# ------------------------------------------------------------------ restore (the saved previous version)
+
+# This program and the modules it imports, copied out so the snapshot's python3 runs today's logic.
+TOOL = (pathlib.Path(__file__), pathlib.Path(update.__file__), pathlib.Path(snapshot.__file__),
+        pathlib.Path(browser.__file__))
+
+
+def load_squashfs(env: Env) -> None:
+    """squashfs and loop for the mount. Booted from the GRUB entry, the kernel is the saved one and
+    this disk may no longer have its modules: then the boot copy's are loaded, in their order."""
+    if sh(env, ["modprobe", "-a", *snapshot.MODULES]).returncode == 0:
+        return
+    for path in snapshot.load_order(env.root):
+        sh(env, ["insmod", path])  # one already loaded answers "File exists": the mount says if it worked
+
+
+def request_restore(env: Env, status: Status) -> None:
+    """Settings > RESTORE PREVIOUS VERSION: leave the request for the boot service (then restart)."""
+    refuse_live(env)
+    saved = snapshot.info(env.root)
+    if saved is None or not snapshot.request(env, env.root):
+        raise UpdateFailed(MSG_NO_SAVED)
+    status.version = saved.version
+    sh(env, ["sync"])
+    status.set("restarting", "RESTARTING TO RESTORE THE SAVED VERSION...", 100)
+
+
+def restore(env: Env, status: Status) -> str:
+    """Put the saved version back over this box; returns its version. The caller restarts.
+
+    The image is mounted from root's own hard link of it (snapshot.hold), and today's updater is
+    copied to root's own directory in /run, which the chroot sees through its bind of /run.
+    """
+    refuse_live(env)
+    refuse_layout(env)
+    status.set("installing", "CHECKING THE SAVED VERSION...")
+    held = env.root / HELD_REL
+    held.parent.mkdir(parents=True, exist_ok=True)
+    saved = snapshot.hold(env, env.root, held)
+    if saved is None:
+        raise UpdateFailed(MSG_NO_SAVED)
+    status.version = saved.version
+    env.note(f"restore: {saved.version} saved {saved.date}")
+    work = env.restore_dir
+    new, tool = work / "root", work / "tool"
+    try:
+        work.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.rmtree(tool, ignore_errors=True)
+        for directory in (new, tool):
+            directory.mkdir(exist_ok=True)
+        for source in TOOL:
+            name = "couchliteos_updater.py" if source == TOOL[0] else source.name
+            shutil.copyfile(source, tool / name)
+        load_squashfs(env)
+        with contextlib.ExitStack() as stack:
+            message = "COULD NOT OPEN THE SAVED VERSION"
+            _mount(env, stack, ["-t", "squashfs", "-o", "ro,loop", str(held)], new, message)
+            _enter(env, stack, new, message)
+            argv = ["chroot", str(new), "python3", f"{tool}/couchliteos_updater.py", "apply-root", "/mnt",
+                    "--status", str(status.path), "--force", "--snapshot-done", "--restore"]
+            # Not captured: its progress lines go to the same screen as ours.
+            code = env.runner(argv, check=False).returncode
+            env.note(f"$ {' '.join(argv)} -> exit {code}")
+            if code != 0:
+                reported = read_status(status.path)
+                failed = reported.get("message") if reported.get("phase") == "failed" else None
+                raise UpdateFailed(failed if isinstance(failed, str) and failed else MSG_RESTORE)
+    finally:
+        shutil.rmtree(tool, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            held.unlink()
+    return saved.version
+
+
+def restore_at_boot(env: Env, status: Status) -> int:
+    """couchliteos-restore.service: restore, drop the request, restart. On failure say why and let
+    the start go on; the request is dropped then too, so a restore that cannot work does not block
+    every start (a power cut leaves it, and the next start finishes the restore)."""
+    status.echo = status.echo or (lambda text: print(text, flush=True))
+    status.echo("RESTORING THE SAVED VERSION. KEEP THE BOX PLUGGED IN.")
+    done: list[str] = []
+    code = _guarded(env, status, lambda: done.append(restore(env, status)))
+    with contextlib.suppress(OSError):
+        snapshot.clear_request(env, env.root)
+    if code == 0:
+        status.echo(f"RESTORED COUCHLITEOS {done[0]}. RESTARTING...")
+        sh(env, ["sync"])
+        reboot(env)
+    else:
+        status.echo("THE BOX STARTS AS IT IS. TRY AGAIN FROM SETTINGS > SOFTWARE UPDATE OR THE BOOT MENU.")
+        env.sleep(RESTORE_FAILED_PAUSE)
+    return code
+# ------------------------------------------------------------------ apply-disk (an installed system, from the ISO)
+#
+# Booted from the new ISO, the live system updates the system installed on a disk of the box,
+# including 0.2.0 (no updater, no version file) and MoonlightOS 0.1.x (the old names). The image is
+# the stick's pristine squashfs, mounted again: the live root carries this session's changes.
+
+LEGACY_VERSION_REL = "etc/moonlightos-version"  # rename:keep
+LEGACY_PROFILE_REL = "usr/share/moonlightos/profile.conf"  # rename:keep
+# The path table of scripts/couchliteos-migrate, relative to the target.
+LEGACY_PATHS = (
+    ("var/lib/moonlightos", "var/lib/couchliteos"),  # rename:keep
+    ("var/log/moonlightos", "var/log/couchliteos"),  # rename:keep
+)
+LEGACY_GROUPS = {"moonlightos": "couchliteos"}  # rename:keep
+LEGACY_USER = "moonlightos"  # rename:keep
+LEGACY_UNIT_PREFIX = "moonlightos-"  # rename:keep
+LEGACY_GRUB_REL = "etc/default/grub.d/20-moonlightos.cfg"  # rename:keep
+LEGACY_CONFIG_REL = "var/lib/couchliteos/config.ini"
+UNIT_DIRS = ("lib/systemd/system", "usr/lib/systemd/system", "etc/systemd/system")
+BOOTCHECK_REL = "etc/grub.d/01_couchliteos_bootcheck"
+LIVE_IMAGE_REL = "run/live/medium/live/filesystem.squashfs"
+INSTALLS_NAME = "installs.json"
+DISK_DIR, DISK_IMAGE_DIR, PROBE_DIR = "disk", "disk-image", "probe"
+PROBE_FS = ("ext4", "ext3", "ext2", "btrfs", "xfs")
+SEPARATE = ("/usr", "/var", "/boot")  # mount points the update cannot replace together with /
+OLDER = "OLDER THAN 0.2.1"
+PHASES = PHASES + ("updated",)  # apply-disk finished: the stick comes out before the restart
+
+MSG_NOT_LIVE = "UPDATING THE INSTALLED SYSTEM NEEDS THE COUCHLITEOS USB STICK"
+MSG_NO_INSTALL = "NO INSTALLED COUCHLITEOS OR MOONLIGHTOS SYSTEM FOUND ON THAT DISK"  # rename:keep
+MSG_DISK_LAYOUT = (
+    "THE INSTALLED SYSTEM HAS A LAYOUT THIS UPDATE DOES NOT KNOW. NOTHING WAS CHANGED. "
+    "USE INSTALL INSTEAD (IT ERASES THE DISK)."
+)
+MSG_DISK_NEWER = "THE INSTALLED SYSTEM IS NEWER THAN THIS USB STICK"
+MSG_DISK_DONE = "UPDATE DONE. REMOVE THE USB STICK, THEN CHOOSE REBOOT ON THE HOME SCREEN."
+
+
+@dataclasses.dataclass(frozen=True)
+class Install:
+    device: str   # the partition holding the root file system
+    version: str  # OLDER when the box has no version file
+    profile: str  # PROFILE_NAME ("general", "nvidia"), "" when the file does not say
+    disk: str     # the whole disk the partition is on, "" when unknown
+
+
+def box_identity(root: pathlib.Path) -> tuple[str, str] | None:
+    """(version or "", profile name) of the system at `root`, or None when it is not one of ours.
+
+    The couchliteos names win; a MoonlightOS box (0.1.x) has only the old ones.
+    """
+    root = pathlib.Path(root)
+    profile = next((root / rel for rel in (PROFILE_REL, LEGACY_PROFILE_REL) if (root / rel).is_file()), None)
+    if profile is None:
+        return None
+    version = update.installed_version([root / VERSION_REL, root / LEGACY_VERSION_REL])
+    return version, update.read_profile(profile).get("PROFILE_NAME", "")
+
+
+def _probe_options(fstype: str) -> str:
+    return "ro,noload" if fstype in ("ext3", "ext4") else "ro"  # noload: not even the journal is replayed
+
+
+def find_installs(env: Env) -> list[Install]:
+    """Every partition holding an installed system: each one not in use is mounted read-only in turn."""
+    result = sh(env, ["lsblk", "-J", "-p", "-o", "NAME,TYPE,FSTYPE,MOUNTPOINT"])
+    try:
+        tree = json.loads(result.stdout or "")["blockdevices"] if result.returncode == 0 else []
+    except (ValueError, KeyError, TypeError):
+        tree = []
+    candidates: list[tuple[str, str, str]] = []
+
+    def walk(nodes: object, disk: str) -> None:
+        for node in nodes if isinstance(nodes, list) else []:
+            if not isinstance(node, dict) or not isinstance(node.get("name"), str):
+                continue
+            kind, name = node.get("type"), node["name"]
+            if kind == "part" and node.get("fstype") in PROBE_FS and not node.get("mountpoint"):
+                candidates.append((name, node["fstype"], disk))
+            walk(node.get("children"), name if kind == "disk" else disk)
+
+    walk(tree, "")
+    probe = env.run_dir / PROBE_DIR
+    found = []
+    for device, fstype, disk in candidates:
+        probe.mkdir(parents=True, exist_ok=True)
+        if sh(env, ["mount", "-o", _probe_options(fstype), device, str(probe)]).returncode != 0:
+            continue
+        try:
+            identity = box_identity(probe)
+        finally:
+            unmount(env, str(probe))
+        if identity is not None:
+            found.append(Install(device, identity[0] or OLDER, identity[1], disk))
+    return found
+
+
+def write_installs(path: pathlib.Path, installs: Iterable[Install]) -> None:
+    """The list the live launcher reads (couchliteos_update.read_installs)."""
+    write_atomic(path, json.dumps([dataclasses.asdict(item) for item in installs]) + "\n", 0o644)
+
+
+def target_layout(target: pathlib.Path) -> str:
+    """Refuse a disk whose fstab mounts /usr, /var or /boot separately (refuse_layout, for a disk that
+    is not running). Returns the fstab source of /boot/efi, "" for a BIOS box."""
+    try:
+        lines = (target / "etc/fstab").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        raise UpdateFailed(MSG_DISK_LAYOUT) from error
+    esp = ""
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 2 or fields[0].startswith("#"):
+            continue
+        point = fields[1].replace("\\040", " ").rstrip("/") or "/"
+        if point in SEPARATE:
+            raise UpdateFailed(MSG_DISK_LAYOUT)
+        if point == "/boot/efi":
+            esp = fields[0]
+    return esp
+
+
+def legacy_conflicts(target: pathlib.Path) -> list[str]:
+    """What stops the old data directories from moving: a symlink, or a name in both old and new."""
+    problems = []
+    for old, new in LEGACY_PATHS:
+        source, destination = target / old, target / new
+        if not os.path.lexists(source):
+            continue
+        if source.is_symlink() or not source.is_dir() or destination.is_symlink():
+            problems.append(f"/{old}")
+        elif destination.is_dir():
+            problems += [f"/{new}/{name}" for name in sorted(set(os.listdir(source)) & set(os.listdir(destination)))]
+        elif os.path.lexists(destination):
+            problems.append(f"/{new}")
+    return problems
+
+
+def move_legacy_dirs(target: pathlib.Path, log: Callable[[str], None]) -> None:
+    """Rename /var/{lib,log}/moonlightos to the couchliteos names; safe to run again.
+
+    The new directory may already exist (the snapshot and this update's log made it): its entries
+    join the old tree first, so the moved directory keeps the owner and mode the box gave it.
+    """
+    for old, new in LEGACY_PATHS:
+        source, destination = target / old, target / new
+        if source.is_symlink() or not source.is_dir():
+            continue
+        if destination.is_dir() and not destination.is_symlink():
+            for entry in sorted(destination.iterdir()):
+                if os.path.lexists(source / entry.name):
+                    raise UpdateFailed(MSG_DISK_LAYOUT)
+                os.rename(entry, source / entry.name)
+            destination.rmdir()
+        os.rename(source, destination)
+        log(f"legacy: moved /{old} to /{new}")
+
+
+def rewrite_legacy_config(path: pathlib.Path, chown: Callable[[str, int, int], None] = os.chown) -> bool:
+    """Values in config.ini that name an old path name the new one; owner and mode stay."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        info = path.stat()
+    except OSError:
+        return False
+    new = text
+    for old, renamed in LEGACY_PATHS:
+        new = re.sub(re.escape(f"/{old}") + r"(?![\w.-])", f"/{renamed}", new)
+    if new == text:
+        return False
+    write_atomic(path, new, stat.S_IMODE(info.st_mode), (info.st_uid, info.st_gid), chown)
+    return True
+
+
+def migrate_legacy(target: pathlib.Path, log: Callable[[str], None],
+                   chown: Callable[[str, int, int], None] = os.chown) -> None:
+    """Before the copy: the old data paths, config values and GRUB settings take the new names."""
+    move_legacy_dirs(target, log)
+    if rewrite_legacy_config(target / LEGACY_CONFIG_REL, chown):
+        log("legacy: old paths rewritten in config.ini")
+    if os.path.lexists(target / LEGACY_GRUB_REL):
+        (target / LEGACY_GRUB_REL).unlink()
+        log(f"legacy: removed /{LEGACY_GRUB_REL}")
+    if any(line.startswith(f"{LEGACY_USER}:") for line in read_accounts(target)["passwd"].splitlines()):
+        log(f"legacy: the old {LEGACY_USER} user has the uid couchliteos has, so couchliteos keeps its files")
+
+
+def _unit_exists(target: pathlib.Path, name: str) -> bool:
+    names = [name]
+    instance = re.match(r"^(.+@)[^@]+(\.[a-z]+)$", name)
+    if instance:
+        names.append(instance.group(1) + instance.group(2))  # the template of an instance
+    for directory in UNIT_DIRS:
+        for unit in names:
+            path = target / directory / unit
+            if path.is_file() and not (directory == "etc/systemd/system" and path.is_symlink()):
+                return True
+    return False
+
+
+def stale_legacy_units(target: pathlib.Path) -> list[str]:
+    """moonlightos-* links in /etc/systemd/system (enablements, aliases) whose unit is gone,
+    relative to /etc."""
+    stale = []
+    for directory, directories, files in os.walk(target / "etc/systemd/system"):
+        for name in directories + files:
+            path = pathlib.Path(directory, name)
+            if name.startswith(LEGACY_UNIT_PREFIX) and path.is_symlink() and not _unit_exists(target, name):
+                stale.append(str(path.relative_to(target / "etc")))
+    return sorted(stale)
+
+
+def remove_legacy_units(target: pathlib.Path, log: Callable[[str], None]) -> None:
+    """After the copy (the old unit files are gone by then): drop what still enables them."""
+    stale = stale_legacy_units(target)
+    for rel in stale:
+        log(f"legacy: removing /etc/{rel}")
+    remove_stale(target / "etc", stale)
+
+
+def grub_install_argv(env: Env, device: str, esp: str) -> list[str]:
+    """The grub-install command for the target's boot loader: UEFI into its ESP, else the disk's MBR."""
+    if esp:
+        return ["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi"]
+    result = sh(env, ["lsblk", "-n", "-p", "-o", "PKNAME", device])
+    disk = (result.stdout or "").split() if result.returncode == 0 else []
+    if not disk or not disk[0].startswith("/dev/"):
+        raise UpdateFailed(MSG_DISK_LAYOUT)
+    return ["grub-install", "--target=i386-pc", disk[0]]
+
+
+def apply_disk(
+    device: str, env: Env, status: Status, *, force: bool = False,
+    save: Callable[..., None] | None = None, apply: Callable[..., None] | None = None,
+) -> None:
+    """Update the system installed on `device` from this live USB stick (see the section comment).
+
+    Every refusal (no install, a separate /usr, /var or /boot, another kind of box, a newer box)
+    comes before anything on the disk is written. The disk is saved as the snapshot first.
+    """
+    status.set("installing", "OPENING THE INSTALLED SYSTEM...")
+    if not update.is_live(env.root / "run/live/medium", env.root / "proc/cmdline"):
+        raise UpdateFailed(MSG_NOT_LIVE)
+    target, image = env.run_dir / DISK_DIR, env.run_dir / DISK_IMAGE_DIR
+    with contextlib.ExitStack() as stack:
+        def mount(argv: list[str], mountpoint: pathlib.Path, message: str) -> None:
+            mountpoint.mkdir(parents=True, exist_ok=True)
+            if sh(env, ["mount", *argv, str(mountpoint)]).returncode != 0:
+                raise UpdateFailed(message)
+            stack.callback(unmount, env, str(mountpoint))
+
+        mount([device], target, "COULD NOT OPEN THE INSTALLED SYSTEM")
+        found = box_identity(target)
+        if found is None:
+            raise UpdateFailed(MSG_NO_INSTALL)
+        esp = target_layout(target)
+        mount(["-t", "squashfs", "-o", "ro,loop", str(env.root / LIVE_IMAGE_REL)], image,
+              "COULD NOT OPEN THE NEW SYSTEM ON THE USB STICK")
+        new = preflight(target, image, env, True, legacy=True)
+        if not force and found[0] and update.is_newer(found[0], new):
+            raise UpdateFailed(MSG_DISK_NEWER)
+        # A GRUB from before the boot check (0.2.0 and older) is installed again, not only configured.
+        grub = None if (target / BOOTCHECK_REL).exists() else grub_install_argv(env, device, esp)
+        if esp:
+            mount([esp], target / "boot/efi", "COULD NOT OPEN THE BOOT PARTITION OF THE INSTALLED SYSTEM")
+        log = Log(target / LOG_REL)
+        log(f"apply-disk {device}: {found[0] or OLDER} ({found[1]}) to {new} from the USB stick")
+        disk_env = dataclasses.replace(env, log=log)
+        (save or save_snapshot)(disk_env, status, target)
+        (apply or apply_root)(target, status, disk_env, force=True, image=image, save_first=False,
+                              legacy=True, grub_install=grub)
+    status.set("updated", MSG_DISK_DONE, 100)
+
+
+def only_install(env: Env) -> str:
+    """The device of the one installed system on the disks (apply-disk --found, the service)."""
+    installs = find_installs(env)
+    if not installs:
+        raise UpdateFailed("NO INSTALLED SYSTEM FOUND ON THE DISKS")
+    if len(installs) > 1:
+        raise UpdateFailed("MORE THAN ONE INSTALLED SYSTEM FOUND: DISCONNECT THE OTHER DISKS AND TRY AGAIN")
+    return installs[0].device
 
 
 # ------------------------------------------------------------------ run (the service) and the CLI
@@ -1128,13 +1604,23 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     iso.add_argument("--no-reboot", action="store_true")
     iso.add_argument("--no-snapshot", action="store_true", help="do not save the current version first")
     commands.add_parser("delete-snapshot", help="remove the saved previous version")
+    commands.add_parser("request-restore", help="restore the saved previous version at the next start")
+    commands.add_parser("restore", help="restore the saved previous version now (the boot service)")
+    commands.add_parser("find-installs", help="live USB: list the installed systems on the disks")
+    disk = commands.add_parser("apply-disk", help="live USB: update the installed system on a disk")
+    disk.add_argument("device", nargs="?", help="the partition holding the installed root")
+    disk.add_argument("--found", action="store_true", help="the one installed system find-installs sees")
+    disk.add_argument("--force", action="store_true", help="allow an installed system newer than the stick")
     root = commands.add_parser("apply-root", help="install step; runs inside the new image")
     root.add_argument("target")
     root.add_argument("--status", required=True)
     root.add_argument("--force", action="store_true")
     root.add_argument("--snapshot-done", action="store_true", help="the caller already saved TARGET (0.3.0 and later)")
     root.add_argument("--no-snapshot", action="store_true", help="do not save TARGET first")
+    root.add_argument("--restore", action="store_true", help="the image is the saved previous version")
     args = parser.parse_args(argv)
+    if args.command == "apply-disk" and bool(args.device) == args.found:
+        parser.error("apply-disk takes a DEVICE or --found")
     env = env or Env()
     if env.euid() != 0:
         print("the updater must run as root", file=sys.stderr)
@@ -1143,10 +1629,11 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
         env.log = Log(env.root / LOG_REL)
 
     if args.command == "apply-root":
-        status = Status(pathlib.Path(args.status))
+        echo = (lambda text: print(text, flush=True)) if args.restore else None
+        status = Status(pathlib.Path(args.status), echo=echo)
         return _guarded(env, status, lambda: apply_root(
             pathlib.Path(args.target), status, env, force=args.force,
-            save_first=not (args.snapshot_done or args.no_snapshot)))
+            save_first=not (args.snapshot_done or args.no_snapshot), restore=args.restore))
 
     status = Status(env.run_dir / STATUS_NAME)
     try:
@@ -1159,6 +1646,22 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
                     return 1
             if args.command == "run":
                 return run(env, status, save_first=not args.no_snapshot)
+            if args.command == "restore":
+                return restore_at_boot(env, status)
+            if args.command == "request-restore":
+                code = _guarded(env, status, lambda: request_restore(env, status))
+                if code == 0:
+                    reboot(env)
+                return code
+            if args.command == "find-installs":
+                write_installs(env.run_dir / INSTALLS_NAME, find_installs(env))
+                return 0
+            if args.command == "apply-disk":
+                code = _guarded(env, status, lambda: apply_disk(
+                    args.device or only_install(env), env, status, force=args.force))
+                if code == 0:  # the live launcher stops offering what is now done
+                    write_installs(env.run_dir / INSTALLS_NAME, find_installs(env))
+                return code
             code = _guarded(env, status, lambda: apply_iso(
                 pathlib.Path(args.path), env, status, force=args.force, save_first=not args.no_snapshot))
             if code == 0 and not args.no_reboot:

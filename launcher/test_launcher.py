@@ -648,7 +648,7 @@ class LauncherTest(unittest.TestCase):
         text, closed = self.active_applications_screen([self.module.curses.KEY_F12, 27])
         self.assertEqual(closed, [])
         hint = next(row for row in text if "CLOSES" in row)
-        self.assertIn("Y (XBOX) / SQUARE (PS) CLOSES", hint)
+        self.assertIn("Y / SQUARE OR DELETE CLOSES", hint)
         self.assertNotIn("X CLOSES", hint)
         # The keyboard keys keep working.
         for key in (ord("x"), self.module.curses.KEY_DC):

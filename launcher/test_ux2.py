@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import couchliteos_quick as quick
+
 
 class Screen:
     """Fake curses window. Keys may be ints or (key, seconds_to_advance_the_clock)."""
@@ -460,7 +462,7 @@ class HintTextTest(unittest.TestCase):
                 pass
         return [hint.strip() for hint in screen.hints]
 
-    def check(self, name, hints):
+    def check(self, name, hints, keyboard=False):
         import re
 
         shown = [hint for hint in hints if hint]
@@ -468,6 +470,8 @@ class HintTextTest(unittest.TestCase):
         for hint in shown:
             self.assertLessEqual(len(hint), 76, f"{name}: does not fit 80 columns: {hint!r}")
             self.assertIsNone(re.search(r"\b(F12|F5|F6|F7|F8)\b", hint), f"{name}: names a keyboard key: {hint!r}")
+            if keyboard:  # the Guide menu and the app overlays (0.3.0); other screens still name only buttons
+                self.assertTrue(quick.names_keyboard_keys(hint), f"{name}: a button without its keyboard key: {hint!r}")
 
     def test_launcher_screens(self):
         module = self.module
@@ -477,8 +481,8 @@ class HintTextTest(unittest.TestCase):
         screen = FrameScreen()
         launcher = self.launcher(screen)
         launcher.draw_launching("X", "|")
-        self.check("starting", [screen.hint().strip()])
-        self.assertIn("HOLD SELECT+START (VIEW+MENU) TO COME BACK", screen.hint())
+        self.check("starting", [screen.hint().strip()], keyboard=True)
+        self.assertIn("HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK", screen.hint())
         screen = FrameScreen([10])
         settings = module.Settings(screen, self.launcher(screen))
         self.check("settings message", self.hints(screen, lambda: settings.show_message("T", "message")))
@@ -489,8 +493,8 @@ class HintTextTest(unittest.TestCase):
             launcher.running_applications = mock.Mock(return_value=[terminal])
             with mock.patch.object(module, "HOME_REQUEST", home):
                 hints = self.hints(screen, launcher.active_applications)
-        self.check("active applications", hints)
-        self.assertIn("Y (XBOX) / SQUARE (PS) CLOSES", hints[0])
+        self.check("active applications", hints, keyboard=True)
+        self.assertIn("Y / SQUARE OR DELETE CLOSES", hints[0])
 
     def test_editing_screens(self):
         module = self.module

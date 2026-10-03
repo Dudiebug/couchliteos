@@ -378,7 +378,10 @@ class ContentTest(unittest.TestCase):
 
     def test_markers_live_with_the_other_state(self):
         self.assertEqual(whatsnew.SEEN.name, "whatsnew-seen")
-        self.assertEqual(whatsnew.SEEN.parent, whatsnew.setup.MARKER.parent)
+        import couchliteos_setup as setup
+
+        self.assertEqual(whatsnew.SETUP_MARKER, setup.MARKER)
+        self.assertEqual(whatsnew.SEEN.parent, setup.MARKER.parent)
         self.assertEqual(whatsnew.SESSION_SEEN.parent, pathlib.Path(os.environ["COUCHLITEOS_RUN_DIR"]))
 
     def test_the_version_comes_from_the_same_files_as_the_update_check(self):

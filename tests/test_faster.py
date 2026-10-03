@@ -7,6 +7,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -26,14 +27,14 @@ def load_script(name, path):
 class InstalledGrubMenuTest(unittest.TestCase):
     """Installed systems boot straight in; the live ISO keeps its own menu."""
 
-    def test_installed_grub_menu_is_hidden_with_a_three_second_timeout(self):
+    def test_installed_grub_menu_is_hidden_with_a_one_second_timeout(self):
         cfg = ROOT / "overlay/etc/default/grub.d/20-couchliteos.cfg"
         # grub-mkconfig sources the file with sh, so evaluate it the same way.
         result = subprocess.run(
             ["sh", "-c", '. "$1"; printf "%s|%s|%s" "$GRUB_TIMEOUT_STYLE" "$GRUB_TIMEOUT" "$GRUB_CMDLINE_LINUX_DEFAULT"', "sh", str(cfg)],
             capture_output=True, text=True, check=True,
         )
-        self.assertEqual(result.stdout, "hidden|3|quiet ipv6.disable=1")
+        self.assertEqual(result.stdout, "hidden|1|quiet loglevel=3 ipv6.disable=1")
 
     def test_live_iso_menu_is_not_changed_by_the_installed_grub_settings(self):
         hook = (ROOT / "config/live-build/hooks/live/0100-autoboot.hook.binary").read_text()
@@ -104,6 +105,35 @@ class GrubBootCheckTest(unittest.TestCase):
         self.assertRegex(fragment, r'(?m)^set (\w+)=$')
         self.assertIn('if [ -s "${prefix}/grubenv" ]; then', fragment)
 
+    def test_failed_boot_menu_overrides_the_header_timeout_in_the_generated_config(self):
+        # Build the start of grub.cfg the way grub-mkconfig does: 00_header with our
+        # settings, then this helper. The one-second hidden timeout must come first, so a
+        # failed boot still gets the visible five-second menu.
+        header = pathlib.Path("/etc/grub.d/00_header")
+        if not header.exists():
+            self.skipTest("grub-mkconfig's 00_header is not installed")
+        cfg = ROOT / "overlay/etc/default/grub.d/20-couchliteos.cfg"
+        settings = subprocess.run(
+            ["sh", "-c", '. "$1"; printf "%s %s" "$GRUB_TIMEOUT_STYLE" "$GRUB_TIMEOUT"', "sh", str(cfg)],
+            capture_output=True, text=True, check=True).stdout.split()
+        env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "GRUB_TIMEOUT_STYLE": settings[0],
+               "GRUB_TIMEOUT": settings[1], "grub_prefix": "/boot/grub", "pkgdatadir": "/usr/share/grub"}
+        generated = subprocess.run(["sh", str(header)], env=env, capture_output=True, text=True)
+        if generated.returncode != 0:
+            self.skipTest("00_header does not run here: " + generated.stderr[-200:])
+        grub_cfg = generated.stdout + self.fragment()
+        hidden = grub_cfg.index("set timeout_style=hidden\n    set timeout=1\n")
+        self.assertLess(hidden, grub_cfg.index("load_env boot_success"))
+        self.assertLess(hidden, grub_cfg.rindex("set timeout_style=menu\n  set timeout=5\n"))
+        # Nothing after the helper's decision sets the timeout again.
+        tail = grub_cfg[grub_cfg.rindex("set timeout=5"):]
+        self.assertEqual(tail.count("set timeout"), 1)
+        if shutil.which("grub-script-check"):
+            with tempfile.NamedTemporaryFile("w", suffix=".cfg") as script:
+                script.write(grub_cfg)
+                script.flush()
+                subprocess.run(["grub-script-check", script.name], check=True)
+
     def test_helper_is_installed_as_an_executable_grub_script_after_the_header(self):
         install = 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"'
         self.assertIn(install, (ROOT / "build/configure.sh").read_text().splitlines())
@@ -149,6 +179,95 @@ class GrubBootCheckTest(unittest.TestCase):
             subprocess.run(command, check=True)
             listing = subprocess.run(["grub-editenv", str(env), "list"], capture_output=True, text=True, check=True).stdout
         self.assertEqual(sorted(listing.split()), ["boot_success=1", "next_entry=keep"])
+
+
+RESTORE_SCRIPT = ROOT / "scripts/couchliteos-grub-restore"
+SNAPSHOT_JSON = """{
+ "version": "0.2.7",
+ "date": "2026-10-02T09:00:00Z",
+ "size": 1812000000,
+ "sha256": "%s",
+ "kernel": "6.12.48+deb13-amd64"
+}
+""" % ("a" * 64)
+
+
+class GrubRestoreTest(unittest.TestCase):
+    """The boot menu entry that restores the saved previous version (42_couchliteos_restore)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        self.snapshot = self.root / "var/lib/couchliteos/snapshot"
+        self.snapshot.mkdir(parents=True)
+        self.snapshot.chmod(0o711)
+        (self.snapshot / "previous.json").write_text(SNAPSHOT_JSON)
+        boot = self.root / "boot/couchliteos-previous"
+        boot.mkdir(parents=True)
+        (boot / "vmlinuz").write_text("kernel")
+        (boot / "initrd.img").write_text("initrd")
+
+    def fragment(self, **env):
+        values = {"PATH": "/usr/bin:/bin", "COUCHLITEOS_ROOT": str(self.root),
+                  "GRUB_DEVICE_UUID": "0b1c2d3e-aaaa-bbbb-cccc-0123456789ab",
+                  "GRUB_CMDLINE_LINUX": "", "GRUB_CMDLINE_LINUX_DEFAULT": "quiet ipv6.disable=1"}
+        values.update(env)
+        return subprocess.run(["sh", str(RESTORE_SCRIPT)], capture_output=True, text=True, check=True,
+                              env=values).stdout
+
+    def test_the_entry_boots_the_saved_kernel_and_initrd_with_the_restore_flag(self):
+        fragment = self.fragment()
+        self.assertIn("menuentry 'CouchLiteOS: restore previous version (0.2.7)' --class couchliteos {", fragment)
+        self.assertIn("search --no-floppy --fs-uuid --set=root 0b1c2d3e-aaaa-bbbb-cccc-0123456789ab", fragment)
+        self.assertRegex(fragment, r"(?m)^\tlinux /boot/couchliteos-previous/vmlinuz "
+                                   r"root=UUID=0b1c2d3e-aaaa-bbbb-cccc-0123456789ab ro +quiet ipv6\.disable=1 "
+                                   r"couchliteos\.restore=1$")
+        self.assertRegex(fragment, r"(?m)^\tinitrd /boot/couchliteos-previous/initrd\.img$")
+
+    def test_the_entry_is_valid_grub_script(self):
+        if not shutil.which("grub-script-check"):
+            self.skipTest("grub-script-check is not installed")
+        with tempfile.NamedTemporaryFile("w", suffix=".cfg") as cfg:
+            cfg.write(self.fragment())
+            cfg.flush()
+            subprocess.run(["grub-script-check", cfg.name], check=True)
+
+    def test_no_entry_without_a_snapshot_or_its_boot_copy(self):
+        (self.root / "boot/couchliteos-previous/initrd.img").unlink()
+        self.assertEqual(self.fragment(), "")
+        (self.root / "boot/couchliteos-previous/initrd.img").write_text("initrd")
+        (self.snapshot / "previous.json").unlink()
+        self.assertEqual(self.fragment(), "")
+
+    def test_no_entry_for_a_snapshot_folder_that_is_a_link(self):
+        moved = self.snapshot.with_name("elsewhere")
+        self.snapshot.rename(moved)
+        self.snapshot.symlink_to(moved)
+        self.assertEqual(self.fragment(), "")
+
+    def test_only_a_plain_version_reaches_grub_cfg(self):
+        (self.snapshot / "previous.json").write_text(SNAPSHOT_JSON.replace("0.2.7", "0.2.7' ; reboot ; echo '"))
+        fragment = self.fragment()
+        self.assertIn("restore previous version (unknown)", fragment)
+        self.assertNotIn("reboot", fragment)
+
+    def test_no_entry_without_a_root_uuid(self):
+        self.assertEqual(self.fragment(GRUB_DEVICE_UUID=""), "")
+        self.assertEqual(self.fragment(GRUB_DEVICE_UUID="x y"), "")
+
+    def test_installed_after_the_normal_entries(self):
+        install = 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"'
+        self.assertIn(install, (ROOT / "build/configure.sh").read_text().splitlines())
+        self.assertGreater("42_couchliteos_restore", "41_custom")
+        self.assertTrue(RESTORE_SCRIPT.read_text().startswith("#!/bin/sh\n"))
+
+    def test_the_restore_service_runs_for_the_entry_or_a_request_before_the_launcher(self):
+        unit = (ROOT / "services/couchliteos-restore.service").read_text()
+        self.assertRegex(unit, r"(?m)^ConditionKernelCommandLine=\|couchliteos\.restore=1$")
+        self.assertRegex(unit, r"(?m)^ConditionPathExists=\|/var/lib/couchliteos/snapshot/restore-request$")
+        self.assertRegex(unit, r"(?m)^Before=couchliteos-launcher\.service")
+        self.assertRegex(unit, r"(?m)^Type=oneshot$")
 
 
 ORDERING_KEYS = {"After", "Before", "Requires", "Wants", "Requisite", "BindsTo"}
@@ -230,6 +349,37 @@ class LauncherOrderingTest(unittest.TestCase):
         # Its own bounded wait (TimeoutStartSec) must stay: it holds multi-user.target, not the launcher.
         text = (ROOT / "services/couchliteos-network-ready.service").read_text()
         self.assertRegex(text, r"(?m)^TimeoutStartSec=\d+$")
+
+    def test_units_ordered_after_the_network_pull_in_their_own_wait(self):
+        # network-ready Wants NetworkManager-wait-online itself, so the global enable in the
+        # chroot hook adds no wait of its own (B2 kept it). Every unit ordered after
+        # network-online.target must also Want it, or the target would not wait at all.
+        units = read_units()
+        self.assertIn("NetworkManager-wait-online.service", units["couchliteos-network-ready.service"]["Wants"])
+        for name, keys in units.items():
+            if "network-online.target" in keys.get("After", []):
+                self.assertIn("network-online.target", keys.get("Wants", []), name)
+
+
+class TvStartImportsTest(unittest.TestCase):
+    """The TV interface does not load the update check's HTTP stack before its first frame."""
+
+    def test_loading_the_tv_interface_leaves_urllib_request_for_the_update_thread(self):
+        script = ROOT / "launcher/couchliteos-tv.py"
+        probe = ("import sys; "
+                 f"exec(compile(open({str(script)!r}).read(), {str(script)!r}, 'exec'), "
+                 f"{{'__name__': 'tv', '__file__': {str(script)!r}}}); "
+                 "print(sorted(m for m in ('urllib.request', 'http.client') if m in sys.modules))")
+        with tempfile.TemporaryDirectory() as directory:
+            env = {"PATH": "/usr/bin:/bin", "HOME": directory,
+                   "COUCHLITEOS_RUN_DIR": directory, "COUCHLITEOS_STATE_DIR": directory}
+            result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                                    env=env, check=True)
+        self.assertEqual(result.stdout.strip(), "[]")
+        # The check still fetches with urllib.request, imported on its own thread.
+        update = (ROOT / "launcher/couchliteos_update.py").read_text()
+        self.assertRegex(update, r"(?m)^    import urllib\.request$")
+        self.assertNotRegex(update, r"(?m)^import urllib\.(request|error)$")
 
 
 class BootTimingTest(unittest.TestCase):

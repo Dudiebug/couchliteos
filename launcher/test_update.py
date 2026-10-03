@@ -110,6 +110,44 @@ class DueTest(unittest.TestCase):
         self.assertTrue(update.due(state, NOW))
 
 
+class PauseTest(unittest.TestCase):
+    """After a restore the automatic check waits a week (config.ini [update] paused_until)."""
+
+    def test_a_pause_stops_even_the_start_up_check_until_it_ends(self):
+        until = NOW + update.PAUSE_SECONDS
+        self.assertFalse(update.due(update.State(), NOW, start=True, paused=until))
+        self.assertFalse(update.due(update.State(), until - 1, start=True, paused=until))
+        self.assertTrue(update.due(update.State(), until, start=True, paused=until))
+
+    def test_a_pause_further_away_than_a_week_came_from_a_wrong_clock_and_is_ignored(self):
+        self.assertTrue(update.due(update.State(), NOW, paused=NOW + update.PAUSE_SECONDS + 1))
+
+    def test_paused_until_is_read_from_config_ini(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / "config.ini"
+            self.assertEqual(update.paused_until(config), 0)
+            config.write_text("[power]\nblank_minutes = 10\n[update]\nsnapshot = on\npaused_until = 1790604800\n")
+            self.assertEqual(update.paused_until(config), 1790604800)
+            config.write_text("[update]\npaused_until = soon\n")
+            self.assertEqual(update.paused_until(config), 0)
+            config.write_text("not an ini [")
+            self.assertEqual(update.paused_until(config), 0)
+
+    def test_the_checker_honours_the_pause_it_read_at_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / "config.ini"
+            config.write_text(f"[update]\npaused_until = {NOW + 3600:.0f}\n")
+            fetch = mock.Mock(return_value="0.1.14")
+            clock = [NOW]
+            checker = update.Checker(current="0.1.13", state_path=pathlib.Path(tmp) / "update-check.ini",
+                                     fetch=fetch, clock=lambda: clock[0], online=lambda: True, config_path=config)
+            checker.check_if_due()
+            fetch.assert_not_called()
+            clock[0] = NOW + 3600
+            checker.check_if_due()
+            fetch.assert_called_once_with("0.1.13")
+
+
 class Response:
     def __init__(self, body):
         self.body = body if isinstance(body, bytes) else json.dumps(body).encode()

@@ -173,6 +173,19 @@ class ScreensTest(unittest.TestCase):
         focus.assert_called_once_with(module.tvscreens.CHILD_TITLE)
         tv.settings_key.assert_not_called()
 
+    def test_guide_while_a_classic_screen_is_open_only_puts_it_back_in_front(self):
+        module, tv = self.tv()
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        tv.child_pid, tv.idle, tv.progress = 42, mock.Mock(), None
+        with mock.patch.object(module.session.Session, "run_dir", run), \
+                mock.patch.object(module.session, "focus_launcher") as focus:
+            (run / "home.request").write_text(module.quick.GUIDE)
+            tv.screens_tick()
+            self.assertFalse((run / "home.request").exists())  # taken: no quick menu once it closes
+            focus.assert_called_once_with(module.tvscreens.CHILD_TITLE)
+            tv.screens_tick()
+            focus.assert_called_once()
+
     def test_the_start_runs_whats_new_then_setup_then_the_auto_stream(self):
         module, tv = self.tv()
         tv.starting, tv.start_steps = True, ["whatsnew", "setup", "update", "autostream"]

@@ -23,6 +23,7 @@ import couchliteos_support as support
 import couchliteos_bluetooth as bluetooth
 import couchliteos_listview as listview
 import couchliteos_apps as apps
+import couchliteos_artwork as artwork
 import couchliteos_browser as browser
 import couchliteos_browsersetup as browsersetup
 import couchliteos_power as power
@@ -48,6 +49,7 @@ import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
 import couchliteos_phone as phone
 import couchliteos_theme as themes
+import couchliteos_quick as quick
 import couchliteos_recent as recent
 import couchliteos_session as session
 
@@ -115,6 +117,8 @@ TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / C
 PHONE_KEYS = (curses.KEY_F2, curses.KEY_F7)
 PHONE_ROW = "SELECT (VIEW) OR F2: TYPE ON PHONE"
 PHONE_HINT = "B / CIRCLE OR ESC CANCELS"
+# Over a starting app: the Home key does what the SELECT+START hold does (gamepad-nav watches both).
+STARTING_HINT = "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE"
 PHONE_POLL_MS = 500
 # Hints name controller buttons first; where it fits they add the keyboard key (Enter, Esc).
 # F5-F12 are never named: the controller's X, LB, RB, SELECT and START send them.
@@ -863,7 +867,7 @@ class Launcher(session.Session):
         center = max(6, height // 2 - 1)
         add_centered(self.screen, center, f"STARTING {label}  {frame}")
         add_centered(self.screen, center + 2, "PLEASE WAIT")
-        add_centered(self.screen, height - 3, "HOLD SELECT+START (VIEW+MENU) TO COME BACK TO THE LAUNCHER")
+        add_centered(self.screen, height - 3, STARTING_HINT)
         self.screen.refresh()
 
     def wake_from_failure(self, _app: apps.Application | None = None) -> bool:
@@ -1160,14 +1164,14 @@ class Launcher(session.Session):
                 except curses.error:
                     pass
             if selected == volume_index:
-                hint = ("LEFT / RIGHT CHANGES THE VOLUME  ·  A / CROSS MUTES", "")
+                hint = ("LEFT / RIGHT CHANGES THE VOLUME  ·  A / CROSS OR ENTER MUTES", "")
             elif selected == brightness_index:
                 hint = ("LEFT / RIGHT CHANGES THE SCREEN BRIGHTNESS", "")
             elif selected == mouse_index:
-                hint = ("A / CROSS TURNS IT ON OR OFF: LEFT STICK POINTS, A CLICKS, RIGHT STICK SCROLLS", "")
+                hint = ("A / CROSS OR ENTER TURNS IT ON OR OFF", "WHEN ON: LEFT STICK POINTS, A CLICKS, RIGHT STICK SCROLLS")
             elif running:
-                hint = (f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK",
-                        "X (XBOX) / TRIANGLE (PS) OPENS THE KEYBOARD AND TYPES INTO THE APP")
+                hint = ("A / CROSS OR ENTER RESUMES  ·  Y / SQUARE OR DELETE CLOSES",
+                        "X / TRIANGLE TYPES INTO IT (OR ENTER, THEN TYPE)  ·  B / CIRCLE OR ESC BACK")
             else:
                 hint = ("NO MANAGED APPLICATIONS ARE RUNNING", "")
             add_centered(self.screen, height - 4, "" if status else hint[1])
@@ -1927,14 +1931,17 @@ class Settings:
                     notice = self.change_screen_setting("text", chosen, rows, selected)
 
     def run_appearance(self) -> None:
-        """THEME and ACCENT; a change recolours the launcher and the keyboard at once."""
+        """THEME and ACCENT; a change recolours the launcher and the keyboard at once. SOUNDS turns the
+        TV interface's navigation sounds on or off. ARTWORK: cover lookup for games."""
         selected = 0
         notice = ""
         while True:
             available, problems = themes.available()
             name, accent = themes.load_choice()
             chosen = available.get(name) or available.get(themes.DEFAULT) or themes.FALLBACK
-            rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}", "BACK"]
+            sounds = quick.sounds_enabled()
+            rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}",
+                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "ARTWORK", "BACK"]
             status = self.status
             # A bad user theme is listed nowhere else: say so until something is chosen.
             self.status = notice or (f"SKIPPED {problems[0]}".upper()[:76] if problems else status)
@@ -1950,11 +1957,66 @@ class Settings:
                 value = self.choose("THEME", [(theme.label, theme.name) for theme in available.values()], chosen.name)
                 if isinstance(value, str):
                     notice = self.change_theme(value, accent)
+            elif selected == 2:
+                try:
+                    quick.save_sounds(not sounds)
+                except OSError as error:
+                    notice = f"NOT SAVED: {error}".upper()
+            elif selected == 3:
+                self.run_artwork()
             else:
                 choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS)]
                 value = self.choose("ACCENT", choices, accent)
                 if isinstance(value, str):
                     notice = self.change_theme(chosen.name, value)
+
+    def run_artwork(self) -> None:
+        """Cover lookup for games: LOOKUP ON/OFF, the user's STEAMGRIDDB KEY, the UNMATCHED GAMES.
+
+        The key is typed masked (or on a phone) and never shown again, only SET or NOT SET."""
+        selected = 0
+        notice = ""
+        while True:
+            on = artwork.lookup_enabled()
+            unmatched = artwork.Cache().unmatched(artwork.key_changed_at())
+            rows = [
+                f"LOOKUP  {'ON' if on else 'OFF'}",
+                f"STEAMGRIDDB KEY  {'SET' if artwork.load_key() else 'NOT SET'}",
+                f"UNMATCHED GAMES  {len(unmatched)}",
+                "BACK",
+            ]
+            status = self.status
+            self.status = notice or artwork.PRIVACY
+            self.draw("ARTWORK", rows, selected)
+            self.status, notice = status, ""
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            if selected == 0:
+                try:
+                    artwork.save_lookup(not on)
+                except OSError:
+                    notice = "NOT SAVED: THE SETTING COULD NOT BE WRITTEN"
+            elif selected == 1:
+                value = ApplicationsSettings(self.screen, self.launcher).text_input(
+                    "STEAMGRIDDB KEY", "API KEY FROM YOUR STEAMGRIDDB PROFILE (EMPTY REMOVES IT)", 128, masked=True,
+                )
+                if value is not None:
+                    try:
+                        artwork.save_key(value)
+                        notice = "KEY SAVED" if value.strip() else "KEY REMOVED"
+                    except ValueError as error:
+                        notice = str(error)
+                    except OSError:
+                        notice = "NOT SAVED: THE KEY COULD NOT BE WRITTEN"
+            else:
+                lines = [f"{name}  ({host})".upper() if host else name.upper() for host, name in unmatched]
+                self.message("UNMATCHED GAMES", "\n".join(
+                    lines + ["", "HOLD Y / SQUARE (OR PRESS F9) ON A GAME TO PICK ITS COVER."]
+                    if lines else ["EVERY GAME LOOKED UP SO FAR HAS A COVER."]))
 
     def change_theme(self, name: str, accent: str) -> str:
         """Save the theme choice and recolour the running foot windows; returns what to tell the user."""

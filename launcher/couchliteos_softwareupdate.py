@@ -8,7 +8,14 @@ stopped safely, so B only says to wait.
 
 The service saves the running system first (couchliteos_snapshot). This screen shows that saved
 version, turns SAVE BEFORE UPDATE on or off (config.ini, the launcher's own file) and asks the root
-service to delete it (/run/couchliteos/snapshot-delete, couchliteos-snapshot-delete.path).
+service to delete it (/run/couchliteos/snapshot-delete, couchliteos-snapshot-delete.path) or to
+restore it (/run/couchliteos/restore-request, couchliteos-restore-request.path: the service leaves a
+request for couchliteos-restore.service and restarts the box, which restores before the launcher).
+
+On the live USB stick the screen offers UPDATE THE INSTALLED SYSTEM when couchliteos-find-installs
+found one on the disks (/run/couchliteos/installs.json): /run/couchliteos/disk-update starts
+couchliteos-disk-update.service (`couchliteos-updater apply-disk --found`), and the same progress
+screen follows it.
 
 Everything the screen needs from outside is injected, so the tests use fakes.
 """
@@ -30,11 +37,15 @@ import couchliteos_update as update
 
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
-DELETE_REQUEST = "snapshot-delete"
+DELETE_REQUEST, RESTORE_REQUEST = "snapshot-delete", "restore-request"
+DISK_REQUEST, INSTALLS = "disk-update", "installs.json"
+UPDATE_DISK = "UPDATE THE INSTALLED SYSTEM (KEEPS PAIRINGS AND SETTINGS)"
+DISK_DONE = "UPDATE DONE. REMOVE THE USB STICK, THEN CHOOSE REBOOT ON THE HOME SCREEN."
 TITLE = "SOFTWARE UPDATE"
 CHECK, INSTALL, BACK = "CHECK FOR UPDATES", "INSTALL UPDATE", "BACK"
 HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
 SAVE_ON, SAVE_OFF, DELETE_SAVED = "SAVE BEFORE UPDATE: ON", "SAVE BEFORE UPDATE: OFF", "DELETE SAVED VERSION"
+RESTORE = "RESTORE PREVIOUS VERSION"
 NO_SAVED = "SAVED VERSION: NONE"
 DELETING = "DELETING THE SAVED VERSION..."
 LIVE_TEXT = (
@@ -131,6 +142,7 @@ class SoftwareUpdate:
         save_first: Callable[[], bool] = snapshot.enabled,
         set_save_first: Callable[[bool], None] = snapshot.set_enabled,
         hand_off: Callable[[str], None] | None = None,
+        installs: Callable[[], list[dict[str, str]]] | None = None,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -151,18 +163,37 @@ class SoftwareUpdate:
         # progress itself: once the install is asked for, `hand_off(version)` and the screen closes.
         self.hand_off = hand_off
         self.handed_off = False
+        self.installs = installs or (lambda: update.read_installs(self.run_dir / INSTALLS))
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
         self.selected = 0
+        self.heading = "UPDATING TO COUCHLITEOS"  # the progress screen's title, before the version
 
     # -- the main screen -----------------------------------------------------------------------
 
     def rows(self) -> list[str]:
         if self.live:
-            return [BACK]
+            return ([UPDATE_DISK] if self.found() else []) + [BACK]
         rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
-        return rows + ([DELETE_SAVED] if self._saved() else []) + [BACK]
+        saved = self._saved()
+        return rows + (self.restore_rows(saved) if saved else []) + [BACK]
+
+    @staticmethod
+    def restore_rows(saved: snapshot.Snapshot) -> list[str]:
+        return [DELETE_SAVED, f"{RESTORE} ({saved.version}, SAVED {saved.saved_on()})"]
+
+    def found(self) -> dict[str, str] | None:
+        """The one installed system on the disks (live USB), or None (none, several, unreadable)."""
+        try:
+            installs = self.installs()
+        except Exception:  # noqa: BLE001
+            return None
+        return installs[0] if len(installs) == 1 else None
+
+    def found_line(self, found: dict[str, str]) -> str:
+        profile = found.get("profile", "").upper()
+        return f"INSTALLED SYSTEM: {found.get('version') or 'UNKNOWN'}" + (f" ({profile})" if profile else "")
 
     def _saved(self) -> snapshot.Snapshot | None:
         try:
@@ -201,11 +232,16 @@ class SoftwareUpdate:
         height, width, row = self.frame()
         wrap = max(8, width - 8)
         lines = [(self.box_line(), 0)] + ([] if self.live else [(self.saved_line(), 0)]) + [("", 0)]
-        if self.live:
+        found = self.found() if self.live else None
+        if found:
+            lines += [(self.found_line(found), 0)]
+            lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)] if self.result else []
+        elif self.live:
             lines += [(text, 0) for text in textwrap.wrap(LIVE_TEXT, wrap)] + [("", 0), (update.RELEASES_TEXT, 0)]
         elif self.result:
             lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)]
-        left = max(2, (width - max(len(text) for text, _attr in lines)) // 2)
+        widest = max([len(text) for text, _attr in lines] + [len(row) + 3 for row in self.rows()])  # ">  " rows
+        left = max(2, (width - widest) // 2)
         for text, attr in lines:
             _put(self.screen, row, left, text, attr)
             row += 1
@@ -237,6 +273,10 @@ class SoftwareUpdate:
                     self.toggle_save_first(choice == SAVE_OFF)
                 elif choice == DELETE_SAVED:
                     self.delete_saved()
+                elif choice.startswith(RESTORE):
+                    self.restore_saved()
+                elif choice == UPDATE_DISK:
+                    self.update_disk()
                 else:
                     self.install()
                     if self.handed_off:
@@ -268,6 +308,32 @@ class SoftwareUpdate:
             self.result = f"COULD NOT DELETE THE SAVED VERSION: {error.strerror or 'ERROR'}".upper()
             return
         self.result = DELETING
+        self.selected = 0
+
+    def restore_saved(self) -> None:
+        saved = self._saved()
+        if saved is None:
+            return
+        if self.apps_running():
+            self.result = CLOSE_APPS
+            return
+        question = (
+            f"RESTORE COUCHLITEOS {saved.version}, SAVED {saved.saved_on()}? EVERYTHING CHANGED SINCE THEN IS LOST: "
+            "SETTINGS, PAIRINGS AND APPS ADDED LATER. THE BOX RESTARTS AND RESTORES IT. KEEP IT PLUGGED IN."
+        )
+        if not self.confirm(self.screen, question):
+            return
+        try:
+            (self.run_dir / STATUS).unlink(missing_ok=True)
+            (self.run_dir / RESTORE_REQUEST).touch()
+        except OSError as error:
+            self.result = f"COULD NOT START THE RESTORE: {error.strerror or 'ERROR'}".upper()
+            return
+        self.heading = "RESTORING COUCHLITEOS"
+        try:
+            self.result = self.progress(saved.version)
+        finally:
+            self.heading = "UPDATING TO COUCHLITEOS"
         self.selected = 0
 
     # -- checking and installing -----------------------------------------------------------------
@@ -327,13 +393,36 @@ class SoftwareUpdate:
         if self.result == NEWEST:  # the service found nothing newer after all
             self.release = self.asset = None
 
+    def update_disk(self) -> None:
+        """Live USB: update the system installed on the disk from this stick."""
+        found = self.found()
+        if found is None:
+            return
+        if self.apps_running():
+            self.result = CLOSE_APPS
+            return
+        question = (
+            f"UPDATE THE {self.found_line(found)} TO COUCHLITEOS {self.current}? IT SAVES THE INSTALLED SYSTEM "
+            "FIRST, THEN INSTALLS THIS VERSION. PAIRINGS, WI-FI, BLUETOOTH AND SETTINGS ARE KEPT. "
+            "KEEP THE BOX PLUGGED IN."
+        )
+        if not self.confirm(self.screen, question):
+            return
+        try:
+            (self.run_dir / STATUS).unlink(missing_ok=True)
+            (self.run_dir / DISK_REQUEST).touch()
+        except OSError as error:
+            self.result = f"COULD NOT START THE UPDATE: {error.strerror or 'ERROR'}".upper()
+            return
+        self.result = self.progress(self.current)
+
     # -- watching the service --------------------------------------------------------------------
 
     def draw_progress(
         self, version: str, text: str, percent: int | None, frame: int, hint: str, with_bar: bool = True
     ) -> None:
         height, width, row = self.frame()
-        _centered(self.screen, row, f"UPDATING TO COUCHLITEOS {version}", curses.A_BOLD)
+        _centered(self.screen, row, f"{self.heading} {version}", curses.A_BOLD)
         for offset, line in enumerate(textwrap.wrap(text, max(8, width - 8))[: max(1, height - 12)]):
             _centered(self.screen, row + 2 + offset, line)
         if with_bar:
@@ -375,6 +464,8 @@ class SoftwareUpdate:
                     return CANCELLED
                 if phase == "uptodate":
                     return NEWEST
+                if phase == "updated":  # apply-disk: the stick has to come out before the restart
+                    return self.failure(shown, _text(state.get("message"), DISK_DONE))
                 if not phase and now - started >= START_WAIT:
                     return self.failure(shown, NOT_STARTED)
                 if phase == "restarting":

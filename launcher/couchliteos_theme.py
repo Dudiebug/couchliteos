@@ -219,14 +219,25 @@ def _write_atomically(path: pathlib.Path, text: str, mode: int) -> None:
 
 
 def save_choice(name: str, accent: str, path: pathlib.Path | None = None) -> None:
-    """Rewrite only the [appearance] section of config.ini, atomically. Raises OSError."""
+    """Rewrite theme and accent in the [appearance] section of config.ini, atomically. Raises OSError."""
+    save_values({"theme": name, "accent": accent}, path)
+
+
+def save_values(values: dict[str, str], path: pathlib.Path | None = None) -> None:
+    """Set these keys of the [appearance] section of config.ini, atomically, keeping its other keys
+    (the TV interface's `sounds`) and the other sections. Raises OSError."""
     path = CONFIG if path is None else path
-    block = f"[{SECTION}]\ntheme = {name}\naccent = {accent}\n"
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except OSError:
         lines = []
     start = next((i for i, line in enumerate(lines) if line.strip().lower() == f"[{SECTION}]"), None)
+    kept: list[str] = []
+    if start is not None:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        kept = [line if line.endswith("\n") else line + "\n" for line in lines[start + 1:end]
+                if line.strip() and line.partition("=")[0].strip().lower() not in values]
+    block = f"[{SECTION}]\n" + "".join(f"{key} = {value}\n" for key, value in values.items()) + "".join(kept)
     if start is None:
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
@@ -234,7 +245,6 @@ def save_choice(name: str, accent: str, path: pathlib.Path | None = None) -> Non
             lines.append("\n")
         lines.append(block)
     else:
-        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
         lines[start:end] = [block + ("\n" if end < len(lines) else "")]
     _write_atomically(path, "".join(lines), 0o640)
 

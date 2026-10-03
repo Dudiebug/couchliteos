@@ -260,6 +260,61 @@ class SavedVersionTest(UiTest):
         self.assertTrue(self.frames_with("KEEP THE BOX PLUGGED IN"))
 
 
+class RestoreTest(UiTest):
+    ROW = "RESTORE PREVIOUS VERSION (0.2.0, SAVED 2 OCT 2026)"
+
+    def restarting(self):
+        return self.service("restarting", 100, "RESTARTING TO RESTORE THE SAVED VERSION...", "0.2.0")
+
+    def test_the_row_names_the_saved_version_and_its_date_next_to_delete(self):
+        self.saved = SAVED
+        self.script = [ESC]
+        screen = self.make()
+        screen.run()
+        self.assertEqual(screen.rows()[-3:], ["DELETE SAVED VERSION", self.ROW, "BACK"])
+        self.assertIn(self.ROW, self.screen.frames[0])
+        self.saved = None
+        self.assertNotIn(self.ROW, screen.rows())
+
+    def test_restore_warns_that_later_changes_are_lost_then_asks_the_service(self):
+        self.saved = SAVED
+        self.script = [DOWN, DOWN, DOWN, ENTER, self.restarting(), None]
+        with self.assertRaises(AssertionError):  # the box restarts: the screen never comes back
+            self.make().run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertIn("RESTORE COUCHLITEOS 0.2.0, SAVED 2 OCT 2026? EVERYTHING CHANGED SINCE THEN IS LOST",
+                      flat(self.questions[0]))
+        self.assertTrue((self.tmp / "restore-request").exists())
+        self.assertTrue(self.frames_with("RESTORING COUCHLITEOS 0.2.0"))
+        self.assertTrue(self.frames_with("RESTARTING..."))
+
+    def test_no_changes_nothing(self):
+        self.saved = SAVED
+        self.answer = False
+        self.script = [DOWN, DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertFalse((self.tmp / "restore-request").exists())
+
+    def test_running_apps_must_be_closed_first(self):
+        self.saved = SAVED
+        self.apps = True
+        self.script = [DOWN, DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertEqual(self.questions, [])
+        self.assertFalse((self.tmp / "restore-request").exists())
+        self.assertIn("CLOSE RUNNING APPS FIRST", self.screen.frames[-1])
+
+    def test_a_refused_request_is_shown_and_the_update_title_comes_back(self):
+        self.saved = SAVED
+        self.script = [DOWN, DOWN, DOWN, ENTER,
+                       self.service("failed", None, "THERE IS NO SAVED VERSION TO RESTORE, OR IT IS DAMAGED", "0.2.0"),
+                       ENTER, ESC]
+        screen = self.make()
+        screen.run()
+        self.assertIn("THERE IS NO SAVED VERSION TO RESTORE", flat(self.screen.frames[-1]))
+        self.assertEqual(screen.heading, "UPDATING TO COUCHLITEOS")
+
+
 class CheckTest(UiTest):
     def test_check_draws_checking_first_and_looks_up_this_version(self):
         self.script = [ENTER, ESC]
