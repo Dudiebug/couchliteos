@@ -8,9 +8,12 @@ export PROFILE
 VERSION := $(shell cat VERSION)
 ISO_SUFFIX := $(shell . config/profiles/$(PROFILE)/profile.conf 2>/dev/null && printf '%s' "$$ISO_SUFFIX")
 ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso
-# RELEASE=1 builds a release ISO (xz squashfs, packages always installed afresh).
+# RELEASE=1 builds a release ISO (xz squashfs).
 # Without it `make build` makes a test ISO (zstd squashfs; docs/BUILDING.md).
+# FRESH=1 installs every package even when COUCHLITEOS_LB_CACHE holds a matching
+# chroot snapshot.
 RELEASE ?= 0
+FRESH ?= 0
 
 .PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet release-assets release-check clean
 
@@ -42,7 +45,7 @@ build:
 	@mkdir -p build/out && : > build/out/build-times.txt
 	./build/timed.sh tests ./build/test-gate.sh run
 	./build/timed.sh configure $(MAKE) configure
-	./build/build.sh $(if $(filter 1,$(RELEASE)),--release)
+	./build/build.sh $(if $(filter 1,$(RELEASE)),--release) $(if $(filter 1,$(FRESH)),--fresh)
 	@./build/timed.sh --summary
 
 test:

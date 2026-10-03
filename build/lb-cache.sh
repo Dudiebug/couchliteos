@@ -18,6 +18,7 @@
 #   chroot-<key>.tar.zst  the chroot with every package installed, taken before
 #       the includes and hooks run (see lb_cache_chroot_stage). Hooks and
 #       includes always run again, so launcher and script changes always land.
+#       Release builds reuse it too, unless build.sh --fresh.
 # Not shared on purpose: the installer cache (keyed by URL, not content) and
 # LB_CACHE_INDICES. Do not run two builds against one cache directory at once.
 
@@ -150,18 +151,24 @@ lb_cache_chroot_supported() {
 
 # Prints the key for the installed chroot: the bootstrap key plus every input of the
 # package stage (all lb config files, package lists, apt sources, keys and pins,
-# preseeds, local packages, the includes copied before packages). Hooks and the
-# includes copied after packages are not in it: they run again on every build.
+# preseeds, local packages, the includes copied before packages), plus the hooks that
+# install or remove packages and the sources they build (the Cage hook installs its
+# build dependencies, then purges them). Other hooks and includes are not in it: they
+# run again on every build.
 lb_cache_chroot_key() {
-  local base path files=() dirs=()
+  local base path files=() dirs=() hooks=()
   base=${LB_CACHE_KEY:-$(lb_cache_key)} || return 1
   [[ -n $base ]] || return 1
   for path in config/common config/bootstrap config/chroot config/binary config/source; do
     [[ -f $path ]] && files+=("$path")
   done
   for path in config/package-lists config/archives config/apt config/preseed \
-      config/includes.chroot_before_packages config/packages.chroot config/packages; do
+      config/includes.chroot_before_packages config/packages.chroot config/packages \
+      config/includes.chroot/usr/src; do
     [[ -e $path || -L $path ]] && dirs+=("$path")
+  done
+  for path in config/hooks/*/*.chroot; do
+    [[ -f $path ]] && grep -qE '\<apt(-get)? +(install|purge|remove|autoremove|upgrade|dist-upgrade)\>|\<dpkg +(-i|--install|-r|--remove|-P|--purge)\>' "$path" && hooks+=("$path")
   done
   {
     printf 'couchliteos-chroot-v1\n%s\n' "$base"
@@ -171,6 +178,7 @@ lb_cache_chroot_key() {
       find "${dirs[@]}" -printf '%y %m %p %l\n' | LC_ALL=C sort
       find "${dirs[@]}" -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
     fi
+    ((${#hooks[@]} == 0)) || sha256sum "${hooks[@]}"
   } | md5sum | cut -d' ' -f1
 }
 
@@ -239,7 +247,7 @@ lb_cache_chroot_save() {
 # includes and hooks run on top exactly as in a fresh build. Without a snapshot the
 # packages are installed normally and the chroot is saved at that point: after
 # chroot_prep remove, so the snapshot holds no mounts, build-time apt sources,
-# policy-rc.d or diverted start-stop-daemon. Release builds pass reuse=0.
+# policy-rc.d or diverted start-stop-daemon. build.sh --fresh passes reuse=0.
 lb_cache_chroot_stage() {
   local dir=$1 reuse=$2 key='' snapshot='' restored=0 pass
   if lb_cache_chroot_supported; then
@@ -258,7 +266,7 @@ lb_cache_chroot_stage() {
       echo "lb-cache: no installed chroot for $key yet, installing packages" >&2
     fi
   else
-    echo 'lb-cache: release build, installing packages afresh' >&2
+    echo 'lb-cache: fresh build, installing packages afresh' >&2
   fi
 
   lb chroot_cache restore

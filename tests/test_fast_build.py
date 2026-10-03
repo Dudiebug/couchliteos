@@ -155,6 +155,23 @@ class ChrootKeyTest(Temporary):
                 first, second = self.changed(path, text)
                 self.assertEqual(first, second)
 
+    def test_hooks_that_change_packages_and_their_sources_change_the_key(self):
+        # The Cage hook installs its build dependencies and purges them again.
+        cage = "#!/bin/sh\napt-get install --yes meson\napt-get purge --yes meson\n"
+        for path, text in (("hooks/live/0050-cage.hook.chroot", cage),
+                           ("hooks/live/0100-x.hook.chroot", "#!/bin/sh\ndpkg -i /tmp/x.deb\n"),
+                           ("includes.chroot/usr/src/couchliteos-cage/x.patch", "+x\n")):
+            with self.subTest(path=path):
+                first, second = self.changed(path, text)
+                self.assertNotEqual(first, second)
+        first, second = self.changed("hooks/live/0050-cage.hook.chroot", cage + "/usr/bin/cage -v\n")
+        self.assertNotEqual(first, second)
+
+    def test_hooks_that_only_query_packages_do_not_change_the_key(self):
+        first, second = self.changed("hooks/live/0200-x.hook.chroot",
+                                     "#!/bin/sh\ndpkg-query -W cage\ndpkg-divert --truename /usr/bin/cage\n")
+        self.assertEqual(first, second)
+
     def test_no_key_without_the_package_indices(self):
         result = run_bash("lb_cache_fetch() { return 22; }\nlb_cache_chroot_key", cwd=self.work)
         self.assertNotEqual(result.returncode, 0)
@@ -291,10 +308,10 @@ class ChrootStageTest(Temporary):
         calls, _ = self.stage(1, HIT="1")
         self.assertEqual(calls, ["restore /cache/chroot-k1.tar.zst"] + PACKAGE_STEPS + FINAL_STEPS)
 
-    def test_a_release_never_restores(self):
+    def test_a_fresh_build_never_restores(self):
         calls, stderr = self.stage(0, HIT="1")
         self.assertEqual(calls, PACKAGE_STEPS + SNAPSHOT_STEPS + FINAL_STEPS)
-        self.assertIn("release build", stderr)
+        self.assertIn("fresh build", stderr)
 
     def test_another_live_build_version_runs_plain_lb_chroot(self):
         calls, _ = self.stage(1, UNSUPPORTED="1", HIT="1")
