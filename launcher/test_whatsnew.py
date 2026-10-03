@@ -248,7 +248,7 @@ class ScreenTest(unittest.TestCase):
         self.assertIn(whatsnew.RENAME_NOTICE, text)
         for feature in whatsnew.FEATURES:
             self.assertIn(feature, text)
-        self.assertIn("PRESS A OR B TO CONTINUE", text)
+        self.assertIn("PRESS A, B, ENTER OR ESC TO CONTINUE", text)
         # Nothing is drawn on top of anything else.
         rows = [row for row, _col, _text, _attr in screen.frame]
         self.assertEqual(len(rows), len(set(rows)))
@@ -272,7 +272,7 @@ class ScreenTest(unittest.TestCase):
                     self.assertTrue(col + len(text) <= width, (col, text))
 
     def test_footer_is_visible_on_a_short_screen(self):
-        self.assertIn("PRESS A OR B TO CONTINUE", self.draw((12, 80)).text())
+        self.assertIn("PRESS A, B, ENTER OR ESC TO CONTINUE", self.draw((12, 80)).text())
 
     def test_the_title_is_bold(self):
         attrs = {text: attr for _row, _col, text, attr in self.draw().frame}

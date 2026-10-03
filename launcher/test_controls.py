@@ -470,7 +470,7 @@ class ScreenTest(unittest.TestCase):
         text = "\n".join(item[2] for item in screen.drawn)
         self.assertIn("CONTROLLER BUTTONS", text)
         self.assertIn("SELECT / OK", text)
-        self.assertIn("PRESS A OR B TO CLOSE", text)
+        self.assertIn("PRESS A, B, ENTER OR ESC TO CLOSE", text)
         self.assertNotIn("SLEEP", text)
 
     def test_screen_clips_instead_of_crashing_on_a_tiny_terminal(self):

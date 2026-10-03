@@ -153,7 +153,7 @@ def wrap_cells(cells: list[tuple[list[str], str]]) -> list[str]:
 
 def footer(kind: str) -> str:
     south, east = FAMILY_NAMES[kind][:2]
-    return f"PRESS {south} OR {east} TO CLOSE"
+    return f"PRESS {south}, {east}, ENTER OR ESC TO CLOSE"
 
 
 def sleep_supported() -> bool:

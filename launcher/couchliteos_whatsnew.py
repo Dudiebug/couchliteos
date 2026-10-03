@@ -62,7 +62,7 @@ RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
 FEATURES = RELEASES[0][1]  # the newest release
 MORE = "AND MORE: SEE THE RELEASE NOTES"
 EARLIER = "EARLIER CHANGES: SEE THE RELEASE NOTES"
-FOOTER = "PRESS A OR B TO CONTINUE"
+FOOTER = "PRESS A, B, ENTER OR ESC TO CONTINUE"
 # gamepad-nav sends Enter for A and Esc for B.
 DISMISS_KEYS = (curses.KEY_ENTER, 10, 13, 27)
 
