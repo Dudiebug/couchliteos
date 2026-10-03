@@ -284,6 +284,16 @@ class AppearanceScreenTest(TempDir):
         self.assertEqual(theme.load_choice(self.config), ("midnight", "amber"))
         write.assert_called_once_with(1, theme.osc(theme.with_accent(theme.FALLBACK, "amber")).encode("ascii"))
 
+    def test_sounds_row_turns_the_tv_sounds_off_and_on(self):
+        import couchliteos_quick as quick
+
+        write, _osk_file = self.run_screen([curses.KEY_DOWN, curses.KEY_DOWN, 10, 27])
+        write.assert_not_called()
+        self.assertFalse(quick.sounds_enabled(self.config))
+        self.assertEqual(theme.load_choice(self.config), ("midnight", ""))
+        self.run_screen([curses.KEY_DOWN, curses.KEY_DOWN, 10, 27])
+        self.assertTrue(quick.sounds_enabled(self.config))
+
     def test_backing_out_changes_nothing(self):
         write, osk_file = self.run_screen([10, 27, 27])
         write.assert_not_called()

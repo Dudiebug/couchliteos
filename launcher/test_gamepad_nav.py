@@ -472,12 +472,12 @@ class GamepadMappingTest(unittest.TestCase):
 
     def test_holding_guide_goes_home_then_asks_for_sleep_once(self):
         home, sleep = self.drive_watch_home([(100.0, (1,)), (101.5, ()), (103.2, ()), (110.0, ())])
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         sleep.assert_called_once_with()
 
     def test_a_short_guide_press_goes_home_and_never_asks_for_sleep(self):
         home, sleep = self.drive_watch_home([(100.0, (1,)), (100.4, (0,)), (110.0, ())])
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         sleep.assert_not_called()
 
     def test_the_pad_loop_does_not_run_a_second_hold(self):
@@ -711,7 +711,7 @@ class GamepadMappingTest(unittest.TestCase):
             state["round"] += 1
             return ([device] if events else []), [], []
 
-        def take_focus():
+        def take_focus(**_kind):
             if focus_after_home:
                 (run / "launcher-focus").touch()
 
@@ -731,7 +731,7 @@ class GamepadMappingTest(unittest.TestCase):
 
     def test_holding_guide_in_the_launcher_asks_for_sleep_after_five_seconds(self):
         home, slept = self.watch_home_rounds(self.HOLD)
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         self.assertTrue(slept)
 
     def test_holding_guide_for_four_and_a_half_seconds_does_not_sleep(self):
@@ -742,7 +742,7 @@ class GamepadMappingTest(unittest.TestCase):
         # The Guide press also brings the launcher forward, so by the time the hold is up the
         # launcher has focus: what counts is who had the controller when the press began.
         home, slept = self.watch_home_rounds(self.HOLD, app=True, focus_after_home=True)
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         self.assertFalse(slept)
 
     def test_holding_guide_while_the_launcher_already_has_focus_sleeps_even_with_an_app_running(self):
@@ -1335,6 +1335,18 @@ class HomeShortcutTest(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
+    def test_home_request_says_whether_it_was_a_guide_tap(self):
+        # The TV interface opens its quick menu on a tap; a held shortcut goes straight Home.
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / "home.request"
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module.subprocess, "run") as run:
+                self.module.request_home(guide=True)
+                self.assertEqual(request.read_text(), "guide\n")
+                self.module.request_home()
+                self.assertEqual(request.read_text(), "shortcut\n")
+            self.assertEqual(run.call_args.args[0][-1], "title:CouchLiteOS Launcher")
+
     # The pointer-mode helpers are shared, not inherited (that would run those tests twice).
     run_dir = PointerModeTest.run_dir
     pads = PointerModeTest.pads
@@ -1785,7 +1797,7 @@ class HomeShortcutTest(unittest.TestCase):
             with self.subTest(case=label):
                 home, _timeouts, _watched = self.watch(
                     self.GUIDE_PRESS, self.GUIDE_PAD, **({"app": True} | kwargs))
-                home.assert_called_once_with()
+                home.assert_called_once_with(guide=True)
 
     def test_the_bluetooth_guide_key_is_the_streams_too(self):
         self.use(home="guide")
@@ -1794,13 +1806,13 @@ class HomeShortcutTest(unittest.TestCase):
         home, _timeouts, _watched = self.watch(presses, capabilities, front="moonlight")
         home.assert_not_called()
         home, _timeouts, _watched = self.watch(presses, capabilities, front="firefox")
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
 
     def test_the_keyboard_home_key_still_goes_home_over_a_stream(self):
         self.use(home="guide")
         press = [(0.0, [(Codes.KEY_HOME, 1)]), (0.1, [(Codes.KEY_HOME, 0)])]
         home, _timeouts, _watched = self.watch(press, (Codes.KEY_HOME, Codes.KEY_ENTER), front="moonlight")
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
 
     def test_the_pad_shortcuts_are_the_way_home_from_a_stream(self):
         hold = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (1.0, []), (1.6, [])]

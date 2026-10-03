@@ -1331,6 +1331,18 @@ rg -q 'tests/test_tv_fallback.py' Makefile
 refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py
 rg -q '^INIT_FAILED = 3$' launcher/couchliteos-tv.py
 rg -q '^INIT_FAILED=3$' scripts/couchliteos-session
+# Quick menu, prompt bar, toasts and sounds (0.3.0 G4): plain Python next to the GTK window.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_quick.py" "\$CHROOT/usr/libexec/couchliteos_quick.py"$' build/configure.sh
+rg -q '^import couchliteos_quick as quick$' launcher/couchliteos-tv.py
+rg -q '^import couchliteos_quick as quick$' launcher/couchliteos-launcher.py
+rg -q 'test_quick.py' launcher/Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_quick.py
+for sound in move select back; do
+  [[ -f overlay/usr/share/couchliteos/sounds/$sound.wav ]]
+done
+rg -q '"pw-play"' launcher/couchliteos_quick.py
+rg -q '^pipewire$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q 'HOME_REQUEST.write_text\("guide\\n" if guide else "shortcut\\n"' launcher/gamepad-nav.py
 
 # Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)
 rg -q 'couchliteos_pads.py' build/configure.sh
