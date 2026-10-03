@@ -29,7 +29,6 @@ import time
 import unicodedata
 import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 
 DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
@@ -132,18 +131,33 @@ def allowed_url(url: str) -> bool:
             and not parts.username and not parts.password)
 
 
-class _Redirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not allowed_url(newurl):
-            raise ArtworkError("redirect to a host that is not allowed")
-        new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new is not None and urllib.parse.urlsplit(newurl).hostname != urllib.parse.urlsplit(req.full_url).hostname:
-            new.remove_header("Authorization")  # the key goes to the SteamGridDB API only
-        return new
+def _redirects_class() -> type:
+    """The redirect check, built on first use: urllib.request (and http.client) stay out of the
+    TV interface's start; the lookup runs on the worker threads."""
+    import urllib.request
+
+    class Redirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if not allowed_url(newurl):
+                raise ArtworkError("redirect to a host that is not allowed")
+            new = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new is not None and urllib.parse.urlsplit(newurl).hostname != urllib.parse.urlsplit(req.full_url).hostname:
+                new.remove_header("Authorization")  # the key goes to the SteamGridDB API only
+            return new
+
+    return Redirects
+
+
+def __getattr__(name: str):
+    if name == "_Redirects":
+        return _redirects_class()
+    raise AttributeError(name)
 
 
 def default_opener() -> Callable[..., object]:
-    return urllib.request.build_opener(_Redirects()).open
+    import urllib.request
+
+    return urllib.request.build_opener(_redirects_class()()).open
 
 
 def fetch(url: str, opener: Callable[..., object], limit: int, timeout: float = TIMEOUT,
@@ -151,6 +165,8 @@ def fetch(url: str, opener: Callable[..., object], limit: int, timeout: float = 
     """GET `url` (HTTPS, allowed hosts only), at most `limit` bytes."""
     if not allowed_url(url):
         raise ArtworkError("host is not allowed")
+    import urllib.request
+
     request = urllib.request.Request(url, headers={"User-Agent": "CouchLiteOS", **(headers or {})})
     try:
         with opener(request, timeout=timeout) as response:
