@@ -7,15 +7,25 @@ test_controls.py checks against the real mapping. Pad names come from /proc/bus/
 from __future__ import annotations
 
 import curses
+import importlib
 import itertools
+import os
 import pathlib
 import textwrap
 
 import couchliteos_input as inputprefs
-import couchliteos_setup as setup
 
 PROC_INPUT = pathlib.Path("/proc/bus/input/devices")
-SHOWN = setup.MARKER.parent / "controls-shown"
+# couchliteos_setup (the whole wizard, and urllib through it) loads only when needed: the
+# TV interface imports this module for detect_family() before its first frame.
+SETUP_MARKER = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "setup-complete"
+SHOWN = SETUP_MARKER.parent / "controls-shown"
+
+
+def __getattr__(name: str):
+    if name == "setup":
+        return importlib.import_module("couchliteos_setup")
+    raise AttributeError(name)
 TITLE = "CONTROLLER BUTTONS"
 KEYS_TITLE = "KEYBOARD KEYS"
 WIDTH = 76  # the widest line; the screen also fits 80x24
@@ -216,14 +226,14 @@ def show_lines(screen: curses.window, title: str, lines: list[str], footer_text:
             return
 
 
-def should_show_once(marker: pathlib.Path = SHOWN, setup_marker: pathlib.Path = setup.MARKER) -> bool:
+def should_show_once(marker: pathlib.Path = SHOWN, setup_marker: pathlib.Path = SETUP_MARKER) -> bool:
     """Only after setup is complete, so it never comes before the wizard."""
     return setup_marker.exists() and not marker.exists()
 
 
 def mark_shown(marker: pathlib.Path = SHOWN) -> None:
     try:
-        setup.write_complete(marker)
+        importlib.import_module("couchliteos_setup").write_complete(marker)
     except OSError:
         pass  # the worst case is that the screen shows again
 
@@ -232,7 +242,7 @@ def show_once(
     screen: curses.window,
     can_sleep: bool | None = None,
     marker: pathlib.Path = SHOWN,
-    setup_marker: pathlib.Path = setup.MARKER,
+    setup_marker: pathlib.Path = SETUP_MARKER,
     proc: pathlib.Path = PROC_INPUT,
 ) -> None:
     if not should_show_once(marker, setup_marker):
