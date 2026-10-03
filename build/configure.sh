@@ -87,6 +87,7 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_softwareupdate.py" "$CHROOT/usr/l
 install -D -m 0644 "$ROOT/launcher/couchliteos_errors.py" "$CHROOT/usr/libexec/couchliteos_errors.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_whatsnew.py" "$CHROOT/usr/libexec/couchliteos_whatsnew.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_padcheck.py" "$CHROOT/usr/libexec/couchliteos_padcheck.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_pads.py" "$CHROOT/usr/libexec/couchliteos_pads.py"
 install -D -m 0755 "$ROOT/scripts/couchliteos-rdp-secret" "$CHROOT/usr/libexec/couchliteos-rdp-secret"
 install -D -m 0755 "$ROOT/launcher/couchliteos_app_runner.py" "$CHROOT/usr/libexec/couchliteos-run-configured-app"
 install -D -m 0644 "$ROOT/launcher/couchliteos_setup.py" "$CHROOT/usr/libexec/couchliteos_setup.py"

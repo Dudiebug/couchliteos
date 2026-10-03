@@ -971,6 +971,17 @@ rg -q '^import couchliteos_recent as recent$' launcher/couchliteos-launcher.py
 rg -q 'recent\.record\(recent\.host_key\(host\), app_name\)' launcher/couchliteos-launcher.py
 refute rg -q '^import (curses|gi)' launcher/couchliteos_home.py launcher/couchliteos_recent.py
 
+# Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)
+rg -q 'couchliteos_pads.py' build/configure.sh
+rg -q 'couchliteos_pads.py' launcher/Makefile
+rg -q 'test_pads.py' launcher/Makefile
+rg -q '^import couchliteos_pads as pads' launcher/couchliteos-launcher.py
+rg -q '^import couchliteos_pads as padprefs' launcher/gamepad-nav.py
+rg -q '"CONTROLLERS": lambda: pads\.run\(self\.screen, read_key\)' launcher/couchliteos-launcher.py
+refute rg -q '\.grab\(' launcher/couchliteos_pads.py
+rg -q '^ACTION=="add", SUBSYSTEM=="leds", KERNEL=="xpad\[0-9\]\*\|.*player.*RUN\+="/bin/chgrp couchliteos /sys/class/leds/%k/brightness", RUN\+="/bin/chmod g\+w /sys/class/leds/%k/brightness"$' \
+  overlay/etc/udev/rules.d/72-couchliteos-leds.rules
+
 # SETTINGS > NETWORK is the controller Wi-Fi menu; nmtui stays behind ADVANCED. The module never
 # starts a process or logs, so a Wi-Fi password cannot reach argv or a log through it.
 rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_netmenu.py" "\$CHROOT/usr/libexec/couchliteos_netmenu.py"$' build/configure.sh

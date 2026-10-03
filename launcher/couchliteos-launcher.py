@@ -42,6 +42,7 @@ import couchliteos_whatsnew as whatsnew
 import couchliteos_controls as controls
 import couchliteos_input as inputprefs
 import couchliteos_padcheck as padcheck
+import couchliteos_pads as pads
 import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
 import couchliteos_phone as phone
@@ -72,6 +73,7 @@ SETTINGS_MENU = (
     "APPEARANCE",
     "AUDIO",
     "BLUETOOTH",
+    "CONTROLLERS",
     "NETWORK",
     "SLEEP & SCREEN",
     "APPLICATIONS",
@@ -2051,6 +2053,7 @@ class Settings:
             "APPEARANCE": self.run_appearance,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
+            "CONTROLLERS": lambda: pads.run(self.screen, read_key),
             "NETWORK": self.run_network,
             "SLEEP & SCREEN": self.run_sleep_settings,
             "APPLICATIONS": self.run_applications,

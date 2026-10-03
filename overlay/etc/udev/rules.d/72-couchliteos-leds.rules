@@ -1,0 +1,5 @@
+# Settings > CONTROLLERS (the launcher) and gamepad-nav run as couchliteos and set the pads' player
+# lights in the chosen order, and blink them for IDENTIFY. sysfs makes the file root-only, so hand it
+# to group couchliteos when the light appears: xpad's ring (xpad0, ...) and the player lights of
+# hid-playstation and hid-nintendo (...:player-1, ...:player1). No root service is needed.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="xpad[0-9]*|*:player-[0-9]*|*:player[0-9]*", RUN+="/bin/chgrp couchliteos /sys/class/leds/%k/brightness", RUN+="/bin/chmod g+w /sys/class/leds/%k/brightness"
