@@ -26,5 +26,11 @@ python3 tools/mutants.py
 make qemu-smoke ISO="$ISO"
 make qemu-install-smoke ISO="$ISO"
 make qemu-persistence-smoke ISO="$ISO"
+# Updating an older install needs that older ISO (OLD_ISO=..., for example 0.2.0).
+if [[ -n ${OLD_ISO:-} ]]; then
+  make qemu-legacy-smoke ISO="$ISO" OLD_ISO="$OLD_ISO"
+else
+  printf 'qemu-legacy-smoke: skipped: OLD_ISO not set\n'
+fi
 
 printf 'CouchLiteOS release gauntlet passed.\n'

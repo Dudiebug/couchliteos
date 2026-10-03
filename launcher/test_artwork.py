@@ -127,6 +127,17 @@ class UrlTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertFalse(artwork.allowed_url(url))
 
+    def test_a_port_that_is_not_443_or_not_a_port_is_refused(self):
+        self.assertTrue(artwork.allowed_url("https://cdn2.steamgriddb.com:443/a.png"))
+        for url in ("https://cdn2.steamgriddb.com:80/a.png", "https://cdn2.steamgriddb.com:99999/a.png",
+                    "https://cdn2.steamgriddb.com:https/a.png", "https://cdn2.steamgriddb.com:-1/a.png"):
+            with self.subTest(url=url):
+                self.assertFalse(artwork.allowed_url(url))
+        web = FakeWeb()
+        with self.assertRaises(artwork.ArtworkError):
+            artwork.fetch("https://cdn2.steamgriddb.com:99999/a.png", web, 100)
+        self.assertEqual(web.requests, [])
+
     def test_fetch_refuses_other_hosts_without_a_request(self):
         web = FakeWeb()
         with self.assertRaises(artwork.ArtworkError):
@@ -212,6 +223,43 @@ class LookupTests(unittest.TestCase):
         self.assertTrue(web.urls()[0].startswith(STEAM_SEARCH))
         self.assertEqual(web.requests[1].get_header("Authorization"), f"Bearer {KEY}")
         self.assertIsNone(web.requests[3].get_header("Authorization"))  # the CDN never gets the key
+
+    GRID = {
+        GRID_SEARCH: {"data": [{"id": 7, "name": "RetroArch"}]},
+        GRID_COVERS + "7": {"data": [{"url": f"https://cdn2.steamgriddb.com/{n}.png"} for n in range(5)]},
+    }
+
+    def test_steamgriddb_when_steam_matches_but_has_no_portrait_cover(self):
+        routes = {STEAM_SEARCH: steam((7, "RetroArch")), STEAM_CDN + "7/": 404, **self.GRID,
+                  "https://cdn2.steamgriddb.com/0.png": PNG}
+        self.assertIsNone(artwork.find_cover("RetroArch", FakeWeb(routes)))  # no key: nothing else to ask
+        web = FakeWeb(routes)
+        self.assertEqual(artwork.find_cover("RetroArch", web, KEY), PNG)
+        self.assertEqual(web.urls()[1], STEAM_CDN + "7/library_600x900.jpg")
+        self.assertTrue(web.urls()[2].startswith(GRID_SEARCH))
+
+    def test_steam_offline_for_the_cover_is_offline_not_a_fallback(self):
+        web = FakeWeb({STEAM_SEARCH: steam((7, "RetroArch")), STEAM_CDN: 503, **self.GRID})
+        with self.assertRaises(artwork.Offline):
+            artwork.find_cover("RetroArch", web, KEY)
+        self.assertFalse(any(url.startswith(GRID_SEARCH) for url in web.urls()))
+
+    def test_steamgriddb_covers_skip_a_broken_one_and_stop_when_offline(self):
+        cdn = "https://cdn2.steamgriddb.com/"
+        # The first is gone (404), the second too large: the third is taken.
+        web = FakeWeb({STEAM_SEARCH: steam(), **self.GRID, cdn + "0.png": 404,
+                       cdn + "1.png": PNG + b"x" * artwork.MAX_IMAGE, cdn + "2.png": JPEG})
+        self.assertEqual(artwork.find_cover("RetroArch", web, KEY), JPEG)
+        # Only the first three are tried.
+        web = FakeWeb({STEAM_SEARCH: steam(), **self.GRID, cdn + "3.png": JPEG})
+        self.assertIsNone(artwork.find_cover("RetroArch", web, KEY))
+        self.assertFalse(any(url == cdn + "3.png" for url in web.urls()))
+        # Offline on a cover ends the lookup (the worker counts it as a failure, not a miss).
+        web = FakeWeb({STEAM_SEARCH: steam(), **self.GRID, cdn + "0.png": urllib.error.URLError("down"),
+                       cdn + "1.png": JPEG})
+        with self.assertRaises(artwork.Offline):
+            artwork.find_cover("RetroArch", web, KEY)
+        self.assertNotIn(cdn + "1.png", web.urls())
 
     def test_bad_key(self):
         web = FakeWeb({STEAM_SEARCH: steam(), GRID_SEARCH: 401})
@@ -409,6 +457,16 @@ class WorkerTests(unittest.TestCase):
         key = artwork.cache_key("uuid", "Portal")
         self.assertEqual(worker.run_job(key, "Portal"), "miss")
         self.assertFalse(self.cache.path(key).exists())
+
+    def test_an_image_the_re_encode_refuses_becomes_a_miss(self):
+        web = FakeWeb({STEAM_SEARCH: steam((1, "Portal")), STEAM_CDN: JPEG})
+        worker = self.worker(web)
+        worker.reencode = mock.Mock(side_effect=artwork.ArtworkError("not a readable jpeg image"))
+        key = artwork.cache_key("uuid", "Portal")
+        self.assertEqual(worker.run_job(key, "Portal", "PC"), "miss")
+        worker.reencode.assert_called_once_with(JPEG)
+        self.assertEqual(self.cache.lookup(key), ("miss", None))
+        self.assertFalse(worker.take_changed())
 
     def test_no_match_is_remembered(self):
         web = FakeWeb({STEAM_SEARCH: steam((2, "Something Else"))})

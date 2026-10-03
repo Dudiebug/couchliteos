@@ -56,23 +56,31 @@ class FallbackTest(unittest.TestCase):
         calls = self.log.read_text().splitlines() if self.log.exists() else []
         return result, calls
 
+    def interface(self):
+        return (self.run / "interface").read_text().splitlines()
+
     CLASSIC = "foot --fullscreen --title CouchLiteOS Launcher /usr/libexec/couchliteos-launcher"
 
     def test_the_tv_interface_runs_when_it_starts(self):
         result, calls = self.session("0")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, ["tv GSK_RENDERER="])
+        self.assertEqual(self.interface(), ["tv", "first try"])
+        self.assertIn("interface: tv (first try)", result.stderr)
 
     def test_exit_3_retries_once_with_cairo(self):
         result, calls = self.session("3 0")
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, ["tv GSK_RENDERER=", "tv GSK_RENDERER=cairo"])
         self.assertIn("trying again without GL", result.stderr)
+        self.assertEqual(self.interface(), ["tv", "GSK_RENDERER=cairo after exit 3"])
 
     def test_two_failures_start_the_classic_launcher(self):
         result, calls = self.session("3 3")
         self.assertEqual(result.returncode, 0)  # foot's status: exec replaced the wrapper
         self.assertEqual(calls, ["tv GSK_RENDERER=", "tv GSK_RENDERER=cairo", self.CLASSIC])
+        self.assertEqual(self.interface(), ["classic", "fallback after exit 3, then exit 3 with cairo"])
+        self.assertIn("interface: classic (fallback after exit 3", result.stderr)
 
     def test_a_crash_before_launcher_ready_counts_as_could_not_start(self):
         result, calls = self.session("139 1", ready_on="")
@@ -93,6 +101,7 @@ class FallbackTest(unittest.TestCase):
             self.log.unlink(missing_ok=True)
             result, calls = self.session("0", config=config)
             self.assertEqual(calls, [self.CLASSIC])
+            self.assertEqual(self.interface(), ["classic", "forced: [appearance] interface = classic"])
 
     def test_interface_tv_or_anything_else_runs_the_tv_interface(self):
         for config in ("[appearance]\ninterface = tv\n", "[appearance]\ntheme = slate\n",

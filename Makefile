@@ -14,8 +14,11 @@ ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.
 # chroot snapshot.
 RELEASE ?= 0
 FRESH ?= 0
+# tests/tv-headless.sh skips when cage, grim or a GTK 4 Python is missing; CI passes
+# TV_HEADLESS_ARGS= (empty) so a missing tool fails the run instead.
+TV_HEADLESS_ARGS ?= --if-available
 
-.PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke release-gauntlet release-assets release-check clean
+.PHONY: help fetch-apps configure build test qemu-smoke qemu-persistence-smoke qemu-install-smoke qemu-legacy-smoke release-gauntlet release-assets release-check clean
 
 help:
 	@printf '%s\n' \
@@ -26,7 +29,8 @@ help:
 	  'make qemu-smoke   Boot the ISO and wait for the appliance marker' \
 	  'make qemu-persistence-smoke  Verify live persistence and recovery boot' \
 	  'make qemu-install-smoke  Install to a VM disk and boot it independently' \
-	  'make release-gauntlet  Run the final source and real-ISO release gate' \
+	  'make qemu-legacy-smoke OLD_ISO=old.iso  Install an older ISO, update it from this ISO, boot it' \
+	  'make release-gauntlet  Run the final source and real-ISO release gate (OLD_ISO=old.iso adds the legacy update)' \
 	  'make release-assets  Write SHA256SUMS for built ISOs and check asset sizes' 	  'make release-check  Check versions, public notes, the tag and SHA256SUMS before publishing' \
 	  'sudo make clean   Remove generated build state' \
 	  '' \
@@ -75,7 +79,7 @@ test:
 	python3 -m unittest -v tests/test_bluetoothd_helpers.py
 	python3 -m unittest -v tests/test_cage_build.py
 	python3 -m unittest -v tests/test_tv_fallback.py
-	if command -v cage >/dev/null; then ./tests/tv-headless.sh --if-available; else echo 'tv-headless: skipped: cage is not installed'; fi
+	if [ -z '$(TV_HEADLESS_ARGS)' ] || command -v cage >/dev/null; then ./tests/tv-headless.sh $(TV_HEADLESS_ARGS); else echo 'tv-headless: skipped: cage is not installed'; fi
 	$(MAKE) -C launcher test
 	./build/test-gate.sh mark
 
@@ -88,8 +92,13 @@ qemu-persistence-smoke:
 qemu-install-smoke:
 	./tests/qemu-install-smoke.sh "$(ISO)"
 
+# OLD_ISO: an older published ISO (0.2.0, or MoonlightOS 0.1.13) to update from.
+qemu-legacy-smoke:
+	@[ -n "$(OLD_ISO)" ] || { echo 'usage: make qemu-legacy-smoke OLD_ISO=path/to/older.iso' >&2; exit 64; }
+	./tests/qemu-legacy-smoke.sh "$(OLD_ISO)" "$(ISO)"
+
 release-gauntlet:
-	./tools/release-gauntlet.sh "$(ISO)"
+	OLD_ISO="$(OLD_ISO)" ./tools/release-gauntlet.sh "$(ISO)"
 
 release-assets:
 	./tools/release-assets.sh

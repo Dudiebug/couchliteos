@@ -458,6 +458,8 @@ def collect(bundle: pathlib.Path) -> None:
     add_command(bundle, "chrome/package-source.txt", ["apt-cache", "policy", "google-chrome-stable"])
     add_file(bundle, "firefox/eme-widevine-status.txt", RUN / "firefox-drm-status")
     add_file(bundle, "firefox/eme-policy.json", pathlib.Path("/etc/firefox/policies/policies.json"))
+    # Which front end is on screen (tv or classic) and why: couchliteos-session writes it.
+    add_file(bundle, "session/interface.txt", RUN / "interface")
     managed = []
     for ready in sorted(RUN.glob("*-ready")):
         app_id = ready.name.removesuffix("-ready")

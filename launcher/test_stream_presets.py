@@ -248,6 +248,41 @@ class PrepareStreamTest(unittest.TestCase):
         self.assertEqual(self.conf.read_text(), written)
         self.assertTrue(self.saved.exists(), "kept for the next start")
 
+    def test_a_games_plan_is_refused_while_moonlight_runs(self):
+        # No record to put back (restore_global has nothing to do): apply_game_plan's own check.
+        stream.save_game("UUID-1", "Game", stream.GameSettings("QUALITY"), self.config)
+        before = self.conf.read_text()
+        (self.run / "app-active").write_text("moonlight\n")
+        with self.assertRaises(stream.StreamError):
+            self.prepare(("UUID-1", "Game"))
+        with self.assertRaises(stream.StreamError):
+            stream.apply_game_plan(stream.preset_plan("QUALITY", P4K, "auto"), "QUALITY", self.conf, self.saved, self.run)
+        self.assertEqual(self.conf.read_text(), before)
+        self.assertFalse(self.saved.exists())
+
+    def test_restore_global_is_refused_while_moonlight_runs(self):
+        stream.save_game("UUID-1", "Game", stream.GameSettings("QUALITY"), self.config)
+        self.prepare(("UUID-1", "Game"))
+        written, record = self.conf.read_text(), self.saved.read_text()
+        (self.run / "app-active").write_text("moonlight\n")
+        with self.assertRaises(stream.StreamError):
+            stream.restore_global(self.conf, self.saved, self.run)
+        self.assertEqual((self.conf.read_text(), self.saved.read_text()), (written, record))
+        (self.run / "app-active").write_text("chiaki\n")  # another app: Moonlight is not running
+        self.assertTrue(stream.restore_global(self.conf, self.saved, self.run))
+        self.assertEqual(self.conf.read_text(), CONF)
+
+    def test_restore_when_moonlight_conf_is_gone(self):
+        # Moonlight's settings were reset (the file removed) after the game's plan: nothing to put
+        # back, no file made up, and the record is dropped.
+        stream.save_game("UUID-1", "Game", stream.GameSettings("QUALITY"), self.config)
+        self.prepare(("UUID-1", "Game"))
+        self.conf.unlink()
+        self.assertFalse(stream.restore_global(self.conf, self.saved, self.run))
+        self.assertFalse(self.conf.exists())
+        self.assertFalse(self.saved.exists())
+        self.assertEqual(stream.active_preset(self.saved), "")
+
     def test_a_damaged_record_is_dropped_and_never_written_into_the_conf(self):
         before = self.conf.read_text()
         for text in ("not json", "[]", json.dumps({"saved": {"width": "1\nx=1"}, "written": {"width": "1920"}}),

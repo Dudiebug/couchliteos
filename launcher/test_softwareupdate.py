@@ -58,7 +58,9 @@ class TextScreen:
         self.put(row, column, text)
 
     def addnstr(self, row, column, text, count, *_attr):
-        self.put(row, column, text[:count])
+        # Curses would cut the text at count: a line the screen meant to show must already fit.
+        assert len(text) <= count, f"{text!r} ({len(text)}) is cut to {count} columns"
+        self.put(row, column, text)
 
     def put(self, row, column, text):
         height, width = self.size
@@ -611,6 +613,9 @@ class FitTest(UiTest):
             self.service("downloading", 99, "DOWNLOADING: 1881 OF 1900 MB"), ESC, self.service("failed", None, "X" * 90),
             ENTER, ESC)
         self.make().run()
+        # Nothing was cut (addnstr above refuses it): the 90-character failure is all there, wrapped.
+        self.assertTrue(any(frame.count("X") == 90 for frame in self.screen.frames), self.screen.frames[-1])
+        self.assertTrue(any("1881 OF 1900 MB" in frame for frame in self.screen.frames))
 
 
 class WiringTest(unittest.TestCase):

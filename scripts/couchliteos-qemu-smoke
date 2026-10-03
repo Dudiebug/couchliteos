@@ -76,6 +76,18 @@ case $mode in
   update-*|disk-update*|restore-*) trap 'status=$?; [[ $status == 0 ]] || echo COUCHLITEOS_SMOKE_UPDATE_FAILED' EXIT ;;
 esac
 wait_for_file /run/couchliteos/launcher-ready launcher
+# The classic launcher also writes launcher-ready: which front end came up is in the interface
+# file (couchliteos-session). Expected `tv` unless the host names another (opt/couchliteos.interface,
+# for example `classic` for a forced-classic or Basic Graphics run).
+expected=$(tr -d '\0' < /sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.interface/raw 2>/dev/null || echo tv)
+interface=$(sed -n 1p /run/couchliteos/interface 2>/dev/null || true)
+why=$(sed -n 2p /run/couchliteos/interface 2>/dev/null || true)
+echo "COUCHLITEOS_SMOKE_INTERFACE=${interface:-none} (${why:-no reason recorded})"
+if [[ $interface != "$expected" ]]; then
+  echo "The launcher came up as ${interface:-none} (${why:-no interface file}), not $expected." >&2
+  journalctl -b --no-pager -u couchliteos-launcher.service | tail -n 40 >&2 || true
+  exit 1
+fi
 case $mode in
   persistence-write)
     test -d /sys/firmware/efi
