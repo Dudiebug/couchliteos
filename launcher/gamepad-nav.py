@@ -105,7 +105,7 @@ NAV_TAP_KEYS = {ecodes.BTN_SELECT: ecodes.KEY_F7, ecodes.BTN_START: ecodes.KEY_F
 # Modifier key codes and the family each belongs to (CTRL, ALT, SHIFT, SUPER), for the keyboard Home key.
 MODIFIER_CODES = {getattr(ecodes, name): family for name, family in inputprefs.MODIFIER_FAMILIES.items()
                   if hasattr(ecodes, name)}
-BUS_VIRTUAL = 0x06  # uinput devices: the pad's own virtual keyboard, the on-screen keyboard, CEC
+OWN_DEVICE_PREFIX = "CouchLiteOS "  # our uinput devices: the pad's keyboard, the on-screen keyboard, the mouse
 
 
 def app_active() -> bool:
@@ -923,8 +923,9 @@ def is_pad_or_media(keys: set[int]) -> bool:
     return watches_home(keys, "")
 
 
-def is_virtual(device) -> bool:
-    return getattr(getattr(device, "info", None), "bustype", None) == BUS_VIRTUAL
+def is_own_device(device) -> bool:
+    """One of our own uinput devices; a VM's virtual keyboard is a real keyboard here."""
+    return str(getattr(device, "name", "")).startswith(OWN_DEVICE_PREFIX)
 
 
 def watches_home(keys: set[int], chord: str | None = None) -> bool:
@@ -986,7 +987,7 @@ def watch_home() -> None:
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if watches_home(keys) and not (is_virtual(device) and not is_pad_or_media(keys)):
+                if watches_home(keys) and not (is_own_device(device) and not is_pad_or_media(keys)):
                     devices[path] = device
                 else:
                     device.close()

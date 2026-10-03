@@ -780,7 +780,7 @@ def key_event(code, value, kind=Codes.EV_KEY):
 
 
 class PointerModeTest(unittest.TestCase):
-    """Controller mouse (pointer mode) for apps without controller support, and Super opening Home."""
+    """Controller mouse (pointer mode) for apps without controller support."""
 
     @classmethod
     def setUpClass(cls):
@@ -1241,7 +1241,7 @@ class PointerModeTest(unittest.TestCase):
         pads.set_pointer(False, 1.0)
         self.assertEqual(pads.sticks, {})
 
-    def watch_keyboards(self, rounds, capabilities=(Codes.KEY_LEFTMETA, Codes.KEY_ENTER)):
+    def watch_keyboards(self, rounds, capabilities=(Codes.KEY_LEFTMETA, Codes.KEY_ENTER), name="Keyboard"):
         """watch_home() over one fake keyboard: rounds[i] lists (code, value) events select i delivers.
 
         Returns (devices select() watched first, request_home mock)."""
@@ -1260,6 +1260,7 @@ class PointerModeTest(unittest.TestCase):
                 pass
 
         keyboard = Keyboard()
+        keyboard.name = name
         watched = []
 
         def fake_select(devices, _writable, _errors, _timeout):
@@ -1596,7 +1597,7 @@ class HomeShortcutTest(unittest.TestCase):
 
     # watch_home: the same Home request as Guide, from devices it only watches (never grabs)
 
-    def watch(self, rounds, capabilities, *, app=True):
+    def watch(self, rounds, capabilities, *, app=True, name="Device"):
         """watch_home() over one device; rounds[i] = (clock after select i, [(code, value), ...]),
         optionally with a third item: buttons let go unseen (another fd grabbed the pad), or an
         OSError for select i to raise.
@@ -1629,6 +1630,7 @@ class HomeShortcutTest(unittest.TestCase):
                 raise AssertionError("watch_home must never grab")
 
         device = Device()
+        device.name = name
         watched = []
 
         def fake_select(devices, _writable, _errors, timeout):
@@ -1714,15 +1716,20 @@ class HomeShortcutTest(unittest.TestCase):
         self.assertEqual(watched, [], "this keyboard has no Super key")
         home.assert_not_called()
 
-    def test_a_virtual_keyboard_is_not_watched_for_the_chord_but_a_virtual_pad_still_is(self):
+    def test_our_own_virtual_keyboards_are_not_watched_but_a_vm_keyboard_and_a_virtual_pad_are(self):
         self.use()
-        virtual = types.SimpleNamespace(bustype=self.module.BUS_VIRTUAL)
-        with mock.patch.object(self.module, "is_virtual", wraps=self.module.is_virtual):
-            self.assertTrue(self.module.is_virtual(types.SimpleNamespace(info=virtual)))
-            self.assertFalse(self.module.is_virtual(types.SimpleNamespace(info=types.SimpleNamespace(bustype=3))))
-            self.assertFalse(self.module.is_virtual(object()), "no bus information: not virtual")
+        chord_keys = (Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H)
+        for name, keys, watched_count in (
+            ("CouchLiteOS Launcher Navigation", chord_keys, 0),
+            ("CouchLiteOS Buffered Keyboard", chord_keys, 0),
+            ("QEMU Virtio Keyboard", chord_keys, 1),
+            ("CouchLiteOS Virtual Pad", (Codes.BTN_MODE,), 1),
+        ):
+            with self.subTest(name=name):
+                _home, _timeouts, watched = self.watch([], keys, name=name)
+                self.assertEqual(len(watched), watched_count)
         self.assertTrue(self.module.is_pad_or_media({Codes.BTN_MODE}))
-        self.assertFalse(self.module.is_pad_or_media({Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H}))
+        self.assertFalse(self.module.is_pad_or_media(set(chord_keys)))
 
     def test_a_hold_let_go_unseen_does_not_open_home_when_its_time_is_up(self):
         # No event arrives after the release here (the controller mouse grabbed the pad): the timer

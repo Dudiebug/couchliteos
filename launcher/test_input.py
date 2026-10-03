@@ -94,13 +94,17 @@ class ChordTest(TempDir):
 
     def test_what_can_be_the_home_key(self):
         ok = [{"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_H"}, {"KEY_LEFTMETA", "KEY_H"}, {"KEY_RIGHTALT", "KEY_G"},
-              {"KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_H"}, {"KEY_LEFTALT", "KEY_F3"}, {"KEY_LEFTCTRL", "KEY_F9"}]
+              {"KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_H"}, {"KEY_LEFTALT", "KEY_1"},
+              {"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_0"}, {"KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_K"}]
         for chord in ok:
             with self.subTest(chord=chord):
                 self.assertIsNone(inputprefs.validate_chord(chord))
         bad = [set(), {"KEY_H"}, {"KEY_LEFTMETA"}, {"KEY_LEFTCTRL", "KEY_LEFTALT"}, {"KEY_LEFTSHIFT", "KEY_H"},
                {"KEY_LEFTCTRL", "KEY_H", "KEY_J"}, {"KEY_LEFTCTRL", "KEY_ENTER"}, {"KEY_LEFTALT", "KEY_ESC"},
-               {"KEY_LEFTMETA", "KEY_F5"}, {"KEY_LEFTALT", "KEY_F12"}, {"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F2"},
+               {"KEY_LEFTCTRL", "KEY_BACKSLASH"}, {"KEY_LEFTCTRL", "KEY_LEFTBRACE"},
+               {"KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_N"}, {"KEY_LEFTCTRL", "KEY_0"}, {"KEY_LEFTCTRL", "KEY_MINUS"}, {"KEY_LEFTALT", "KEY_F3"}, {"KEY_LEFTCTRL", "KEY_F9"},
+               {"KEY_LEFTALT", "KEY_INSERT"},
+               {"KEY_LEFTALT", "KEY_FN_F1"}, {"KEY_LEFTMETA", "KEY_F5"}, {"KEY_LEFTALT", "KEY_F12"}, {"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F2"},
                {"KEY_LEFTMETA", "KEY_F3"}, {"KEY_LEFTMETA", "KEY_UP"}, {"KEY_LEFTCTRL", "KEY_C"},
                {"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_M"}, {"KEY_LEFTALT", "KEY_SPACE"}]
         for chord in bad:
@@ -244,6 +248,12 @@ class CaptureScreenTest(TempDir):
         self.assertEqual(self.capture([], self.NOTHING + [curses.KEY_F12],
                                       inputprefs.Settings(keyboard_home="KEY_LEFTMETA+KEY_H")), inputprefs.DEFAULT_CHORD)
         self.assertEqual(self.notice, "KEYBOARD HOME KEY  CTRL+ALT+H")
+
+    def test_delete_and_f12_on_the_keyboard_turn_it_off_and_reset_it_too(self):
+        self.assertEqual(self.capture(self.chord("KEY_DELETE"), self.NOTHING), "")
+        self.assertEqual(self.notice, "KEYBOARD HOME KEY  OFF")
+        self.assertEqual(self.capture(self.chord("KEY_F12"), self.NOTHING,
+                                      inputprefs.Settings(keyboard_home="KEY_LEFTMETA+KEY_H")), inputprefs.DEFAULT_CHORD)
 
     def test_the_screen_names_the_current_key_and_fits_80x24(self):
         self.capture([], self.NOTHING + [27], inputprefs.Settings(keyboard_home="KEY_LEFTMETA+KEY_H"))

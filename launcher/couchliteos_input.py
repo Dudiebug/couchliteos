@@ -59,6 +59,9 @@ FIXED_KEYS = frozenset({
 })
 # Ctrl+letter bytes curses treats specially: interrupt, end of input, Tab, Enter, flow control, suspend.
 CTRL_RESERVED = frozenset({"C", "D", "I", "J", "M", "Q", "S", "Z"})
+# foot's own key bindings (copy, paste, new window, search, URLs, prompt jumps, Unicode input, font size).
+FOOT_CTRL_SHIFT = frozenset({"C", "V", "R", "N", "O", "Z", "X", "U"})
+FOOT_CTRL = frozenset({"0"})
 CHORD_ORDER = ("CTRL", "ALT", "SHIFT", "SUPER")
 LEFT_KEYS = {"CTRL": "KEY_LEFTCTRL", "ALT": "KEY_LEFTALT", "SHIFT": "KEY_LEFTSHIFT", "SUPER": "KEY_LEFTMETA"}
 
@@ -131,6 +134,12 @@ def validate_chord(names) -> str | None:
         return "SHIFT ALONE IS NOT ENOUGH; ADD CTRL, ALT OR SUPER"
     if key in FIXED_KEYS:
         return f"{key[4:]} IS USED BY THE LAUNCHER; PICK ANOTHER KEY"
+    if not parse_chord(key):
+        return "THAT KEY CANNOT BE USED; PICK ANOTHER"
+    if len(key) != 5:  # function, editing and symbol keys reach curses as sequences it may not read back
+        return "USE A LETTER OR NUMBER KEY"
+    if (mods == {"CTRL", "SHIFT"} and key[4:] in FOOT_CTRL_SHIFT) or (mods == {"CTRL"} and key[4:] in FOOT_CTRL):
+        return f"THE TERMINAL USES THIS WITH {'+'.join(m for m in CHORD_ORDER if m in mods)}; PICK ANOTHER"
     if "CTRL" in mods and key[4:] in CTRL_RESERVED:
         return f"CTRL+{key[4:]} IS USED BY THE TERMINAL; PICK ANOTHER KEY"
     if {"CTRL", "ALT"} <= mods and key[4:].startswith("F") and key[5:].isdigit():

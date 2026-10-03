@@ -293,7 +293,7 @@ def setup_ui(screen: curses.window) -> setup.CursesUI:
 class KeyboardSource:
     """The keyboards' key presses for the capture screen, read from evdev (watched, never grabbed)."""
 
-    BUS_VIRTUAL = 0x06  # the pad's own virtual keyboard and the on-screen keyboard are not typed on
+    OWN_DEVICE_PREFIX = "CouchLiteOS "  # the pad's own virtual keyboard and the on-screen keyboard are not typed on
 
     def __init__(self) -> None:
         self.devices: list = []
@@ -309,7 +309,7 @@ class KeyboardSource:
             try:
                 device = evdev.InputDevice(path)
                 keys = set(device.capabilities().get(codes.EV_KEY, []))
-                if {codes.KEY_A, codes.KEY_LEFTCTRL} <= keys and device.info.bustype != self.BUS_VIRTUAL:
+                if {codes.KEY_A, codes.KEY_LEFTCTRL} <= keys and not device.name.startswith(self.OWN_DEVICE_PREFIX):
                     self.devices.append(device)
                 else:
                     device.close()
@@ -2217,6 +2217,10 @@ class Settings:
                         continue
                     if chord == {"KEY_ESC"}:
                         return "NOT CHANGED"
+                    if chord == {"KEY_DELETE"}:  # a keyboard's Y / SQUARE: its curses key is held back by the quiet period
+                        return self.save_home_key(settings, "")
+                    if chord == {"KEY_F12"}:  # a keyboard's X / TRIANGLE
+                        return self.save_home_key(settings, inputprefs.DEFAULT_CHORD)
                     message = inputprefs.validate_chord(chord) or ""
                     if not message:
                         return self.confirm_home_key(source, settings, chord)
