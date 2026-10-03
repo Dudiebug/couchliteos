@@ -49,6 +49,14 @@ printf '%s\n' "$*" >> "$COUCHLITEOS_RUN_DIR/foot.log"
 touch "$COUCHLITEOS_STATE_DIR/setup-complete"
 EOF
 chmod 755 "$work/foot"
+# The volume the quick menu shows: PipeWire is not running here.
+mkdir -p "$work/bin"
+cat > "$work/bin/wpctl" <<'EOF'
+#!/bin/sh
+[ "$1" = get-volume ] && { echo 'Volume: 0.60'; exit 0; }
+exit 1
+EOF
+chmod 755 "$work/bin/wpctl"
 
 # A fresh fixture per run: setup done, update checks and artwork lookup off (nothing leaves
 # the machine), one gaming PC with three games (one with a long name) and two covers.
@@ -67,8 +75,8 @@ fixture() {
   mkdir -p "$conf" "$art"
   printf '%s\n' '[hosts]' '1\hostname=GAMING-PC' '1\uuid=FIXTURE-UUID' '1\localaddress=192.0.2.10' \
     '1\apps\size=3' '1\apps\1\name=Desktop' '1\apps\1\id=101' \
-    '1\apps\2\name=The Elder Scrolls V: Skyrim Special Edition Anniversary Upgrade' '1\apps\2\id=102' \
-    '1\apps\3\name=Rocket League' '1\apps\3\id=103' 'size=1' > "$conf/Moonlight.conf"
+    '1\apps\2\name=Lanterns Over the Harbor: Definitive Collectors Edition Remastered' '1\apps\2\id=102' \
+    '1\apps\3\name=Paper Kite Racers' '1\apps\3\id=103' 'size=1' > "$conf/Moonlight.conf"
   "$PYTHON" - "$art" <<'EOF'
 import pathlib, struct, sys, zlib
 
@@ -97,7 +105,7 @@ run_tv() {
   [[ -z $firstboot ]] || rm -f -- "$base/state/setup-complete"
   local status=0
   COUCHLITEOS_RUN_DIR=$base/run COUCHLITEOS_STATE_DIR=$base/state HOME=$base/home \
-    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot \
+    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot PATH=$work/bin:$PATH \
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
     TV_PYTHON=$PYTHON TV_ROOT=$ROOT TV_STATUS=$base/status TV_SIZE="$width $height" \
     TV_SCRIPT=$script TV_DUMP=$base/dump TV_SHOTS=$shots \

@@ -569,6 +569,15 @@ class ApplyDiskTest(LegacyCase):
         self.assertEqual(self.applied, [])
         self.assertNotEqual(self.status.phases()[-1], "updated")
 
+    def test_too_little_room_to_save_updates_without_a_copy_and_says_so(self):
+        # The old install has no SAVE BEFORE UPDATE switch: refusing would leave it unable to update.
+        def no_room(env, status, root):
+            raise updater.NoRoomToSave("NOT ENOUGH FREE SPACE TO SAVE THE CURRENT VERSION: NEED 7 GB.")
+        self.disk(save=no_room)
+        self.assertEqual(len(self.applied), 1)
+        self.assertEqual(self.status.phases()[-1], "updated")
+        self.assertIn(updater.MSG_NO_ROOM_OLD_CALLER, (self.target / updater.LOG_REL).read_text())
+
     def test_the_real_apply_root_runs_against_the_disk(self):
         self.runner.script = fake_rsync(self.disk_image, self.target)
         self.disk(apply=None)

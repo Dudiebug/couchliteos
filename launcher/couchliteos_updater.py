@@ -1558,7 +1558,13 @@ def apply_disk(
         log = Log(target / LOG_REL)
         log(f"apply-disk {device}: {found[0] or OLDER} ({found[1]}) to {new} from the USB stick")
         disk_env = dataclasses.replace(env, log=log)
-        (save or save_snapshot)(disk_env, status, target)
+        try:
+            (save or save_snapshot)(disk_env, status, target)
+        except NoRoomToSave as error:
+            # The old install has no SAVE BEFORE UPDATE switch to turn off: go on without a copy.
+            log(f"snapshot: {error.message}")
+            log(MSG_NO_ROOM_OLD_CALLER)
+            status.set("installing", MSG_NO_ROOM_OLD_CALLER)
         (apply or apply_root)(target, status, disk_env, force=True, image=image, save_first=False,
                               legacy=True, grub_install=grub)
     status.set("updated", MSG_DISK_DONE, 100)

@@ -1476,6 +1476,12 @@ class Tv(Screens, Look, Script, session.Session):
         self.toast.set_margin_end(self.layout.margin_x + (self.quick_width if self.quick_open else 0))
 
     def render_quick(self) -> None:
+        # The 1 s tick refreshes the values: rebuild the rows only when what they show changed.
+        shown = (tuple((item.label, item.value, item.selectable) for item in self.quick.items),
+                 self.quick.index, self.quick.prompt(self.family))
+        if shown == getattr(self, "quick_shown", None) and self.quick_panel.get_visible():
+            return
+        self.quick_shown = shown
         clear(self.quick_rows)
         for index, item in enumerate(self.quick.items):
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
