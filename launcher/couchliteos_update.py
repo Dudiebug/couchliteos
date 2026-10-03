@@ -409,6 +409,12 @@ class Checker:
             except OSError:
                 pass  # read-only or full disk: keep the in-memory state for this session
 
+    def reload(self) -> None:
+        """Read the saved state again: a classic screen the TV interface opened may have changed it."""
+        state = load_state(self.state_path)
+        with self._lock:
+            self._state = state
+
     def set_enabled(self, enabled: bool) -> None:
         self._update(enabled=enabled)
         self._wake.set()

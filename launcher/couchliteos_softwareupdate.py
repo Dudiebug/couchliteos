@@ -130,6 +130,7 @@ class SoftwareUpdate:
         saved: Callable[[], snapshot.Snapshot | None] = snapshot.info,
         save_first: Callable[[], bool] = snapshot.enabled,
         set_save_first: Callable[[bool], None] = snapshot.set_enabled,
+        hand_off: Callable[[str], None] | None = None,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -146,6 +147,10 @@ class SoftwareUpdate:
         self.saved = saved
         self.save_first = save_first
         self.set_save_first = set_save_first
+        # The TV interface runs this screen on its own (couchliteos-launcher --screen) and draws the
+        # progress itself: once the install is asked for, `hand_off(version)` and the screen closes.
+        self.hand_off = hand_off
+        self.handed_off = False
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
@@ -234,6 +239,8 @@ class SoftwareUpdate:
                     self.delete_saved()
                 else:
                     self.install()
+                    if self.handed_off:
+                        return
 
     # -- the saved version -----------------------------------------------------------------------
 
@@ -309,6 +316,13 @@ class SoftwareUpdate:
         except OSError as error:
             self.result = f"COULD NOT START THE UPDATE: {error.strerror or 'ERROR'}".upper()
             return
+        if self.hand_off is not None:
+            try:
+                self.hand_off(self.release.version)
+                self.handed_off = True
+                return
+            except OSError:
+                pass  # nobody else will watch it: follow it here
         self.result = self.progress(self.release.version)
         if self.result == NEWEST:  # the service found nothing newer after all
             self.release = self.asset = None

@@ -138,6 +138,9 @@ SCREEN_RESTARTS_PER_MINUTE = 3
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
+# The TV interface (couchliteos-tv) shows the progress of an update started by `--screen
+# software-update`: the screen leaves the version here and exits (couchliteos_tvscreens.UPDATE_WATCH).
+UPDATE_WATCH = "update-watch"
 # A result or error stays on the main screen this long unless a button is pressed first.
 STATUS_HOLD_SECONDS = 15.0
 
@@ -1817,15 +1820,19 @@ class Settings:
         if text:
             self.status = text
 
-    def run_software_update(self) -> None:
+    def run_software_update(self, hand_off: bool = False) -> None:
+        """`hand_off`: run for the TV interface, which shows the progress (UPDATE_WATCH)."""
         def keep_awake() -> None:  # a long download must not blank or sleep the box
             if IDLE_GUARD is not None:
                 IDLE_GUARD.keep_awake()
 
+        def watch(version: str) -> None:
+            (RUN / UPDATE_WATCH).write_text(f"{version}\n", encoding="ascii")
+
         try:
             softwareupdate.show(
                 self.screen, read_key=read_key, apps_running=self.launcher.apps_running, keep_awake=keep_awake,
-                record=self.launcher.updates.record)
+                record=self.launcher.updates.record, hand_off=watch if hand_off else None)
         except Exception:  # noqa: BLE001 - a broken screen must not take the launcher down
             self.status = "COULD NOT OPEN SOFTWARE UPDATE"
 
@@ -3396,6 +3403,57 @@ def connect_tv_control(launcher: Launcher) -> None:
     launcher.tv_control_screen = lambda: Settings(launcher.screen, launcher).run_tv_control()
 
 
+def first_start(launcher: Launcher) -> None:
+    """`--screen setup`: what Launcher.run does before its menu (setup, resumed when it restarted
+    for a new picture size during it, then the CONTROLS screen once). What's New is the TV's own."""
+    if (RUN / "reopen-setup").exists():  # restarted for a new picture size during setup
+        (RUN / "reopen-setup").unlink(missing_ok=True)
+        launcher.setup_wizard(resume=True)
+    else:
+        launcher.setup_wizard()
+    controls.show_once(launcher.screen)
+
+
+# `couchliteos-launcher --screen NAME`: one screen in a foot window of its own, then exit. The TV
+# interface opens what it does not draw itself this way (couchliteos_tvscreens.SCREENS has the
+# same names). A screen that restarts the launcher (sys.exit after a new picture size) only ends
+# this window: its marker in RUN tells the TV interface to open it again.
+SCREENS: dict[str, Callable[[Settings, str], object]] = {
+    "display": lambda settings, _app: settings.run_display(),
+    "appearance": lambda settings, _app: settings.run_appearance(),
+    "audio": lambda settings, _app: settings.run_audio(),
+    "bluetooth": lambda settings, _app: bluetooth.run_bluetooth(settings.screen),
+    "controllers": lambda settings, _app: pads.run(settings.screen, read_key),
+    "network": lambda settings, _app: settings.run_network(),
+    "sleep": lambda settings, _app: settings.run_sleep_settings(),
+    "applications": lambda settings, _app: settings.run_applications(),
+    "remote-desktop": lambda settings, _app: settings.run_remote_desktop(),
+    "streaming": lambda settings, _app: settings.run_streaming(),
+    "tv-control": lambda settings, _app: settings.run_tv_control(),
+    "software-update": lambda settings, _app: settings.run_software_update(hand_off=True),
+    "controls": lambda settings, _app: settings.run_controls(),
+    "setup-wizard": lambda settings, _app: settings.launcher.setup_wizard(force=True),
+    "support-file": lambda settings, _app: settings.generate_support_file(),
+    "setup": lambda settings, _app: first_start(settings.launcher),
+    "connect": lambda settings, app: settings.launcher.launch_by_id(app),
+}
+
+
+def run_screen(screen: curses.window, name: str, app: str = "") -> None:
+    curses.set_escdelay(25)
+    launcher = Launcher(screen)
+    register_failure_actions(launcher)
+    connect_tv_control(launcher)
+    curses.curs_set(0)
+    screen.keypad(True)
+    screen.timeout(1000)
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        pass
+    SCREENS[name](Settings(screen, launcher), app)
+
+
 def main(screen: curses.window) -> None:
     curses.set_escdelay(25)  # the controller's B sends a bare Esc; don't wait 1 s for a sequence
     launcher = Launcher(screen)
@@ -3404,5 +3462,18 @@ def main(screen: curses.window) -> None:
     launcher.run()
 
 
+def parse_arguments(argv: list[str] | None = None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="CouchLiteOS classic launcher")
+    parser.add_argument("--screen", choices=sorted(SCREENS), help="run this one screen and exit (the TV interface)")
+    parser.add_argument("--app", default="", help="the application --screen connect starts")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    curses.wrapper(main)
+    arguments = parse_arguments()
+    if arguments.screen:
+        curses.wrapper(run_screen, arguments.screen, arguments.app)
+    else:
+        curses.wrapper(main)

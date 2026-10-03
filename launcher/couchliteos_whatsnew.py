@@ -196,21 +196,20 @@ def draw(screen: curses.window, version: str, seen: str = "") -> None:
     screen.refresh()
 
 
-def show_once(
-    screen: curses.window,
-    read_key: Callable[[], int] | None = None,
+def due(
     *,
     markers: Iterable[pathlib.Path] = (SEEN, SESSION_SEEN),
     setup_marker: pathlib.Path = setup.MARKER,
     version_files: Iterable[pathlib.Path] = VERSION_FILES,
-) -> bool:
-    """Show the screen on the first start of a new version after an upgrade; True if it was shown.
+) -> tuple[str, str] | None:
+    """(version, version last seen) when the screen is due now, else None; either way this
+    version is recorded as seen (before anything is drawn, so a crash cannot loop it).
 
     Call it BEFORE the setup wizard: a new user has no setup marker yet, so they are only
     recorded as having seen this version (afterwards they would look like an upgrader)."""
     version = update.installed_version(version_files)
     if not version:
-        return False
+        return None
     markers = tuple(markers)
     seen_texts = [read_seen(path) for path in markers]
     stale = [path for path, text in zip(markers, seen_texts) if should_show(text, version, True)]
@@ -222,9 +221,26 @@ def show_once(
     for path in stale:
         mark_seen(path, version)
     if len(stale) < len(markers) or not setup_was_completed(setup_marker):
-        return False
+        return None
     if notes(version, seen) == (False, []):  # nothing new to say for this version
+        return None
+    return version, seen
+
+
+def show_once(
+    screen: curses.window,
+    read_key: Callable[[], int] | None = None,
+    *,
+    markers: Iterable[pathlib.Path] = (SEEN, SESSION_SEEN),
+    setup_marker: pathlib.Path = setup.MARKER,
+    version_files: Iterable[pathlib.Path] = VERSION_FILES,
+) -> bool:
+    """Show the screen on the first start of a new version after an upgrade; True if it was shown.
+    The TV interface asks `due` and draws it itself."""
+    pending = due(markers=markers, setup_marker=setup_marker, version_files=version_files)
+    if pending is None:
         return False
+    version, seen = pending
     read_key = read_key or screen.getch
     while True:
         draw(screen, version, seen)

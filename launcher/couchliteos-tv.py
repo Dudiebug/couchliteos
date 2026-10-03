@@ -2,9 +2,14 @@
 """The TV interface: the GTK 4 home screen CouchLiteOS shows inside Cage.
 
 One full-screen window holding a stack of screens: HOME (top bar, GAMES, APPS and SYSTEM
-rows, prompt bar), STARTING / WAITING, a message screen (a failure, a question, a screen
-that is not in the TV interface yet) and ACTIVE APPLICATIONS (Guide / Home with apps
-running). The rows come from couchliteos_home.HomeModel; starting, resuming and closing
+rows, prompt bar), STARTING / WAITING, a message screen (a failure, a question) and ACTIVE
+APPLICATIONS (Guide / Home with apps running); SETTINGS (two panes), POWER, WHAT'S NEW and
+the SOFTWARE UPDATE progress come from couchliteos_tvscreens. A Settings screen the TV
+interface does not draw itself, the setup wizard and a Remote Desktop start run as the
+classic curses screen in a foot window on top (`couchliteos-launcher --screen <name>`);
+the rows are read again when it closes.
+
+The rows come from couchliteos_home.HomeModel; starting, resuming and closing
 apps is couchliteos_session's, the same code the classic launcher runs. Sizes, colours,
 keys and blanking are couchliteos_tvlayout's.
 
@@ -34,7 +39,9 @@ import couchliteos_session as session
 import couchliteos_stream as stream
 import couchliteos_theme as theme
 import couchliteos_tvlayout as tvlayout
+import couchliteos_tvscreens as tvscreens
 import couchliteos_update as update
+import couchliteos_whatsnew as whatsnew
 
 try:
     import gi
@@ -55,13 +62,6 @@ TICK_SECONDS = 1
 RELOAD_SECONDS = 5  # how often the rows are read again (pairing, apps added in Settings)
 AUTOSTREAM_SECONDS = 5
 REPO_THEMES = pathlib.Path(__file__).resolve().parents[1] / "overlay/usr/share/couchliteos/themes"
-# Screens the TV interface does not draw yet (Settings and power come with the next screens).
-NOT_YET = {
-    "settings": ("SETTINGS", "SETTINGS IS NOT IN THE TV INTERFACE YET."),
-    "hosts": ("HOSTS", "PAIRING AND MANAGING GAMING PCS IS NOT IN THE TV INTERFACE YET."),
-    "power": ("POWER", "THE POWER MENU IS NOT IN THE TV INTERFACE YET."),
-    "software-update": ("SOFTWARE UPDATE", "SOFTWARE UPDATE IS NOT IN THE TV INTERFACE YET."),
-}
 BACK_HINT = "B / CIRCLE OR ESC GOES BACK"
 
 
@@ -97,7 +97,375 @@ def clear(box: "Gtk.Box") -> None:
         child = following
 
 
-class Tv(session.Session):
+class Screens:
+    """SETTINGS, POWER, WHAT'S NEW, the SOFTWARE UPDATE progress, the classic screens opened on
+    top, and the steps of the start. Part of Tv: the models are couchliteos_tvscreens'."""
+
+    def init_screens(self) -> None:
+        self.child_pid: int | None = None  # the classic screen running on top (open_screen)
+        self.child_name = ""
+        self.starting = True  # the steps before the home screen still run (continue_start)
+        self.start_steps = ["whatsnew", "setup", "update", "autostream"]
+        self.settings = tvscreens.SettingsModel(tvscreens.value_sources(
+            updates=self.updates, controllers=self.controllers, running=self.running_applications,
+            applications=lambda: len(visible_applications().applications),
+            can_sleep=lambda: self.can_sleep, network=home.link_status,
+        ))
+        self.power_menu = tvscreens.PowerModel(self.can_sleep, self.can_wake)
+        self.progress: tvscreens.UpdateProgress | None = None
+        self.progress_return = "home"
+        self.screen_pages: list = []
+
+    def screen_keys(self) -> dict:
+        return {"settings": self.settings_key, "power": self.power_key, "whatsnew": self.whatsnew_key,
+                "update": self.update_key}
+
+    # ------------------------------------------------------------------ building
+
+    def build_screens(self) -> None:
+        # SETTINGS: title, the categories on the left and the focused one's value on the right.
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        page.append(label("SETTINGS", "tv-title"))
+        panes = self.settings_panes = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        panes.set_vexpand(True)
+        self.settings_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.settings_list.add_css_class("tv-list")
+        self.settings_list.set_hexpand(False)  # its labels would take the width: the right pane gets it
+        panes.append(self.settings_list)
+        pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pane.add_css_class("tv-pane")
+        pane.set_hexpand(True)
+        pane.set_valign(Gtk.Align.START)
+        self.settings_title = label("", "tv-title", wrap=True)
+        self.settings_value = label("", "tv-value", wrap=True)
+        self.settings_help = label("", "tv-help", wrap=True)
+        for widget in (self.settings_title, self.settings_value, self.settings_help):
+            pane.append(widget)
+        self.settings_pane = pane
+        panes.append(pane)
+        page.append(panes)
+        self.settings_status = label("", "tv-status", xalign=0.5, wrap=True)
+        page.append(self.settings_status)
+        page.append(label(tvscreens.SETTINGS_HINT, "tv-prompt", xalign=0.5, wrap=True))
+        self.stack.add_named(page, "settings")
+
+        # POWER: a short list in the middle, as ACTIVE APPLICATIONS.
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_valign(Gtk.Align.CENTER)
+        box.append(label("POWER", "tv-title", xalign=0.5))
+        self.power_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.power_list.set_halign(Gtk.Align.CENTER)
+        box.append(self.power_list)
+        self.power_hint = label(tvscreens.POWER_HINT, "tv-prompt", xalign=0.5, wrap=True)
+        box.append(self.power_hint)
+        power_page = box
+        self.stack.add_named(box, "power")
+
+        # WHAT'S NEW: the title, one line per feature, how to go on.
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_valign(Gtk.Align.CENTER)
+        self.whatsnew_title = label("", "tv-title", xalign=0.5, wrap=True)
+        box.append(self.whatsnew_title)
+        self.whatsnew_lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.whatsnew_lines.set_halign(Gtk.Align.CENTER)
+        box.append(self.whatsnew_lines)
+        box.append(label(tvscreens.WHATS_NEW_HINT, "tv-prompt", xalign=0.5, wrap=True))
+        whatsnew_page = box
+        self.stack.add_named(box, "whatsnew")
+
+        # SOFTWARE UPDATE progress: what the service does now, a bar, what B does.
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_valign(Gtk.Align.CENTER)
+        self.update_title = label("", "tv-title", xalign=0.5, wrap=True)
+        self.update_text = label("", "tv-body", xalign=0.5, wrap=True)
+        self.update_bar = Gtk.ProgressBar()
+        self.update_bar.set_halign(Gtk.Align.CENTER)
+        self.update_percent = label("", "tv-body", xalign=0.5, ellipsize=False)
+        self.update_hint = label("", "tv-prompt", xalign=0.5, wrap=True)
+        for widget in (self.update_title, self.update_text, self.update_bar, self.update_percent, self.update_hint):
+            box.append(widget)
+        update_page = box
+        self.stack.add_named(box, "update")
+        self.screen_pages = [page, power_page, whatsnew_page, update_page]
+
+    def relayout_screens(self) -> None:
+        layout = self.layout
+        self.settings_panes.set_spacing(layout.px(40))
+        self.settings_list.set_size_request(round((layout.width - 2 * layout.margin_x) * 0.36), -1)
+        self.settings_pane.set_spacing(layout.px(20))
+        self.update_bar.set_size_request(round(layout.width * 0.5), layout.px(24))
+        for box in (self.power_list, self.whatsnew_lines):
+            box.set_spacing(layout.px(8))
+        self.power_list.set_size_request(round(layout.width * 0.4), -1)
+        if self.mode == "settings":
+            self.render_settings()
+
+    # ------------------------------------------------------------------ SETTINGS
+
+    def open_settings(self) -> None:
+        self.settings.focus = 0
+        self.settings.refresh()
+        self.status = ""
+        self.render_settings()
+        self.show("settings")
+
+    def render_settings(self) -> None:
+        if not hasattr(self, "layout"):
+            return
+        clear(self.settings_list)
+        rows = self.settings.rows()
+        for index in self.settings.visible(tvscreens.list_slots(self.layout)):
+            item = label(rows[index], "tv-item")
+            if index == self.settings.focus:
+                item.add_css_class("tv-focused")
+            self.settings_list.append(item)
+        title, value, text = self.settings.detail()
+        self.settings_title.set_label(title)
+        self.settings_value.set_label(value)
+        self.settings_value.set_visible(bool(value))
+        self.settings_help.set_label(text)
+        self.settings_status.set_label(self.status)
+        self.settings_status.set_visible(bool(self.status))
+
+    def settings_key(self, name: str) -> None:
+        if name in ("up", "down"):
+            self.status = ""
+            self.settings.move(1 if name == "down" else -1)
+        elif name in ("back", "home"):
+            self.close_screen()
+            return
+        elif name == "activate":
+            self.status = ""
+            kind, target = self.settings.activate()
+            if kind == tvscreens.SCREEN:
+                self.open_screen(target)
+            elif kind == tvscreens.APP:
+                self.launch_by_id(target)
+                self.show("settings")
+            elif target == "active":
+                self.open_active()
+                return
+            elif target == "updates":
+                self.status = tvscreens.toggle_updates(self.updates)
+                self.settings.refresh()
+            else:
+                self.close_screen()
+                return
+        self.render_settings()
+
+    def close_screen(self) -> None:
+        """Back to the home screen, its rows read again."""
+        self.model.reload()
+        self.show("home")
+        self.render_home()
+
+    # ------------------------------------------------------------------ POWER
+
+    def open_power(self) -> None:
+        self.can_sleep = power.can_suspend()  # checked again: the stick may have moved to another PC
+        running = [app.name for app in self.running_applications()]
+        self.power_menu = tvscreens.PowerModel(self.can_sleep, self.can_wake, running)
+        self.status = ""
+        self.render_power()
+        self.show("power")
+
+    def render_power(self) -> None:
+        clear(self.power_list)
+        for index, text in enumerate(self.power_menu.rows()):
+            item = label(text, "tv-item", xalign=0.5, ellipsize=False)
+            if index == self.power_menu.focus:
+                item.add_css_class("tv-focused")
+            self.power_list.append(item)
+        self.power_hint.set_label(self.status or tvscreens.POWER_HINT)
+
+    def power_key(self, name: str) -> None:
+        if name in ("up", "down"):
+            self.status = ""
+            self.power_menu.move(1 if name == "down" else -1)
+        elif name in ("back", "home"):
+            self.close_screen()
+            return
+        elif name == "activate":
+            choice = self.power_menu.focused()
+            if not choice.request:
+                self.close_screen()
+                return
+            if choice.request == "suspend" and not self.power_menu.can_sleep:
+                self.status = "SLEEP IS NOT SUPPORTED ON THIS PC"
+            elif self.ask(choice.label, choice.question, tvlayout.QUESTION_HINT) == "yes":
+                try:
+                    self.request(choice.request)  # couchliteos-<request>.path carries it out as root
+                    self.status = tvscreens.PowerModel.done(choice.request)
+                except OSError as error:
+                    self.status = f"COULD NOT ASK FOR {choice.label}: {error.strerror or 'ERROR'}".upper()
+                self.close_screen()
+                return
+            self.show("power")
+        self.render_power()
+
+    # ------------------------------------------------------------------ WHAT'S NEW
+
+    def open_whatsnew(self, version: str, seen: str) -> None:
+        title, lines = tvscreens.whats_new(version, seen)
+        self.whatsnew_title.set_label(title)
+        clear(self.whatsnew_lines)
+        for line in lines:
+            self.whatsnew_lines.append(label(line, "tv-line", wrap=True))
+        self.show("whatsnew")
+
+    def whatsnew_key(self, name: str) -> None:
+        if name in ("activate", "back", "home"):
+            self.show("home")
+            self.continue_start()
+
+    # ------------------------------------------------------------------ SOFTWARE UPDATE progress
+
+    def watch_update(self, version: str) -> None:
+        self.progress = tvscreens.UpdateProgress(version, self.run_dir)
+        self.progress_return = self.mode if self.mode in ("settings", "home") else "home"
+        self.render_update(self.progress.poll())
+        self.show("update")
+
+    def render_update(self, view: tvscreens.Progress) -> None:
+        self.update_title.set_label(view.title)
+        self.update_text.set_label(view.text)
+        self.update_bar.set_visible(view.bar)
+        self.update_percent.set_visible(view.bar and view.percent is not None)
+        if view.bar and view.percent is None:
+            self.update_bar.pulse()
+        elif view.bar:
+            self.update_bar.set_fraction(view.percent / 100)
+            self.update_percent.set_label(f"{view.percent}%")
+        self.update_hint.set_label(view.hint)
+        self.update_hint.set_visible(bool(view.hint))
+
+    def update_key(self, name: str) -> None:
+        if self.progress is None:
+            return
+        if name in ("back", "home"):
+            self.progress.back()
+        elif name == "activate":
+            self.progress.dismiss()
+        self.update_tick()
+
+    def update_tick(self) -> None:
+        self.idle.keep_awake()  # a long download must not blank or sleep the box
+        view = self.progress.poll()
+        if view.finished:
+            self.progress = None
+            if self.starting:
+                self.continue_start()
+            self.status = view.finished
+            if self.progress_return == "settings":
+                self.settings.refresh()
+                self.render_settings()
+                self.show("settings")
+            else:
+                self.show("home")
+                self.render_home()
+            return
+        self.render_update(view)
+
+    # ------------------------------------------------------------------ classic screens on top
+
+    def open_screen(self, name: str, app: str = "") -> bool:
+        """Run a classic screen (`couchliteos-launcher --screen`) in a foot window on top of this one."""
+        if self.child_pid is not None:
+            return False
+        try:
+            pid, *_streams = GLib.spawn_async(
+                tvscreens.child_command(name, app),
+                flags=GLib.SpawnFlags.DO_NOT_REAP_CHILD | GLib.SpawnFlags.SEARCH_PATH,
+            )
+        except GLib.Error as error:
+            self.status = tvscreens.CHILD_FAILED.format(name.upper().replace("-", " "), error.message.upper())
+            display.log(f"tv: cannot open --screen {name}: {error.message}", session.LOG)
+            self.render_current()
+            return False
+        self.child_pid, self.child_name = pid, name
+        self.set_launcher_focus(True)  # gamepad-nav sends the controller's keys to the screen on top
+        GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, self.on_child_exit)
+        return True
+
+    def on_child_exit(self, pid: int, wait_status: int) -> None:
+        GLib.spawn_close_pid(pid)
+        name, self.child_pid, self.child_name = self.child_name, None, ""
+        try:
+            code = os.waitstatus_to_exitcode(wait_status)
+        except ValueError:
+            code = 1
+        if code:
+            display.log(f"tv: --screen {name} exited with {code}", session.LOG)
+            self.status = f"{name.upper().replace('-', ' ')} CLOSED WITH AN ERROR ({code})"
+        session.focus_launcher()
+        self.after_screen()
+        if (self.run_dir / tvscreens.REOPEN_SETUP).exists():
+            self.open_screen("setup")  # it restarted for a new picture size: carry on at the next step
+        elif tvscreens.take_reopen_display(self.run_dir):
+            self.open_screen("display")  # it restarted to apply SCREEN EDGES / TEXT SIZE
+        elif (version := tvscreens.take_update_watch(self.run_dir)) is not None:
+            self.watch_update(version)
+        elif self.starting:
+            self.continue_start()
+
+    def after_screen(self) -> None:
+        """A classic screen closed: whatever it changed (apps, pairing, theme, sleep, display) shows here."""
+        self.model.reload()
+        self.updates.reload()  # SOFTWARE UPDATE's check is saved by the screen's own process
+        self.can_sleep = power.can_suspend()
+        self.can_wake = bool(power.wake_sources())
+        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
+        self.size = (0, 0)  # the theme or the picture size may be new: CSS and sizes again
+        self.relayout(self.screen_size())
+        self.settings.refresh()
+        self.render_current()
+
+    def render_current(self) -> None:
+        if self.mode == "settings":
+            self.render_settings()
+        elif self.mode == "power":
+            self.render_power()
+        elif self.mode == "home":
+            self.render_home()
+
+    def screens_tick(self) -> None:
+        """The 1 s tick while a classic screen is on top or an update runs: nothing else happens."""
+        if self.mode == "update" and self.progress is not None:
+            self.update_tick()
+        if self.child_pid is not None:
+            self.idle.keep_awake()  # the classic screen blanks the screen itself
+            if self.home_request.exists():
+                # Guide brought this window up: the screen is still open, put it back in front. The
+                # Home press stays and is answered when the screen closes, as in classic Settings.
+                session.focus_launcher(tvscreens.CHILD_TITLE)
+
+    # ------------------------------------------------------------------ the start
+
+    def continue_start(self) -> None:
+        """The steps before the home screen, one at a time; a step that opens a screen ends this call
+        and the screen's end calls it again: What's New (upgrades), the setup wizard, an update that
+        runs (the TV interface restarted mid-way), then the auto-stream."""
+        while self.start_steps:
+            step = self.start_steps.pop(0)
+            if step == "whatsnew":
+                pending = whatsnew.due()
+                if pending is not None:
+                    self.open_whatsnew(*pending)
+                    return
+            elif step == "setup":
+                if tvscreens.setup_due(self.run_dir) and self.open_screen("setup"):
+                    return
+            elif step == "update":
+                if tvscreens.update_running(self.run_dir):
+                    self.watch_update("")
+                    return
+            elif step == "autostream":
+                self.starting = False
+                self.autostream()
+        self.starting = False
+
+
+class Tv(Screens, session.Session):
     def __init__(self, application: "Gtk.Application") -> None:
         self.application = application
         self.window: Gtk.ApplicationWindow | None = None
@@ -123,6 +491,7 @@ class Tv(session.Session):
             apps_running=self.apps_running, enabled=lambda: not power.smoke_test_active(),
         )
         self.css = Gtk.CssProvider()
+        self.init_screens()
 
     # ------------------------------------------------------------------ building
 
@@ -194,6 +563,7 @@ class Tv(session.Session):
         box.append(self.active_hint)
         self.active_page = box
         self.stack.add_named(box, "active")
+        self.build_screens()
 
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.on_key)
@@ -223,9 +593,12 @@ class Tv(session.Session):
             return
         self.size = size
         self.layout = tvlayout.Layout(*size)
-        self.css.load_from_data(tvlayout.stylesheet(current_theme(), self.layout).encode(), -1)
+        colours = current_theme()
+        self.css.load_from_data((tvlayout.stylesheet(colours, self.layout)
+                                 + tvscreens.stylesheet(colours, self.layout)).encode(), -1)
         layout = self.layout
-        for page in (self.home_page, self.active_page, *(entry[0] for entry in self.pages.values())):
+        for page in (self.home_page, self.active_page, *(entry[0] for entry in self.pages.values()),
+                     *self.screen_pages):
             page.set_margin_start(layout.margin_x)
             page.set_margin_end(layout.margin_x)
             page.set_margin_top(layout.margin_y)
@@ -235,6 +608,7 @@ class Tv(session.Session):
         for _title, tiles in self.row_boxes:
             tiles.set_spacing(layout.gap)
             tiles.set_size_request(-1, -1)
+        self.relayout_screens()
         self.render_home()
 
     # ------------------------------------------------------------------ drawing
@@ -359,8 +733,9 @@ class Tv(session.Session):
         return "retry" if answer == "yes" and retry else "dismiss"
 
     def prepare_remote_desktop(self, app: apps.Application) -> bool:
-        # The certificate check and the password prompt are curses screens for now.
-        self.status = f"{app.name}: OPEN REMOTE DESKTOP FROM SETTINGS > REMOTE DESKTOP"
+        # The certificate check and the password prompt are curses screens for now: the whole
+        # start runs in the classic screen on top, and this start stops here.
+        self.open_screen("connect", app.id)
         return False
 
     def start_stream(self, host: stream.Host, app_name: str, *, by_hand: bool = False) -> bool:
@@ -430,13 +805,17 @@ class Tv(session.Session):
             return True  # the key that wakes the screen does nothing else
         if name is None:
             return False
+        if self.child_pid is not None:
+            session.focus_launcher(tvscreens.CHILD_TITLE)  # Guide raised this window: the screen is still open
+            return True
         if self.busy_depth and self.mode != "message":
             self.busy_pressed = True
             return True
         if self.status and self.mode == "home":
             self.status = ""  # a press dismisses the last result
             self.home_status.set_label("")
-        handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key}.get(self.mode)
+        handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key,
+                   **self.screen_keys()}.get(self.mode)
         if handler is not None:
             handler(name)
         return True
@@ -518,9 +897,15 @@ class Tv(session.Session):
             self.open_view(action[0])
 
     def open_view(self, name: str) -> None:
-        """A screen of its own (Settings, Hosts, Power). Those not in the TV interface yet say so."""
-        title, body = NOT_YET.get(name, (name.upper(), ""))
-        self.show_text("message", title, body, BACK_HINT)
+        """A screen of its own: SETTINGS and POWER here, HOSTS and SOFTWARE UPDATE as classic screens."""
+        if name == "settings":
+            self.open_settings()
+        elif name == "power":
+            self.open_power()
+        elif name in tvscreens.TILE_SCREENS:
+            self.open_screen(tvscreens.TILE_SCREENS[name])
+        else:
+            self.show_text("message", name.upper(), "", BACK_HINT)
 
     def open_active(self) -> None:
         self.set_launcher_focus(True)  # gamepad-nav forwards keys to this menu while an app runs
@@ -554,6 +939,9 @@ class Tv(session.Session):
     def tick_once(self) -> None:
         if self.busy_depth:
             self.idle.keep_awake()
+            return
+        if self.child_pid is not None or self.mode == "update":
+            self.screens_tick()
             return
         self.relayout(self.screen_size())
         if self.take_resumed():
@@ -633,7 +1021,7 @@ class Tv(session.Session):
         if display.restore_saved_mode() is None:
             self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
             self.render_bar()
-        self.autostream()
+        self.continue_start()
         return False
 
     def activate(self, _application) -> None:

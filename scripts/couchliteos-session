@@ -4,9 +4,11 @@
 # never leave a black screen:
 #
 #   [appearance] interface = classic   the classic launcher, nothing else is tried
-#   setup not complete                 the classic launcher (the setup wizard is a curses screen)
 #   otherwise                          couchliteos-tv; if it could not start, once more with
 #                                      GSK_RENDERER=cairo (no GL); then the classic launcher
+#
+# Setup does not decide: couchliteos-tv runs the setup wizard itself, as the classic curses screen
+# on top of it (couchliteos-launcher --screen setup), before its home screen.
 #
 # "Could not start" is exit status 3 (couchliteos-tv: no GTK, no display, no renderer) or any
 # other failure before it wrote launcher-ready (a crash in the GL driver, a Python error). Once
@@ -57,9 +59,6 @@ try_tv() {
 choice=$(interface)
 if [[ $choice == classic ]]; then
   classic "[appearance] interface = classic"
-fi
-if [[ ! -e $STATE_DIR/setup-complete ]]; then
-  classic "setup is not complete"
 fi
 
 status=0

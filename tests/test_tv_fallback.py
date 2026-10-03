@@ -101,10 +101,11 @@ class FallbackTest(unittest.TestCase):
             result, calls = self.session("0", config=config)
             self.assertEqual(calls, ["tv GSK_RENDERER="], config)
 
-    def test_setup_not_complete_runs_the_classic_launcher_for_the_wizard(self):
+    def test_setup_not_complete_still_runs_the_tv_interface(self):
+        # couchliteos-tv runs the wizard itself (couchliteos-launcher --screen setup on top).
         (self.state / "setup-complete").unlink()
         result, calls = self.session("0")
-        self.assertEqual(calls, [self.CLASSIC])
+        self.assertEqual(calls, ["tv GSK_RENDERER="])
 
 
 class UnitTest(unittest.TestCase):
