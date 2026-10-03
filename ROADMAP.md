@@ -10,6 +10,11 @@ say what actually shipped. Ideas and votes are welcome as
 
 ## Next
 
+- **A smaller download.** The ISO shrinks by about a third, with the same
+  hardware support.
+- **Pick your web browser at setup.** Firefox or Google Chrome installs from the
+  internet when you choose it, during setup or later in Settings, instead of
+  both coming in the download.
 - **A TV interface.** Your games first, with cover art, a bar along the bottom
   that always shows what each button does, sounds and small notifications (a
   controller connected, an update ready, the gaming PC online), and a return to
