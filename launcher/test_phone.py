@@ -148,6 +148,64 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(post(session, "line\nbreak")[0], 400)
         self.assertIsNone(session.poll())
 
+    def raw(self, session, data):
+        """The status line's code for raw request bytes (None when closed unanswered)."""
+        with socket.create_connection(("127.0.0.1", session.port), timeout=5) as client:
+            client.sendall(data)
+            answer = client.recv(64)
+        return int(answer.split()[1]) if answer else None
+
+    def held(self, session, data):
+        """A connection that sent part of a request and is waiting; closed at the end of the test."""
+        client = socket.create_connection(("127.0.0.1", session.port), timeout=5)
+        self.addCleanup(client.close)
+        client.sendall(data)
+        return client
+
+    def test_chunked_or_unnumbered_bodies_are_refused_with_411(self):
+        session = self.session()
+        head = b"POST " + session.path.encode() + b" HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+        self.assertEqual(self.raw(session, head + b"Transfer-Encoding: chunked\r\n\r\n7\r\nvalue=x\r\n0\r\n\r\n"), 411)
+        self.assertEqual(self.raw(session, head + b"Transfer-Encoding: chunked\r\nContent-Length: 7\r\n\r\nvalue=x"), 411)
+        self.assertEqual(self.raw(session, head + b"Content-Length: seven\r\n\r\nvalue=x"), 411)
+        self.assertEqual(self.raw(session, head + b"Content-Length: -7\r\n\r\nvalue=x"), 411)
+        self.assertEqual(self.raw(session, head + b"\r\nvalue=x"), 411)  # no length at all
+        self.assertIsNone(session.poll())
+        self.assertEqual(post(session, "ok")[0], 200)  # still open: nothing was delivered
+        self.assertEqual(session.poll(), "ok")
+
+    def test_more_than_max_connections_at_once_are_dropped_unanswered(self):
+        session = self.session()
+        with mock.patch.object(phone._Handler, "timeout", 30):  # the held ones must not time out first
+            waiting = [self.held(session, b"GET " + session.path.encode() + b" HTTP/1.1\r\n")
+                       for _ in range(phone.MAX_CONNECTIONS)]
+            time.sleep(0.5)  # every one accepted and counted
+            self.assertIsNone(self.raw(session, b"GET " + session.path.encode() + b" HTTP/1.0\r\n\r\n"))
+            waiting[0].close()  # one fewer: the next request is answered again
+            for _ in range(50):
+                time.sleep(0.1)
+                if self.raw(session, b"GET " + session.path.encode() + b" HTTP/1.0\r\n\r\n") == 200:
+                    break
+            else:
+                self.fail("no request was answered after a held connection closed")
+
+    def test_two_posts_at_once_only_one_value_is_kept(self):
+        session = self.session()
+        with mock.patch.object(phone._Handler, "timeout", 30):
+            clients = []
+            for value in ("first", "other"):
+                body = f"value={value}".encode()
+                head = (b"POST " + session.path.encode() + b" HTTP/1.0\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+                        + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n")
+                clients.append((self.held(session, head + body[:-1]), body[-1:]))
+            time.sleep(0.3)  # both handlers are reading their bodies: both passed the open check
+            for client, last in clients:
+                client.sendall(last)
+            statuses = sorted(int(client.recv(64).split()[1]) for client, _last in clients)
+        self.assertEqual(statuses, [200, 404])
+        self.assertIn(session.poll(), ("first", "other"))
+        self.assertIsNone(session.poll())
+
     def test_close_cuts_a_client_that_sends_slowly(self):
         session = self.session()
         client = socket.create_connection(("127.0.0.1", session.port), timeout=5)

@@ -533,6 +533,13 @@ class RunDirectoryTrustTest(unittest.TestCase):
         self.assertNotIn(secret, text)
         self.assertIn("y: Streaming Y", text)
 
+    def test_the_interface_file_is_in_the_bundle(self):
+        (self.run_dir / "interface").write_text("classic\nfallback after exit 3, then exit 3 with cairo\n")
+        bundle = pathlib.Path(self.tmp.name) / "bundle"
+        self.collect_into(bundle)
+        self.assertEqual((bundle / "session/interface.txt").read_text(),
+                         "classic\nfallback after exit 3, then exit 3 with cairo\n")
+
     def test_status_fifo_does_not_block_the_exporter(self):
         (self.run_dir / "x-ready").write_text("")
         os.mkfifo(self.run_dir / "x-status")

@@ -4,7 +4,9 @@
 # stream settings, what's new, the update progress) and --dump-layout records every label on each one.
 # Checks: each screen opened; no text under 28 px at 1920x1080; no label shortened or cut
 # at 1280x720 unless it is shortened on purpose (a tile's title); a live switch to each
-# built-in theme. Screenshots (1920x1080) go to build/out/screenshots/.
+# built-in theme; no Python traceback in any run's log. A first-boot run (setup not complete)
+# starts the setup wizard on top (a fake foot records it) and still writes launcher-ready.
+# Screenshots (1920x1080) go to build/out/screenshots/.
 #
 # Test-only tools, not in the image: cage, grim, and a Python with GTK 4 (PyGObject).
 # COUCHLITEOS_TV_PYTHON picks the Python (default: the first of python3, python3.13 and
@@ -39,6 +41,14 @@ done
 
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
+# The foot window a classic screen opens in: records its arguments; as setup would, it marks
+# setup complete.
+cat > "$work/foot" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$COUCHLITEOS_RUN_DIR/foot.log"
+touch "$COUCHLITEOS_STATE_DIR/setup-complete"
+EOF
+chmod 755 "$work/foot"
 
 # A fresh fixture per run: setup done, update checks and artwork lookup off (nothing leaves
 # the machine), one gaming PC with three games (one with a long name) and two covers.
@@ -77,19 +87,21 @@ png(folder / "102.png", (30, 160, 90), (240, 200, 60))
 EOF
 }
 
-# run_tv <name> <width> <height> <script> [screenshots]: the TV interface at that size until
-# the script's `quit`; its dumps land in $work/<name>/dump.
+# run_tv <name> <width> <height> <script> [screenshots] [firstboot]: the TV interface at that
+# size until the script's `quit`; its dumps land in $work/<name>/dump. With firstboot, setup is
+# not complete.
 run_tv() {
-  local name=$1 width=$2 height=$3 script=$4 shots=${5:-}
+  local name=$1 width=$2 height=$3 script=$4 shots=${5:-} firstboot=${6:-}
   local base=$work/$name
   fixture "$base"
+  [[ -z $firstboot ]] || rm -f -- "$base/state/setup-complete"
   local status=0
   COUCHLITEOS_RUN_DIR=$base/run COUCHLITEOS_STATE_DIR=$base/state HOME=$base/home \
-    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config \
+    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot \
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
     TV_PYTHON=$PYTHON TV_ROOT=$ROOT TV_STATUS=$base/status TV_SIZE="$width $height" \
     TV_SCRIPT=$script TV_DUMP=$base/dump TV_SHOTS=$shots \
-    timeout 180 cage -- sh -c '
+    timeout -k 10 180 cage -- sh -c '
       "$TV_PYTHON" "$TV_ROOT/tests/wl-output-size.py" $TV_SIZE || { echo size > "$TV_STATUS"; exit 1; }
       "$TV_PYTHON" "$TV_ROOT/launcher/couchliteos-tv.py" --script "$TV_SCRIPT" --dump-layout "$TV_DUMP" \
         ${TV_SHOTS:+--screenshots "$TV_SHOTS"}
@@ -97,6 +109,11 @@ run_tv() {
   if [[ $status != 0 || $(cat "$base/status" 2>/dev/null) != 0 ]]; then
     echo "tv-headless: the $name run failed (cage $status, tv $(cat "$base/status" 2>/dev/null || echo none)):" >&2
     grep -v -i -e egl -e mesa -e '^$' "$base/log" >&2 || true
+    exit 1
+  fi
+  if grep -q Traceback "$base/log"; then
+    echo "tv-headless: the $name run logged a Python traceback:" >&2
+    cat "$base/log" >&2
     exit 1
   fi
 }
@@ -112,6 +129,14 @@ done
 rm -f -- "$SHOTS"/*.png
 run_tv 1080 1920 1080 "$screens$themes,open:update,dump:update,quit" "$SHOTS"
 run_tv 720 1280 720 "$screens,open:update,dump:update,quit"
+# First boot: the wizard opens on top as `couchliteos-launcher --screen setup` in foot; when it
+# closes, the home screen.
+run_tv firstboot 1280 720 'wait:4000,dump:home,quit' '' firstboot
+if ! grep -q -- '--screen setup' "$work/firstboot/run/foot.log" 2>/dev/null; then
+  echo "tv-headless: first boot did not open the setup wizard (foot: $(cat "$work/firstboot/run/foot.log" 2>/dev/null || echo 'not started'))" >&2
+  exit 1
+fi
+[[ -e $work/firstboot/run/launcher-ready ]] || { echo 'tv-headless: first boot wrote no launcher-ready' >&2; exit 1; }
 
 "$PYTHON" - "$work" "${THEMES[@]}" <<'EOF'
 import json, pathlib, sys
@@ -148,8 +173,11 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720))):
                 if cut or label["x"] < 0 or label["right"] > size[0] + 1:
                     problems.append(f"{where}: clipped {text!r} {label['classes']} "
                                     f"({label['natural']} px in {label['width']} px at x={label['x']})")
+first = work / "firstboot" / "dump" / "home.json"
+if not first.exists() or json.loads(first.read_text())["screen"] != "home":
+    problems.append("firstboot: the home screen did not follow the setup wizard")
 for problem in problems:
     print(f"tv-headless: {problem}", file=sys.stderr)
 sys.exit(1 if problems else 0)
 EOF
-echo "tv-headless: all screens open at 1920x1080 and 1280x720 ($PYTHON); screenshots in $SHOTS"
+echo "tv-headless: all screens open at 1920x1080 and 1280x720, first boot opens setup ($PYTHON); screenshots in $SHOTS"

@@ -115,6 +115,9 @@ refute rg -q 'couchliteos-network-ready.service' services/couchliteos-launcher.s
 refute rg -q 'Before=.*couchliteos-launcher.service' services/couchliteos-network-ready.service
 refute rg -q 'couchliteos-network-ready.service' services/couchliteos-{moonlight,chiaki,firefox}.service
 rg -q 'COUCHLITEOS_LAUNCHER_READY' services/couchliteos-launcher.service tests/qemu-smoke.sh
+# Both front ends write launcher-ready: the smoke gates also check which one came up.
+rg -q 'COUCHLITEOS_SMOKE_INTERFACE=' scripts/couchliteos-qemu-smoke tests/qemu-smoke.sh
+rg -Fq 'record classic' scripts/couchliteos-session
 rg -q 'StandardOutput=journal\+console' services/couchliteos-launcher.service
 refute rg -q '^Environment=WAYLAND_DISPLAY=' services/couchliteos-launcher.service
 rg -q '/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1' services/couchliteos-launcher.service
@@ -261,7 +264,10 @@ rg -Fq '("/var/log/moonlightos", "/var/log/couchliteos")' scripts/couchliteos-mi
 rg -Fq 'os.lchown' scripts/couchliteos-migrate
 refute rg -q 'os\.chown|shutil\.chown|followlinks=True|shell=True' scripts/couchliteos-migrate
 rg -Fq 'unittest -v tests/test_migrate.py' Makefile
-rg -Fq './tests/tv-headless.sh --if-available' Makefile
+rg -Fq 'TV_HEADLESS_ARGS ?= --if-available' Makefile
+rg -Fq './tests/tv-headless.sh $(TV_HEADLESS_ARGS)' Makefile
+rg -q 'make test TV_HEADLESS_ARGS=$' .github/workflows/build.yml
+rg -q 'cage grim python3-gi gir1.2-gtk-4.0' .github/workflows/build.yml
 
 refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
 rg -q '^intel-media-va-driver$' config/profiles/intel/package-lists/intel-graphics.list.chroot
@@ -848,7 +854,8 @@ rg -q '^  restore-check\)$' scripts/couchliteos-qemu-smoke
 rg -q '^boot_and_wait restore-apply COUCHLITEOS_SMOKE_RESTORE_REQUESTED$' tests/qemu-install-smoke.sh
 rg -q '^boot_and_wait restore-check COUCHLITEOS_SMOKE_RESTORE_READY$' tests/qemu-install-smoke.sh
 # The live USB updates an older install on the disk (apply-disk): found by a root service, requested
-# by the launcher through a path unit, proven in QEMU by tests/qemu-legacy-smoke.sh.
+# by the launcher through a path unit. tests/qemu-legacy-smoke.sh drives it in QEMU (make
+# qemu-legacy-smoke OLD_ISO=..., or the release gauntlet with OLD_ISO set); not run without an old ISO.
 rg -q '^ConditionKernelCommandLine=boot=live$' services/couchliteos-find-installs.service
 rg -q '^ExecStart=/usr/libexec/couchliteos-updater find-installs$' services/couchliteos-find-installs.service
 rg -q '^PathExists=/run/couchliteos/disk-update$' services/couchliteos-disk-update.path
@@ -863,6 +870,10 @@ rg -q '^  disk-update-check\)$' scripts/couchliteos-qemu-smoke
 rg -q '^boot_and_wait disk-update COUCHLITEOS_SMOKE_DISK_UPDATED 2700$' tests/qemu-legacy-smoke.sh
 rg -q '^boot_and_wait disk-update-check COUCHLITEOS_SMOKE_DISK_UPDATE_READY 240$' tests/qemu-legacy-smoke.sh
 bash -n tests/qemu-legacy-smoke.sh
+rg -q '^qemu-legacy-smoke:$' Makefile
+rg -Fq './tests/qemu-legacy-smoke.sh "$(OLD_ISO)" "$(ISO)"' Makefile
+rg -Fq 'make qemu-legacy-smoke ISO="$ISO" OLD_ISO="$OLD_ISO"' tools/release-gauntlet.sh
+rg -Fq 'qemu-legacy-smoke: skipped: OLD_ISO not set' tools/release-gauntlet.sh
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh

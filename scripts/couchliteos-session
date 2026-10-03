@@ -13,6 +13,10 @@
 # "Could not start" is exit status 3 (couchliteos-tv: no GTK, no display, no renderer) or any
 # other failure before it wrote launcher-ready (a crash in the GL driver, a Python error). Once
 # it is up, its exit status is passed on and systemd restarts the service as before.
+#
+# $RUN_DIR/interface records which one is on screen, for the QEMU smoke tests and the support
+# export: `tv` or `classic` on the first line, why on the second (forced by the setting, or the
+# fallback after which exit status; the cairo retry for `tv`).
 # The COUCHLITEOS_* variables below exist for tests/test_tv_fallback.py.
 set -u
 
@@ -28,8 +32,17 @@ say() {
   printf 'couchliteos-session: %s\n' "$*" >&2
 }
 
+# record <tv|classic> <why>: write $RUN_DIR/interface (best effort) and log it.
+record() {
+  say "interface: $1 ($2)"
+  printf '%s\n%s\n' "$1" "$2" > "$RUN_DIR/interface.tmp" 2>/dev/null \
+    && mv -f "$RUN_DIR/interface.tmp" "$RUN_DIR/interface" 2>/dev/null
+  return 0
+}
+
 classic() {
   say "starting the classic launcher: $1"
+  record classic "$2"
   exec "$FOOT" --fullscreen --title "CouchLiteOS Launcher" "$LAUNCHER"
 }
 
@@ -58,15 +71,19 @@ try_tv() {
 
 choice=$(interface)
 if [[ $choice == classic ]]; then
-  classic "[appearance] interface = classic"
+  classic "[appearance] interface = classic" "forced: [appearance] interface = classic"
 fi
 
 status=0
+record tv "first try"
 if try_tv "$TV"; then
   exit "$status"
 fi
+first=$status
 say "the TV interface could not start (exit $status); trying again without GL"
+record tv "GSK_RENDERER=cairo after exit $first"
 if try_tv env GSK_RENDERER=cairo "$TV"; then
   exit "$status"
 fi
-classic "the TV interface could not start with cairo either (exit $status)"
+classic "the TV interface could not start with cairo either (exit $status)" \
+  "fallback after exit $first, then exit $status with cairo"
