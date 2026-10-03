@@ -117,7 +117,8 @@ refute rg -q 'couchliteos-network-ready.service' services/couchliteos-{moonlight
 rg -q 'COUCHLITEOS_LAUNCHER_READY' services/couchliteos-launcher.service tests/qemu-smoke.sh
 rg -q 'StandardOutput=journal\+console' services/couchliteos-launcher.service
 refute rg -q '^Environment=WAYLAND_DISPLAY=' services/couchliteos-launcher.service
-rg -q '/usr/bin/cage -s -- /usr/libexec/couchliteos-foot --fullscreen' services/couchliteos-launcher.service
+rg -q '/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1' services/couchliteos-launcher.service
+rg -qF 'exec "$FOOT" --fullscreen --title "CouchLiteOS Launcher" "$LAUNCHER"' scripts/couchliteos-session
 rg -q '^Environment=QT_QPA_PLATFORM=xcb$' services/couchliteos-moonlight.service
 rg -q '^Environment=QT_QPA_PLATFORM=wayland$' services/couchliteos-chiaki.service
 rg -q '^Environment=MOZ_ENABLE_WAYLAND=1$' services/couchliteos-firefox.service
@@ -350,7 +351,8 @@ rg -q '^rfkill$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^wlr-randr$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q 'qrencode -t ANSIUTF8' scripts/couchliteos-tailscale-enrollment
 rg -q "trap 'rm -f --.*URL_FILE.*' EXIT" scripts/couchliteos-tailscale
-refute rg -q 'gir1.2-gtk|libfuse' config/live-build/package-lists/couchliteos.list.chroot
+refute rg -q 'libfuse' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^gir1.2-gtk-4.0$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q 'OVMF_VARS_4M.fd' tests/qemu-smoke.sh
 rg -q 'unit=1,file=' tests/qemu-smoke.sh
 rg -q 'screendump' tests/qemu-smoke.sh
@@ -465,6 +467,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_bluetooth.py launcher/couchliteos_audio.py launcher/gamepad-nav.py \
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
   launcher/couchliteos_pcstatus.py launcher/couchliteos_recent.py launcher/couchliteos_home.py \
+  launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
   launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py launcher/couchliteos_snapshot.py \
   launcher/couchliteos_browser.py launcher/couchliteos_browsersetup.py \
@@ -842,6 +845,22 @@ rg -q '^  restore-apply\)$' scripts/couchliteos-qemu-smoke
 rg -q '^  restore-check\)$' scripts/couchliteos-qemu-smoke
 rg -q '^boot_and_wait restore-apply COUCHLITEOS_SMOKE_RESTORE_REQUESTED$' tests/qemu-install-smoke.sh
 rg -q '^boot_and_wait restore-check COUCHLITEOS_SMOKE_RESTORE_READY$' tests/qemu-install-smoke.sh
+# The live USB updates an older install on the disk (apply-disk): found by a root service, requested
+# by the launcher through a path unit, proven in QEMU by tests/qemu-legacy-smoke.sh.
+rg -q '^ConditionKernelCommandLine=boot=live$' services/couchliteos-find-installs.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater find-installs$' services/couchliteos-find-installs.service
+rg -q '^PathExists=/run/couchliteos/disk-update$' services/couchliteos-disk-update.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/disk-update$' services/couchliteos-disk-update.service
+rg -q 'couchliteos-updater apply-disk --found$' services/couchliteos-disk-update.service
+rg -q '^systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path$' \
+  config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q 'UPDATE THE INSTALLED SYSTEM \(KEEPS PAIRINGS AND SETTINGS\)' launcher/couchliteos_softwareupdate.py
+rg -q 'test_apply_disk.py' launcher/Makefile
+rg -q '^  disk-update\)$' scripts/couchliteos-qemu-smoke
+rg -q '^  disk-update-check\)$' scripts/couchliteos-qemu-smoke
+rg -q '^boot_and_wait disk-update COUCHLITEOS_SMOKE_DISK_UPDATED 2700$' tests/qemu-legacy-smoke.sh
+rg -q '^boot_and_wait disk-update-check COUCHLITEOS_SMOKE_DISK_UPDATE_READY 240$' tests/qemu-legacy-smoke.sh
+bash -n tests/qemu-legacy-smoke.sh
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh
@@ -874,6 +893,297 @@ rg -Fq -- '--release) release=1 ;;' build/build.sh
 rg -Fq "squashfs_options=(--chroot-squashfs-compression-type xz)" build/build.sh
 rg -q 'squashfs_options=\(--chroot-squashfs-compression-type zstd --chroot-squashfs-compression-level [0-9]+\)' build/build.sh
 rg -Fq '"${squashfs_options[@]}"' build/build.sh
+# Release squashfs: 1 MiB blocks and the x86 BCJ filter, release builds only.
+[[ $(sed -n '/^if ((release)); then$/,/^else$/p' build/build.sh | rg -c "^  export MKSQUASHFS_OPTIONS='-b 1M -Xbcj x86'$") == 1 ]]
+[[ $(rg -c 'MKSQUASHFS_OPTIONS=' build/build.sh) == 1 ]]
+rg -q '^  --apt-indices false \\$' build/build.sh
+# No documentation, manual pages or non-English translations; copyright files stay.
+slim_cfg=config/live-build/includes.chroot_before_packages/etc/dpkg/dpkg.cfg.d/couchliteos-slim
+for rule in 'path-exclude /usr/share/doc/\*' 'path-include /usr/share/doc/\*/copyright' \
+  'path-exclude /usr/share/man/\*' 'path-exclude /usr/share/info/\*' \
+  'path-exclude /usr/share/locale/\*' 'path-include /usr/share/locale/en\*'; do
+  rg -q "^$rule\$" "$slim_cfg"
+done
+# dpkg applies the last matching rule: every include follows its exclude.
+(($(rg -n '^path-include /usr/share/doc/' "$slim_cfg" | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/doc/' "$slim_cfg" | cut -d: -f1)))
+(($(rg -n '^path-include /usr/share/locale/en' "$slim_cfg" | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/locale/' "$slim_cfg" | cut -d: -f1)))
+slim_test=$(mktemp -d)
+mkdir -p "$slim_test/bin" "$slim_test/root/lib/modules/6.12.94+deb13-amd64/kernel" \
+  "$slim_test/root/usr/share/doc/libfoo1/examples" "$slim_test/root/usr/share/doc/couchliteos/examples" \
+  "$slim_test/root/usr/share/man/man1" "$slim_test/root/usr/share/info" \
+  "$slim_test/root/usr/share/locale/de/LC_MESSAGES" "$slim_test/root/usr/share/locale/en_GB/LC_MESSAGES" \
+  "$slim_test/root/usr/share/locale/es/LC_MESSAGES" \
+  "$slim_test/root/usr/lib/gcc/x86_64-linux-gnu/14" "$slim_test/root/usr/libexec/gcc/x86_64-linux-gnu/14" \
+  "$slim_test/root/usr/lib/x86_64-linux-gnu" "$slim_test/root/usr/bin" \
+  "$slim_test/root/usr/lib/firmware/ath10k/QCA4019/hw1.0" "$slim_test/root/usr/lib/firmware/ath10k/QCA6174/hw3.0" \
+  "$slim_test/root/usr/lib/firmware/ath11k/IPQ8074/hw2.0" "$slim_test/root/usr/lib/firmware/ath11k/WCN6855/hw2.0" \
+  "$slim_test/root/usr/lib/firmware/mediatek/mt8183" "$slim_test/root/usr/lib/firmware/mediatek/sof" \
+  "$slim_test/root/usr/lib/firmware/nvidia/ga102/gsp" "$slim_test/root/usr/lib/firmware/tigon" \
+  "$slim_test/root/usr/lib/firmware/qcom"
+for file in usr/share/doc/libfoo1/copyright usr/share/doc/libfoo1/changelog.Debian.gz \
+  usr/share/doc/libfoo1/examples/a.c usr/share/doc/couchliteos/examples/steam.ini \
+  usr/share/man/man1/foo.1.gz usr/share/info/foo.info.gz usr/share/locale/locale.alias \
+  usr/share/locale/de/LC_MESSAGES/foo.mo usr/share/locale/es/LC_MESSAGES/foo.mo \
+  usr/share/locale/en_GB/LC_MESSAGES/foo.mo \
+  usr/libexec/gcc/x86_64-linux-gnu/14/lto1 usr/libexec/gcc/x86_64-linux-gnu/14/cc1 \
+  usr/bin/x86_64-linux-gnu-lto-dump-14 usr/bin/x86_64-linux-gnu-gcc-14 \
+  usr/lib/gcc/x86_64-linux-gnu/14/libasan.so usr/lib/gcc/x86_64-linux-gnu/14/liblto_plugin.so \
+  usr/lib/x86_64-linux-gnu/libasan.so.8.0.0 usr/lib/x86_64-linux-gnu/libubsan.so.1.0.0 \
+  usr/lib/x86_64-linux-gnu/libhwasan.so.0.0.0 usr/lib/x86_64-linux-gnu/libtsan.so.2.0.0 \
+  usr/lib/x86_64-linux-gnu/liblsan.so.0.0.0 usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 \
+  usr/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin usr/lib/firmware/ath10k/QCA6174/hw3.0/firmware-6.bin \
+  usr/lib/firmware/ath11k/IPQ8074/hw2.0/m3.bin usr/lib/firmware/ath11k/WCN6855/hw2.0/amss.bin \
+  usr/lib/firmware/mediatek/mt8183/scp.img usr/lib/firmware/mediatek/sof/sof-mt8186.ri \
+  usr/lib/firmware/mediatek/mt7986_wm.bin usr/lib/firmware/mediatek/mt7622pr2h.bin \
+  usr/lib/firmware/mediatek/WIFI_RAM_CODE_MT7922_1.bin usr/lib/firmware/mediatek/mt7915_wm.bin \
+  usr/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin usr/lib/firmware/tigon/tg357766.bin \
+  usr/lib/firmware/qcom/a630_sqe.fw \
+  usr/lib/firmware/iwlwifi-cc-a0-46.ucode usr/lib/firmware/iwlwifi-cc-a0-72.ucode \
+  usr/lib/firmware/iwlwifi-cc-a0-77.ucode usr/lib/firmware/iwlwifi-cc-a0-79.ucode \
+  usr/lib/firmware/iwlwifi-so-a0-gf-a0-64.ucode usr/lib/firmware/iwlwifi-so-a0-gf-a0-86.ucode \
+  usr/lib/firmware/iwlwifi-so-a0-gf-a0.pnvm usr/lib/firmware/iwlwifi-7265D-27.ucode.xz \
+  usr/lib/firmware/iwlwifi-7265D-29.ucode.xz usr/lib/firmware/iwlwifi-3160-17.ucode \
+  usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-50.ucode usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-77.ucode; do
+  printf 'x\n' > "$slim_test/root/$file"
+done
+# A kept file that is a link keeps the device's older files (they may be its target).
+ln -s iwlwifi-Qu-b0-jf-b0-50.ucode "$slim_test/root/usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-72.ucode"
+ln -s libfoo1 "$slim_test/root/usr/share/doc/libfoo1-dev"
+# The kernel's iwlwifi API maxima: cc-a0 77, so-a0-gf-a0 89 (64 never loads; 86 is the newest
+# file), 7265D 29, 3160 17, Qu-b0-jf-b0 72 (a link to 50).
+printf '#!/bin/bash\n[[ $1 == -k && $2 == 6.12.94+deb13-amd64 && $3 == -F && $4 == firmware ]] || exit 2\n[[ $5 == iwlwifi ]] || exit 1\nprintf "%%s\\n" iwlwifi-cc-a0-77.ucode iwlwifi-so-a0-gf-a0-89.ucode iwlwifi-7265D-29.ucode iwlwifi-3160-17.ucode iwlwifi-Qu-b0-jf-b0-72.ucode iwlwifi-ma-b0-gf-a0-89.ucode\n' \
+  > "$slim_test/bin/modinfo"
+chmod 0755 "$slim_test/bin/modinfo"
+PATH="$slim_test/bin:$PATH" COUCHLITEOS_SLIM_ROOT="$slim_test/root" \
+  bash config/live-build/hooks/live/0900-slim.hook.chroot > "$slim_test/log"
+(cd "$slim_test/root" && find . ! -type d | sed 's|^\./||' | LC_ALL=C sort) > "$slim_test/after"
+printf '%s\n' usr/bin/x86_64-linux-gnu-gcc-14 usr/lib/firmware/ath10k/QCA6174/hw3.0/firmware-6.bin \
+  usr/lib/firmware/ath11k/WCN6855/hw2.0/amss.bin usr/lib/firmware/iwlwifi-3160-17.ucode \
+  usr/lib/firmware/iwlwifi-7265D-29.ucode.xz usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-50.ucode \
+  usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-72.ucode usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-77.ucode \
+  usr/lib/firmware/iwlwifi-cc-a0-77.ucode usr/lib/firmware/iwlwifi-cc-a0-79.ucode \
+  usr/lib/firmware/iwlwifi-so-a0-gf-a0-86.ucode usr/lib/firmware/iwlwifi-so-a0-gf-a0.pnvm \
+  usr/lib/firmware/mediatek/WIFI_RAM_CODE_MT7922_1.bin usr/lib/firmware/mediatek/mt7915_wm.bin \
+  usr/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin usr/lib/firmware/tigon/tg357766.bin \
+  usr/lib/gcc/x86_64-linux-gnu/14/liblto_plugin.so usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 \
+  usr/libexec/gcc/x86_64-linux-gnu/14/cc1 usr/share/doc/couchliteos/examples/steam.ini \
+  usr/share/doc/libfoo1-dev usr/share/doc/libfoo1/copyright \
+  usr/share/locale/en_GB/LC_MESSAGES/foo.mo usr/share/locale/locale.alias | LC_ALL=C sort > "$slim_test/expected"
+diff -u "$slim_test/expected" "$slim_test/after"
+# What stays passes the release profiles' image checks (build.sh lists the image as //path).
+for pattern in $(profile_value general FORBIDDEN_IMAGE_PATHS); do
+  refute rg -q -- "$pattern" <(sed 's|^|//|' "$slim_test/after")
+done
+for removed in usr/share/man/man1/foo.1.gz usr/share/info/foo.info.gz usr/share/doc/libfoo1/changelog.Debian.gz \
+  usr/share/locale/de/LC_MESSAGES/foo.mo usr/share/locale/es/LC_MESSAGES/foo.mo \
+  usr/libexec/gcc/x86_64-linux-gnu/14/lto1 usr/lib/gcc/x86_64-linux-gnu/14/libasan.so \
+  usr/lib/x86_64-linux-gnu/libubsan.so.1.0.0 usr/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin \
+  usr/lib/firmware/ath11k/IPQ8074/hw2.0/m3.bin usr/lib/firmware/qcom/a630_sqe.fw \
+  usr/lib/firmware/mediatek/mt8183/scp.img usr/lib/firmware/mediatek/sof/sof-mt8186.ri \
+  usr/lib/firmware/mediatek/mt7986_wm.bin usr/lib/firmware/mediatek/mt7622pr2h.bin; do
+  matched=0
+  for pattern in $(profile_value general FORBIDDEN_IMAGE_PATHS); do
+    rg -q -- "$pattern" <<< "//$removed" && matched=1
+  done
+  ((matched)) || { echo "no FORBIDDEN_IMAGE_PATHS pattern catches /$removed" >&2; exit 1; }
+done
+rg -q '^slim: removed /usr/lib/firmware/iwlwifi-cc-a0-46\.ucode$' "$slim_test/log"
+rg -q '^slim: removed /usr/lib/firmware/mediatek/mt8183/scp\.img$' "$slim_test/log"
+rg -q '^slim: 1 copyright files kept$' "$slim_test/log"
+# More than one image kernel: iwlwifi firmware is kept.
+mkdir -p "$slim_test/root/lib/modules/6.12.95+deb13-amd64/kernel"
+printf 'x\n' > "$slim_test/root/usr/lib/firmware/iwlwifi-cc-a0-46.ucode"
+PATH="$slim_test/bin:$PATH" COUCHLITEOS_SLIM_ROOT="$slim_test/root" \
+  bash config/live-build/hooks/live/0900-slim.hook.chroot > "$slim_test/log"
+test -f "$slim_test/root/usr/lib/firmware/iwlwifi-cc-a0-46.ucode"
+rm -rf -- "$slim_test"
+# The release profiles fail a build whose image still has what 0900-slim removes.
+for profile in general nvidia; do
+  forbidden=$(profile_value "$profile" FORBIDDEN_IMAGE_PATHS)
+  # Anchored: the application images under /opt keep their own usr/share.
+  for pattern in '^/+usr/share/man/.' '^/+usr/share/info/.' '^/+usr/share/doc/[^/]+/changelog' \
+    '^/+usr/share/locale/([^e/]|e[^n/])[^/]*/' '^/+usr/(lib|libexec)/gcc/.*/lto1$' \
+    '^/+usr/lib/(gcc/.*|x86_64-linux-gnu)/lib(asan|tsan|lsan|ubsan|hwasan)[^/]*$' \
+    '^/+usr/lib/firmware/ath1[0-2]k/(QCA4019|WCN3990|WCN6750|IPQ[0-9]+)/' '^/+usr/lib/firmware/(imx|meson|rockchip|qcom)/' \
+    '^/+usr/lib/firmware/mediatek/(.*mt8[0-9]{3}|mt7622|mt7629|mt798[0-9])'; do
+    [[ " $forbidden " == *" $pattern "* ]] || { echo "profile $profile does not forbid $pattern" >&2; exit 1; }
+  done
+done
+# chiaki-ng: English only, no DevTools; QtWebEngine stays.
+rg -Fq 'rm -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_devtools_resources.pak"' build/configure.sh
+rg -Fq -- "-name '*.pak' ! -name en-US.pak -delete" build/configure.sh
+rg -Fq -- "-name '*.qm' ! -name '*_en.qm' -delete" build/configure.sh
+rg -Fq 'test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_resources.pak"' build/configure.sh
+# A smaller initrd: zstd, no nouveau (it loads from the root filesystem), on the ISO only.
+rg -q '^zstd$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^COMPRESS=zstd$' overlay/etc/initramfs-tools/conf.d/couchliteos.conf
+rg -q '^COMPRESSLEVEL=19$' overlay/etc/initramfs-tools/conf.d/couchliteos.conf
+initramfs_hook=overlay/etc/initramfs-tools/hooks/couchliteos-slim
+test -x "$initramfs_hook"
+sh -n "$initramfs_hook"
+rg -q '^prereqs\)$' "$initramfs_hook"
+rg -Fq '"${DESTDIR}"/lib/modules/*/kernel/drivers/gpu/drm/nouveau' "$initramfs_hook"
+rg -Fq '"${DESTDIR}/lib/firmware/nvidia"' "$initramfs_hook"
+initramfs_test=$(mktemp -d)
+mkdir -p "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau" \
+  "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915" "$initramfs_test/lib/firmware/nvidia/gk104"
+touch "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau/nouveau.ko.xz" \
+  "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz" \
+  "$initramfs_test/lib/firmware/nvidia/gk104/fecs_inst.bin"
+[[ $("$initramfs_hook" prereqs) == '' ]]
+DESTDIR=$initramfs_test "$initramfs_hook"
+test ! -e "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau"
+test ! -e "$initramfs_test/lib/firmware/nvidia"
+test -e "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz"
+rm -rf -- "$initramfs_test"
+[[ $(< config/live-build/rootfs/excludes) == 'boot/initrd.img-*' ]]
+rg -Fq "grep -E '^/+boot/initrd\.img-' \"\$listing\"" build/build.sh
+# An installed system makes the initrd the image leaves out, before 10_linux looks for it.
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-initrd" "$CHROOT/etc/grub.d/00_couchliteos_initrd"' build/configure.sh
+[[ 00_couchliteos_initrd < 00_header ]]
+sh -n scripts/couchliteos-grub-initrd
+rg -q 'update-initramfs -c -k "\$version" >&2' scripts/couchliteos-grub-initrd
+refute rg -q '^[^#]*(echo|printf|cat)\b[^>]*$' scripts/couchliteos-grub-initrd
+rg -Fq 'mode = "-u" if (target / "boot" / f"initrd.img-{kernel}").exists() else "-c"' launcher/couchliteos_updater.py
+rg -q '^  initrd_check binary/live/initrd\.img$' build/build.sh
+rg -qw zstd docs/BUILDING.md
+if command -v zstd >/dev/null; then
+  eval "$(sed -n '/^initrd_check() {$/,/^}$/p' build/build.sh)"
+  initrd_test=$(mktemp -d)
+  python3 - "$initrd_test" <<'EOF'
+import pathlib, subprocess, sys
+
+def cpio(names):
+    out = b""
+    for name in [*names, "TRAILER!!!"]:
+        body = b"" if name == "TRAILER!!!" else b"x" * 5
+        encoded = name.encode() + b"\0"
+        fields = [1, 0o100644, 0, 0, 1, 0, len(body), 0, 0, 0, 0, len(encoded), 0]
+        header = b"070701" + b"".join(b"%08X" % value for value in fields)
+        out += header + encoded
+        out += b"\0" * (-len(out) % 4) + body
+        out += b"\0" * (-len(out) % 4)
+    return out
+
+directory = pathlib.Path(sys.argv[1])
+early = cpio(["kernel/x86/microcode/GenuineIntel.bin"]) + b"\0" * 512
+modules = ["usr/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz"]
+nouveau = modules + ["usr/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau/nouveau.ko.xz"]
+zstd = lambda data: subprocess.run(["zstd", "-q", "-c"], input=data, stdout=subprocess.PIPE, check=True).stdout
+(directory / "good").write_bytes(early + zstd(cpio(modules)))
+(directory / "nouveau").write_bytes(early + zstd(cpio(nouveau)))
+(directory / "gzip").write_bytes(early + b"\x1f\x8b\x08\x00" + b"\0" * 64)
+EOF
+  [[ $(initrd_check "$initrd_test/good") == 'initrd: zstd, no nouveau, 1 entries' ]]
+  (initrd_check "$initrd_test/nouveau" 2>&1 && exit 1 || true) | rg -q 'still has nouveau: .*/nouveau\.ko\.xz'
+  (initrd_check "$initrd_test/gzip" 2>&1 && exit 1 || true) | rg -q 'is not zstd \(starts 1f8b0800'
+  rm -rf -- "$initrd_test"
+fi
+# Installer trim: module udebs for the installer's kernel only, no graphical installer,
+# indexes and Release hashes rewritten for what remains.
+trim_hook=config/live-build/hooks/live/0200-installer-trim.hook.binary
+test -x "$trim_hook"
+refute rg -q 'gensub|asort|PROCINFO' "$trim_hook"
+rg -Fq "installer_abis=\$(find binary -path 'binary/pool*' -name '*-di_*.udeb' -printf '%f\\n' |" build/build.sh
+if command -v apt-ftparchive >/dev/null && command -v dpkg-deb >/dev/null; then
+  trim_test=$(mktemp -d)
+  python3 - "$trim_test" <<'EOF'
+import pathlib, subprocess, sys
+
+iso = pathlib.Path(sys.argv[1]) / "binary"
+kernel = bytearray(0x4000)
+kernel[0x20E:0x210] = (0x3000).to_bytes(2, "little")
+version = b"6.12.94+deb13-amd64 (debian-kernel@lists.debian.org) #1 SMP PREEMPT_DYNAMIC Debian 6.12.94-1\0"
+kernel[0x3200:0x3200 + len(version)] = version
+(iso / "install").mkdir(parents=True)
+(iso / "install/vmlinuz").write_bytes(kernel)
+udebs = {
+    "nic-modules-6.12.94+deb13-amd64-di": "l/linux-signed-amd64",
+    "kernel-image-6.12.94+deb13-amd64-di": "l/linux-signed-amd64",
+    "nic-modules-6.12.38+deb13-amd64-di": "l/linux-signed-amd64",
+    "kernel-image-6.12.38+deb13-amd64-di": "l/linux-signed-amd64",
+    "libgtk2.0-0-udeb": "g/gtk+2.0",
+    "libcairo2-udeb": "c/cairo",
+    "libpango1.0-udeb": "p/pango1.0",
+    "fonts-dejavu-udeb": "f/fonts-dejavu",
+    "rootskel-gtk": "r/rootskel-gtk",
+    "cdebconf-gtk-udeb": "c/cdebconf",
+    "cdebconf-newt-udeb": "c/cdebconf",
+    "espeakup-udeb": "e/espeakup",
+    "libespeak-ng1-udeb": "e/espeak-ng",
+}
+stanzas = []
+for package, directory in udebs.items():
+    name = f"pool/main/{directory}/{package}_1.0_amd64.udeb"
+    (iso / name).parent.mkdir(parents=True, exist_ok=True)
+    (iso / name).write_bytes(package.encode())
+    stanzas.append(f"Package: {package}\nVersion: 1.0\nFilename: {name}\nSize: {len(package)}\n")
+udeb_index = iso / "dists/trixie/main/debian-installer/binary-amd64"
+udeb_index.mkdir(parents=True)
+(udeb_index / "Packages").write_text("\n".join(stanzas))
+deb_index = iso / "dists/trixie/main/binary-amd64"
+deb_index.mkdir(parents=True)
+# pool/: the live system has this kernel and libicu76 (other version), not GRUB.
+debs = [("linux-image-6.12.94+deb13-amd64", "6.12.94-1", "main/l/linux-signed-amd64"),
+        ("libicu76", "76.1-4", "main/i/icu"), ("grub-pc", "2.12-9", "main/g/grub2")]
+deb_stanzas = []
+for package, version, directory in debs:
+    tree = iso.parent / "deb" / package
+    (tree / "DEBIAN").mkdir(parents=True)
+    (tree / "DEBIAN/control").write_text(f"Package: {package}\nVersion: {version}\nArchitecture: amd64\n"
+                                         "Maintainer: Test <test@example.org>\nDescription: test\n")
+    name = f"pool/{directory}/{package}_{version}_amd64.deb"
+    (iso / name).parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["dpkg-deb", "--root-owner-group", "-Zgzip", "--build", str(tree), str(iso / name)],
+                   check=True, stdout=subprocess.DEVNULL)
+    deb_stanzas.append(f"Package: {package}\nVersion: {version}\nFilename: {name}\n")
+(deb_index / "Packages").write_text("\n".join(deb_stanzas))
+(iso / "live").mkdir()
+(iso / "live/filesystem.packages").write_text(
+    "grub-common\t2.12-9\nlibicu76:amd64\t76.1-5\nlinux-image-6.12.94+deb13-amd64\t6.12.94-1\n")
+(deb_index / "Release").write_text("Archive: trixie\nComponent: main\nArchitecture: amd64\n")
+(iso / "dists/stable").symlink_to("trixie")
+(iso / "dists/trixie/Release").write_text(
+    "Origin: Debian\nLabel: Debian\nSuite: trixie\nVersion: 13\nCodename: trixie\n"
+    "Date: Sat, 03 Oct 2026 12:00:00 +0000\nArchitectures: amd64\nComponents: main\n"
+    "Description: Last updated: Sat, 03 Oct 2026 12:00:00 +0000\nMD5Sum:\n 0 0 stale\nSHA256:\n 0 0 stale\n")
+EOF
+  (cd "$trim_test" && bash "$ROOT/$trim_hook") > "$trim_test/log"
+  trim_iso=$trim_test/binary
+  for package in nic-modules-6.12.38+deb13-amd64-di kernel-image-6.12.38+deb13-amd64-di libgtk2.0-0-udeb \
+    libcairo2-udeb libpango1.0-udeb fonts-dejavu-udeb rootskel-gtk cdebconf-gtk-udeb; do
+    [[ -z $(find "$trim_iso/pool" -name "${package}_*") ]]
+    refute rg -qFx "Package: $package" "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
+    rg -q "^installer trim: removed pool/main/[^ ]+/${package//+/\\+}_1\.0_amd64\.udeb\$" "$trim_test/log"
+  done
+  for package in nic-modules-6.12.94+deb13-amd64-di kernel-image-6.12.94+deb13-amd64-di cdebconf-newt-udeb \
+    espeakup-udeb libespeak-ng1-udeb; do
+    [[ -n $(find "$trim_iso/pool" -name "${package}_*") ]]
+    rg -qFx "Package: $package" "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
+  done
+  rg -q '^installer trim: installer kernel 6\.12\.94\+deb13-amd64$' "$trim_test/log"
+  cmp <(gzip -dc "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages.gz") \
+    "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
+  # pool/: only the .deb the live system has at the same version goes.
+  test ! -e "$trim_iso/pool/main/l/linux-signed-amd64/linux-image-6.12.94+deb13-amd64_6.12.94-1_amd64.deb"
+  test -e "$trim_iso/pool/main/i/icu/libicu76_76.1-4_amd64.deb"
+  test -e "$trim_iso/pool/main/g/grub2/grub-pc_2.12-9_amd64.deb"
+  [[ $(rg '^Package: ' "$trim_iso/dists/trixie/main/binary-amd64/Packages") == $'Package: libicu76\nPackage: grub-pc' ]]
+  trim_release=$trim_iso/dists/trixie/Release
+  for field in 'Origin: Debian' 'Suite: trixie' 'Version: 13' 'Codename: trixie' \
+    'Date: Sat, 03 Oct 2026 12:00:00 \+0000' 'Architectures: amd64' 'Components: main'; do
+    rg -q "^$field\$" "$trim_release"
+  done
+  refute rg -q 'stale' "$trim_release"
+  udeb_sha=$(sha256sum < "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages" | cut -d ' ' -f 1)
+  rg -q "^ $udeb_sha +[0-9]+ main/debian-installer/binary-amd64/Packages\$" "$trim_release"
+  rg -q ' main/binary-amd64/Release$' "$trim_release"
+  test -L "$trim_iso/dists/stable"
+  # The installer's own kernel must have module udebs: a tree without them fails.
+  rm -f "$trim_iso"/pool/main/l/linux-signed-amd64/*6.12.94*
+  (cd "$trim_test" && bash "$ROOT/$trim_hook" 2>&1 && exit 1 || true) | rg -q 'no module udebs for the installer kernel'
+  rm -rf -- "$trim_test"
+fi
 rg -Fq '"${cache_options[@]}"' build/build.sh
 rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
 # Release builds reuse a matching chroot snapshot too; only --fresh (FRESH=1) installs afresh.
@@ -1000,7 +1310,7 @@ rg -qF "+libinput       = dependency('libinput')" config/cage/cage-0.2.0-pointer
 rg -q 'libxkbcommon-dev libinput-dev\)' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -qF 'grep -aq /var/lib/couchliteos/mouse-speed "$work/cage-0.2.0/build/cage"' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -q '^FOOT = "/usr/libexec/couchliteos-foot"' launcher/couchliteos_app_runner.py
-refute rg -q '/usr/bin/foot' services/couchliteos-launcher.service scripts/couchliteos-osk-session launcher/couchliteos_app_runner.py
+refute rg -q '/usr/bin/foot' services/couchliteos-launcher.service scripts/couchliteos-session scripts/couchliteos-osk-session launcher/couchliteos_app_runner.py
 # TYPE ON PHONE: a one-time form on the home network fills a text field; qrencode draws its QR code
 rg -q 'couchliteos_phone.py" "\$CHROOT/usr/libexec/couchliteos_phone.py"' build/configure.sh
 rg -q '^import couchliteos_phone as phone' launcher/couchliteos-launcher.py
@@ -1039,8 +1349,19 @@ rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_recent.py" "\$CHROOT/usr
 rg -q 'test_home.py' launcher/Makefile
 rg -q 'test_recent.py' launcher/Makefile
 rg -q '^import couchliteos_recent as recent$' launcher/couchliteos-launcher.py
-rg -q 'recent\.record\(recent\.host_key\(host\), app_name\)' launcher/couchliteos-launcher.py
+rg -q 'recent\.record\(recent\.host_key\(host\), app_name\)' launcher/couchliteos_session.py
 refute rg -q '^import (curses|gi)' launcher/couchliteos_home.py launcher/couchliteos_recent.py
+# TV interface (0.3.0): GTK shell, shared session logic, fallback wrapper. Only couchliteos-tv touches gi.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_session.py" "\$CHROOT/usr/libexec/couchliteos_session.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_tvlayout.py" "\$CHROOT/usr/libexec/couchliteos_tvlayout.py"$' build/configure.sh
+rg -q '^import couchliteos_session as session$' launcher/couchliteos-launcher.py launcher/couchliteos-tv.py
+rg -q '^class Launcher\(session.Session\):$' launcher/couchliteos-launcher.py
+rg -q 'test_session.py' launcher/Makefile
+rg -q 'test_tvlayout.py' launcher/Makefile
+rg -q 'tests/test_tv_fallback.py' Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py
+rg -q '^INIT_FAILED = 3$' launcher/couchliteos-tv.py
+rg -q '^INIT_FAILED=3$' scripts/couchliteos-session
 
 # Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)
 rg -q 'couchliteos_pads.py' build/configure.sh

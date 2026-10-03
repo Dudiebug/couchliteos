@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes curl ca-certificates cpio debootstrap \
             debian-archive-keyring e2fsprogs xorriso squashfs-tools grub-pc-bin \
-            grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf ripgrep
+            grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf ripgrep zstd
           curl --fail --location --output /tmp/live-build.deb \
             https://deb.debian.org/debian/pool/main/l/live-build/live-build_20250505+deb13u1_all.deb
           sudo apt-get install --yes /tmp/live-build.deb

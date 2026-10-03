@@ -1836,6 +1836,11 @@ class ApplyRootRestoreTest(TmpCase):
         self.assertIn("restore to 0.2.0 done", log)
         self.assertEqual(self.status.phases()[-1], "restarting")
 
+    def test_a_restore_is_never_a_legacy_update(self):
+        with self.assertRaises(ValueError):
+            self.restore(legacy=True)
+        self.assertEqual(self.runner.calls, [])
+
     def test_a_state_step_that_fails_stops_before_the_boot_menu(self):
         self.fail["var/lib/couchliteos/"] = (23, "partial transfer")
         with self.assertRaises(updater.UpdateFailed) as caught:

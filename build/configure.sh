@@ -74,6 +74,10 @@ install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
   "$CHROOT/usr/share/keyrings/google-chrome.asc"
 
 install -D -m 0755 "$ROOT/launcher/couchliteos-launcher.py" "$CHROOT/usr/libexec/couchliteos-launcher"
+install -D -m 0755 "$ROOT/launcher/couchliteos-tv.py" "$CHROOT/usr/libexec/couchliteos-tv"
+install -D -m 0755 "$ROOT/scripts/couchliteos-session" "$CHROOT/usr/libexec/couchliteos-session"
+install -D -m 0644 "$ROOT/launcher/couchliteos_session.py" "$CHROOT/usr/libexec/couchliteos_session.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_tvlayout.py" "$CHROOT/usr/libexec/couchliteos_tvlayout.py"
 install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/couchliteos-gamepad-nav"
 install -D -m 0644 "$ROOT/launcher/couchliteos_apps.py" "$CHROOT/usr/libexec/couchliteos_apps.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_rdp.py" "$CHROOT/usr/libexec/couchliteos_rdp.py"
@@ -132,6 +136,7 @@ install -D -m 0644 "$ROOT/third_party/envytools/extract_firmware.py" "$CHROOT/us
 install -D -m 0755 "$ROOT/scripts/couchliteos-diagnostics" "$CHROOT/usr/bin/couchliteos-diagnostics"
 install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"
 install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"
+install -D -m 0755 "$ROOT/scripts/couchliteos-grub-initrd" "$CHROOT/etc/grub.d/00_couchliteos_initrd"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/couchliteos-hardware-report"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
 install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"
@@ -195,6 +200,12 @@ while IFS='|' read -r name _version _url filename; do
     chiaki-ng)
       test -x "$CHROOT/opt/couchliteos/apps/$name/usr/bin/chiaki"
       test -f "$CHROOT/opt/couchliteos/apps/$name/usr/plugins/platforms/libqwayland-egl.so"
+      # English only and no web developer tools; QtWebEngine itself stays (PSN login).
+      rm -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_devtools_resources.pak"
+      find "$CHROOT/opt/couchliteos/apps/$name/usr/translations/qtwebengine_locales" -name '*.pak' ! -name en-US.pak -delete
+      find "$CHROOT/opt/couchliteos/apps/$name/usr/translations" -maxdepth 1 -name '*.qm' ! -name '*_en.qm' -delete
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/translations/qtwebengine_locales/en-US.pak"
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_resources.pak"
       ;;
   esac
   find "$extract" -depth -delete

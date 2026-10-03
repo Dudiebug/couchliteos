@@ -73,7 +73,7 @@ rdp_state_absent() {
 
 case $mode in
   # Lets tests/qemu-install-smoke.sh stop waiting as soon as an update mode fails.
-  update-*|restore-*) trap 'status=$?; [[ $status == 0 ]] || echo COUCHLITEOS_SMOKE_UPDATE_FAILED' EXIT ;;
+  update-*|disk-update*|restore-*) trap 'status=$?; [[ $status == 0 ]] || echo COUCHLITEOS_SMOKE_UPDATE_FAILED' EXIT ;;
 esac
 wait_for_file /run/couchliteos/launcher-ready launcher
 case $mode in
@@ -178,6 +178,93 @@ case $mode in
     [[ -z $(dpkg --audit) ]] || { echo 'dpkg --audit is not clean after the restore.' >&2; dpkg --audit >&2; exit 1; }
     id installer-test >/dev/null
     echo COUCHLITEOS_SMOKE_RESTORE_READY
+    exit 0
+    ;;
+  disk-update)
+    # tests/qemu-legacy-smoke.sh, boot 1: this ISO, live, with an older install (0.2.0 or
+    # MoonlightOS 0.1.13) on the disk. Seed the owner's state in the old layout, then ask for
+    # UPDATE THE INSTALLED SYSTEM the way the launcher does and follow the service to the end.
+    wait_for_file /run/couchliteos/installs.json 'the search for an installed system'
+    device=$(python3 -c 'import json, sys; found = json.load(open(sys.argv[1])); assert len(found) == 1, found; print(found[0]["device"])' \
+      /run/couchliteos/installs.json)
+    echo "installed system on $device: $(cat /run/couchliteos/installs.json)"
+    mkdir -p /run/couchliteos-seed
+    mount "$device" /run/couchliteos-seed
+    name=couchliteos
+    [[ -d /run/couchliteos-seed/var/lib/moonlightos ]] && name=moonlightos  # rename:keep
+    data=/run/couchliteos-seed/var/lib/$name
+    [[ -e $data/config.ini ]] || install -m 0640 -o 1000 -g "$(stat -c %g "$data")" /dev/null "$data/config.ini"
+    printf '\n[qemu-smoke]\nlegacy_update = verified\nold_path = /var/lib/%s/marker\n' "$name" >> "$data/config.ini"
+    pairing="$data/home/.config/Moonlight Game Streaming Project/Moonlight.conf"
+    [[ -e $pairing ]] || install -D -m 0640 -o 1000 -g "$(stat -c %g "$data")" /dev/null "$pairing"
+    printf '[qemu]\nqemu-legacy-pairing=1\n' >> "$pairing"
+    install -D -m 0600 /dev/null /run/couchliteos-seed/etc/NetworkManager/system-connections/qemu-legacy.nmconnection
+    printf '[connection]\nid=qemu-legacy\ntype=ethernet\n' \
+      > /run/couchliteos-seed/etc/NetworkManager/system-connections/qemu-legacy.nmconnection
+    sync
+    umount /run/couchliteos-seed
+    echo COUCHLITEOS_SMOKE_DISK_SEEDED
+    rm -f /run/couchliteos/update-status.json
+    touch /run/couchliteos/disk-update
+    phase=
+    for _ in $(seq 1 "$(scaled 2700)"); do
+      phase=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("phase", ""))' \
+        /run/couchliteos/update-status.json 2>/dev/null || true)
+      [[ $phase == updated || $phase == failed ]] && break
+      sleep 1
+    done
+    if [[ $phase != updated ]]; then
+      echo 'The installed system was not updated. Status and log follow.' >&2
+      cat /run/couchliteos/update-status.json >&2 || true
+      journalctl -b --no-pager -u couchliteos-disk-update.service | tail -n 80 >&2 || true
+      tail -n 80 /var/log/couchliteos/update.log >&2 || true
+      exit 1
+    fi
+    sync
+    echo COUCHLITEOS_SMOKE_DISK_UPDATED
+    exit 0
+    ;;
+  disk-update-check)
+    # Boot 2, from the disk: the state is there under the new names, nothing old is left behind,
+    # the old system was saved, and SOFTWARE UPDATE can take over from here.
+    config=/var/lib/couchliteos/config.ini
+    grep -Fxq 'legacy_update = verified' "$config"
+    grep -Fxq 'old_path = /var/lib/couchliteos/marker' "$config"
+    pairing='/var/lib/couchliteos/home/.config/Moonlight Game Streaming Project/Moonlight.conf'
+    grep -Fxq 'qemu-legacy-pairing=1' "$pairing"
+    [[ $(stat -c %U "$pairing") == couchliteos ]]
+    grep -Fxq 'id=qemu-legacy' /etc/NetworkManager/system-connections/qemu-legacy.nmconnection
+    test ! -e /var/lib/moonlightos  # rename:keep
+    test ! -e /var/log/moonlightos  # rename:keep
+    test ! -e /etc/default/grub.d/20-moonlightos.cfg  # rename:keep
+    if getent passwd moonlightos || getent group moonlightos; then  # rename:keep
+      echo 'The old account or group is still there.' >&2
+      exit 1
+    fi
+    if find /etc/systemd/system -name 'moonlightos-*' -xtype l | grep .; then  # rename:keep
+      echo 'Links to old units that no longer exist were left behind.' >&2
+      exit 1
+    fi
+    grep -q ' done$' /var/log/couchliteos/update.log
+    grep 'apply-disk ' /var/log/couchliteos/update.log | tail -n 1
+    test -s /var/lib/couchliteos/snapshot/previous.squashfs
+    unsquashfs -s /var/lib/couchliteos/snapshot/previous.squashfs >/dev/null
+    test -s /boot/couchliteos-previous/vmlinuz
+    test -s /etc/grub.d/01_couchliteos_bootcheck
+    [[ -z $(dpkg --audit) ]] || { echo 'dpkg --audit is not clean after the update.' >&2; dpkg --audit >&2; exit 1; }
+    systemctl is-enabled --quiet couchliteos-update.path
+    python3 -c '
+import importlib.machinery, importlib.util, sys
+sys.path.insert(0, "/usr/libexec")
+import couchliteos_update as update
+loader = importlib.machinery.SourceFileLoader("couchliteos_updater", "/usr/libexec/couchliteos-updater")
+updater = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(updater)
+assert update.installed_version(), "no version file"
+updater.refuse_live(updater.Env())
+updater.refuse_layout(updater.Env())
+'
+    echo COUCHLITEOS_SMOKE_DISK_UPDATE_READY
     exit 0
     ;;
   live-persistence-write)

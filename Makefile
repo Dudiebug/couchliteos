@@ -74,6 +74,7 @@ test:
 	python3 -m unittest -v tests/test_host_address_modes.py
 	python3 -m unittest -v tests/test_bluetoothd_helpers.py
 	python3 -m unittest -v tests/test_cage_build.py
+	python3 -m unittest -v tests/test_tv_fallback.py
 	$(MAKE) -C launcher test
 	./build/test-gate.sh mark
 

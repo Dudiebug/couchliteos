@@ -1,0 +1,16 @@
+#!/bin/sh
+# Installed as /etc/grub.d/00_couchliteos_initrd: grub-mkconfig runs it first, before
+# 10_linux looks for each kernel's initrd.
+#
+# The image leaves /boot/initrd.img-* out of its root filesystem (the live ISO boots its
+# own copy), so a system the installer copied from it may have a kernel without an initrd.
+# Make the missing ones here; the installer runs update-grub once it has copied the system.
+# Prints nothing to standard output: that becomes grub.cfg.
+for kernel in /boot/vmlinuz-*; do
+  [ -e "$kernel" ] || continue
+  version=${kernel#/boot/vmlinuz-}
+  [ -e "/boot/initrd.img-$version" ] && continue
+  [ -d "/lib/modules/$version" ] || continue
+  echo "Creating the missing initrd for $version" >&2
+  update-initramfs -c -k "$version" >&2 || echo "Could not create the initrd for $version" >&2
+done

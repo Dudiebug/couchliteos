@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/disk-update
+Unit=couchliteos-disk-update.service
+
+[Install]
+WantedBy=graphical.target
