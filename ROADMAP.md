@@ -10,25 +10,17 @@ say what actually shipped. Ideas and votes are welcome as
 
 ## Next
 
-- **A smaller download.** The ISO shrinks by about a third, with the same
-  hardware support.
-- **Pick your web browser at setup.** Firefox or Google Chrome installs from the
-  internet when you choose it, during setup or later in Settings, instead of
-  both coming in the download.
-- **A TV interface.** Your games first, with cover art, a bar along the bottom
-  that always shows what each button does, sounds and small notifications (a
-  controller connected, an update ready, the gaming PC online), and a return to
-  the game you just played.
-- **Themes**, including your own colors.
-- **Faster boot** on installed systems.
-- **Undo an update.** Every update saves the current system first, so you can go
-  back with the controller if the new version misbehaves.
-- **Type from your phone.** Scan a QR code and type passwords and searches on
-  the phone instead of the on-screen keyboard.
-- **Controller management**: every connected pad with its battery, player order,
-  identify and test buttons, and an A/B and X/Y swap for Nintendo layouts.
-- **Per-game stream settings**: performance, balanced or quality per game.
-- **Keyboard tips** next to the controller hints on every screen.
+0.3.0 brought the smaller download, the web browser picked at setup, the TV
+interface, themes, a faster start, undoing an update, typing from your phone,
+controller management and per-game stream settings; see its
+[release notes](https://github.com/Dudiebug/couchliteos/releases/tag/v0.3.0).
+Still to come from that work:
+
+- **Keyboard tips** next to the controller hints on the remaining classic
+  screens (the TV interface already shows both).
+- **Per-game stream settings in the classic interface**, which today uses the
+  settings chosen in the TV interface but cannot change them.
+- **PlayStation light bar** in each player's colour.
 
 ## Later
 

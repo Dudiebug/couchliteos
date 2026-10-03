@@ -323,7 +323,7 @@ class StartTest(unittest.TestCase):
 class WhatsNewTest(unittest.TestCase):
     def test_lines_for_an_upgrade(self):
         version = whatsnew.RELEASES[0][0]
-        title, lines = tvscreens.whats_new(version, "0.2.6")
+        title, lines = tvscreens.whats_new(version, whatsnew.RELEASES[1][0])  # from the release before
         self.assertEqual(title, f"WHAT'S NEW IN {version}")
         self.assertEqual(lines, [f"·  {feature}" for feature in whatsnew.FEATURES])
         _title, lines = tvscreens.whats_new(version, "")

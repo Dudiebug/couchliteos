@@ -27,6 +27,17 @@ RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE
 # What each release added, newest first: one line per feature, at most 66 columns (the screen wraps longer ones at 80x24).
 # An upgrade shows every release newer than the one last seen, newest first.
 RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("0.3.0", (
+        "A NEW TV HOME SCREEN: YOUR GAMES FIRST, WITH COVER ART",
+        "QUICK MENU: TAP GUIDE / PS, OR PRESS HOME ON A KEYBOARD",
+        "THEMES AND ACCENT COLOURS: SETTINGS > APPEARANCE",
+        "UNDO AN UPDATE: SOFTWARE UPDATE > RESTORE PREVIOUS VERSION",
+        "TYPE ON YOUR PHONE: SELECT (VIEW) OR F2 IN A TEXT FIELD",
+        "PLAYER ORDER, BATTERY, TEST, A/B SWAP: SETTINGS > CONTROLLERS",
+        "STREAM SETTINGS PER GAME: HOLD X / TRIANGLE (OR F10) ON A GAME",
+        "CHANGE A COVER: HOLD Y / SQUARE (OR F9) ON A GAME",
+        "WEB BROWSER: SETTINGS > APPLICATIONS > ADD A WEB BROWSER",
+    )),
     ("0.2.7", (
         "IN A STREAM, GUIDE GOES TO THE STREAM. HOME: HOLD SELECT+START",
         "PS4 / PS5 TOUCHPAD GOES TO THE STREAM, NOT THE MOUSE POINTER",
