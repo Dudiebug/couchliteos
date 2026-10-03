@@ -84,6 +84,8 @@ systemctl enable couchliteos-suspend.path couchliteos-resume.service
 systemctl enable couchliteos-support-export.path couchliteos-nvidia-firmware.path
 systemctl enable couchliteos-update.path
 systemctl enable couchliteos-snapshot-delete.path
+# Live USB: find an installed system on the disks and update it on request (apply-disk).
+systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path
 systemctl enable couchliteos-browser.path couchliteos-browser-refresh.service
 systemctl enable couchliteos-configured-app.path couchliteos-osk.path
 systemctl enable couchliteos-rdp.path couchliteos-rdp-secret.path
