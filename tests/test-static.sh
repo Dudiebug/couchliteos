@@ -995,10 +995,10 @@ trim_hook=config/live-build/hooks/live/0200-installer-trim.hook.binary
 test -x "$trim_hook"
 refute rg -q 'gensub|asort|PROCINFO' "$trim_hook"
 rg -Fq "installer_abis=\$(find binary -path 'binary/pool*' -name '*-di_*.udeb' -printf '%f\\n' |" build/build.sh
-if command -v apt-ftparchive >/dev/null; then
+if command -v apt-ftparchive >/dev/null && command -v dpkg-deb >/dev/null; then
   trim_test=$(mktemp -d)
   python3 - "$trim_test" <<'EOF'
-import pathlib, sys
+import pathlib, subprocess, sys
 
 iso = pathlib.Path(sys.argv[1]) / "binary"
 kernel = bytearray(0x4000)
@@ -1033,9 +1033,24 @@ udeb_index.mkdir(parents=True)
 (udeb_index / "Packages").write_text("\n".join(stanzas))
 deb_index = iso / "dists/trixie/main/binary-amd64"
 deb_index.mkdir(parents=True)
-(iso / "pool/main/g/grub2").mkdir(parents=True)
-(iso / "pool/main/g/grub2/grub-pc_2.12-9_amd64.deb").write_bytes(b"grub")
-(deb_index / "Packages").write_text("Package: grub-pc\nVersion: 2.12-9\nFilename: pool/main/g/grub2/grub-pc_2.12-9_amd64.deb\n")
+# pool/: the live system has this kernel and libicu76 (other version), not GRUB.
+debs = [("linux-image-6.12.94+deb13-amd64", "6.12.94-1", "main/l/linux-signed-amd64"),
+        ("libicu76", "76.1-4", "main/i/icu"), ("grub-pc", "2.12-9", "main/g/grub2")]
+deb_stanzas = []
+for package, version, directory in debs:
+    tree = iso.parent / "deb" / package
+    (tree / "DEBIAN").mkdir(parents=True)
+    (tree / "DEBIAN/control").write_text(f"Package: {package}\nVersion: {version}\nArchitecture: amd64\n"
+                                         "Maintainer: Test <test@example.org>\nDescription: test\n")
+    name = f"pool/{directory}/{package}_{version}_amd64.deb"
+    (iso / name).parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["dpkg-deb", "--root-owner-group", "-Zgzip", "--build", str(tree), str(iso / name)],
+                   check=True, stdout=subprocess.DEVNULL)
+    deb_stanzas.append(f"Package: {package}\nVersion: {version}\nFilename: {name}\n")
+(deb_index / "Packages").write_text("\n".join(deb_stanzas))
+(iso / "live").mkdir()
+(iso / "live/filesystem.packages").write_text(
+    "grub-common\t2.12-9\nlibicu76:amd64\t76.1-5\nlinux-image-6.12.94+deb13-amd64\t6.12.94-1\n")
 (deb_index / "Release").write_text("Archive: trixie\nComponent: main\nArchitecture: amd64\n")
 (iso / "dists/stable").symlink_to("trixie")
 (iso / "dists/trixie/Release").write_text(
@@ -1059,7 +1074,11 @@ EOF
   rg -q '^installer trim: installer kernel 6\.12\.94\+deb13-amd64$' "$trim_test/log"
   cmp <(gzip -dc "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages.gz") \
     "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
-  rg -q '^Package: grub-pc$' "$trim_iso/dists/trixie/main/binary-amd64/Packages"
+  # pool/: only the .deb the live system has at the same version goes.
+  test ! -e "$trim_iso/pool/main/l/linux-signed-amd64/linux-image-6.12.94+deb13-amd64_6.12.94-1_amd64.deb"
+  test -e "$trim_iso/pool/main/i/icu/libicu76_76.1-4_amd64.deb"
+  test -e "$trim_iso/pool/main/g/grub2/grub-pc_2.12-9_amd64.deb"
+  [[ $(rg '^Package: ' "$trim_iso/dists/trixie/main/binary-amd64/Packages") == $'Package: libicu76\nPackage: grub-pc' ]]
   trim_release=$trim_iso/dists/trixie/Release
   for field in 'Origin: Debian' 'Suite: trixie' 'Version: 13' 'Codename: trixie' \
     'Date: Sat, 03 Oct 2026 12:00:00 \+0000' 'Architectures: amd64' 'Components: main'; do

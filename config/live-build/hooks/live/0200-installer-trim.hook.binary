@@ -5,7 +5,8 @@ set -Eeuo pipefail
 # indexes and the Release hashes for what remains:
 #   - kernel module udebs for a kernel other than the installer's (install/vmlinuz);
 #   - the graphical installer (GTK, cairo, pango, fonts, rootskel-gtk, cdebconf-gtk),
-#     which `--debian-installer-gui false` never starts. Speech synthesis stays.
+#     which `--debian-installer-gui false` never starts. Speech synthesis stays;
+#   - .debs in pool/ that the live system has installed at the same version.
 # Every removed file is printed to the build log. Binary hooks run on the build host
 # (apt-ftparchive is in apt-utils), in the ISO tree; tests run it one level up.
 [[ -d install || ! -d binary/install ]] || cd binary
@@ -55,6 +56,22 @@ for udeb in "${udebs[@]}"; do
   esac
 done
 ((own_modules > 0)) || fail "no module udebs for the installer kernel $installer_abi"
+
+# .debs whose exact version the live system already has: the installer copies that system
+# to the disk, so they are installed there already (the kernel, libicu, python3.13).
+if [[ -s live/filesystem.packages ]]; then
+  installed=$(awk '{ sub(/:.*/, "", $1); print $1 " " $2 }' live/filesystem.packages | LC_ALL=C sort -u)
+  while IFS= read -r -d '' deb; do
+    fields=$(dpkg-deb --field "$deb" Package Version | sed -n 's/^\(Package\|Version\): //p' | paste -sd ' ')
+    if grep -Fqx -- "$fields" <<< "$installed"; then
+      drop "$deb"
+    fi
+  done < <(find . -path './pool/*' -type f -name '*.deb' -print0 | LC_ALL=C sort -z)
+  # Links in /firmware to removed .debs.
+  [[ ! -d firmware ]] || find firmware -xtype l -print -delete
+else
+  echo 'installer trim: no live/filesystem.packages; pool/ kept'
+fi
 
 # Package indexes: leave out the stanzas whose file is gone (plain POSIX awk: the build
 # host's awk is mawk). Then Release, with the header live-build wrote, over the new files.
