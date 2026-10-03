@@ -83,6 +83,7 @@ systemctl enable couchliteos-reboot.path couchliteos-poweroff.path
 systemctl enable couchliteos-suspend.path couchliteos-resume.service
 systemctl enable couchliteos-support-export.path couchliteos-nvidia-firmware.path
 systemctl enable couchliteos-update.path
+systemctl enable couchliteos-snapshot-delete.path
 systemctl enable couchliteos-configured-app.path couchliteos-osk.path
 systemctl enable couchliteos-rdp.path couchliteos-rdp-secret.path
 systemctl enable couchliteos-audio.service couchliteos-launcher.service \

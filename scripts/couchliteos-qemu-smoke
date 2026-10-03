@@ -126,6 +126,13 @@ case $mode in
     grep -Fxq 'cold_boot = verified' /var/lib/couchliteos/config.ini
     verify_rdp_state
     grep -q ' done$' /var/log/couchliteos/update.log
+    # The update saved the system it replaced: one image, its json and the boot copy.
+    test -s /var/lib/couchliteos/snapshot/previous.squashfs
+    unsquashfs -s /var/lib/couchliteos/snapshot/previous.squashfs >/dev/null
+    python3 -c 'import json, sys; json.load(open(sys.argv[1]))["sha256"]' /var/lib/couchliteos/snapshot/previous.json
+    test -s /boot/couchliteos-previous/vmlinuz
+    test -s /boot/couchliteos-previous/initrd.img
+    grep 'snapshot: saved' /var/log/couchliteos/update.log | tail -n 1
     test -s "$extras_file"
     while read -r package; do
       dpkg -s "$package" | grep -Fxq 'Status: install ok installed' \

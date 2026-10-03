@@ -155,8 +155,8 @@ boot_and_wait() {
     # The update boots have the release ISO as a CD-ROM (/dev/sr0) but still start from the disk.
     extra=(-boot order=c -drive "file=$ISO,media=cdrom,readonly=on")
   fi
-  # Copying a whole system and rebuilding the initramfs takes far longer than a boot.
-  [[ $mode != update-apply ]] || limit=1800
+  # Saving the old system, copying the new one and rebuilding the initramfs take far longer than a boot.
+  [[ $mode != update-apply ]] || limit=2700
   printf '\n=== installed boot: %s ===\n' "$mode" >> "$BOOT_LOG"
   qemu-system-x86_64 \
     "${common[@]}" "${monitor[@]}" "${extra[@]}" \
