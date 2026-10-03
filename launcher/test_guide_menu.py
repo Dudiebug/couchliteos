@@ -1,6 +1,7 @@
 """The Guide / Home menu (ACTIVE APPLICATIONS): resume, close, type into an app, volume, brightness,
 controller mouse."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import pathlib
 import subprocess

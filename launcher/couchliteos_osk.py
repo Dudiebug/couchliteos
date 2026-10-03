@@ -21,9 +21,10 @@ from typing import Any, Callable
 
 
 APP_ID = "couchliteos-osk"  # set by couchliteos-osk-session; Cage docks it
-PAYLOAD = pathlib.Path("/run/couchliteos/osk-payload.json")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+PAYLOAD = RUN / "osk-payload.json"
 # Written by the launcher when the keyboard is opened for a password field.
-MASK_REQUEST = pathlib.Path("/run/couchliteos/osk-masked")
+MASK_REQUEST = RUN / "osk-masked"
 MAX_TEXT = 512
 # Seconds a new virtual keyboard needs before the compositor sees its keys.
 DEVICE_SETTLE = 0.5
@@ -33,7 +34,7 @@ REFOCUS_POLL = 0.05
 REFOCUS_TRIES = 20
 # Touched once an app other than the launcher is back in front: a Guide menu opened by Home
 # while the keyboard was up must close and hand the controller back to that app.
-REFOCUSED = pathlib.Path("/run/couchliteos/osk-refocused")
+REFOCUSED = RUN / "osk-refocused"
 LAUNCHER_TITLE = "CouchLiteOS Launcher"
 LETTERS = (
     tuple("1234567890"),

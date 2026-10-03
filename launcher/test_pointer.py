@@ -1,3 +1,5 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
+import os
 import pathlib
 import tempfile
 import unittest
@@ -54,7 +56,7 @@ class ModesTest(unittest.TestCase):
         self.modes = pointer.Modes(self.flag)
 
     def test_the_default_flag_is_the_one_gamepad_nav_reads(self):
-        self.assertEqual(pointer.FLAG, pathlib.Path("/run/couchliteos/pointer-mode"))
+        self.assertEqual(pointer.FLAG, pathlib.Path(os.environ["COUCHLITEOS_RUN_DIR"], "pointer-mode"))
         self.assertEqual(pointer.Modes().flag, pointer.FLAG)
 
     def test_enabled_follows_the_default_until_toggled(self):

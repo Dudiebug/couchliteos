@@ -5,6 +5,7 @@ socket connects, /sys/class/net, and the paired hosts. The parsing, the verdict,
 the screens run for real.
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import contextlib
 import curses
 import importlib.util

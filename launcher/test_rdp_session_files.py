@@ -1,5 +1,6 @@
 """couchliteos_rdp: session request files, password-service status and small validators."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import json
 import os
 import pathlib

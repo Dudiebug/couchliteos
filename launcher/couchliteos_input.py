@@ -19,10 +19,11 @@ import tempfile
 import time
 from collections.abc import Callable
 
-CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+CONFIG = DATA / "config.ini"
 SECTION = "input"
 # Cage reads this: one float, libinput's pointer acceleration speed (-1.0 to 1.0).
-MOUSE_SPEED_FILE = pathlib.Path("/var/lib/couchliteos/mouse-speed")
+MOUSE_SPEED_FILE = DATA / "mouse-speed"
 PROC = pathlib.Path("/proc")
 COMPOSITOR = "cage"
 # Only a Cage built with the speed patch handles SIGHUP; to any other the signal is fatal (the

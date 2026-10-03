@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import pathlib
 
-PATH = pathlib.Path("/var/lib/couchliteos/screen.json")  # next to config.ini and setup-complete
+# Next to config.ini and setup-complete.
+PATH = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "screen.json"
 EDGE_CHOICES = (0, 2, 4, 6)  # percent of the width and height hidden on each side; 6 is the cap
 TEXT_CHOICES = ("auto", "smaller", "larger")
 TEXT_SCALES = {"smaller": 0.8, "auto": 1.0, "larger": 1.25}

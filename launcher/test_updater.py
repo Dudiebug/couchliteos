@@ -1,5 +1,6 @@
 """The root-side updater: pure logic on temp trees, orchestration with a recording runner."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import contextlib
 import hashlib
 import io

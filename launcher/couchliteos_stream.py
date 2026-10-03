@@ -25,11 +25,10 @@ import time
 from collections.abc import Callable
 
 
-MOONLIGHT_CONF = pathlib.Path(
-    "/var/lib/couchliteos/home/.config/Moonlight Game Streaming Project/Moonlight.conf"
-)
-CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
-RUN = pathlib.Path("/run/couchliteos")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+MOONLIGHT_CONF = DATA / "home/.config/Moonlight Game Streaming Project/Moonlight.conf"
+CONFIG = DATA / "config.ini"
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 HARDWARE_ENV = pathlib.Path(os.environ.get("COUCHLITEOS_HARDWARE_ENV", "/run/couchliteos-hardware/hardware.env"))
 STREAM_REQUEST = RUN / "moonlight-stream.request"
 SECTION = "streaming"

@@ -1,5 +1,6 @@
 """Settings > SOFTWARE UPDATE: every screen, with a fake screen, keys, clock and update service."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import curses
 import importlib.util
 import json

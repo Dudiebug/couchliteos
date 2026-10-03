@@ -1,5 +1,6 @@
 """Screen brightness (couchliteos_brightness) against a fake /sys/class/backlight."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import os
 import pathlib
 import tempfile

@@ -1,5 +1,6 @@
 """Settings > NETWORK: join Wi-Fi with a controller (wizard's network step), or go advanced."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import unittest
 from unittest import mock
 

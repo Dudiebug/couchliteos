@@ -1,5 +1,6 @@
 """couchliteos_stream: the WAKE PC entry point, the take-request CLI and small validators."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import contextlib
 import io
 import os

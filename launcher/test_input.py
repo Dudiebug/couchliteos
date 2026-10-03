@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import curses
 import os
 import pathlib
@@ -297,7 +298,7 @@ class CaptureScreenTest(TempDir):
 class MouseSpeedTest(TempDir):
     def test_the_steps_are_libinput_acceleration_speeds(self):
         self.assertEqual(inputprefs.MOUSE_SPEEDS, {"slow": -0.5, "normal": 0.0, "fast": 0.4, "very-fast": 0.8})
-        self.assertEqual(inputprefs.MOUSE_SPEED_FILE, pathlib.Path("/var/lib/couchliteos/mouse-speed"))
+        self.assertEqual(inputprefs.MOUSE_SPEED_FILE, pathlib.Path(os.environ["COUCHLITEOS_STATE_DIR"], "mouse-speed"))
 
     def test_the_file_holds_the_plain_float(self):
         for speed, text in (("slow", "-0.5\n"), ("normal", "0.0\n"), ("fast", "0.4\n"), ("very-fast", "0.8\n")):

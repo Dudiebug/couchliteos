@@ -1,5 +1,6 @@
 """Couch-usability tests: status messages, cursor identity, scrolling, hints, RDP connect."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import pathlib
 import tempfile
