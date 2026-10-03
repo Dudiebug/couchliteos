@@ -1319,6 +1319,18 @@ rg -q 'couchliteos_phone.py' launcher/Makefile
 rg -q 'test_phone.py' launcher/Makefile
 rg -q 'hmac.compare_digest' launcher/couchliteos_phone.py
 rg -q 'secrets.token_urlsafe\(16\)' launcher/couchliteos_phone.py
+# Artwork lookup (0.3.0): HTTPS allow-list, 5 MB cap, GdkPixbuf re-encode imported only when used, key 0600
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_artwork.py" "\$CHROOT/usr/libexec/couchliteos_artwork.py"$' build/configure.sh
+rg -q '^import couchliteos_artwork as artwork$' launcher/couchliteos-launcher.py
+rg -q '^import couchliteos_artwork as artwork$' launcher/couchliteos-tv.py
+rg -q 'couchliteos_artwork.py' launcher/Makefile
+rg -q 'test_artwork.py' launcher/Makefile
+rg -q '^MAX_IMAGE = 5 \* 1024 \* 1024$' launcher/couchliteos_artwork.py
+rg -q 'parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS' launcher/couchliteos_artwork.py
+rg -q '_write\(path, key.encode\("ascii"\), 0o600\)' launcher/couchliteos_artwork.py
+refute rg -q '^(import|from) gi\b' launcher/couchliteos_artwork.py
+refute rg -q '(print|log)\(.*\bkey\b' launcher/couchliteos_artwork.py
+python3 -m py_compile launcher/couchliteos_artwork.py
 # Upgrade notice: a one-time "what's new" screen, only for people who finished setup on an older version
 rg -q 'couchliteos_whatsnew.py' build/configure.sh
 rg -q '^import couchliteos_whatsnew as whatsnew' launcher/couchliteos-launcher.py

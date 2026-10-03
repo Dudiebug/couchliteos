@@ -139,6 +139,11 @@ class Host:
     remote: str = ""
     ipv6: str = ""
     apps: tuple[str, ...] = ()
+    # (app name, Sunshine's app id) for the box art Moonlight caches per id; not part of equality.
+    app_ids: tuple[tuple[str, int], ...] = dataclasses.field(default=(), compare=False)
+
+    def app_id(self, app: str) -> int | None:
+        return next((number for name, number in self.app_ids if name == app), None)
 
     @property
     def label(self) -> str:
@@ -180,10 +185,15 @@ def _host(fields: dict[str, str]) -> Host:
     except ValueError:
         app_count = 0
     apps: list[str] = []
+    app_ids: list[tuple[str, int]] = []
     for index in range(1, app_count + 1):
         name = as_text(fields.get(f"apps\\{index}\\name", "")).strip()
         if name and fields.get(f"apps\\{index}\\hidden", "false") != "true":
             apps.append(name)
+            try:
+                app_ids.append((name, int(fields.get(f"apps\\{index}\\id", ""))))
+            except ValueError:
+                pass
     return Host(
         name=text("hostname") or "UNKNOWN",
         uuid=text("uuid"),
@@ -195,6 +205,7 @@ def _host(fields: dict[str, str]) -> Host:
         remote=text("remoteaddress"),
         ipv6=text("ipv6address"),
         apps=tuple(apps),
+        app_ids=tuple(app_ids),
     )
 
 

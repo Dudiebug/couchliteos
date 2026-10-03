@@ -56,6 +56,7 @@ class Codes:
     KEY_F6 = 64
     KEY_F7 = 65
     KEY_F8 = 66
+    KEY_F9 = 67
     KEY_F12 = 88
     KEY_BACK = 158
     KEY_SPACE = 57
@@ -2159,6 +2160,31 @@ class HomeShortcutTest(unittest.TestCase):
                   (0.5, [(Codes.EV_KEY, Codes.BTN_START, 0)])]
         pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
         self.assertEqual(pressed, [(0.5, Codes.KEY_F8)])
+
+    def test_holding_y_in_the_launcher_sends_f9_once(self):
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.3, []), (0.7, []), (1.5, []),
+                  (2.0, [(Codes.EV_KEY, Codes.BTN_WEST, 0)])]
+        pressed, timeouts, pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DELETE), (0.7, Codes.KEY_F9)])
+        self.assertAlmostEqual(timeouts[1], 0.3)  # select() wakes when the hold is due
+        self.assertEqual(pads.y_holds, {})
+
+    def test_a_short_y_press_sends_only_delete(self):
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.3, [(Codes.EV_KEY, Codes.BTN_WEST, 0)]), (1.0, [])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DELETE)])
+
+    def test_a_y_hold_is_forgotten_when_an_app_takes_the_pad(self):
+        run = self.run_dir(app=False, pointer=False)
+
+        def app_has_it(run, _pads):
+            (run / "app-active").write_text("firefox\n")
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.3, [], app_has_it), (1.0, [])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DELETE)])
 
     def test_leaving_mouse_mode_forgets_a_hold(self):
         pads, _mouse = self.pads()

@@ -23,6 +23,7 @@ import couchliteos_support as support
 import couchliteos_bluetooth as bluetooth
 import couchliteos_listview as listview
 import couchliteos_apps as apps
+import couchliteos_artwork as artwork
 import couchliteos_browser as browser
 import couchliteos_browsersetup as browsersetup
 import couchliteos_power as power
@@ -1924,7 +1925,7 @@ class Settings:
 
     def run_appearance(self) -> None:
         """THEME and ACCENT; a change recolours the launcher and the keyboard at once. SOUNDS turns the
-        TV interface's navigation sounds on or off."""
+        TV interface's navigation sounds on or off. ARTWORK: cover lookup for games."""
         selected = 0
         notice = ""
         while True:
@@ -1933,7 +1934,7 @@ class Settings:
             chosen = available.get(name) or available.get(themes.DEFAULT) or themes.FALLBACK
             sounds = quick.sounds_enabled()
             rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}",
-                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "BACK"]
+                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "ARTWORK", "BACK"]
             status = self.status
             # A bad user theme is listed nowhere else: say so until something is chosen.
             self.status = notice or (f"SKIPPED {problems[0]}".upper()[:76] if problems else status)
@@ -1954,11 +1955,61 @@ class Settings:
                     quick.save_sounds(not sounds)
                 except OSError as error:
                     notice = f"NOT SAVED: {error}".upper()
+            elif selected == 3:
+                self.run_artwork()
             else:
                 choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS)]
                 value = self.choose("ACCENT", choices, accent)
                 if isinstance(value, str):
                     notice = self.change_theme(chosen.name, value)
+
+    def run_artwork(self) -> None:
+        """Cover lookup for games: LOOKUP ON/OFF, the user's STEAMGRIDDB KEY, the UNMATCHED GAMES.
+
+        The key is typed masked (or on a phone) and never shown again, only SET or NOT SET."""
+        selected = 0
+        notice = ""
+        while True:
+            on = artwork.lookup_enabled()
+            unmatched = artwork.Cache().unmatched(artwork.key_changed_at())
+            rows = [
+                f"LOOKUP  {'ON' if on else 'OFF'}",
+                f"STEAMGRIDDB KEY  {'SET' if artwork.load_key() else 'NOT SET'}",
+                f"UNMATCHED GAMES  {len(unmatched)}",
+                "BACK",
+            ]
+            status = self.status
+            self.status = notice or artwork.PRIVACY
+            self.draw("ARTWORK", rows, selected)
+            self.status, notice = status, ""
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            if selected == 0:
+                try:
+                    artwork.save_lookup(not on)
+                except OSError:
+                    notice = "NOT SAVED: THE SETTING COULD NOT BE WRITTEN"
+            elif selected == 1:
+                value = ApplicationsSettings(self.screen, self.launcher).text_input(
+                    "STEAMGRIDDB KEY", "API KEY FROM YOUR STEAMGRIDDB PROFILE (EMPTY REMOVES IT)", 128, masked=True,
+                )
+                if value is not None:
+                    try:
+                        artwork.save_key(value)
+                        notice = "KEY SAVED" if value.strip() else "KEY REMOVED"
+                    except ValueError as error:
+                        notice = str(error)
+                    except OSError:
+                        notice = "NOT SAVED: THE KEY COULD NOT BE WRITTEN"
+            else:
+                lines = [f"{name}  ({host})".upper() if host else name.upper() for host, name in unmatched]
+                self.message("UNMATCHED GAMES", "\n".join(
+                    lines + ["", "HOLD Y / SQUARE (OR PRESS F9) ON A GAME TO PICK ITS COVER."]
+                    if lines else ["EVERY GAME LOOKED UP SO FAR HAS A COVER."]))
 
     def change_theme(self, name: str, accent: str) -> str:
         """Save the theme choice and recolour the running foot windows; returns what to tell the user."""
