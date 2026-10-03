@@ -242,6 +242,34 @@ class CaptureScreenTest(TempDir):
         self.assertEqual((saved, self.notice), (inputprefs.DEFAULT_CHORD, "NOT CHANGED"))
 
 
+    def test_an_alt_chord_whose_esc_arrives_before_its_key_events_is_not_a_cancel(self):
+        # foot writes the ESC of Ctrl+Alt+G at once; the keyboard events are read just after it.
+        rounds = [[], [("KEY_LEFTCTRL", 1), ("KEY_LEFTALT", 1), ("KEY_G", 1)],
+                  [("KEY_G", 0)], [("KEY_LEFTALT", 0)], [("KEY_LEFTCTRL", 0)]]
+        saved = self.capture(rounds, [27] + self.NOTHING + [10])
+        self.assertEqual(saved, "KEY_LEFTCTRL+KEY_LEFTALT+KEY_G")
+
+    def test_the_screen_waits_briefly_for_keys_while_capturing_and_goes_back_after(self):
+        launcher = load_launcher()
+        screen = FakeScreen([])
+        waits = []
+        screen.timeout = waits.append
+        menu = launcher.Settings(screen, mock.Mock())
+        with mock.patch.object(launcher, "read_key", side_effect=lambda window, **_kw: window.getch()),                 mock.patch.object(launcher, "HOME_REQUEST", self.root / "home.request"),                 mock.patch.object(inputprefs, "CONFIG", self.config):
+            with self.assertRaises(RuntimeError):
+                menu.capture_home_key(FakeKeyboards([]))
+        self.assertEqual(waits, [menu.CAPTURE_POLL_MS, 1000])
+        self.assertLessEqual(menu.CAPTURE_POLL_MS, 100)
+
+    def test_a_keyboard_that_goes_away_ends_the_capture(self):
+        source = FakeKeyboards([])
+        source.devices = []
+        launcher = load_launcher()
+        screen = FakeScreen(self.NOTHING)
+        menu = launcher.Settings(screen, mock.Mock())
+        with mock.patch.object(launcher, "read_key", side_effect=lambda window, **_kw: window.getch()),                 mock.patch.object(launcher, "HOME_REQUEST", self.root / "home.request"),                 mock.patch.object(inputprefs, "CONFIG", self.config):
+            self.assertEqual(menu.capture_home_key(source), "KEYBOARD DISCONNECTED")
+
     def test_y_turns_it_off_and_x_goes_back_to_the_default(self):
         self.assertEqual(self.capture([], self.NOTHING + [curses.KEY_DC]), "")
         self.assertEqual(self.notice, "KEYBOARD HOME KEY  OFF")

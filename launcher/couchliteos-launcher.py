@@ -2184,6 +2184,7 @@ class Settings:
                 _settings, notice = inputprefs.change(settings, inputprefs.FIELDS[selected], step)
 
     CAPTURE_HINT = "B / CIRCLE OR ESC: CANCEL  ·  Y / SQUARE: OFF  ·  X / TRIANGLE: RESET"
+    CAPTURE_POLL_MS = 50
     CAPTURE_QUIET = 0.4  # seconds after a keyboard press before a pad button or lone Esc counts
 
     def draw_capture(self, lines: list[str], hint: str) -> None:
@@ -2205,26 +2206,44 @@ class Settings:
         capture = inputprefs.ChordCapture()
         message = ""
         last_press = 0.0
+        settings = inputprefs.load_settings()
+
+        def take(events) -> str | None:
+            """Feed the key events; the notice to leave with once a chord, Esc, Delete or F12 settles it."""
+            nonlocal message, last_press
+            for name, value in events:
+                last_press = time.monotonic()
+                chord = capture.feed(name, value)
+                if chord is None:
+                    continue
+                if chord == {"KEY_ESC"}:
+                    return "NOT CHANGED"
+                if chord == {"KEY_DELETE"}:  # a keyboard's Y / SQUARE: its curses key is held back by the quiet period
+                    return self.save_home_key(settings, "")
+                if chord == {"KEY_F12"}:  # a keyboard's X / TRIANGLE
+                    return self.save_home_key(settings, inputprefs.DEFAULT_CHORD)
+                message = inputprefs.validate_chord(chord) or ""
+                if not message:
+                    return self.confirm_home_key(source, settings, chord)
+            return None
+
+        old_timeout = 1000  # the Settings screens' wait; a short one here so a release shows within a blink
+        self.screen.timeout(self.CAPTURE_POLL_MS)
         try:
             while True:
                 settings = inputprefs.load_settings()
                 lines = ["HOLD THE KEYS YOU WANT, THEN LET GO", f"NOW: {inputprefs.chord_label(settings.keyboard_home)}"]
                 self.draw_capture([*lines, message] if message else lines, self.CAPTURE_HINT)
-                for name, value in source.poll(0.05):
-                    last_press = time.monotonic()
-                    chord = capture.feed(name, value)
-                    if chord is None:
-                        continue
-                    if chord == {"KEY_ESC"}:
-                        return "NOT CHANGED"
-                    if chord == {"KEY_DELETE"}:  # a keyboard's Y / SQUARE: its curses key is held back by the quiet period
-                        return self.save_home_key(settings, "")
-                    if chord == {"KEY_F12"}:  # a keyboard's X / TRIANGLE
-                        return self.save_home_key(settings, inputprefs.DEFAULT_CHORD)
-                    message = inputprefs.validate_chord(chord) or ""
-                    if not message:
-                        return self.confirm_home_key(source, settings, chord)
+                notice = take(source.poll(0.05))
+                if notice is not None:
+                    return notice
                 key = read_key(self.screen, keyboard=False)
+                # foot writes the ESC of an Alt chord before the key events were read: look again first
+                notice = take(source.poll(0))
+                if notice is not None:
+                    return notice
+                if getattr(source, "devices", [None]) == []:
+                    return "KEYBOARD DISCONNECTED"
                 if key == -1 or capture.held or time.monotonic() - last_press < self.CAPTURE_QUIET:
                     continue  # nothing, or bytes of a keyboard chord still arriving
                 if key == 27:
@@ -2234,6 +2253,7 @@ class Settings:
                 if key == curses.KEY_F12:
                     return self.save_home_key(settings, inputprefs.DEFAULT_CHORD)
         finally:
+            self.screen.timeout(old_timeout)
             source.close()
             flush_input()
             HOME_REQUEST.unlink(missing_ok=True)  # the old key, pressed while capturing, asked for Home
