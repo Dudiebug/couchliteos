@@ -46,6 +46,7 @@ import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
 import couchliteos_phone as phone
 import couchliteos_theme as themes
+import couchliteos_recent as recent
 
 
 RUN = pathlib.Path("/run/couchliteos")
@@ -1077,11 +1078,17 @@ class Launcher:
             except (OSError, ValueError) as error:
                 self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
                 return False
-            return self.launch_app(app, auto=True)
+            started = self.launch_app(app, auto=True)
         finally:
             self.pending_stream = None
             self.stream_by_hand = False
             request.unlink(missing_ok=True)
+        if started:
+            try:
+                recent.record(recent.host_key(host), app_name)  # the home screen's GAMES row shows it first
+            except (OSError, ValueError):
+                pass  # the order is a convenience: never a reason to fail the stream
+        return started
 
     def stream_selected_pc(self) -> bool:
         """The STREAM <PC> row: stream the PC and application chosen in Settings > STREAMING, no countdown."""
