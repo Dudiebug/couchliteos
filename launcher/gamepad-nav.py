@@ -507,7 +507,7 @@ class Pads:
         self.combo.feed(path, event, now)
         if is_home_event(event):
             # The grab hides the pad from watch_home(): Guide must still bring up the menu.
-            request_home()
+            request_home(guide=True)
         elif event.code in POINTER_BUTTONS and event.value in (0, 1):
             self.pointer.button(POINTER_BUTTONS[event.code], bool(event.value))
         elif event.value == 1 and event.code == ecodes.BTN_NORTH:
@@ -1054,9 +1054,11 @@ def request_sleep() -> None:
         SLEEP_REQUEST.touch()
 
 
-def request_home() -> None:
+def request_home(guide: bool = False) -> None:
+    """Ask the launcher for Home. A tap of Guide / PS, the Home key or a remote's Home key (`guide`)
+    opens the TV interface's quick menu; the held shortcuts and the keyboard chord go straight Home."""
     try:
-        HOME_REQUEST.touch()
+        HOME_REQUEST.write_text("guide\n" if guide else "shortcut\n", encoding="ascii")
         subprocess.run(
             ["wlrctl", "toplevel", "focus", "title:CouchLiteOS Launcher"],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
@@ -1115,8 +1117,10 @@ def watch_home() -> None:
                     # Home is then the Select+Start hold or the keyboard shortcut.
                     chorded = chord.feed(path, event)
                     guide_goes_home = is_home_event(event) and not (is_guide_press(event) and stream_owns_pad())
-                    if chorded or guide_goes_home:
+                    if chorded:
                         request_home()
+                    elif guide_goes_home:
+                        request_home(guide=True)
                     # Deliberately also during a stream or remote desktop: the volume and
                     # brightness keys control this box (the TV's sound), not the remote PC.
                     paced = media.allow(path, event, time.monotonic())
@@ -1145,7 +1149,7 @@ def handle_cec_event(ui: UInput, event) -> None:
     if event.type != ecodes.EV_KEY or event.value != 1:
         return
     if event.code in CEC_HOME:
-        request_home()
+        request_home(guide=True)
     elif event.code in CEC_NAV:
         key = CEC_NAV[event.code]
         # The launcher's shortcut keys (colour keys, Clear) go to it whenever it has the focus, even with an

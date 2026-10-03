@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import couchliteos_pointer as pointer
+import couchliteos_quick
 
 
 class Screen:
@@ -134,6 +135,20 @@ class GuideFixture(unittest.TestCase):
 
 
 class GuideMenuTest(GuideFixture):
+    def test_every_hint_names_the_keyboard_key_too(self):
+        # 0.3.0: a hint that names a controller button also names the key that does the same.
+        self.running(self.chrome, self.moonlight)
+        self.brightness = 50
+        down = self.curses.KEY_DOWN
+        screen, _launcher = self.guide([down] * 6 + [27])
+        hints = {text.strip() for frame in screen.frames for text in frame
+                 if text.strip() and not (text[:1] in (">", " ") and text[1:3] == "  ")}
+        self.assertTrue(any("RESUMES" in hint for hint in hints), hints)
+        self.assertTrue(any("CHANGES THE VOLUME" in hint for hint in hints), hints)
+        self.assertTrue(any("TURNS IT ON OR OFF" in hint for hint in hints), hints)
+        for hint in hints:
+            self.assertTrue(couchliteos_quick.names_keyboard_keys(hint), hint)
+
     # The rows
 
     def test_rows_list_running_apps_then_volume_mouse_and_return(self):

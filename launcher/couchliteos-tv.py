@@ -3,10 +3,12 @@
 
 One full-screen window holding a stack of screens: HOME (top bar, GAMES, APPS and SYSTEM
 rows, prompt bar), STARTING / WAITING, a message screen (a failure, a question, a screen
-that is not in the TV interface yet) and ACTIVE APPLICATIONS (Guide / Home with apps
-running). The rows come from couchliteos_home.HomeModel; starting, resuming and closing
-apps is couchliteos_session's, the same code the classic launcher runs. Sizes, colours,
-keys and blanking are couchliteos_tvlayout's.
+that is not in the TV interface yet) and ACTIVE APPLICATIONS (a held Home shortcut with apps
+running). Over them: the quick menu (a Guide tap), toasts and the blank screen. The rows
+come from couchliteos_home.HomeModel; starting, resuming and closing apps is
+couchliteos_session's, the same code the classic launcher runs. Sizes, colours, keys and
+blanking are couchliteos_tvlayout's; the quick menu, prompt bar texts, toasts and sounds
+are couchliteos_quick's.
 
 Keys are the ones gamepad-nav sends (arrows, Enter, Esc, Delete, F5-F8, F12), so a
 controller, a TV remote and a keyboard all work. Guide / Home arrives as home.request.
@@ -27,9 +29,12 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_apps as apps
 import couchliteos_controllers as controllers
+import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_home as home
+import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
+import couchliteos_quick as quick
 import couchliteos_session as session
 import couchliteos_stream as stream
 import couchliteos_theme as theme
@@ -63,6 +68,8 @@ NOT_YET = {
     "software-update": ("SOFTWARE UPDATE", "SOFTWARE UPDATE IS NOT IN THE TV INTERFACE YET."),
 }
 BACK_HINT = "B / CIRCLE OR ESC GOES BACK"
+TOAST_TICK_MS = 250
+KEY_HOME_SECONDS = 1.0  # the Home key reaches the window and gamepad-nav: one press, not two
 
 
 def visible_applications() -> apps.LoadResult:
@@ -123,6 +130,7 @@ class Tv(session.Session):
             apps_running=self.apps_running, enabled=lambda: not power.smoke_test_active(),
         )
         self.css = Gtk.CssProvider()
+        self.init_quick()
 
     # ------------------------------------------------------------------ building
 
@@ -134,6 +142,7 @@ class Tv(session.Session):
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         overlay.set_child(self.stack)
+        self.build_quick(overlay)
         self.blank = Gtk.Box()
         self.blank.add_css_class("tv-blank")
         self.blank.set_visible(False)
@@ -224,6 +233,7 @@ class Tv(session.Session):
         self.size = size
         self.layout = tvlayout.Layout(*size)
         self.css.load_from_data(tvlayout.stylesheet(current_theme(), self.layout).encode(), -1)
+        self.relayout_quick()
         layout = self.layout
         for page in (self.home_page, self.active_page, *(entry[0] for entry in self.pages.values())):
             page.set_margin_start(layout.margin_x)
@@ -286,6 +296,7 @@ class Tv(session.Session):
         self.bar_update.set_label(f"UPDATE {status.update}" if status.update else "")
         self.bar_update.set_visible(bool(status.update))
         self.home_status.set_label(self.status)
+        self.home_prompt.set_label(quick.prompt(self.family, quick.HOME_PROMPT))
 
     def show(self, name: str) -> None:
         self.mode = name
@@ -302,14 +313,16 @@ class Tv(session.Session):
     def render_active(self) -> None:
         clear(self.active_list)
         running = self.running_applications()
-        rows = [f"{app.name}  RUNNING" for app in running] + ["BACK TO HOME"]
+        rows = [f"{app.name}  RUNNING" for app in running] + ["QUICK MENU", "BACK TO HOME"]
         self.active_index = min(self.active_index, len(rows) - 1)
         for index, text in enumerate(rows):
-            item = label(text, "tv-item", xalign=0.5)
+            item = label(text, "tv-item", xalign=0.5, ellipsize=False)  # centred: its own width
             if index == self.active_index:
                 item.add_css_class("tv-focused")
             self.active_list.append(item)
-        self.active_hint.set_label(self.status or (tvlayout.ACTIVE_HINT if running else BACK_HINT))
+        on_app = self.active_index < len(running)
+        self.active_hint.set_label(self.status or quick.prompt(
+            self.family, quick.ACTIVE_PROMPT if on_app else quick.QUICK_PROMPT[:1] + quick.ACTIVE_PROMPT[-1:]))
 
     # ------------------------------------------------------------------ the main loop's own loops
 
@@ -323,7 +336,7 @@ class Tv(session.Session):
 
     def draw_launching(self, label_text: str, frame: str) -> None:
         self.show_text("busy", f"STARTING {label_text}  {frame}", "PLEASE WAIT",
-                       "HOLD SELECT+START (VIEW+MENU) TO COME BACK TO THE LAUNCHER")
+                       "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE")
 
     def launch_wait_begin(self) -> None:
         self.busy_depth += 1
@@ -433,6 +446,10 @@ class Tv(session.Session):
         if self.busy_depth and self.mode != "message":
             self.busy_pressed = True
             return True
+        self.sounds.for_key(name)
+        if self.mode != "message" and (name == "home" or self.quick_open):
+            self.quick_key_or_open(name)  # a question on screen keeps Home as its NO
+            return True
         if self.status and self.mode == "home":
             self.status = ""  # a press dismisses the last result
             self.home_status.set_label("")
@@ -477,11 +494,16 @@ class Tv(session.Session):
 
     def active_key(self, name: str) -> None:
         running = self.running_applications()
-        count = len(running) + 1
+        count = len(running) + 2  # QUICK MENU, BACK TO HOME
         if name in ("up", "down"):
             self.active_index = max(0, min(count - 1, self.active_index + (1 if name == "down" else -1)))
             self.status = ""
-        elif name in ("back", "home") or (name == "activate" and self.active_index >= len(running)):
+        elif name == "activate" and self.active_index == len(running):
+            self.status = ""
+            self.show("home")
+            self.open_quick()
+            return
+        elif name in ("back", "home") or (name == "activate" and self.active_index > len(running)):
             self.status = ""
             self.show("home")
             self.render_home()
@@ -565,17 +587,12 @@ class Tv(session.Session):
             session.focus_launcher()
             self.show("home")
             self.autostream()
-        if self.take_home_request():
+        kind = quick.take_request(self.home_request)
+        if kind is not None:
             self.idle.keep_awake()
             self.blank.set_visible(False)
             session.focus_launcher()
-            if self.mode == "active":
-                self.show("home")
-            elif self.running_applications():
-                self.open_active()
-            else:
-                self.set_launcher_focus(True)
-                self.show("home")
+            self.home_request_arrived(kind)
         action = self.idle.tick()
         if action == power.BLANK:
             self.blank.set_visible(True)
@@ -596,9 +613,11 @@ class Tv(session.Session):
             if self.mode == "home":
                 self.render_home()
         self.was_running = running
+        self.tick_quick()
         if self.mode == "home":
             self.render_bar()
-            self.offer_update()
+            if not self.quick_open:
+                self.offer_update()
         elif self.mode == "active":
             self.render_active()
 
@@ -613,6 +632,201 @@ class Tv(session.Session):
             self.open_view("software-update")
         else:
             self.show("home")
+
+    # ------------------------------------------------------------------ quick menu, toasts, sounds
+
+    def init_quick(self) -> None:
+        self.family = controls.detect_family()
+        self.quick_open = False
+        self.quick_front = ""  # the app Guide was tapped over: B / Esc goes back to it
+        self.key_home_at = float("-inf")
+        self.quick = quick.QuickMenu(
+            quick.Sources.system(
+                battery=self.controllers.line, network=home.link_status,
+                running=lambda: len(self.running_applications()), can_sleep=lambda: self.can_sleep,
+            ),
+            extra=self.quick_stream_items,
+        )
+        self.toasts = quick.Toasts()
+        self.pcstatus = pcstatus.Monitor()
+        self.toast_feed = quick.ToastFeed(
+            self.toasts, pads=lambda: controls.pad_names(controls.PROC_INPUT.read_text(errors="replace")),
+            low=self.controllers.low, pc_line=self.pcstatus.line, update=self.updates.available,
+        )
+        self.sounds = quick.Sounds(muted=self.apps_running)
+        self.quick_css = Gtk.CssProvider()
+
+    def quick_stream_items(self) -> list[quick.Item]:
+        """Rows at the top of the quick menu while a stream runs (R1: the preset and SHOW STATS)."""
+        return []
+
+    def quick_extra_action(self, action: tuple) -> None:
+        """A quick_stream_items row was chosen (R1)."""
+
+    def build_quick(self, overlay: "Gtk.Overlay") -> None:
+        """The quick menu panel (right edge) and the toast card (top right), over every screen."""
+        panel = self.quick_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        panel.add_css_class("tv-quick")
+        panel.set_halign(Gtk.Align.END)
+        panel.set_valign(Gtk.Align.FILL)
+        panel.append(label("QUICK MENU", "tv-title"))
+        self.quick_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.quick_rows.set_vexpand(True)
+        panel.append(self.quick_rows)
+        self.quick_prompt = label("", "tv-prompt", wrap=True)
+        panel.append(self.quick_prompt)
+        panel.set_visible(False)
+        overlay.add_overlay(panel)
+        toast = self.toast = label("", "tv-toast", ellipsize=False, wrap=True)
+        toast.set_halign(Gtk.Align.END)
+        toast.set_valign(Gtk.Align.START)
+        toast.set_hexpand(False)
+        toast.set_focusable(False)  # a toast never takes focus, and the pointer passes through it
+        toast.set_can_target(False)
+        toast.set_visible(False)
+        overlay.add_overlay(toast)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self.quick_css, Gtk.STYLE_PROVIDER_PRIORITY_USER,
+        )
+
+    def relayout_quick(self) -> None:
+        layout = self.layout
+        self.quick_css.load_from_data(quick.stylesheet(current_theme(), layout).encode(), -1)
+        self.quick_width = max(1, round(layout.width * 0.34))
+        self.quick_panel.set_size_request(self.quick_width, -1)
+        self.quick_panel.set_spacing(layout.px(16))
+        self.toast.set_margin_top(layout.margin_y)
+        self.toast.set_max_width_chars(40)
+        self.place_toast()
+
+    def place_toast(self) -> None:
+        """Top right, or left of the quick menu while it is open, so it never covers a row."""
+        self.toast.set_margin_end(self.layout.margin_x + (self.quick_width if self.quick_open else 0))
+
+    def render_quick(self) -> None:
+        clear(self.quick_rows)
+        for index, item in enumerate(self.quick.items):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            row.add_css_class("tv-quick-row")
+            if not item.selectable:
+                row.add_css_class("tv-info")
+            if index == self.quick.index:
+                row.add_css_class("tv-focused")
+            row.append(label(item.label))
+            if item.value:
+                value = label(item.value, xalign=1.0, ellipsize=False)
+                value.set_hexpand(False)
+                row.append(value)
+            self.quick_rows.append(row)
+        self.quick_prompt.set_label(self.quick.prompt(self.family))
+
+    def open_quick(self) -> None:
+        self.quick_front = quick.front_app_id(self.run_dir) if self.apps_running() else ""
+        self.set_launcher_focus(True)  # gamepad-nav forwards the pad's keys to this menu over an app
+        self.quick_open = True
+        self.quick.open()
+        self.render_quick()
+        self.quick_panel.set_visible(True)
+        self.place_toast()
+
+    def close_quick(self, resume: bool = True) -> None:
+        """Close the menu. `resume`: back to the app Guide was tapped over, if it still runs."""
+        self.quick_open = False
+        self.quick_panel.set_visible(False)
+        self.place_toast()
+        front, self.quick_front = self.quick_front, ""
+        if resume and front:
+            app = next((item for item in self.running_applications() if item.id == front), None)
+            if app is not None and self.focus_app(app):
+                return
+        if self.mode == "home":
+            self.render_home()
+
+    def home_request_arrived(self, kind: str) -> None:
+        """Guide / Home through gamepad-nav: a tap opens or closes the quick menu, a held shortcut goes Home."""
+        if kind == quick.GUIDE and time.monotonic() - self.key_home_at < KEY_HOME_SECONDS:
+            return  # the Home key this window already acted on
+        target = quick.home_target(kind, self.quick_open, self.mode, bool(self.running_applications()))
+        if target == "quick":
+            self.open_quick()
+        elif target == "close":
+            self.close_quick()
+        else:
+            if self.quick_open:
+                self.close_quick(resume=False)
+            if target == "active":
+                self.open_active()
+            else:
+                self.set_launcher_focus(True)
+                self.show("home")
+                self.render_home()
+
+    def quick_key_or_open(self, name: str) -> None:
+        if name == "home":  # the keyboard's Home key: a Guide tap
+            self.key_home_at = time.monotonic()
+            self.home_request.unlink(missing_ok=True)
+            if self.quick_open:
+                self.close_quick()
+            else:
+                self.open_quick()
+            return
+        menu = self.quick
+        if name in ("up", "down"):
+            menu.move(1 if name == "down" else -1)
+        elif name in ("left", "right"):
+            menu.adjust(1 if name == "right" else -1)
+        elif name == "back":
+            self.close_quick()
+            return
+        elif name == "activate":
+            self.quick_action(menu.activate())
+        if self.quick_open:
+            self.render_quick()
+
+    def quick_action(self, action: tuple) -> None:
+        if not action:
+            return
+        if action == ("active",):
+            self.close_quick(resume=False)
+            self.open_active()
+        elif action == ("home",):
+            self.close_quick(resume=False)
+            self.show("home")
+            self.render_home()
+        elif action[0] == "power":
+            self.close_quick(resume=False)
+            request = action[1]
+            question = quick.POWER_QUESTIONS.get(request)
+            if question is not None:
+                answer = self.ask(*question, tvlayout.QUESTION_HINT)
+                self.show("home")
+                if answer != "yes":
+                    return
+            try:
+                self.request(request)  # couchliteos-<request>.path does the root work
+            except OSError as error:
+                self.status = f"COULD NOT ASK FOR {question[0] if question else 'SLEEP'}: {error}".upper()
+                self.render_bar()
+        else:
+            self.quick_extra_action(action)
+
+    def tick_quick(self) -> None:
+        """Once a second: the pad family for the prompts, new toasts, and the open menu's values."""
+        self.family = controls.detect_family()
+        self.toast_feed.poll()
+        if self.quick_open:
+            self.quick.refresh()
+            self.render_quick()
+
+    def render_toast(self) -> bool:
+        try:
+            text = self.toasts.current()
+            if self.toast.get_label() != text:
+                self.toast.set_label(text)
+            self.toast.set_visible(bool(text))
+        except Exception as error:  # noqa: BLE001 - toasts must never stop the home screen
+            display.log(f"tv toast failed: {error!r}", session.LOG)
+        return True  # keep the timeout
 
     # ------------------------------------------------------------------ start
 
@@ -643,8 +857,10 @@ class Tv(session.Session):
         self.prepare_session()
         self.controllers.start()
         self.updates.start()
+        self.pcstatus.start()
         self.build()
         GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
+        GLib.timeout_add(TOAST_TICK_MS, self.render_toast)
 
 
 def main(argv: list[str] | None = None) -> int:
