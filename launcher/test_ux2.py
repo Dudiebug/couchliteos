@@ -477,7 +477,7 @@ class HintTextTest(unittest.TestCase):
         launcher = self.launcher(screen)
         launcher.draw_launching("X", "|")
         self.check("starting", [screen.hint().strip()])
-        self.assertIn("GUIDE", screen.hint())
+        self.assertIn("HOLD SELECT+START (VIEW+MENU) TO COME BACK", screen.hint())
         screen = FrameScreen([10])
         settings = module.Settings(screen, self.launcher(screen))
         self.check("settings message", self.hints(screen, lambda: settings.show_message("T", "message")))

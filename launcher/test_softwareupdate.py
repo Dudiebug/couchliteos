@@ -229,6 +229,30 @@ class CheckTest(UiTest):
         self.assertIn("THIS RELEASE HAS NO FILE FOR THIS BOX", self.screen.frames[-1])
         self.assertIn("(NVIDIA)", self.screen.frames[-1])
 
+    def test_a_successful_check_tells_the_home_notice_what_it_found(self):
+        recorded = []
+        for latest in ("0.2.2", "0.2.1"):  # newer, and the same: Home learns both
+            self.fetch_result = release(latest)
+            self.script = [ENTER, ESC]
+            self.make(record=recorded.append).run()
+        self.assertEqual(recorded, ["0.2.2", "0.2.1"])
+
+    def test_a_failed_check_records_nothing(self):
+        recorded = []
+        self.fetch_result = update.UpdateError("offline")
+        self.script = [ENTER, ESC]
+        self.make(record=recorded.append).run()
+        self.assertEqual(recorded, [])
+
+    def test_a_recorder_that_fails_does_not_spoil_the_answer(self):
+        def broken(_version):
+            raise OSError("disk full")
+
+        self.script = [ENTER, ESC]
+        self.make(record=broken).run()
+        self.assertIn("COUCHLITEOS 0.2.2 IS AVAILABLE", self.screen.frames[-1])
+        self.assertTrue(self.screen.line_with("INSTALL UPDATE").startswith(">"))
+
     def test_the_default_lookup_gives_github_ten_seconds(self):
         with mock.patch.object(update, "fetch_release", return_value=release()) as fetch:
             self.assertEqual(su.default_fetch("0.2.1"), release())

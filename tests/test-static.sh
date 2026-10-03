@@ -98,7 +98,7 @@ find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.2.6 ]]
+[[ "$(< VERSION)" == 0.2.7 ]]
 refute rg -q 'NONE PAIRED' launcher --glob '*.py'
 cmp -s VERSION overlay/etc/couchliteos-version
 rg -Fq 'path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso' .github/workflows/build.yml
@@ -566,6 +566,21 @@ rg -q '/etc/NetworkManager/system-connections' scripts/couchliteos-qemu-smoke
 rg -q '"rfkill", "unblock", "bluetooth"' scripts/couchliteos-bluetoothd
 rg -q '^KERNEL=="rfkill", SUBSYSTEM=="misc", GROUP="couchliteos", MODE="0660"$' \
   overlay/etc/udev/rules.d/70-couchliteos-rfkill.rules
+
+# PlayStation pads: SDL (Moonlight, Chiaki) reads the touchpad over hidraw, which the couchliteos
+# user (group input, no login session) only gets through this rule.
+ps_rules=overlay/etc/udev/rules.d/71-couchliteos-playstation.rules
+rg -q '^KERNEL=="hidraw\*", SUBSYSTEM=="hidraw", ATTRS\{idVendor\}=="054c", ATTRS\{idProduct\}=="[0-9a-f|]*0ce6[0-9a-f|]*".*GROUP="input", MODE="0660"$' "$ps_rules"
+rg -q '^KERNEL=="hidraw\*", SUBSYSTEM=="hidraw", KERNELS=="[^"]*0005:054C:0CE6\.\*[^"]*", GROUP="input", MODE="0660"$' "$ps_rules"
+for product in 05c4 09cc 0ba0 0ce6 0df2; do
+  rg -q "ATTRS\\{idProduct\\}==\"[^\"]*\\b$product\\b" "$ps_rules"
+  # The 0ba0 dongle is USB only; every pad itself also appears over Bluetooth.
+  [ "$product" = 0ba0 ] || rg -qi "0005:054C:${product}\\." "$ps_rules"
+done
+refute rg -q 'MODE="066[^0]|MODE="0666' "$ps_rules"
+for unit in services/couchliteos-moonlight.service services/couchliteos-chiaki.service; do
+  rg -q '^SupplementaryGroups=.*\binput\b' "$unit"
+done
 
 # Sleep and wake: the launcher's SLEEP request, resume marker, wake sources, Wake-on-LAN.
 rg -q '^PathExists=/run/couchliteos/suspend$' services/couchliteos-suspend.path

@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import io
 import json
@@ -60,7 +61,7 @@ class StateTest(unittest.TestCase):
         self.assertEqual((state.enabled, state.latest, state.checked_at), (True, "", 0.0))
 
     def test_round_trip_and_permissions(self):
-        original = update.State(enabled=False, latest="0.1.14", checked_at=NOW, attempted_at=NOW)
+        original = update.State(enabled=False, latest="0.1.14", checked_at=NOW, attempted_at=NOW, prompted="0.1.14")
         update.save_state(original, self.path)
         self.assertEqual(update.load_state(self.path), original)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
@@ -77,15 +78,27 @@ class DueTest(unittest.TestCase):
     def test_never_checked_is_due(self):
         self.assertTrue(update.due(update.State(), NOW))
 
-    def test_successful_check_is_not_repeated_for_24_hours(self):
+    def test_successful_check_is_not_repeated_within_a_run_for_six_hours(self):
         state = update.State(latest="0.1.13", checked_at=NOW, attempted_at=NOW)
-        self.assertFalse(update.due(state, NOW + DAY - 1))
-        self.assertTrue(update.due(state, NOW + DAY))
+        self.assertFalse(update.due(state, NOW + update.CHECK_SECONDS - 1))
+        self.assertTrue(update.due(state, NOW + update.CHECK_SECONDS))
+        self.assertEqual(update.CHECK_SECONDS, 6 * 3600)
 
-    def test_failed_attempt_is_retried_after_an_hour_not_a_day(self):
+    def test_the_first_check_of_a_run_ignores_the_last_check(self):
+        state = update.State(latest="0.1.13", checked_at=NOW, attempted_at=NOW)
+        self.assertFalse(update.due(state, NOW + 10, start=True), "a launcher restart loop must not hammer GitHub")
+        self.assertFalse(update.due(state, NOW + update.START_GAP_SECONDS - 1, start=True))
+        self.assertTrue(update.due(state, NOW + update.START_GAP_SECONDS, start=True))
+        self.assertTrue(update.due(update.State(checked_at=NOW), NOW + 3600, start=True))
+
+    def test_failed_attempt_is_retried_after_ten_minutes(self):
         state = update.State(attempted_at=NOW)
+        self.assertEqual(update.RETRY_SECONDS, 600)
         self.assertFalse(update.due(state, NOW + update.RETRY_SECONDS - 1))
         self.assertTrue(update.due(state, NOW + update.RETRY_SECONDS))
+        # A failure at start-up retries on the same schedule, not at the 60 s restart gap.
+        self.assertFalse(update.due(state, NOW + update.RETRY_SECONDS - 1, start=True, retry=True))
+        self.assertTrue(update.due(state, NOW + update.RETRY_SECONDS, start=True, retry=True))
 
     def test_disabled_is_never_due(self):
         self.assertFalse(update.due(update.State(enabled=False), NOW))
@@ -276,15 +289,99 @@ class CheckerTest(unittest.TestCase):
         self.assertIn("0.1.14", checker.notice())
         self.assertEqual(update.load_state(self.path).latest, "0.1.14")
 
-    def test_at_most_one_successful_request_per_day_even_across_restarts(self):
+    def test_every_start_checks_even_a_few_minutes_after_the_last_check(self):
         fetch = mock.Mock(return_value="0.1.14")
         self.checker(fetch).check_if_due()
-        self.now += DAY / 2
-        self.checker(fetch).check_if_due()  # a new launcher process reads the saved state
-        self.assertEqual(fetch.call_count, 1)
-        self.now += DAY
-        self.checker(fetch).check_if_due()
+        self.now += 5 * 60
+        self.checker(fetch).check_if_due()  # a reboot: a new launcher process reads the saved state
         self.assertEqual(fetch.call_count, 2)
+        self.now += 3600
+        self.checker(fetch).check_if_due()
+        self.assertEqual(fetch.call_count, 3)
+
+    def test_a_launcher_restarting_within_a_minute_does_not_ask_again(self):
+        fetch = mock.Mock(return_value="0.1.14")
+        self.checker(fetch).check_if_due()
+        self.now += 20
+        self.checker(fetch).check_if_due()
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_while_running_it_asks_again_after_six_hours_only(self):
+        fetch = mock.Mock(return_value="0.1.14")
+        checker = self.checker(fetch)
+        checker.check_if_due()
+        self.now += update.CHECK_SECONDS - 1
+        checker.check_if_due()
+        self.assertEqual(fetch.call_count, 1)
+        self.now += 1
+        checker.check_if_due()
+        self.assertEqual(fetch.call_count, 2)
+
+    def test_a_failed_start_check_retries_after_ten_minutes_even_if_the_last_check_was_recent(self):
+        self.checker(mock.Mock(return_value="0.1.14")).check_if_due()
+        self.now += 3600  # rebooted an hour later; the network is flaky
+        fetch = mock.Mock(side_effect=OSError("no route"))
+        checker = self.checker(fetch)
+        checker.check_if_due()
+        self.assertEqual(fetch.call_count, 1)
+        self.now += update.RETRY_SECONDS - 1
+        checker.check_if_due()
+        self.assertEqual(fetch.call_count, 1)
+        self.now += 1
+        fetch.side_effect = None
+        fetch.return_value = "0.1.15"
+        checker.check_if_due()
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(checker.available(), "0.1.15")
+
+    def test_available_and_to_offer(self):
+        checker = self.checker(mock.Mock(return_value="0.1.14"))
+        self.assertEqual((checker.available(), checker.to_offer()), ("", ""))
+        checker.check_if_due()
+        self.assertEqual((checker.available(), checker.to_offer()), ("0.1.14", "0.1.14"))
+        checker.mark_offered("0.1.14")
+        self.assertEqual((checker.available(), checker.to_offer()), ("0.1.14", ""))
+        self.assertEqual(update.load_state(self.path).prompted, "0.1.14")
+        self.assertEqual(self.checker(mock.Mock()).to_offer(), "", "a restart does not ask again")
+
+    def test_a_newer_release_is_offered_again(self):
+        checker = self.checker(mock.Mock(return_value="0.1.14"))
+        checker.check_if_due()
+        checker.mark_offered("0.1.14")
+        self.now += update.CHECK_SECONDS
+        checker.fetch = mock.Mock(return_value="0.1.15")
+        checker.check_if_due()
+        self.assertEqual(checker.to_offer(), "0.1.15")
+
+    def test_nothing_is_offered_when_up_to_date_disabled_or_live(self):
+        up_to_date = self.checker(mock.Mock(return_value="0.1.13"))
+        up_to_date.check_if_due()
+        self.assertEqual(up_to_date.to_offer(), "")
+        disabled = self.checker(mock.Mock(return_value="0.1.14"))
+        disabled.check_if_due()
+        disabled.set_enabled(False)
+        self.assertEqual((disabled.available(), disabled.to_offer()), ("", ""))
+        self.path.unlink()  # the disabled checker saved "off"
+        live = update.Checker(
+            current="0.1.13", state_path=self.path, fetch=mock.Mock(return_value="0.1.14"),
+            clock=lambda: self.now, online=lambda: True, live=lambda: True,
+        )
+        live.check_if_due()
+        self.assertEqual((live.available(), live.to_offer()), ("0.1.14", ""))
+
+    def test_a_check_made_elsewhere_is_recorded_and_counts_as_this_runs_check(self):
+        fetch = mock.Mock(return_value="0.1.14")
+        checker = self.checker(fetch)
+        checker.record("0.1.14")
+        self.assertEqual(checker.available(), "0.1.14")
+        state = update.load_state(self.path)
+        self.assertEqual((state.latest, state.checked_at), ("0.1.14", NOW))
+        self.assertEqual(checker.to_offer(), "", "the owner saw it in SOFTWARE UPDATE: Home does not ask again")
+        self.assertEqual(state.prompted, "0.1.14")
+        checker.check_if_due()
+        fetch.assert_not_called()
+        checker.record("nightly")  # junk is ignored
+        self.assertEqual(checker.available(), "0.1.14")
 
     def test_failures_are_silent_and_keep_the_previous_notice(self):
         self.checker(mock.Mock(return_value="0.1.14")).check_if_due()
@@ -376,6 +473,142 @@ class LauncherUpdateTest(unittest.TestCase):
         launcher = self.launcher(update.State(latest="0.1.14", checked_at=NOW))
         texts = [text for text, _attr in launcher.footer_lines()]
         self.assertEqual(texts, ["UPDATE AVAILABLE: 0.1.14 — github.com/Dudiebug/couchliteos/releases"])
+
+    def settings_label(self, launcher):
+        for index, (label, action) in enumerate(launcher.menu):
+            if action == "settings":
+                return launcher.menu[index][0]
+        raise AssertionError("no SETTINGS row")
+
+    def drawn_rows(self, launcher):
+        rows = []
+        with mock.patch.object(self.module, "add_centered", side_effect=lambda _s, _r, text, *_a: rows.append(text)):
+            with mock.patch.object(self.module, "draw_border"), mock.patch.object(self.module.listview, "draw_rows") as draw:
+                launcher.draw()
+        return draw.call_args[0][1], rows
+
+    def test_the_settings_row_says_when_an_update_is_available(self):
+        launcher = self.launcher(update.State(latest="0.1.14", checked_at=NOW))
+        labels, _rows = self.drawn_rows(launcher)
+        self.assertEqual([label for label in labels if "UPDATE" in label], ["SETTINGS  -  UPDATE AVAILABLE"])
+        self.assertEqual(self.settings_label(launcher), "SETTINGS", "only the drawn text changes, never the row")
+        labels, _rows = self.drawn_rows(self.launcher(update.State(latest="0.1.13", checked_at=NOW)))
+        self.assertIn("SETTINGS", labels)
+        self.assertFalse([label for label in labels if "UPDATE" in label])
+
+    def test_the_software_update_row_names_the_new_version(self):
+        launcher = self.launcher(update.State(latest="0.1.14", checked_at=NOW))
+        settings = self.module.Settings(launcher.screen, launcher)
+        self.assertEqual(settings.menu_label("SOFTWARE UPDATE"), "SOFTWARE UPDATE  -  0.1.14 AVAILABLE")
+        quiet = self.module.Settings(launcher.screen, self.launcher(update.State(latest="0.1.13", checked_at=NOW)))
+        self.assertEqual(quiet.menu_label("SOFTWARE UPDATE"), "SOFTWARE UPDATE")
+        self.assertLessEqual(len("SOFTWARE UPDATE  -  0.10.123 AVAILABLE"), 76)
+
+    def offering(self, state, *, present=(), running=False, home=False, answer=False, guard=None, confirm_effect=None):
+        """Run offer_update() twice on an idle Home; `present` names the /run/couchliteos markers that exist."""
+        launcher = self.launcher(state)
+        launcher.updates.installed = True
+        launcher.draw = mock.Mock()
+        run = mock.MagicMock()
+        run.__truediv__.side_effect = lambda name: mock.Mock(**{"exists.return_value": name in present})
+        home_request = mock.Mock()
+        home_request.exists.return_value = home
+        with tempfile.TemporaryDirectory() as directory:
+            launcher.updates.state_path = pathlib.Path(directory) / "update-check.ini"
+            patches = [
+                mock.patch.object(self.module, "RUN", run),
+                mock.patch.object(self.module, "HOME_REQUEST", home_request),
+                mock.patch.object(self.module.Launcher, "any_app_running", return_value=running),
+                mock.patch.object(self.module, "IDLE_GUARD", guard),
+            ]
+            confirm_patch = mock.patch.object(
+                self.module.confirmation, "confirm", return_value=answer, side_effect=confirm_effect)
+            settings_patch = mock.patch.object(self.module, "Settings")
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                confirm = stack.enter_context(confirm_patch)
+                settings = stack.enter_context(settings_patch)
+                launcher.offer_update()
+                launcher.offer_update()  # a second idle pass must not ask again
+        return launcher, confirm, settings
+
+    def test_a_new_release_is_offered_once_on_an_idle_home_screen(self):
+        launcher, confirm, settings = self.offering(update.State(latest="0.1.14", checked_at=NOW))
+        confirm.assert_called_once()
+        self.assertIn("0.1.14", confirm.call_args[0][1])
+        self.assertIn("SOFTWARE UPDATE", confirm.call_args[0][1])
+        settings.assert_not_called()  # answered NO: later
+        self.assertEqual(launcher.updates.to_offer(), "")
+        self.assertEqual(launcher.updates.available(), "0.1.14", "the footer and rows keep saying so")
+        launcher.draw.assert_called()  # the question's screen is repainted away
+
+    def test_yes_opens_software_update(self):
+        launcher, confirm, settings = self.offering(update.State(latest="0.1.14", checked_at=NOW), answer=True)
+        confirm.assert_called_once()
+        settings.return_value.run_software_update.assert_called_once_with()
+        launcher.draw.assert_called()
+
+    def test_the_release_is_marked_offered_before_the_question_is_asked(self):
+        seen = []
+
+        def question(_screen, _text):
+            seen.append(launcher_box[0].updates.to_offer())
+            raise RuntimeError("crash while the question is up")
+
+        launcher_box = []
+        original = self.launcher
+
+        def remember(state):
+            launcher_box.append(original(state))
+            return launcher_box[0]
+
+        with mock.patch.object(self, "launcher", remember), self.assertRaises(RuntimeError):
+            self.offering(update.State(latest="0.1.14", checked_at=NOW), confirm_effect=question)
+        self.assertEqual(seen, [""], "a crash cannot make the question come back")
+
+    def test_nothing_is_offered_over_an_app_a_stream_or_a_home_request(self):
+        state = update.State(latest="0.1.14", checked_at=NOW)
+        for label, options in (
+            ("app marker", {"present": ("app-active",)}),  # a stream or any app owns the screen
+            ("an app showing signs of life", {"running": True}),
+            ("a Home request", {"home": True}),
+            ("the keyboard is up", {"present": ("osk-active",)}),
+            ("the keyboard is starting", {"present": ("start-osk",)}),
+        ):
+            with self.subTest(label):
+                launcher, confirm, _settings = self.offering(state, **options)
+                confirm.assert_not_called()
+                self.assertEqual(launcher.updates.to_offer(), "0.1.14", "not used up: asked when Home is idle")
+
+    def test_the_question_counts_as_activity_and_waits_for_a_blank_screen_to_wake(self):
+        state = update.State(latest="0.1.14", checked_at=NOW)
+        awake = mock.Mock()
+        awake.timer.blanked = False
+        _launcher, confirm, _settings = self.offering(state, guard=awake)
+        confirm.assert_called_once()
+        awake.keep_awake.assert_called_once_with()  # once: the second pass has nothing to ask
+        blank = mock.Mock()
+        blank.timer.blanked = True
+        launcher, confirm, _settings = self.offering(state, guard=blank)
+        confirm.assert_not_called()
+        blank.keep_awake.assert_not_called()
+        self.assertEqual(launcher.updates.to_offer(), "0.1.14", "not used up: asked when someone is looking")
+
+    def test_nothing_is_offered_when_up_to_date(self):
+        _launcher, confirm, _settings = self.offering(update.State(latest="0.1.13", checked_at=NOW))
+        confirm.assert_not_called()
+
+    def test_the_main_loop_offers_only_when_idle(self):
+        source = pathlib.Path(__file__).with_name("couchliteos-launcher.py").read_text(encoding="utf-8")
+        self.assertRegex(source, r"if key == -1:[^\n]*\n\s+self\.offer_update\(\)")
+
+    def test_software_update_screen_reports_its_check_to_home(self):
+        launcher = self.launcher(update.State())
+        settings = self.module.Settings(launcher.screen, launcher)
+        with mock.patch.object(self.module.softwareupdate, "show") as show:
+            settings.run_software_update()
+        self.assertEqual(show.call_args.kwargs["record"], launcher.updates.record)
 
     def test_home_is_quiet_when_up_to_date(self):
         self.assertEqual(self.launcher(update.State(latest="0.1.13", checked_at=NOW)).footer_lines(), [])

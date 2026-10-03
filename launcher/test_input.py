@@ -370,12 +370,12 @@ class RowsAndCycleTest(TempDir):
             "MOUSE SPEED  NORMAL",
         ])
         rows = inputprefs.rows(inputprefs.Settings("guide", "", "very-fast", "slow"))
-        self.assertEqual(rows[0], "HOME SHORTCUT  GUIDE ONLY")
+        self.assertEqual(rows[0], "HOME SHORTCUT  GUIDE (SELECT+START IN A STREAM)")
         self.assertEqual(rows[1], "KEYBOARD HOME KEY  OFF")
         self.assertEqual(rows[2], "CONTROLLER MOUSE SPEED  VERY FAST")
         self.assertEqual(rows[3], "MOUSE SPEED  SLOW")
         self.assertEqual([label for _value, label in inputprefs.HOME_CHOICES],
-                         ["GUIDE ONLY", "GUIDE OR SELECT+START (HOLD)", "GUIDE OR L3+R3 (HOLD)"])
+                         ["GUIDE (SELECT+START IN A STREAM)", "GUIDE OR SELECT+START (HOLD)", "GUIDE OR L3+R3 (HOLD)"])
         for text in [*rows, *inputprefs.HELP.values()]:
             self.assertLessEqual(len(text), 76)
             self.assertEqual(text, text.upper())
@@ -494,7 +494,7 @@ class ControlsScreenTest(TempDir):
             self.assertIn(row, text)
 
     def test_left_right_and_a_cycle_each_row_and_save(self):
-        keys = [curses.KEY_RIGHT, curses.KEY_RIGHT,  # HOME SHORTCUT: L3+R3, then GUIDE ONLY
+        keys = [curses.KEY_RIGHT, curses.KEY_RIGHT,  # HOME SHORTCUT: L3+R3, then GUIDE (SELECT+START IN A STREAM)
                 curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT,  # the Home key is not cycled
                 curses.KEY_DOWN, curses.KEY_LEFT,  # controller mouse: SLOW
                 curses.KEY_DOWN, curses.KEY_RIGHT,  # mouse: FAST
@@ -506,7 +506,7 @@ class ControlsScreenTest(TempDir):
         self.assertEqual(self.speed.read_text(), "0.4\n")
         send.assert_called_once_with()
         last = "\n".join(frames[-1])
-        self.assertIn("HOME SHORTCUT  GUIDE ONLY", last)
+        self.assertIn("HOME SHORTCUT  GUIDE (SELECT+START IN A STREAM)", last)
         self.assertIn("MOUSE SPEED  FAST", last)
         self.assertIn("HOME SHORTCUT  GUIDE OR L3+R3 (HOLD)", "\n".join(frames[1]))
 

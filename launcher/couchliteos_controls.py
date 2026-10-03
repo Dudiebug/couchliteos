@@ -104,15 +104,15 @@ def table(
         ([west], "DELETE A LETTER / CLOSE AN APP"),
         (["D-PAD OR LEFT STICK"], "MOVE (HOLD TO KEEP MOVING)"),
         (shortcuts, "APP SHORTCUTS (SET IN SETTINGS > REMOTE DESKTOP)"),
-        ([guide], "OPEN ACTIVE APPLICATIONS FROM ANY APP OR GAME STREAM"),
+        ([guide], "OPEN ACTIVE APPLICATIONS (IN A STREAM IT GOES TO THE STREAM)"),
     ]
     held = f"HELD {inputprefs.HOME_HOLD_SECONDS:g} S"
-    if home == inputprefs.HOME_SELECT_START:
-        rows.append(([f"{view} + {menu}", held], f"SAME AS {guide}, BUT NOT WITH {left} OR {right} HELD"))
+    if home in (inputprefs.HOME_SELECT_START, inputprefs.HOME_GUIDE):  # Guide-only still has it in a stream
+        rows.append(([f"{view} + {menu}", held], f"OPENS HOME, ALSO IN A STREAM; NOT WITH {left} OR {right} HELD"))
     elif home == inputprefs.HOME_STICKS:
-        rows.append((["L3 + R3 (BOTH STICKS IN)", held], f"SAME AS {guide}"))
+        rows.append((["L3 + R3 (BOTH STICKS IN)", held], "OPENS HOME, ALSO IN A STREAM"))
     if keyboard:
-        rows.append(([f"KEYBOARD: {inputprefs.chord_label(keyboard)}"], f"SAME AS {guide}"))
+        rows.append(([f"KEYBOARD: {inputprefs.chord_label(keyboard)}"], "OPENS HOME, ALSO IN A STREAM"))
     if can_sleep:
         rows.append(([f"HOLD {guide} {SLEEP_HOLD_SECONDS} S"], "SLEEP"))
     return rows

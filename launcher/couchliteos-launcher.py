@@ -84,6 +84,8 @@ SETTINGS_MENU = (
     "SYSTEM DIAGNOSTICS",
     "BACK",
 )
+UPDATE_SUFFIX = "  -  UPDATE AVAILABLE"  # on the SETTINGS row while a newer release is known
+STREAM_WINDOW_WORDS = {"moonlight": "moonlight", "chiaki-ng": "chiaki"}  # found in the listed window of a stream
 SPINNER = "|/-\\"
 SAVE_FAILED = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
@@ -774,7 +776,11 @@ class Launcher:
         add_centered(self.screen, title_row, "COUCHLITEOS")
         add_centered(self.screen, title_row + 1, self.pcstatus.line())
 
-        labels = [label for label, _action in self.menu]
+        available = self.updates.available()
+        labels = [
+            f"{label}{UPDATE_SUFFIX}" if available and action == "settings" else label
+            for label, action in self.menu
+        ]
         selected = self.selected
         first_row = max(title_row + 3, height // 3)
         footer = self.footer_lines()
@@ -795,6 +801,25 @@ class Launcher:
         for offset, (text, attr) in enumerate(reversed(footer)):
             add_centered(self.screen, height - 3 - offset, text, attr)
         self.screen.refresh()
+
+    def offer_update(self) -> None:
+        """Once per release, ask on the Home screen whether to open SOFTWARE UPDATE.
+
+        Only while nothing runs and the launcher is in front: never over an app or a stream."""
+        version = self.updates.to_offer()
+        if not version or HOME_REQUEST.exists() or (RUN / "app-active").exists() or self.any_app_running():
+            return
+        if (RUN / "osk-active").exists() or (RUN / "start-osk").exists():
+            return  # the on-screen keyboard is up or on its way
+        guard = IDLE_GUARD
+        if guard is not None:
+            if guard.timer.blanked:
+                return  # the screen is blank: ask when someone is looking
+            guard.keep_awake()  # the question is activity: no blanking or sleep while it waits
+        self.updates.mark_offered(version)  # before the question: a crash cannot make it come back
+        if confirmation.confirm(self.screen, f"COUCHLITEOS {version} IS AVAILABLE. OPEN SOFTWARE UPDATE NOW?"):
+            Settings(self.screen, self).run_software_update()
+        self.draw()
 
     def footer_lines(self) -> list[tuple[str, int]]:
         """Extra home-screen lines below the status line: (text, curses attribute)."""
@@ -818,7 +843,7 @@ class Launcher:
         center = max(6, height // 2 - 1)
         add_centered(self.screen, center, f"STARTING {label}  {frame}")
         add_centered(self.screen, center + 2, "PLEASE WAIT")
-        add_centered(self.screen, height - 3, "PRESS GUIDE / PS TO COME BACK TO THE LAUNCHER")
+        add_centered(self.screen, height - 3, "HOLD SELECT+START (VIEW+MENU) TO COME BACK TO THE LAUNCHER")
         self.screen.refresh()
 
     def wake_from_failure(self, _app: apps.Application | None = None) -> bool:
@@ -1215,12 +1240,56 @@ class Launcher:
                     ["wlrctl", "toplevel", "focus", match], check=False,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
                 )
+            except subprocess.TimeoutExpired:
+                continue  # one slow answer is not "no window": try the next match
             except (OSError, subprocess.SubprocessError):
                 return False
             if result.returncode == 0:
                 POINTER_MODES.apply(app)
                 set_launcher_focus(False)
                 return True
+        keyword = STREAM_WINDOW_WORDS.get(app.id)
+        if keyword is not None and Launcher.focus_listed_toplevel(keyword):
+            POINTER_MODES.apply(app)
+            set_launcher_focus(False)
+            return True
+        return False
+
+    @staticmethod
+    def focus_listed_toplevel(keyword: str) -> bool:
+        """A stream window the exact matches missed: take it from what the compositor lists, by whatever
+        app id or title it really has. A miss writes the list to the journal, so the names show up there."""
+        try:
+            listing = subprocess.run(
+                ["wlrctl", "toplevel", "list"], check=False, capture_output=True, text=True, timeout=2,
+            ).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return False
+        lines = [line.strip() for line in listing.splitlines() if line.strip()]
+        windows = [line.partition(":")[::2] for line in lines  # wlrctl prints "app_id: title"
+                   if "couchliteos" not in line.lower()]
+        windows = [(app_id.strip(), title.strip()) for app_id, title in windows]
+        # A window whose app id names the client; failing that one with no app id whose title does
+        # (never another program's window that merely mentions it, such as a browser tab).
+        for by_app_id in (True, False):
+            for app_id, title in windows:
+                if keyword not in (app_id if by_app_id else (title if not app_id else "")).lower():
+                    continue
+                for match in (f"app_id:{app_id}" if app_id else "", f"title:{title}" if title else ""):
+                    if not match:
+                        continue
+                    try:
+                        result = subprocess.run(
+                            ["wlrctl", "toplevel", "focus", match], check=False,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+                        )
+                    except (OSError, subprocess.SubprocessError):
+                        continue
+                    if result.returncode == 0:
+                        return True
+        # The launcher's own terminal is the screen: the journal is not reachable from here, a log file is.
+        display.log(f"no window for {keyword}; the compositor lists: {lines!r}",
+                    pathlib.Path("/var/log/couchliteos/launcher.log"))
         return False
 
     @staticmethod
@@ -1567,6 +1636,8 @@ class Launcher:
                 self.active_applications()
                 self.draw()
                 continue
+            if key == -1:  # idle: nobody is mid-press
+                self.offer_update()
             if not (self.selected == 0 and key in (curses.KEY_UP, ord("k"))):  # never wrap up onto SHUTDOWN
                 self.selected = move_selection(self.selected, key, len(self.menu))
             if key in (curses.KEY_ENTER, 10, 13):
@@ -1656,6 +1727,8 @@ class Settings:
     def menu_label(self, item: str) -> str:
         if item == "CHECK FOR UPDATES":
             return f"{item}  {'ON' if self.launcher.updates.enabled else 'OFF'}"
+        if item == "SOFTWARE UPDATE" and self.launcher.updates.available():
+            return f"{item}  -  {self.launcher.updates.available()} AVAILABLE"
         return item
 
     def toggle_updates(self) -> None:
@@ -1666,7 +1739,7 @@ class Settings:
         elif not self.launcher.updates.online():
             self.status = "UPDATE CHECK ON: WAITS UNTIL THIS PC IS ONLINE"
         else:
-            self.status = "UPDATE CHECK ON: LOOKS FOR A NEWER RELEASE ONCE A DAY"
+            self.status = "UPDATE CHECK ON: LOOKS FOR A NEWER RELEASE AT EVERY START"
 
     def choose(self, title: str, choices: list[tuple[str, object]], current: object) -> object | None:
         if not choices:
@@ -1952,7 +2025,8 @@ class Settings:
 
         try:
             softwareupdate.show(
-                self.screen, read_key=read_key, apps_running=self.launcher.apps_running, keep_awake=keep_awake)
+                self.screen, read_key=read_key, apps_running=self.launcher.apps_running, keep_awake=keep_awake,
+                record=self.launcher.updates.record)
         except Exception:  # noqa: BLE001 - a broken screen must not take the launcher down
             self.status = "COULD NOT OPEN SOFTWARE UPDATE"
 
@@ -3312,7 +3386,7 @@ class StreamingSettings(RemoteDesktopSettings):
             self.message(title, "NO NETWORK. CONNECT ETHERNET OR WI-FI FIRST: SETTINGS > NETWORK.")
             return
         if stream.moonlight_running(RUN):
-            self.message(title, "CLOSE MOONLIGHT FIRST: PRESS GUIDE, THEN CLOSE IT IN ACTIVE APPLICATIONS.")
+            self.message(title, "CLOSE MOONLIGHT FIRST: HOLD SELECT+START, THEN CLOSE IT IN ACTIVE APPLICATIONS.")
             return
         before = {self.ident(host) for host in stream.load_hosts()}
         actions = {

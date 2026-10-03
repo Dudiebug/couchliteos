@@ -42,6 +42,11 @@ SLEEP_HOLD_SECONDS = 5.0
 CEC_NAV, CEC_HOME = cec.remote_key_maps(ecodes)
 # Remote keys a running app gets too (the grabbed remote reaches nobody else); the rest are launcher shortcuts.
 CEC_APP_KEYS = {ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT, ecodes.KEY_ENTER, ecodes.KEY_ESC}
+# Apps that stream a PC or a console and read the controller themselves: while one has the screen
+# the Guide / PS button belongs to the stream (Steam Big Picture, the PS menu) and the PlayStation
+# touchpad is theirs too. Home is then the Select+Start hold or the keyboard shortcut.
+STREAM_APPS = frozenset({"moonlight", "chiaki-ng"})
+SONY_VENDOR = 0x054C
 _last_state_check = 0.0
 _last_state = False
 # A held direction repeats like a keyboard: a pause, then steady steps.
@@ -121,6 +126,23 @@ def app_active() -> bool:
 def app_owns_pad() -> bool:
     """An app or game is running and the launcher has not taken the controller back (not cached)."""
     return APP_ACTIVE.exists() and not LAUNCHER_FOCUS.exists()
+
+
+def stream_owns_pad() -> bool:
+    """A streaming client (Moonlight, Chiaki) is the app in front: not cached, like app_owns_pad."""
+    try:
+        app = APP_ACTIVE.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return False
+    return app in STREAM_APPS and not LAUNCHER_FOCUS.exists()
+
+
+def effective_home_choice(choice: str) -> str:
+    """The Home shortcut in force: Guide is the stream's while one is in front, so a pad that chose
+    "Guide only" still gets the Select+Start hold as its way home."""
+    if choice == inputprefs.HOME_GUIDE and stream_owns_pad():
+        return inputprefs.HOME_SELECT_START
+    return choice
 
 
 def navigation_blocked(active_osk: bool) -> bool:
@@ -220,6 +242,20 @@ def is_gamepad(dev: InputDevice) -> bool:
     return ecodes.BTN_GAMEPAD in keys or ecodes.BTN_SOUTH in keys
 
 
+def is_playstation_touchpad(dev: InputDevice) -> bool:
+    """The "... Touchpad" node hid-playstation / hid-sony create for a DualShock 4 or DualSense."""
+    try:
+        keys = set(dev.capabilities().get(ecodes.EV_KEY, []))
+        return (
+            dev.info.vendor == SONY_VENDOR
+            and str(dev.name).strip().lower().endswith("touchpad")
+            and ecodes.BTN_TOUCH in keys
+            and not ({ecodes.BTN_GAMEPAD, ecodes.BTN_SOUTH} & keys)
+        )
+    except (AttributeError, OSError):
+        return False
+
+
 def save_identity(dev: InputDevice) -> None:
     """Record the launcher controller so USB/IP never exports it (first pad found)."""
     serial = (dev.uniq or "*").lower()
@@ -276,6 +312,8 @@ class Pads:
         self.devices: dict[str, InputDevice] = {}
         self.grabbed: set[str] = set()
         self.ignored: set[str] = set()  # nodes already seen to be something else
+        self.touchpads: dict[str, InputDevice] = {}  # PlayStation pad touchpads, held back from the pointer during a stream
+        self.touch_grabbed: set[str] = set()
         self.clock = time.monotonic
         self.holds: dict[str, Hold] = {}
         self.sticks: dict[str, dict[int, list]] = {}  # path -> axis -> [-1.0..1.0, -1/0/+1 held]
@@ -292,11 +330,16 @@ class Pads:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(self.devices) - paths:
             self.drop(path)
+        for path in set(self.touchpads) - paths:
+            self.drop_touchpad(path)
         self.ignored &= paths
-        for path in sorted(paths - set(self.devices) - self.ignored):
+        for path in sorted(paths - set(self.devices) - set(self.touchpads) - self.ignored):
             dev = None
             try:
                 dev = InputDevice(path)
+                if is_playstation_touchpad(dev):
+                    self.touchpads[path] = dev
+                    continue
                 if not is_gamepad(dev):
                     self.ignored.add(path)
                     dev.close()
@@ -335,6 +378,33 @@ class Pads:
     def drop_all(self) -> None:
         for path in list(self.devices):
             self.drop(path)
+        for path in list(self.touchpads):
+            self.drop_touchpad(path)
+
+    def drop_touchpad(self, path: str) -> None:
+        dev = self.touchpads.pop(path, None)
+        self.touch_grabbed.discard(path)
+        if dev is not None:
+            try:
+                dev.close()  # closing the descriptor also lets go of the grab
+            except OSError:
+                pass
+
+    def sync_touchpads(self, streaming: bool) -> None:
+        """While a stream is in front the PlayStation touchpad is grabbed, so the compositor does not
+        move the pointer with it; the streaming client reads it from the pad itself. Otherwise it is a
+        plain touchpad again (browser, desktop, the launcher)."""
+        for path, dev in list(self.touchpads.items()):
+            if streaming == (path in self.touch_grabbed):
+                continue
+            try:
+                dev.grab() if streaming else dev.ungrab()
+            except OSError:
+                if streaming:
+                    continue  # busy or gone: try again on the next pass
+                self.drop_touchpad(path)  # could not let go: reopen it with a fresh descriptor
+                continue
+            self.touch_grabbed.add(path) if streaming else self.touch_grabbed.discard(path)
 
     def sync_grab(self, active_osk: bool) -> None:
         """The on-screen keyboard grabs every pad so games never see its input."""
@@ -512,6 +582,7 @@ class Pads:
             time.sleep(1)
             return
         now = self.clock()
+        self.sync_touchpads(stream_owns_pad())
         active_osk = OSK_ACTIVE.exists()
         pointer = pointer_mode(active_osk)
         self.set_pointer(pointer, now)
@@ -599,6 +670,14 @@ def is_home_event(event) -> bool:
         event.type == ecodes.EV_KEY
         and event.value == 1
         and event.code in {ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE}
+    )
+
+
+def is_guide_press(event) -> bool:
+    """The pad's Guide / PS button going down: BTN_MODE, or KEY_HOMEPAGE (how Bluetooth Xbox pads
+    send it). The keyboard's Home key (KEY_HOME) is not one."""
+    return (
+        event.type == ecodes.EV_KEY and event.value == 1 and event.code in {ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE}
     )
 
 
@@ -740,7 +819,7 @@ class HomeCombo:
         self.spent: set[object] = set()  # pads whose current hold may not open Home
 
     def combo(self) -> tuple[frozenset[int], frozenset[int]] | None:
-        return HOME_COMBOS.get(self.choice())
+        return HOME_COMBOS.get(effective_home_choice(self.choice()))
 
     def feed(self, path: object, event, now: float, pressed: Iterable[int] | None = None) -> None:
         """`pressed`: the pad's real key state when it is known (it may have been held while grabbed)."""
@@ -858,7 +937,8 @@ class PairTaps:
     BUTTONS = frozenset({ecodes.BTN_SELECT, ecodes.BTN_START})
 
     def __init__(self, deferred: Callable[[], bool] | None = None) -> None:
-        self.deferred = deferred or (lambda: INPUT_SETTINGS.current().home == inputprefs.HOME_SELECT_START)
+        self.deferred = deferred or (
+            lambda: effective_home_choice(INPUT_SETTINGS.current().home) == inputprefs.HOME_SELECT_START)
         self.down: dict[object, set[int]] = {}
         self.armed: dict[object, set[int]] = {}  # pressed alone so far: a tap when let go
 
@@ -1007,7 +1087,11 @@ def watch_home() -> None:
                         in_game = app_owns_pad()
                     # The keyboard Home key is not held back from a stream or remote desktop in
                     # front: it is the keyboard's way home from one (Guide is the pad's).
-                    if is_home_event(event) or chord.feed(path, event):
+                    # A stream in front keeps the Guide / PS button (Steam Big Picture, the PS menu):
+                    # Home is then the Select+Start hold or the keyboard shortcut.
+                    chorded = chord.feed(path, event)
+                    guide_goes_home = is_home_event(event) and not (is_guide_press(event) and stream_owns_pad())
+                    if chorded or guide_goes_home:
                         request_home()
                     # Deliberately also during a stream or remote desktop: the volume and
                     # brightness keys control this box (the TV's sound), not the remote PC.
@@ -1088,6 +1172,7 @@ def run() -> None:
     while True:
         pads.rescan()
         if not pads.devices:
+            pads.sync_touchpads(False)  # no pad left to stream with: a leftover touchpad is a plain one
             time.sleep(2)
             continue
         pads.pump(ui)

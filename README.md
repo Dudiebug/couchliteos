@@ -19,7 +19,9 @@ It is built on Debian 13 and is not a general-purpose desktop.
   generic controller, a keyboard, or the TV remote over HDMI-CEC. Home (Guide,
   PS, or a keyboard shortcut you choose, Ctrl+Alt+H by default) opens a menu over
   any app: switch apps, close one, change volume and brightness, type with the
-  on-screen keyboard, or use the controller as a mouse.
+  on-screen keyboard, or use the controller as a mouse. During a stream Guide
+  and the PlayStation touchpad go to the gaming PC; hold Select+Start (View+Menu)
+  to come back to Home.
 - **Setup wizard** on first start: TV picture and text size, sound, network,
   controllers and Bluetooth.
 - **Web apps and browsers** (Firefox and Google Chrome) for streaming services and
@@ -28,8 +30,9 @@ It is built on Debian 13 and is not a general-purpose desktop.
   main menu.
 - **Sleep and wake:** hold Guide or PS to sleep, wake the gaming PC over the
   network, and turn the TV on and off with the box.
-- **Updates from the couch:** Settings > SOFTWARE UPDATE downloads the new
-  version and keeps your settings and pairings. Older boxes whose Settings has
+- **Updates from the couch:** CouchLiteOS checks for a new release at every
+  start and asks if you want it; Settings > SOFTWARE UPDATE downloads it
+  and keeps your settings and pairings. Older boxes whose Settings has
   no SOFTWARE UPDATE, including MoonlightOS, reinstall once from the latest ISO;
   see [Updating](https://github.com/Dudiebug/couchliteos/wiki/Updating).
 - Optional Tailscale and USB/IP for playing away from home or sharing USB devices

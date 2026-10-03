@@ -1,0 +1,7 @@
+# PlayStation pads (DualShock 4, DualSense, DualSense Edge): let the streaming clients read them
+# over hidraw, which is how SDL gets the touchpad, motion sensors and rumble. The boxes run under
+# seatd without a login session, so the "uaccess" rules from steam-devices never grant this.
+# USB:
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="05c4|09cc|0ba0|0ce6|0df2", GROUP="input", MODE="0660"
+# Bluetooth (the HID device is named bus:vendor:product.n):
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="0005:054C:05C4.*|0005:054C:09CC.*|0005:054C:0CE6.*|0005:054C:0DF2.*", GROUP="input", MODE="0660"

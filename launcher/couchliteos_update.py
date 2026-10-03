@@ -3,7 +3,8 @@
 
 Nothing here may block or break the launcher: the check runs on a daemon
 thread, every failure is swallowed, and the answer is cached in a small state
-file so a release is asked for at most once a day.
+file. A release is asked for once at every start of the launcher (every boot), then at most
+every few hours while the box stays on.
 """
 
 from __future__ import annotations
@@ -44,10 +45,14 @@ VERSION_FILES = (
     pathlib.Path("/etc/couchliteos-version"),
     pathlib.Path(__file__).resolve().parents[1] / "VERSION",
 )
-CHECK_SECONDS = 24 * 3600.0
+# While the box stays on: how long a successful check is good for.
+CHECK_SECONDS = 6 * 3600.0
 # An attempt that failed (usually: the network was not up yet at boot) does not
 # count as a check; it is retried after this long.
-RETRY_SECONDS = 3600.0
+RETRY_SECONDS = 600.0
+# The check at start-up ignores the last check, but a launcher that keeps restarting
+# must not ask GitHub every few seconds.
+START_GAP_SECONDS = 60.0
 POLL_SECONDS = 60.0
 TIMEOUT = 5
 MAX_BYTES = 512 * 1024
@@ -99,6 +104,7 @@ class State:
     latest: str = ""
     checked_at: float = 0.0  # last successful check
     attempted_at: float = 0.0  # last attempt, successful or not
+    prompted: str = ""  # the release the owner was last offered on the Home screen
 
 
 def _number(value: str) -> float:
@@ -118,11 +124,13 @@ def load_state(path: pathlib.Path = STATE) -> State:
         return State()
     enabled = section.get("enabled", "true").strip().lower()
     latest = section.get("latest", "").strip()
+    prompted = section.get("prompted", "").strip()
     return State(
         enabled=configparser.ConfigParser.BOOLEAN_STATES.get(enabled, True),
         latest=latest if parse_version(latest) is not None else "",
         checked_at=_number(section.get("checked_at", "0")),
         attempted_at=_number(section.get("attempted_at", "0")),
+        prompted=prompted if parse_version(prompted) is not None else "",
     )
 
 
@@ -133,6 +141,7 @@ def save_state(state: State, path: pathlib.Path = STATE) -> None:
         f"latest = {state.latest}\n"
         f"checked_at = {state.checked_at:.0f}\n"
         f"attempted_at = {state.attempted_at:.0f}\n"
+        f"prompted = {state.prompted}\n"
     )
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -182,13 +191,18 @@ def has_default_route(route4: pathlib.Path = ROUTE4, route6: pathlib.Path = ROUT
     return False
 
 
-def due(state: State, now: float) -> bool:
+def due(state: State, now: float, *, start: bool = False, retry: bool = False) -> bool:
+    """True when a release should be asked for now.
+
+    `start`: no check has succeeded since the launcher started, so the last check (maybe from before
+    the reboot) does not count. `retry`: an attempt already failed in this run."""
     if not state.enabled:
         return False
     # A timestamp in the future (the clock was wrong when it was saved) is stale.
-    if 0 <= now - state.checked_at < CHECK_SECONDS and state.checked_at:
+    if not start and state.checked_at and 0 <= now - state.checked_at < CHECK_SECONDS:
         return False
-    return not (state.attempted_at and 0 <= now - state.attempted_at < RETRY_SECONDS)
+    gap = RETRY_SECONDS if retry or not start else START_GAP_SECONDS
+    return not (state.attempted_at and 0 <= now - state.attempted_at < gap)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -326,6 +340,8 @@ class Checker:
         self._save_lock = threading.Lock()
         self._wake = threading.Event()
         self._state = load_state(state_path)
+        self._checked = False  # a check has succeeded since this launcher started
+        self._failed = False  # an attempt has failed since then
 
     @property
     def enabled(self) -> bool:
@@ -334,6 +350,31 @@ class Checker:
     def notice(self) -> str:
         with self._lock:
             return notice(self._state, self.current, self.installed)
+
+    def available(self) -> str:
+        """The newer release the last check found ("" when none, or checking is off)."""
+        with self._lock:
+            state = self._state
+        return state.latest if state.enabled and is_newer(state.latest, self.current) else ""
+
+    def to_offer(self) -> str:
+        """The newer release to offer the owner now: once per release, and never on a live stick."""
+        latest = self.available()
+        with self._lock:
+            prompted = self._state.prompted
+        return latest if latest and self.installed and latest != prompted else ""
+
+    def mark_offered(self, version: str) -> None:
+        self._update(prompted=version)
+
+    def record(self, latest: str) -> None:
+        """A check made elsewhere (SETTINGS > SOFTWARE UPDATE) found `latest`: Home shows it too."""
+        if parse_version(latest) is None:
+            return
+        now = self.clock()
+        # The owner is looking at the result right now: Home need not ask about it again.
+        self._update(latest=latest, checked_at=now, attempted_at=now, prompted=latest)
+        self._checked, self._failed = True, False
 
     def _update(self, **changes: object) -> None:
         with self._lock:
@@ -354,17 +395,19 @@ class Checker:
     def check_if_due(self) -> None:
         now = self.clock()
         with self._lock:
-            if not due(self._state, now):
+            if not due(self._state, now, start=not self._checked, retry=self._failed):
                 return
         # Runs before anything is recorded: a boot without a network must not use
-        # up the day's check, so the next poll after the network comes up retries.
+        # up the start-up check, so the next poll after the network comes up retries.
         if not self.online():
             return
         try:
             latest = self.fetch(self.current)
         except Exception:  # never let a network or parsing problem reach the launcher
+            self._failed = True
             self._update(attempted_at=now)
             return
+        self._checked, self._failed = True, False
         self._update(latest=latest, checked_at=now, attempted_at=now)
 
     def start(self) -> None:

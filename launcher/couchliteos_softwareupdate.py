@@ -113,6 +113,7 @@ class SoftwareUpdate:
         current: str | None = None, profile: dict[str, str] | None = None, live: bool | None = None,
         fetch: Callable[[str], update.Release] = default_fetch, run_dir: pathlib.Path = RUN,
         clock: Callable[[], float] = time.monotonic,
+        record: Callable[[str], None] = lambda _version: None,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -125,6 +126,7 @@ class SoftwareUpdate:
         self.fetch = fetch
         self.run_dir = pathlib.Path(run_dir)
         self.clock = clock
+        self.record = record  # tells the Home screen's update notice what this check found
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
@@ -204,6 +206,10 @@ class SoftwareUpdate:
         except Exception:  # noqa: BLE001 - offline, DNS, TLS, a changed API: all one message for the owner
             self.result = NO_NETWORK
             return
+        try:
+            self.record(release.version)
+        except Exception:  # noqa: BLE001 - the Home notice is a courtesy; this screen still answers
+            pass
         if not update.is_newer(release.version, self.current):
             self.result = NEWEST
             return

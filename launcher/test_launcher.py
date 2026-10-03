@@ -493,6 +493,112 @@ class LauncherTest(unittest.TestCase):
             self.module.Launcher.focus_app(self.terminal_app())
         self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["title:TERMINAL"])
 
+    # Resuming a stream whose window the exact app id / title do not match.
+
+    def stream_app(self, app_id="moonlight"):
+        return self.module.apps.Application(
+            id=app_id, name=app_id.upper(), kind="request", request=f"start-{app_id}", status_id=app_id,
+        )
+
+    def fake_wlrctl(self, listing, focusable, timeouts=()):
+        """subprocess.run stand-in: `list` prints listing; `focus X` succeeds only for X in focusable."""
+        calls = []
+
+        def run(command, **_kwargs):
+            calls.append(command[2:])
+            if command[2] == "list":
+                return mock.Mock(returncode=0, stdout=listing)
+            if command[-1] in timeouts:
+                raise self.module.subprocess.TimeoutExpired(command, 2)
+            return mock.Mock(returncode=0 if command[-1] in focusable else 1, stdout="")
+
+        return run, calls
+
+    def test_a_timeout_on_one_match_tries_the_next_instead_of_giving_up(self):
+        run, calls = self.fake_wlrctl("", {"title:Moonlight"}, timeouts={"app_id:moonlight"})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "LAUNCHER_FOCUS", pathlib.Path(directory) / "launcher-focus", create=True
+        ), mock.patch.object(self.module.subprocess, "run", side_effect=run):
+            self.assertTrue(self.module.Launcher.focus_app(self.stream_app()))
+        self.assertEqual([call[-1] for call in calls], ["app_id:moonlight", "title:Moonlight"])
+
+    def test_a_stream_window_with_another_name_is_found_in_the_list(self):
+        listing = "couchliteos-launcher: CouchLiteOS Launcher\nfoot: TERMINAL\nMoonlight: Moonlight Streaming\n"
+        run, calls = self.fake_wlrctl(listing, {"app_id:Moonlight"})
+        with tempfile.TemporaryDirectory() as directory:
+            focus = pathlib.Path(directory) / "launcher-focus"
+            focus.touch()
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True), mock.patch.object(
+                self.module.subprocess, "run", side_effect=run
+            ):
+                self.assertTrue(self.module.Launcher.focus_app(self.stream_app()))
+            self.assertFalse(focus.exists())
+        self.assertEqual(calls[-1], ["focus", "app_id:Moonlight"])
+
+    def test_the_title_is_used_when_the_window_has_no_app_id(self):
+        run, calls = self.fake_wlrctl(": Moonlight (1920x1080) - 60 FPS\n", {"title:Moonlight (1920x1080) - 60 FPS"})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "LAUNCHER_FOCUS", pathlib.Path(directory) / "launcher-focus", create=True
+        ), mock.patch.object(self.module.subprocess, "run", side_effect=run):
+            self.assertTrue(self.module.Launcher.focus_app(self.stream_app()))
+
+    def test_chiaki_is_found_by_its_own_word_and_the_launcher_is_never_picked(self):
+        listing = "couchliteos-launcher: CouchLiteOS Moonlight Chiaki Launcher\nChiaki-Window: Remote Play\n"
+        run, calls = self.fake_wlrctl(listing, {"app_id:Chiaki-Window"})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "LAUNCHER_FOCUS", pathlib.Path(directory) / "launcher-focus", create=True
+        ), mock.patch.object(self.module.subprocess, "run", side_effect=run):
+            self.assertTrue(self.module.Launcher.focus_app(self.stream_app("chiaki-ng")))
+        self.assertNotIn(["focus", "app_id:couchliteos-launcher"], calls)
+
+    def test_no_stream_window_leaves_the_marker_and_logs_what_the_compositor_lists(self):
+        listing = "couchliteos-launcher: CouchLiteOS Launcher\nfoot: TERMINAL\n"
+        run, _calls = self.fake_wlrctl(listing, set())
+        with tempfile.TemporaryDirectory() as directory:
+            focus = pathlib.Path(directory) / "launcher-focus"
+            focus.touch()
+            with mock.patch.object(self.module, "LAUNCHER_FOCUS", focus, create=True), mock.patch.object(
+                self.module.subprocess, "run", side_effect=run
+            ), mock.patch.object(self.module.display, "log") as log, mock.patch.object(
+                self.module.sys, "stderr"
+            ) as stderr:
+                self.assertFalse(self.module.Launcher.focus_app(self.stream_app()))
+            self.assertTrue(focus.exists())
+        stderr.write.assert_not_called()  # stderr is the launcher's own screen
+        logged, path = log.call_args.args
+        self.assertIn("no window for moonlight", logged)
+        self.assertIn("foot: TERMINAL", logged)
+        self.assertEqual(path, pathlib.Path("/var/log/couchliteos/launcher.log"))
+
+    def test_a_window_whose_app_id_names_the_client_beats_a_tab_that_mentions_it(self):
+        listing = "firefox-esr: Moonlight setup guide - Mozilla Firefox\nmoonlight-qt: Moonlight\n"
+        run, calls = self.fake_wlrctl(listing, {"app_id:moonlight-qt", "app_id:firefox-esr"})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "LAUNCHER_FOCUS", pathlib.Path(directory) / "launcher-focus", create=True
+        ), mock.patch.object(self.module.subprocess, "run", side_effect=run):
+            self.assertTrue(self.module.Launcher.focus_app(self.stream_app()))
+        self.assertEqual(calls[-1], ["focus", "app_id:moonlight-qt"])
+        # With no such window the browser is left alone: Moonlight really is not on screen.
+        run, calls = self.fake_wlrctl("firefox-esr: Moonlight setup guide\n", {"app_id:firefox-esr"})
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            self.module, "LAUNCHER_FOCUS", pathlib.Path(directory) / "launcher-focus", create=True
+        ), mock.patch.object(self.module.subprocess, "run", side_effect=run), mock.patch.object(
+            self.module.display, "log"
+        ):
+            self.assertFalse(self.module.Launcher.focus_app(self.stream_app()))
+        self.assertNotIn(["focus", "app_id:firefox-esr"], calls)
+
+    def test_a_missing_wlrctl_is_not_retried_for_every_match(self):
+        with mock.patch.object(self.module.subprocess, "run", side_effect=FileNotFoundError("wlrctl")) as run:
+            self.assertFalse(self.module.Launcher.focus_app(self.stream_app()))
+        self.assertEqual(run.call_count, 1)
+
+    def test_other_apps_do_not_read_the_window_list(self):
+        run, calls = self.fake_wlrctl("firefox: Mozilla Firefox\n", set())
+        with mock.patch.object(self.module.subprocess, "run", side_effect=run):
+            self.assertFalse(self.module.Launcher.focus_app(self.terminal_app()))
+        self.assertNotIn(["list"], [call[:1] for call in calls])
+
     def active_applications_screen(self, keys):
         class Recording(Screen):
             def __init__(self, keys):
@@ -1728,7 +1834,8 @@ class LauncherTest(unittest.TestCase):
                 for text in ("STATUS LINE", *footer.values()):
                     self.assertIn(text, shown)
                 label = launcher.menu[selected][0]
-                self.assertIn(f">  {label}", shown)  # the row the cursor is on stays visible
+                # The row the cursor is on stays visible (SETTINGS may carry the update suffix).
+                self.assertTrue(any(text.startswith(f">  {label}") for text in shown), label)
                 self.assertTrue(all(row < 23 for row in rows), "drew on the border row")
 
     def test_progress_helpers(self):

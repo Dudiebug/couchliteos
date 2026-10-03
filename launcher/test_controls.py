@@ -250,8 +250,15 @@ class HomeShortcutRowsTest(unittest.TestCase):
         self.assertNotIn("VIEW + MENU", sticks)
         guide_only = self.text(home="guide")
         self.assertNotIn("L3 + R3", guide_only)
-        self.assertNotIn("VIEW + MENU", guide_only)
-        self.assertNotIn("HELD", guide_only)
+        # Guide belongs to a stream, so the pad's way home from one stays in the list.
+        self.assertIn("VIEW + MENU", guide_only)
+        self.assertIn("HELD 1.5 S", guide_only)
+
+    def test_the_guide_row_says_a_stream_keeps_it_and_the_shortcuts_work_in_one(self):
+        text = " ".join(self.text().split())
+        self.assertIn("IN A STREAM IT GOES TO THE STREAM", text)
+        self.assertIn("OPENS HOME, ALSO IN A STREAM", text)
+        self.assertEqual(self.text(keyboard="").count("ALSO IN A STREAM"), 1)
 
     def test_the_keyboard_row_follows_the_saved_home_key(self):
         self.assertIn("KEYBOARD: CTRL+ALT+H", self.text())

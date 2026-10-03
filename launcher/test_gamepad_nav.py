@@ -27,6 +27,7 @@ class Codes:
     BTN_SELECT = 314
     BTN_START = 315
     BTN_MODE = 316
+    BTN_TOUCH = 330
     BTN_DPAD_UP = 544
     BTN_DPAD_DOWN = 545
     BTN_DPAD_LEFT = 546
@@ -1597,7 +1598,7 @@ class HomeShortcutTest(unittest.TestCase):
 
     # watch_home: the same Home request as Guide, from devices it only watches (never grabs)
 
-    def watch(self, rounds, capabilities, *, app=True, name="Device"):
+    def watch(self, rounds, capabilities, *, app=True, name="Device", front=None, focus=False):
         """watch_home() over one device; rounds[i] = (clock after select i, [(code, value), ...]),
         optionally with a third item: buttons let go unseen (another fd grabbed the pad), or an
         OSError for select i to raise.
@@ -1605,7 +1606,9 @@ class HomeShortcutTest(unittest.TestCase):
         An app owns the pad by default: the shortcut must work over it, as Guide does.
         Returns (request_home mock, select timeouts, devices watched)."""
         module = self.module
-        run = self.run_dir(app=app, pointer=False)
+        run = self.run_dir(app=app, pointer=False, focus=focus)
+        if front is not None:
+            (run / "app-active").write_text(front + "\n")  # which app is in front, as couchliteos-run-app writes it
         state = {"round": 0, "now": 0.0}
         events = []
         down = set()
@@ -1654,7 +1657,7 @@ class HomeShortcutTest(unittest.TestCase):
         ), mock.patch.object(module, "request_home") as home, mock.patch.object(module, "request_sleep"):
             with self.assertRaises(Stop):
                 module.watch_home()
-        self.assertTrue((run / "app-active").exists())
+        self.assertEqual((run / "app-active").exists(), app or front is not None)
         return home, timeouts, watched[0]
 
     PAD = (Codes.BTN_SOUTH, Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_TL, Codes.BTN_TR,
@@ -1760,6 +1763,270 @@ class HomeShortcutTest(unittest.TestCase):
              (0.3, [(Codes.KEY_LEFTMETA, 1), (Codes.KEY_LEFTMETA, 0)])],
             (*self.KEYBOARD, Codes.KEY_LEFTMETA))
         home.assert_called_once_with()  # Ctrl+Alt+H only
+
+    # Guide belongs to the stream (Moonlight, Chiaki): the PC's Steam Big Picture gets it, not Home.
+
+    GUIDE_PAD = (*PAD, Codes.BTN_MODE)
+    GUIDE_PRESS = [(0.0, [(Codes.BTN_MODE, 1)]), (0.1, [(Codes.BTN_MODE, 0)])]
+
+    def test_guide_does_not_open_home_while_a_stream_is_in_front(self):
+        self.use(home="guide")
+        for app in ("moonlight", "chiaki-ng"):
+            with self.subTest(app=app):
+                home, _timeouts, _watched = self.watch(self.GUIDE_PRESS, self.GUIDE_PAD, front=app)
+                home.assert_not_called()
+
+    def test_guide_still_opens_home_over_everything_else(self):
+        self.use(home="guide")
+        for label, kwargs in (("browser", {"front": "firefox"}), ("no app", {"app": False}),
+                              ("launcher in front", {"front": "moonlight", "focus": True}),
+                              ("empty marker", {"front": ""})):
+            with self.subTest(case=label):
+                home, _timeouts, _watched = self.watch(
+                    self.GUIDE_PRESS, self.GUIDE_PAD, **({"app": True} | kwargs))
+                home.assert_called_once_with()
+
+    def test_the_bluetooth_guide_key_is_the_streams_too(self):
+        self.use(home="guide")
+        presses = [(0.0, [(Codes.KEY_HOMEPAGE, 1)]), (0.1, [(Codes.KEY_HOMEPAGE, 0)])]
+        capabilities = (*self.PAD[1:], Codes.KEY_HOMEPAGE)
+        home, _timeouts, _watched = self.watch(presses, capabilities, front="moonlight")
+        home.assert_not_called()
+        home, _timeouts, _watched = self.watch(presses, capabilities, front="firefox")
+        home.assert_called_once_with()
+
+    def test_the_keyboard_home_key_still_goes_home_over_a_stream(self):
+        self.use(home="guide")
+        press = [(0.0, [(Codes.KEY_HOME, 1)]), (0.1, [(Codes.KEY_HOME, 0)])]
+        home, _timeouts, _watched = self.watch(press, (Codes.KEY_HOME, Codes.KEY_ENTER), front="moonlight")
+        home.assert_called_once_with()
+
+    def test_the_pad_shortcuts_are_the_way_home_from_a_stream(self):
+        hold = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (1.0, []), (1.6, [])]
+        # Even with "Guide only" chosen: Guide is the stream's, so the hold must not be dead.
+        for choice in ("select-start", "guide"):
+            with self.subTest(choice=choice):
+                self.use(home=choice)
+                home, _timeouts, _watched = self.watch(hold, self.GUIDE_PAD, front="moonlight")
+                home.assert_called_once_with()
+        self.use(home="l3-r3")
+        home, _timeouts, _watched = self.watch(
+            [(0.0, [(Codes.BTN_THUMBL, 1), (Codes.BTN_THUMBR, 1)]), (1.6, [])], self.GUIDE_PAD, front="moonlight")
+        home.assert_called_once_with()
+
+    def test_guide_only_keeps_its_meaning_outside_a_stream(self):
+        # Over a browser the hold is still not a Home shortcut when the choice is Guide only.
+        self.use(home="guide")
+        hold = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (1.6, []), (3.0, [])]
+        home, _timeouts, _watched = self.watch(hold, self.GUIDE_PAD, front="firefox")
+        home.assert_not_called()
+
+    def test_stream_owns_pad_reads_the_marker_and_the_launcher_focus(self):
+        self.assertEqual(self.module.STREAM_APPS, {"moonlight", "chiaki-ng"})
+        for text, focus, expected in (("moonlight\n", False, True), ("chiaki-ng", False, True),
+                                      ("firefox\n", False, False), ("", False, False),
+                                      ("moonlight\n", True, False)):
+            with self.subTest(text=text, focus=focus):
+                run = self.run_dir(app=True, pointer=False, focus=focus)
+                (run / "app-active").write_text(text)
+                self.assertEqual(self.module.stream_owns_pad(), expected)
+        self.run_dir(app=False, pointer=False)
+        self.assertFalse(self.module.stream_owns_pad(), "no marker, no stream")
+
+    def test_the_effective_home_choice_only_changes_guide_only_in_a_stream(self):
+        choice = self.module.effective_home_choice
+        self.run_dir(app=True, pointer=False)
+        for app, expected in (("moonlight", "select-start"), ("firefox", "guide")):
+            (self.module.APP_ACTIVE).write_text(app + "\n")
+            with self.subTest(app=app):
+                self.assertEqual(choice("guide"), expected)
+                self.assertEqual(choice("l3-r3"), "l3-r3")
+                self.assertEqual(choice("select-start"), "select-start")
+
+    def test_select_and_start_taps_wait_for_release_in_a_stream_with_guide_only(self):
+        # The hold is the way home there, so a tap must not fire F7/F8 (or Esc/Space) on press.
+        self.use(home="guide")
+        taps = self.module.PairTaps()
+        run = self.run_dir(app=True, pointer=False)
+        (run / "app-active").write_text("moonlight\n")
+        self.assertTrue(taps.deferred())
+        (run / "app-active").write_text("firefox\n")
+        self.assertFalse(taps.deferred())
+
+    def test_a_touchpad_left_without_a_pad_is_let_go(self):
+        # run() with no pad but a grabbed touchpad: it is released before the loop sleeps.
+        seen = []
+
+        class OnePass(Exception):
+            pass
+
+        def sleep(_seconds):
+            raise OnePass
+
+        class StubPads:
+            devices = {}
+
+            def rescan(self):
+                pass
+
+            def sync_touchpads(self, streaming):
+                seen.append(streaming)
+
+        with mock.patch.object(self.module, "Pads", StubPads), mock.patch.object(
+            self.module, "UInput"
+        ), mock.patch.object(self.module.threading, "Thread"), mock.patch.object(
+            self.module.time, "sleep", side_effect=sleep
+        ):
+            with self.assertRaises(OnePass):
+                self.module.run()
+        self.assertEqual(seen, [False])
+
+    def test_rescanning_does_not_reopen_a_known_touchpad(self):
+        touchpad = self.touchpad()
+        opened = []
+        devices = {"/dev/input/event2": touchpad}
+        pads = self.module.Pads()
+        with mock.patch.object(self.module.glob, "glob", return_value=sorted(devices)), mock.patch.object(
+            self.module, "InputDevice", side_effect=lambda path: opened.append(path) or devices[path]
+        ), mock.patch.object(self.module, "save_identity"):
+            pads.rescan()
+            pads.rescan()
+        self.assertEqual(opened, ["/dev/input/event2"], "one open, not one per rescan")
+
+    def test_a_replugged_touchpad_is_grabbed_again_for_the_next_stream(self):
+        first, second = self.touchpad(), self.touchpad()
+        pads = self.rescanned({"/dev/input/event2": first})
+        pads.sync_touchpads(True)
+        pads.drop_touchpad("/dev/input/event2")  # unplugged mid-stream
+        first.close.assert_called_once_with()
+        self.assertEqual(pads.touchpads, {})
+        devices = {"/dev/input/event2": second}  # the same path comes back after a replug
+        with mock.patch.object(self.module.glob, "glob", return_value=sorted(devices)), mock.patch.object(
+            self.module, "InputDevice", side_effect=lambda path: devices[path]
+        ), mock.patch.object(self.module, "save_identity"):
+            pads.rescan()
+        pads.sync_touchpads(True)
+        second.grab.assert_called_once_with()
+
+    def test_guide_with_the_controller_mouse_on_still_goes_home(self):
+        # The mouse grabs the pad, so the stream cannot see Guide anyway: it must not be lost.
+        self.use()
+        run = self.run_dir()
+        (run / "app-active").write_text("moonlight\n")
+        with mock.patch.object(self.module.subprocess, "run"):
+            self.drive([(0.0, [(Codes.EV_KEY, Codes.BTN_MODE, 1)]), (0.1, [(Codes.EV_KEY, Codes.BTN_MODE, 0)])],
+                       run=run)
+        self.assertTrue((run / "home.request").exists())
+
+    # The PlayStation touchpad is the stream's: grabbed so Cage never turns it into a pointer.
+
+    @staticmethod
+    def touchpad(*, vendor=0x054C, name="DualSense Wireless Controller Touchpad", keys=None):
+        keys = [Codes.BTN_TOUCH] if keys is None else keys
+        pad = mock.Mock()
+        pad.name = name
+        pad.info = SimpleNamespace(vendor=vendor, product=0x0CE6)
+        pad.capabilities.return_value = {Codes.EV_KEY: list(keys)}
+        return pad
+
+    def rescanned(self, devices):
+        """Pads after rescan() sees these {path: device} nodes."""
+        pads = self.module.Pads()
+        with mock.patch.object(self.module.glob, "glob", return_value=sorted(devices)), mock.patch.object(
+            self.module, "InputDevice", side_effect=lambda path: devices[path]
+        ), mock.patch.object(self.module, "save_identity"):
+            pads.rescan()
+        return pads
+
+    def test_which_nodes_count_as_a_playstation_touchpad(self):
+        is_touchpad = self.module.is_playstation_touchpad
+        self.assertTrue(is_touchpad(self.touchpad()))
+        self.assertTrue(is_touchpad(self.touchpad(name="Wireless Controller Touchpad")))
+        self.assertFalse(is_touchpad(self.touchpad(vendor=0x06CB, name="Synaptics TouchPad")), "a laptop's")
+        self.assertFalse(is_touchpad(self.touchpad(name="DualSense Wireless Controller")), "not the touchpad node")
+        self.assertFalse(is_touchpad(self.touchpad(name="DualSense Wireless Controller Motion Sensors")))
+        self.assertFalse(is_touchpad(self.touchpad(keys=[])), "no BTN_TOUCH")
+        self.assertFalse(is_touchpad(self.touchpad(keys=[Codes.BTN_TOUCH, Codes.BTN_SOUTH])), "a pad, not a touchpad")
+        broken = self.touchpad()
+        broken.capabilities.side_effect = OSError(19, "No such device")
+        self.assertFalse(is_touchpad(broken))
+
+    def test_rescan_keeps_a_playstation_touchpad_apart_from_the_pads(self):
+        pad = FakePad()
+        touchpad = self.touchpad()
+        laptop = self.touchpad(vendor=0x06CB, name="Synaptics TouchPad")
+        pads = self.rescanned({"/dev/input/event1": pad, "/dev/input/event2": touchpad,
+                               "/dev/input/event3": laptop})
+        self.assertEqual(list(pads.devices), ["/dev/input/event1"])
+        self.assertEqual(list(pads.touchpads), ["/dev/input/event2"])
+        self.assertIn("/dev/input/event3", pads.ignored)
+        touchpad.grab.assert_not_called()
+
+    def test_the_touchpad_is_grabbed_for_a_stream_and_let_go_afterwards(self):
+        touchpad = self.touchpad()
+        pads = self.rescanned({"/dev/input/event2": touchpad})
+        pads.sync_touchpads(False)
+        touchpad.grab.assert_not_called()
+        pads.sync_touchpads(True)
+        pads.sync_touchpads(True)
+        touchpad.grab.assert_called_once_with()
+        pads.sync_touchpads(False)
+        pads.sync_touchpads(False)
+        touchpad.ungrab.assert_called_once_with()
+        pads.sync_touchpads(True)
+        self.assertEqual(touchpad.grab.call_count, 2, "a second stream grabs it again")
+
+    def test_a_busy_touchpad_is_retried_and_one_that_will_not_let_go_is_reopened(self):
+        touchpad = self.touchpad()
+        touchpad.grab.side_effect = [OSError(16, "Device or resource busy"), None]
+        pads = self.rescanned({"/dev/input/event2": touchpad})
+        pads.sync_touchpads(True)
+        self.assertEqual(pads.touch_grabbed, set())
+        pads.sync_touchpads(True)
+        self.assertEqual(pads.touch_grabbed, {"/dev/input/event2"})
+        touchpad.ungrab.side_effect = OSError(19, "No such device")
+        pads.sync_touchpads(False)
+        self.assertEqual(pads.touchpads, {})
+        touchpad.close.assert_called_once_with()
+
+    def test_pump_grabs_the_touchpad_only_while_a_stream_is_in_front(self):
+        self.use()
+        touchpad = self.touchpad()
+        run = self.run_dir(app=True, pointer=False)
+        states = {"moonlight\n": True, "firefox\n": False}
+        for text, grabbed in states.items():
+            (run / "app-active").write_text(text)
+            pads, _mouse = self.pads()
+            pads.touchpads = {"/dev/input/event2": touchpad}
+            touchpad.reset_mock()
+            with mock.patch.object(self.module.select, "select", return_value=([], [], [])), mock.patch.object(
+                pads, "rescan"
+            ):
+                pads.pump(mock.Mock())
+            self.assertEqual(touchpad.grab.called, grabbed, text)
+        (run / "app-active").write_text("moonlight\n")
+        pads, _mouse = self.pads()
+        pads.touchpads = {"/dev/input/event2": touchpad}
+        with mock.patch.object(self.module.select, "select", return_value=([], [], [])), mock.patch.object(
+            pads, "rescan"
+        ):
+            pads.pump(mock.Mock())
+            (run / "launcher-focus").touch()  # Home came forward: the touchpad is a touchpad again
+            pads.pump(mock.Mock())
+        touchpad.ungrab.assert_called_once_with()
+
+    def test_an_unplugged_touchpad_is_forgotten_and_drop_all_closes_it(self):
+        touchpad = self.touchpad()
+        pads = self.rescanned({"/dev/input/event2": touchpad})
+        with mock.patch.object(self.module.glob, "glob", return_value=[]):
+            pads.rescan()
+        self.assertEqual(pads.touchpads, {})
+        touchpad.close.assert_called_once_with()
+        other = self.touchpad()
+        pads = self.rescanned({"/dev/input/event2": other})
+        pads.drop_all()
+        self.assertEqual(pads.touchpads, {})
+        other.close.assert_called_once_with()
 
     def test_devices_watched_for_the_shortcuts(self):
         watches = self.module.watches_home
