@@ -74,6 +74,10 @@ install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
   "$CHROOT/usr/share/keyrings/google-chrome.asc"
 
 install -D -m 0755 "$ROOT/launcher/couchliteos-launcher.py" "$CHROOT/usr/libexec/couchliteos-launcher"
+install -D -m 0755 "$ROOT/launcher/couchliteos-tv.py" "$CHROOT/usr/libexec/couchliteos-tv"
+install -D -m 0755 "$ROOT/scripts/couchliteos-session" "$CHROOT/usr/libexec/couchliteos-session"
+install -D -m 0644 "$ROOT/launcher/couchliteos_session.py" "$CHROOT/usr/libexec/couchliteos_session.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_tvlayout.py" "$CHROOT/usr/libexec/couchliteos_tvlayout.py"
 install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/couchliteos-gamepad-nav"
 install -D -m 0644 "$ROOT/launcher/couchliteos_apps.py" "$CHROOT/usr/libexec/couchliteos_apps.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_rdp.py" "$CHROOT/usr/libexec/couchliteos_rdp.py"

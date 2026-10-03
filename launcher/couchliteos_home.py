@@ -76,7 +76,12 @@ class Status:
 
 
 def installed(app: apps.Application, root: pathlib.Path = pathlib.Path("/")) -> bool:
-    """Whether the program behind a tile is on this system (browsers are installed on demand)."""
+    """Whether the program behind a tile is on this system (browsers are installed on demand).
+
+    A manifest that names its program (`binary`, as the browsers' do) is judged by the apps
+    module's own rule, the one the classic launcher uses; the rest by what they start."""
+    if app.binary:
+        return apps.installed(app, root)
     if app.kind == "command":
         return os.access(root / app.command.lstrip("/"), os.X_OK)
     if app.kind == "request" and app.request in REQUEST_BINARIES:
