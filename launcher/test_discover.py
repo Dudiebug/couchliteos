@@ -1021,11 +1021,11 @@ class LabelTest(unittest.TestCase):
 
 class SystemBoundaryTest(unittest.TestCase):
     CONF = (
-        "[General]\n"
-        "hosts\\1\\hostname=GAMING-PC\nhosts\\1\\uuid=U1\nhosts\\1\\localaddress=192.168.1.50\n"
-        "hosts\\1\\mac=1c:1b:0d:8d:bf:e9\n"
-        "hosts\\2\\hostname=NO-ADDRESS\nhosts\\2\\uuid=U2\n"
-        "hosts\\size=2\n"
+        "[General]\nwidth=1920\n\n[hosts]\n"
+        "1\\hostname=GAMING-PC\n1\\uuid=U1\n1\\localaddress=192.168.1.50\n"
+        "1\\mac=1c:1b:0d:8d:bf:e9\n"
+        "2\\hostname=NO-ADDRESS\n2\\uuid=U2\n"
+        "size=2\n"
     )
 
     def test_only_paired_pcs_with_a_known_mac_can_be_woken(self):

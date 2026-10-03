@@ -137,12 +137,12 @@ class ShowOnceTest(unittest.TestCase):
 
     def test_a_version_without_notes_shows_nothing_but_is_marked(self):
         self.complete_setup()
-        self.seen.write_text("0.2.5\n")
-        self.version_file.write_text("0.2.6\n")
+        self.seen.write_text("0.2.6\n")
+        self.version_file.write_text("0.2.7\n")
         shown, screen = self.show(keys=())
         self.assertFalse(shown)
         self.assertEqual(screen.frame, [])
-        self.assertEqual(self.seen.read_text().strip(), "0.2.6")
+        self.assertEqual(self.seen.read_text().strip(), "0.2.7")
 
     def test_an_older_seen_marker_is_replaced(self):
         self.complete_setup()
@@ -233,7 +233,7 @@ class ShowOnceTest(unittest.TestCase):
 
 
 class ScreenTest(unittest.TestCase):
-    def draw(self, size=(24, 80), version="0.2.5", seen=""):
+    def draw(self, size=(24, 80), version="0.2.6", seen=""):
         screen = Screen(size=size)
         whatsnew.draw(screen, version, seen)
         return screen
@@ -244,7 +244,7 @@ class ScreenTest(unittest.TestCase):
             self.assertTrue(0 < row < 23, (row, text))
             self.assertTrue(col >= 1 and col + len(text) <= 79, (col, text))
         text = "\n".join(screen.text())
-        self.assertIn("WHAT'S NEW IN 0.2.5", text)
+        self.assertIn("WHAT'S NEW IN 0.2.6", text)
         self.assertIn(whatsnew.RENAME_NOTICE, text)
         for feature in whatsnew.FEATURES:
             self.assertIn(feature, text)
@@ -276,15 +276,15 @@ class ScreenTest(unittest.TestCase):
 
     def test_the_title_is_bold(self):
         attrs = {text: attr for _row, _col, text, attr in self.draw().frame}
-        self.assertTrue(attrs["WHAT'S NEW IN 0.2.5"] & curses.A_BOLD)
+        self.assertTrue(attrs["WHAT'S NEW IN 0.2.6"] & curses.A_BOLD)
 
-    def test_an_upgrade_from_0_2_4_shows_only_0_2_5_without_the_rename(self):
-        text = "\n".join(self.draw(seen="0.2.4").text())
+    def test_an_upgrade_from_0_2_5_shows_only_0_2_6_without_the_rename(self):
+        text = "\n".join(self.draw(seen="0.2.5").text())
         self.assertNotIn(whatsnew.RENAME_NOTICE, text)
         for feature in whatsnew.FEATURES:
             self.assertIn(feature, text)
-        self.assertNotIn("BRIGHTNESS AND VOLUME KEYS", text)  # 0.2.4 notes were seen already
-        self.assertNotIn("NEW IN 0.2.5:", text)  # one release needs no heading
+        self.assertNotIn("KEYBOARD HOME KEY", text)  # 0.2.5 notes were seen already
+        self.assertNotIn("NEW IN 0.2.6:", text)  # one release needs no heading
         self.assertNotIn(whatsnew.EARLIER, text)
 
     def test_a_long_upgrade_shows_only_this_release_and_points_to_the_rest(self):
@@ -317,8 +317,15 @@ class ContentTest(unittest.TestCase):
         current = (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
         self.assertEqual(whatsnew.RELEASES[0][0], current)
 
-    def test_0_2_5_says_the_super_key_no_longer_opens_home_and_where_to_set_the_key(self):
+    def test_0_2_6_says_a_paired_pc_is_recognised_and_the_notice_is_gone(self):
         release, features = whatsnew.RELEASES[0]
+        self.assertEqual(release, "0.2.6")
+        text = " ".join(features)
+        self.assertIn("PAIRED GAMING PC", text)
+        self.assertIn("NO MORE NOTICE", text)
+
+    def test_0_2_5_says_the_super_key_no_longer_opens_home_and_where_to_set_the_key(self):
+        release, features = whatsnew.RELEASES[1]
         self.assertEqual(release, "0.2.5")
         text = " ".join(features)
         self.assertIn("SUPER", text)
@@ -326,7 +333,7 @@ class ContentTest(unittest.TestCase):
         self.assertIn("SETTINGS > CONTROLS", text)
 
     def test_notes_are_only_the_installed_release(self):
-        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[2]]))
+        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[3]]))
         renamed, releases = whatsnew.notes("0.2.3", "0.2.0")
         self.assertFalse(renamed)
         self.assertEqual([r for r, _f in releases], ["0.2.3"])
@@ -337,10 +344,10 @@ class ContentTest(unittest.TestCase):
         self.assertEqual([r for r, _f in releases], ["0.2.3"])
         self.assertTrue(whatsnew.notes("0.2.3", "")[0])  # no marker: from before the rename
         # A release without its own notes shows none: never the previous release's.
-        self.assertEqual(whatsnew.notes("0.2.6", "0.2.5"), (False, []))
-        self.assertEqual(whatsnew.notes("0.2.5.1", "0.2.5"), (False, []))
-        # A pre-release of 0.2.5 already shows the 0.2.5 notes.
-        self.assertEqual(whatsnew.notes("0.2.5-rc.1", "0.2.4")[1], [whatsnew.RELEASES[0]])
+        self.assertEqual(whatsnew.notes("0.2.7", "0.2.6"), (False, []))
+        self.assertEqual(whatsnew.notes("0.2.6.1", "0.2.6"), (False, []))
+        # A pre-release of 0.2.6 already shows the 0.2.6 notes.
+        self.assertEqual(whatsnew.notes("0.2.6-rc.1", "0.2.5")[1], [whatsnew.RELEASES[0]])
         # A future version's notes are not shown on an older system.
         self.assertEqual(whatsnew.notes("0.2.2", "0.2.1")[1][0][0], "0.2.2")
 

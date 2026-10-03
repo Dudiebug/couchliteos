@@ -202,37 +202,41 @@ def _host(fields: dict[str, str]) -> Host:
 def parse_hosts(text: str) -> list[Host]:
     """Paired hosts from Moonlight.conf text, read the way Moonlight reads them.
 
-    Moonlight prefers the `hostsbackup` array when it is non-empty, else `hosts`.
+    Moonlight (QSettings) writes each array in its own section: `[hosts]` holds
+    `1\\hostname=...` and `size=N`, and `[hostsbackup]` is the same. A `hosts\\1\\hostname`
+    key in [General] is read too. Moonlight prefers `hostsbackup` when it is non-empty.
     """
     arrays: dict[str, dict[int, dict[str, str]]] = {"hosts": {}, "hostsbackup": {}}
     sizes: dict[str, int] = {}
-    in_general = False
+    section = ""
     for line in text.splitlines():
         line = line.strip()
         if not line or line[0] in ";#":
             continue
         if line[0] == "[" and line[-1] == "]":
-            in_general = line[1:-1].strip() == "General"
+            section = line[1:-1].strip()
             continue
-        if not in_general or "=" not in line:
+        if "=" not in line:
             continue
         key, _, raw = line.partition("=")
         key = key.strip()
-        for name in arrays:
-            prefix = f"{name}\\"
-            if not key.startswith(prefix):
+        if section in arrays:
+            name, rest = section, key
+        elif section == "General":
+            name, _, rest = key.partition("\\")
+            if name not in arrays:
                 continue
-            rest = key[len(prefix):]
-            if rest == "size":
-                try:
-                    sizes[name] = int(decode_value(raw))
-                except ValueError:
-                    pass
-                break
-            index, _, field = rest.partition("\\")
-            if index.isdigit() and field:
-                arrays[name].setdefault(int(index), {})[field] = decode_value(raw)
-            break
+        else:
+            continue
+        if rest == "size":
+            try:
+                sizes[name] = int(decode_value(raw))
+            except ValueError:
+                pass
+            continue
+        index, _, field = rest.partition("\\")
+        if index.isdigit() and field:
+            arrays[name].setdefault(int(index), {})[field] = decode_value(raw)
     for name in ("hostsbackup", "hosts"):
         count = sizes.get(name, 0)
         if count > 0:

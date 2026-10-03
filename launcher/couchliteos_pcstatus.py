@@ -1,5 +1,7 @@
 """The one-line "is my gaming PC ready?" status under the title of the main screen.
 
+It is empty when no gaming PC is paired: not everyone streams from one.
+
 The launcher only ever reads a string (Monitor.line). The network probe
 (stream.probe: a TCP connect to Sunshine, never ping, never Wake-on-LAN) runs in a
 daemon thread every INTERVAL seconds, and never while an application or stream is
@@ -19,7 +21,6 @@ RUN = pathlib.Path("/run/couchliteos")
 INTERVAL = 20.0  # seconds between probes
 RETRY = 2.0  # while an app runs, look again this soon so the line is fresh when it ends
 LABEL_CELLS = 24  # columns of the PC name; the longest line is then 72 of 76
-NONE_PAIRED = "GAMING PC: NONE PAIRED YET - OPEN MOONLIGHT TO PAIR YOUR PC"
 ENDINGS = {
     "up": "READY",
     "awake": "IS ON BUT SUNSHINE IS NOT ANSWERING",
@@ -63,7 +64,7 @@ def status_text(
     if not link_up:
         return ""  # the status line already says OFFLINE
     if not hosts:
-        return NONE_PAIRED
+        return ""  # no gaming PC is fine: this box is also a PlayStation Remote Play client or a desktop
     if isinstance(host, int):
         return f"GAMING PCS: {host} PAIRED"
     if host is None:

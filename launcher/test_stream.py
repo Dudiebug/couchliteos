@@ -70,6 +70,84 @@ hosts\9\hostname=not-a-host
 '''
 
 
+def real_layout(text, array="hosts"):
+    """`text` laid out the way Moonlight's QSettings writes it: each array in its own section.
+
+    SAMPLE keeps `hosts\\N\\field` lines in [General]; the real file has a `[hosts]` section
+    holding `N\\field` and `size`. Tests that pass on SAMPLE alone missed exactly that.
+    """
+    general: list[str] = []
+    arrays: list[str] = []
+    prefix = array + "\\"
+    head, _, other = text.partition("\n[Other]")
+    for line in head.splitlines():
+        (arrays if line.startswith(prefix) else general).append(line.removeprefix(prefix))
+    return "\n".join(general).rstrip() + f"\n\n[{array}]\n" + "\n".join(arrays) + "\n" + (
+        "\n[Other]" + other if other else ""
+    )
+
+
+REAL_SAMPLE = real_layout(SAMPLE)
+
+
+class RealLayoutTest(unittest.TestCase):
+    """Moonlight writes `[hosts]` / `[hostsbackup]` sections, not `hosts\\N` keys in [General]."""
+
+    def test_a_typical_file_has_its_hosts_in_their_own_section(self):
+        self.assertIn("\n[hosts]\n1\\apps\\1\\appcollector=false\n", REAL_SAMPLE)
+        self.assertIn("\n1\\hostname=GAMING-PC\n", REAL_SAMPLE)
+        self.assertIn("\nsize=2\n\n[Other]", REAL_SAMPLE)
+        self.assertEqual(REAL_SAMPLE.count("\nhosts\\"), 1)  # only [Other]'s decoy is left in the flat form
+
+    def test_parses_the_same_hosts_as_the_flat_layout(self):
+        self.assertEqual(stream.parse_hosts(REAL_SAMPLE), stream.parse_hosts(SAMPLE))
+        hosts = stream.parse_hosts(REAL_SAMPLE)
+        self.assertEqual([host.name for host in hosts], ["GAMING-PC", "Living Room Mini"])
+        self.assertEqual(hosts[0].apps, ("Desktop", "Steam Big Picture"))
+        self.assertEqual(hosts[0].mac_text, "1C:1B:0D:8D:BF:E9")
+        self.assertEqual((hosts[1].local, hosts[1].local_port), ("192.168.1.77", 48989))
+
+    def test_a_minimal_real_file(self):
+        text = "[General]\nwidth=1920\n\n[hosts]\n1\\hostname=DESKTOP\n1\\localaddress=10.0.0.5\nsize=1\n"
+        hosts = stream.parse_hosts(text)
+        self.assertEqual([(host.name, host.local) for host in hosts], [("DESKTOP", "10.0.0.5")])
+
+    def test_crlf_line_endings(self):
+        self.assertEqual(len(stream.parse_hosts(REAL_SAMPLE.replace("\n", "\r\n"))), 2)
+
+    def test_backup_section_wins_and_an_empty_one_falls_back(self):
+        text = (
+            "[General]\nwidth=1\n\n[hosts]\n1\\hostname=Main\nsize=1\n\n"
+            "[hostsbackup]\n1\\hostname=Backup\nsize=1\n"
+        )
+        self.assertEqual([host.name for host in stream.parse_hosts(text)], ["Backup"])
+        empty_backup = text.replace("[hostsbackup]\n1\\hostname=Backup\nsize=1", "[hostsbackup]\nsize=0")
+        self.assertEqual([host.name for host in stream.parse_hosts(empty_backup)], ["Main"])
+
+    def test_size_missing_or_garbage_means_no_hosts(self):
+        self.assertEqual(stream.parse_hosts("[hosts]\n1\\hostname=A\n"), [])
+        self.assertEqual(stream.parse_hosts("[hosts]\n1\\hostname=A\nsize=x\n"), [])
+        self.assertEqual(stream.parse_hosts("[hosts]\nsize=0\n"), [])
+        self.assertEqual(stream.parse_hosts("[General]\nwidth=1\n"), [])
+
+    def test_host_lines_in_other_sections_are_ignored(self):
+        text = "[Other]\n1\\hostname=A\nsize=1\n[General]\nwidth=1\n"
+        self.assertEqual(stream.parse_hosts(text), [])
+
+    def test_a_host_missing_from_the_middle_still_counts_by_size(self):
+        text = "[hosts]\n1\\hostname=A\n3\\hostname=C\nsize=3\n"
+        self.assertEqual([host.name for host in stream.parse_hosts(text)], ["A", "UNKNOWN", "C"])
+
+    def test_load_hosts_and_default_host_from_a_real_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "Moonlight.conf"
+            path.write_bytes(real_layout(SAMPLE).encode("latin-1"))
+            hosts = stream.load_hosts(path)
+            self.assertEqual(len(hosts), 2)
+            self.assertEqual(stream.default_host(hosts[:1], stream.StreamSettings()), hosts[0])
+            self.assertIsNone(stream.default_host(hosts, stream.StreamSettings()))
+
+
 class ParseTest(unittest.TestCase):
     def test_parses_hosts_with_addresses_apps_and_escaped_mac(self):
         hosts = stream.parse_hosts(SAMPLE)
