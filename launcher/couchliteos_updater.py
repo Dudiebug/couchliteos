@@ -41,6 +41,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator
 
+import couchliteos_browser as browser
 import couchliteos_update as update
 
 RUN_DIR = pathlib.Path("/run/couchliteos")
@@ -891,6 +892,12 @@ def apply_root(
         merge_dpkg_status(_read(image / "var/lib/dpkg/status"), list(extras.values())), 0o644)
     _boot_menu(target, env, log, step)
     write_atomic(target / VERSION_REL, new_version + "\n", 0o644)
+    # Browsers are not in the image (the box installed them), so they are kept as extras;
+    # couchliteos-browser-refresh.service installs them again on the new system at the next start.
+    packages = {item.package for item in browser.BROWSERS.values()}
+    if any(name in packages for name, _architecture in extras):
+        write_atomic(target / browser.REFRESH_REL, "", 0o644)
+        log("browsers installed: refresh marked for the next start")
     step("SAVING TO THE DISK...", 98)
     sh(env, ["sync"], log)
     log(f"update to {new_version} done")

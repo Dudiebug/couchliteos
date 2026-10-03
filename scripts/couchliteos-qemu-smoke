@@ -277,17 +277,13 @@ systemctl stop couchliteos-moonlight.service
 systemctl start --no-block couchliteos-chiaki.service
 wait_for_file /run/couchliteos/chiaki-ng-ready chiaki-ng
 systemctl stop couchliteos-chiaki.service
-systemctl start --no-block couchliteos-firefox.service
-wait_for_file /run/couchliteos/firefox-ready Firefox
-printf 'google-chrome\n' > /run/couchliteos/launch-app.request
-systemctl start --no-block couchliteos-configured-app.service
-wait_for_file /run/couchliteos/google-chrome-ready 'Google Chrome'
+# Firefox and Google Chrome are not in the image: they install from the internet on demand.
 echo COUCHLITEOS_SMOKE_APPS_READY
 
 # Remote Desktop: real password helper, session unit, sdl-freerdp3 under Cage
 # without Xwayland, crash-restart policy, and OnFailure cleanup. A local TLS
 # endpoint answers the RDP negotiation and closes after the handshake.
-systemctl stop couchliteos-firefox.service couchliteos-configured-app.service || true
+systemctl stop couchliteos-configured-app.service || true
 test -x /usr/bin/sdl-freerdp3
 systemctl is-enabled --quiet couchliteos-rdp.path
 systemctl is-enabled --quiet couchliteos-rdp-secret.path

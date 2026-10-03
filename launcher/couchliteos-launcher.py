@@ -8,7 +8,6 @@ import dataclasses
 import ipaddress
 import os
 import pathlib
-import shlex
 import ssl
 import subprocess
 import sys
@@ -24,6 +23,8 @@ import couchliteos_support as support
 import couchliteos_bluetooth as bluetooth
 import couchliteos_listview as listview
 import couchliteos_apps as apps
+import couchliteos_browser as browser
+import couchliteos_browsersetup as browsersetup
 import couchliteos_power as power
 import couchliteos_rdp as rdp
 import couchliteos_setup as setup
@@ -129,7 +130,9 @@ STATUS_HOLD_SECONDS = 15.0
 
 def application_result() -> apps.LoadResult:
     system_dir = apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
-    return apps.load_applications(system_dir=system_dir)
+    result = apps.load_applications(system_dir=system_dir)
+    # Firefox and Chrome have no tile until they are installed (ADD A WEB BROWSER).
+    return apps.LoadResult(tuple(app for app in result.applications if apps.installed(app)), result.errors)
 
 
 def set_launcher_focus(held: bool) -> None:
@@ -1483,6 +1486,7 @@ class Launcher:
             "launch": self.launch_and_wait,
             "pair_moonlight": self.pair_moonlight,
             "wake_pc": self.wake_message,
+            "browser": self.browser_setup,
             "applications": Settings(self.screen, self).run_applications,
         }
         tv_control = getattr(self, "tv_control_screen", None)
@@ -1499,6 +1503,20 @@ class Launcher:
         ).run(force=force, resume=resume)
         HOME_REQUEST.unlink(missing_ok=True)  # setup takes no Home request, as with Guide: drop a leftover one
         self.reload_applications()
+
+    def browser_setup(self) -> bool | None:
+        """ADD A WEB BROWSER (setup and Settings > APPLICATIONS): True once one was installed there."""
+        def keep_awake() -> None:  # a long download must not blank or sleep the box
+            if IDLE_GUARD is not None:
+                IDLE_GUARD.keep_awake()
+
+        try:
+            return browsersetup.show(self.screen, read_key=read_key, keep_awake=keep_awake)
+        except Exception:  # noqa: BLE001 - a broken screen must not take the launcher down
+            self.status = "COULD NOT OPEN ADD A WEB BROWSER"
+            return False
+        finally:
+            self.reload_applications()
 
     def wizard_text(self, title: str, prompt: str, limit: int, *, masked: bool = False) -> str | None:
         request_osk(masked)
@@ -2626,6 +2644,11 @@ class ApplicationsSettings:
             self.status = f"APPLICATION NOT ADDED: {error}"
 
     def add_web(self) -> None:
+        if not browser.installed_browsers():  # a web app opens in an installed browser
+            self.launcher.browser_setup()
+            if not browser.installed_browsers():
+                self.status = "ADD A WEB BROWSER FIRST"
+                return
         name = self.text_input("ADD WEB APPLICATION", "NAME", apps.MAX_NAME)
         if not name:
             return
@@ -2634,15 +2657,17 @@ class ApplicationsSettings:
             return
         try:
             url = apps.validate_web_url(url)
+            kiosk = browser.kiosk_command(url)
+            if kiosk is None:
+                self.status = "ADD A WEB BROWSER FIRST"
+                return
             result = self.result()
             app_id = apps.application_id(name, {item.id for item in result.applications})
             order = max([50, *(item.order for item in result.applications if item.visible)]) + 10
             self._write_user(
                 apps.Application(
                     id=app_id, name=name.strip().upper(), kind="command",
-                    command="/usr/bin/google-chrome-stable",
-                    arguments=shlex.join(["--ozone-platform=wayland", "--kiosk", "--no-first-run", url]),
-                    status_id=app_id, order=order,
+                    command=kiosk[0], arguments=kiosk[1], status_id=app_id, order=order,
                 )
             )
             self.status = f"ADDED {name.strip().upper()}"
@@ -2707,7 +2732,7 @@ class ApplicationsSettings:
             result = self.result()
             visible = [app for app in result.applications if app.visible]
             rows = [f"{app.name:<28} {'ENABLED' if app.enabled else 'DISABLED'}" for app in visible]
-            rows += ["ADD COMMAND APPLICATION", "ADD WEB APPLICATION", "BACK"]
+            rows += ["ADD COMMAND APPLICATION", "ADD WEB APPLICATION", "ADD A WEB BROWSER", "BACK"]
             self.selected = min(self.selected, len(rows) - 1)
             if result.errors:
                 self.status = f"{len(result.errors)} INVALID APPLICATION(S) SKIPPED"
@@ -2730,6 +2755,8 @@ class ApplicationsSettings:
                 self.add_command()
             elif self.selected == len(visible) + 1:
                 self.add_web()
+            elif self.selected == len(visible) + 2:
+                self.launcher.browser_setup()
             else:
                 return
 

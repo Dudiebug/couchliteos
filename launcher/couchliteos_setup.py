@@ -50,6 +50,7 @@ TITLES = {
     "tv": "TV CONTROL",
     "tailscale": "TAILSCALE",
     "chiaki-ng": "CHIAKI-NG",
+    "browser": "WEB BROWSER",
     "applications": "MORE APPS",
 }
 
@@ -58,7 +59,7 @@ def plan_steps(*, cec_present: bool, tv_available: bool) -> list[str]:
     steps = ["network", "controller", "display", "streaming"]
     if cec_present and tv_available:
         steps.append("tv")
-    return steps + ["tailscale", "chiaki-ng", "applications"]
+    return steps + ["tailscale", "chiaki-ng", "browser", "applications"]
 
 
 def _atomic_write(path: pathlib.Path, text: str) -> None:
@@ -1495,8 +1496,14 @@ class SetupWizard:
         intro, label, app = OPTIONAL["chiaki-ng"]
         return self.open_step("chiaki-ng", intro, label, lambda: self.actions["launch"](app))
 
+    def step_browser(self) -> str:
+        """Neither browser ships with the system: ADD A WEB BROWSER installs one (its NOT NOW skips)."""
+        action = self.actions.get("browser")
+        result = action() if callable(action) else None
+        return DONE if result else (SKIPPED if result is None else FAILED)
+
     def step_applications(self) -> str:
-        return self.open_step("applications", "ADD MORE APPS, LIKE A WEB BROWSER OR A REMOTE DESKTOP.", "OPEN APPLICATIONS", self.actions["applications"])
+        return self.open_step("applications", "ADD MORE APPS, LIKE A WEB APP OR A REMOTE DESKTOP.", "OPEN APPLICATIONS", self.actions["applications"])
 
 
 # --- curses drawing (thin: no decisions are made here) ----------------------

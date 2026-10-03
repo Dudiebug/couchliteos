@@ -49,6 +49,28 @@ class ApplicationsTest(unittest.TestCase):
         self.assertFalse(editor.enabled)
         self.assertEqual(editor.order, 5)
 
+    def test_browser_manifests_name_their_binary_and_are_hidden_without_it(self):
+        result = self.load()
+        binaries = {app.id: app.binary for app in result.applications if app.binary}
+        self.assertEqual(binaries, {"firefox": "/usr/bin/firefox-esr", "google-chrome": "/usr/bin/google-chrome-stable"})
+        root = pathlib.Path(self.temporary.name) / "root"
+        firefox = next(app for app in result.applications if app.id == "firefox")
+        terminal = next(app for app in result.applications if app.id == "terminal")
+        self.assertFalse(apps.installed(firefox, root))
+        self.assertTrue(apps.installed(terminal, root), "no binary: always shown")
+        (root / "usr/bin").mkdir(parents=True)
+        (root / "usr/bin/firefox-esr").touch()
+        self.assertTrue(apps.installed(firefox, root))
+
+    def test_binary_must_be_absolute_and_survives_a_round_trip(self):
+        app = apps.Application(id="web", name="WEB", kind="command", command="/bin/true", binary="/usr/bin/x",
+                               status_id="web")
+        apps.write_user_application(app, system_dir=SYSTEM, user_dir=self.user)
+        self.assertEqual(next(item for item in self.load().applications if item.id == "web").binary, "/usr/bin/x")
+        (self.user / "bad.ini").write_text(apps.serialize(dataclasses.replace(app, id="bad", status_id="bad"))
+                                           .replace("/usr/bin/x", "usr/bin/x"))
+        self.assertIn("bad.ini: binary must be an absolute path", self.load().errors)
+
     def test_duplicate_user_id_is_skipped(self):
         self.user.mkdir()
         (self.user / "duplicate.ini").write_text(

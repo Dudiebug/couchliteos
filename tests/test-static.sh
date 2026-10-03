@@ -133,7 +133,45 @@ rg -q 'failed: exited before the application became ready' scripts/couchliteos-r
 rg -q 'unsquashfs -quiet -offset' build/configure.sh
 removed_units='couchliteos-escape''-guard|couchliteos-stop''-active-app'
 refute rg -q "$removed_units" build/configure.sh
-rg -q '^firefox-esr$' config/live-build/package-lists/couchliteos.list.chroot
+# Browsers on demand: neither browser is in the image; couchliteos-browser installs the user's pick.
+refute rg -q '^(firefox-esr|google-chrome-stable)$' config/live-build/package-lists/couchliteos.list.chroot
+for profile in general nvidia; do
+  rg -q "^FORBIDDEN_IMAGE_PATHS=.*usr/bin/firefox-esr\\$ usr/bin/google-chrome-stable\\$'" "config/profiles/$profile/profile.conf"
+done
+rg -q '^binary = /usr/bin/firefox-esr$' config/apps.d/30-firefox.ini
+rg -q '^binary = /usr/bin/google-chrome-stable$' config/apps.d/35-google-chrome.ini
+rg -q '^deb \[signed-by=/usr/share/keyrings/debian-archive-keyring.gpg\] http://deb.debian.org/debian trixie main$' \
+  overlay/usr/share/couchliteos/apt/sources.list
+rg -q 'trixie-updates main$' overlay/usr/share/couchliteos/apt/sources.list
+rg -q 'debian-security trixie-security main$' overlay/usr/share/couchliteos/apt/sources.list
+# The tool's Chrome source is the one the image's /etc/apt gets.
+chrome_source=$(cat overlay/usr/share/couchliteos/apt/sources.list.d/google-chrome.list)
+rg -Fq "$chrome_source" config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'Dir::Etc::sourcelist={APT_DIR}/sources.list' launcher/couchliteos_browser.py
+rg -Fq 'Dir::Etc::sourceparts={APT_DIR}/sources.list.d' launcher/couchliteos_browser.py
+rg -Fq 'APT_DIR = "/usr/share/couchliteos/apt"' launcher/couchliteos_browser.py
+rg -Fq '"$ROOT/launcher/couchliteos_browser.py" "$CHROOT/usr/libexec/couchliteos-browser"' build/configure.sh
+rg -q -- '-m 0755 "\$ROOT/launcher/couchliteos_browser.py"' build/configure.sh
+rg -Fq '"$CHROOT/usr/libexec/couchliteos_browser.py"' build/configure.sh
+rg -Fq '"$CHROOT/usr/libexec/couchliteos_browsersetup.py"' build/configure.sh
+rg -q '^PathExists=/run/couchliteos/browser-install$' services/couchliteos-browser.path
+rg -q '^Unit=couchliteos-browser.service$' services/couchliteos-browser.path
+rg -q '^User=root$' services/couchliteos-browser.service
+rg -q '/usr/libexec/couchliteos-browser request$' services/couchliteos-browser.service
+rg -q '^ExecStopPost=/usr/bin/rm -f /run/couchliteos/browser-install$' services/couchliteos-browser.service
+rg -q '^ConditionPathExists=/var/lib/couchliteos-update/browser-refresh$' services/couchliteos-browser-refresh.service
+rg -q '^After=couchliteos-network-ready.service$' services/couchliteos-browser-refresh.service
+rg -q '/usr/libexec/couchliteos-browser refresh$' services/couchliteos-browser-refresh.service
+refute rg -q '^Type=oneshot$' services/couchliteos-browser-refresh.service
+rg -q '^systemctl enable couchliteos-browser.path couchliteos-browser-refresh.service$' \
+  config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'REFRESH_REL = "var/lib/couchliteos-update/browser-refresh"' launcher/couchliteos_browser.py
+rg -q 'test_browser.py test_browsersetup.py' launcher/Makefile
+rg -q '^import couchliteos_browser as browser$' launcher/couchliteos-launcher.py launcher/couchliteos_browsersetup.py
+rg -q '^import couchliteos_browsersetup as browsersetup$' launcher/couchliteos-launcher.py
+rg -q '^import couchliteos_browser as browser$' launcher/couchliteos_updater.py
+refute rg -n 'shell=True|os\.system' launcher/couchliteos_browser.py launcher/couchliteos_browsersetup.py
+refute rg -q 'firefox-ready|google-chrome-ready|couchliteos-firefox.service' scripts/couchliteos-qemu-smoke
 # Build profiles: shared base plus hardware-specific packages, hooks, and files.
 # general and nvidia are the release ISOs; intel and imac2013 are legacy.
 for profile in general nvidia intel imac2013; do
@@ -289,13 +327,13 @@ rg -q 'InaccessiblePaths=.*-/var/lib/couchliteos/rdp-secrets' services/couchlite
 rg -q 'FREERDP_SECRET_ARGUMENT' scripts/couchliteos-support-export
 rg -q 'BTN_NORTH: ecodes.KEY_F12' launcher/gamepad-nav.py
 rg -q '"REMOTE DESKTOP"' launcher/couchliteos-launcher.py
-rg -q '^google-chrome-stable$' config/live-build/package-lists/couchliteos.list.chroot
 refute rg -q '^chromium' config/live-build/package-lists/couchliteos.list.chroot
 rg -q 'https://dl.google.com/linux/chrome/deb/ stable main' config/live-build/archives/google-chrome.list.chroot
 rg -q 'linux_signing_key.pub' build/sources.lock
 rg -q '^command = /usr/bin/google-chrome-stable$' config/apps.d/35-google-chrome.ini
-rg -q 'command="/usr/bin/google-chrome-stable"' launcher/couchliteos-launcher.py
-rg -q -- '--ozone-platform=wayland' config/apps.d/35-google-chrome.ini launcher/couchliteos-launcher.py
+rg -q '"google-chrome-stable", "/usr/bin/google-chrome-stable"' launcher/couchliteos_browser.py
+rg -q -- '--ozone-platform=wayland' config/apps.d/35-google-chrome.ini launcher/couchliteos_browser.py
+rg -q 'browser.kiosk_command\(url\)' launcher/couchliteos-launcher.py
 rg -q '^libavcodec61$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^systemd-timesyncd$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^wlrctl$' config/live-build/package-lists/couchliteos.list.chroot
@@ -320,9 +358,6 @@ rg -q '/boot/grub/grub.cfg' tests/qemu-smoke.sh
 rg -q 'COUCHLITEOS_APP_STARTED' scripts/couchliteos-run-app
 rg -q 'moonlight-ready' scripts/couchliteos-qemu-smoke
 rg -q 'chiaki-ng-ready' scripts/couchliteos-qemu-smoke
-rg -q 'firefox-ready' scripts/couchliteos-qemu-smoke
-rg -q 'systemctl start --no-block couchliteos-firefox.service' scripts/couchliteos-qemu-smoke
-rg -q 'google-chrome-ready' scripts/couchliteos-qemu-smoke
 rg -q 'name=opt/couchliteos.smoke,string=apps' tests/qemu-smoke.sh
 rg -q 'qemu-persistence-smoke' Makefile .github/workflows/build.yml
 rg -q 'live-persistence-write' scripts/couchliteos-qemu-smoke tests/qemu-persistence-smoke.sh
@@ -425,6 +460,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_pcstatus.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
   launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py \
+  launcher/couchliteos_browser.py launcher/couchliteos_browsersetup.py \
   scripts/couchliteos-rdp-secret \
   scripts/couchliteos-host-address scripts/couchliteos-support-export \
   scripts/couchliteos-bluetoothd scripts/couchliteos-hwdetect
