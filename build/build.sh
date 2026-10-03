@@ -102,9 +102,12 @@ fi
 # xz's 124 s on the 0.2.3 general chroot (16 CPUs), for a 13% larger image (1.57 GB
 # instead of 1.40 GB); level 15 took 50 s for 7%. The Debian 13 kernel the image boots
 # (CONFIG_SQUASHFS_ZSTD=y) and live-boot read zstd.
+# Releases also use 1 MiB blocks and xz's x86 BCJ filter (smaller code); live-build adds
+# MKSQUASHFS_OPTIONS from the environment to its mksquashfs command (binary_rootfs).
 if ((release)); then
   squashfs_options=(--chroot-squashfs-compression-type xz)
-  echo 'Build type: release (xz squashfs)'
+  export MKSQUASHFS_OPTIONS='-b 1M -Xbcj x86'
+  echo 'Build type: release (xz squashfs, 1 MiB blocks, x86 BCJ)'
 else
   squashfs_options=(--chroot-squashfs-compression-type zstd --chroot-squashfs-compression-level 9)
   echo 'Build type: test (zstd squashfs; sudo make build RELEASE=1 for a release)'
@@ -126,6 +129,7 @@ lb config noauto \
   --iso-publisher 'CouchLiteOS Project' \
   --iso-volume 'COUCHLITEOS' \
   --apt-recommends false \
+  --apt-indices false \
   --memtest none \
   "${cache_options[@]}" \
   "${squashfs_options[@]}" \

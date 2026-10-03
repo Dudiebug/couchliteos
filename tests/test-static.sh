@@ -803,6 +803,127 @@ rg -Fq -- '--release) release=1 ;;' build/build.sh
 rg -Fq "squashfs_options=(--chroot-squashfs-compression-type xz)" build/build.sh
 rg -q 'squashfs_options=\(--chroot-squashfs-compression-type zstd --chroot-squashfs-compression-level [0-9]+\)' build/build.sh
 rg -Fq '"${squashfs_options[@]}"' build/build.sh
+# Release squashfs: 1 MiB blocks and the x86 BCJ filter, release builds only.
+[[ $(sed -n '/^if ((release)); then$/,/^else$/p' build/build.sh | rg -c "^  export MKSQUASHFS_OPTIONS='-b 1M -Xbcj x86'$") == 1 ]]
+[[ $(rg -c 'MKSQUASHFS_OPTIONS=' build/build.sh) == 1 ]]
+rg -q '^  --apt-indices false \\$' build/build.sh
+# No documentation, manual pages or non-English translations; copyright files stay.
+slim_cfg=config/live-build/includes.chroot_before_packages/etc/dpkg/dpkg.cfg.d/couchliteos-slim
+for rule in 'path-exclude /usr/share/doc/\*' 'path-include /usr/share/doc/\*/copyright' \
+  'path-exclude /usr/share/man/\*' 'path-exclude /usr/share/info/\*' \
+  'path-exclude /usr/share/locale/\*' 'path-include /usr/share/locale/en\*'; do
+  rg -q "^$rule\$" "$slim_cfg"
+done
+# dpkg applies the last matching rule: every include follows its exclude.
+(($(rg -n '^path-include /usr/share/doc/' "$slim_cfg" | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/doc/' "$slim_cfg" | cut -d: -f1)))
+(($(rg -n '^path-include /usr/share/locale/en' "$slim_cfg" | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/locale/' "$slim_cfg" | cut -d: -f1)))
+slim_test=$(mktemp -d)
+mkdir -p "$slim_test/bin" "$slim_test/root/lib/modules/6.12.94+deb13-amd64/kernel" \
+  "$slim_test/root/usr/share/doc/libfoo1/examples" "$slim_test/root/usr/share/doc/couchliteos/examples" \
+  "$slim_test/root/usr/share/man/man1" "$slim_test/root/usr/share/info" \
+  "$slim_test/root/usr/share/locale/de/LC_MESSAGES" "$slim_test/root/usr/share/locale/en_GB/LC_MESSAGES" \
+  "$slim_test/root/usr/share/locale/es/LC_MESSAGES" \
+  "$slim_test/root/usr/lib/gcc/x86_64-linux-gnu/14" "$slim_test/root/usr/libexec/gcc/x86_64-linux-gnu/14" \
+  "$slim_test/root/usr/lib/x86_64-linux-gnu" "$slim_test/root/usr/bin" \
+  "$slim_test/root/usr/lib/firmware/ath10k/QCA4019/hw1.0" "$slim_test/root/usr/lib/firmware/ath10k/QCA6174/hw3.0" \
+  "$slim_test/root/usr/lib/firmware/ath11k/IPQ8074/hw2.0" "$slim_test/root/usr/lib/firmware/ath11k/WCN6855/hw2.0" \
+  "$slim_test/root/usr/lib/firmware/mediatek/mt8183" "$slim_test/root/usr/lib/firmware/mediatek/sof" \
+  "$slim_test/root/usr/lib/firmware/nvidia/ga102/gsp" "$slim_test/root/usr/lib/firmware/tigon" \
+  "$slim_test/root/usr/lib/firmware/qcom"
+for file in usr/share/doc/libfoo1/copyright usr/share/doc/libfoo1/changelog.Debian.gz \
+  usr/share/doc/libfoo1/examples/a.c usr/share/doc/couchliteos/examples/steam.ini \
+  usr/share/man/man1/foo.1.gz usr/share/info/foo.info.gz usr/share/locale/locale.alias \
+  usr/share/locale/de/LC_MESSAGES/foo.mo usr/share/locale/es/LC_MESSAGES/foo.mo \
+  usr/share/locale/en_GB/LC_MESSAGES/foo.mo \
+  usr/libexec/gcc/x86_64-linux-gnu/14/lto1 usr/libexec/gcc/x86_64-linux-gnu/14/cc1 \
+  usr/bin/x86_64-linux-gnu-lto-dump-14 usr/bin/x86_64-linux-gnu-gcc-14 \
+  usr/lib/gcc/x86_64-linux-gnu/14/libasan.so usr/lib/gcc/x86_64-linux-gnu/14/liblto_plugin.so \
+  usr/lib/x86_64-linux-gnu/libasan.so.8.0.0 usr/lib/x86_64-linux-gnu/libubsan.so.1.0.0 \
+  usr/lib/x86_64-linux-gnu/libhwasan.so.0.0.0 usr/lib/x86_64-linux-gnu/libtsan.so.2.0.0 \
+  usr/lib/x86_64-linux-gnu/liblsan.so.0.0.0 usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 \
+  usr/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin usr/lib/firmware/ath10k/QCA6174/hw3.0/firmware-6.bin \
+  usr/lib/firmware/ath11k/IPQ8074/hw2.0/m3.bin usr/lib/firmware/ath11k/WCN6855/hw2.0/amss.bin \
+  usr/lib/firmware/mediatek/mt8183/scp.img usr/lib/firmware/mediatek/sof/sof-mt8186.ri \
+  usr/lib/firmware/mediatek/mt7986_wm.bin usr/lib/firmware/mediatek/mt7622pr2h.bin \
+  usr/lib/firmware/mediatek/WIFI_RAM_CODE_MT7922_1.bin usr/lib/firmware/mediatek/mt7915_wm.bin \
+  usr/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin usr/lib/firmware/tigon/tg357766.bin \
+  usr/lib/firmware/qcom/a630_sqe.fw \
+  usr/lib/firmware/iwlwifi-cc-a0-46.ucode usr/lib/firmware/iwlwifi-cc-a0-72.ucode \
+  usr/lib/firmware/iwlwifi-cc-a0-77.ucode usr/lib/firmware/iwlwifi-cc-a0-79.ucode \
+  usr/lib/firmware/iwlwifi-so-a0-gf-a0-64.ucode usr/lib/firmware/iwlwifi-so-a0-gf-a0-86.ucode \
+  usr/lib/firmware/iwlwifi-so-a0-gf-a0.pnvm usr/lib/firmware/iwlwifi-7265D-27.ucode.xz \
+  usr/lib/firmware/iwlwifi-7265D-29.ucode.xz usr/lib/firmware/iwlwifi-3160-17.ucode \
+  usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-50.ucode usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-77.ucode; do
+  printf 'x\n' > "$slim_test/root/$file"
+done
+# A kept file that is a link keeps the device's older files (they may be its target).
+ln -s iwlwifi-Qu-b0-jf-b0-50.ucode "$slim_test/root/usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-72.ucode"
+ln -s libfoo1 "$slim_test/root/usr/share/doc/libfoo1-dev"
+# The kernel's iwlwifi API maxima: cc-a0 77, so-a0-gf-a0 89 (64 never loads; 86 is the newest
+# file), 7265D 29, 3160 17, Qu-b0-jf-b0 72 (a link to 50).
+printf '#!/bin/bash\n[[ $1 == -k && $2 == 6.12.94+deb13-amd64 && $3 == -F && $4 == firmware ]] || exit 2\n[[ $5 == iwlwifi ]] || exit 1\nprintf "%%s\\n" iwlwifi-cc-a0-77.ucode iwlwifi-so-a0-gf-a0-89.ucode iwlwifi-7265D-29.ucode iwlwifi-3160-17.ucode iwlwifi-Qu-b0-jf-b0-72.ucode iwlwifi-ma-b0-gf-a0-89.ucode\n' \
+  > "$slim_test/bin/modinfo"
+chmod 0755 "$slim_test/bin/modinfo"
+PATH="$slim_test/bin:$PATH" COUCHLITEOS_SLIM_ROOT="$slim_test/root" \
+  bash config/live-build/hooks/live/0900-slim.hook.chroot > "$slim_test/log"
+(cd "$slim_test/root" && find . ! -type d | sed 's|^\./||' | LC_ALL=C sort) > "$slim_test/after"
+printf '%s\n' usr/bin/x86_64-linux-gnu-gcc-14 usr/lib/firmware/ath10k/QCA6174/hw3.0/firmware-6.bin \
+  usr/lib/firmware/ath11k/WCN6855/hw2.0/amss.bin usr/lib/firmware/iwlwifi-3160-17.ucode \
+  usr/lib/firmware/iwlwifi-7265D-29.ucode.xz usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-50.ucode \
+  usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-72.ucode usr/lib/firmware/iwlwifi-Qu-b0-jf-b0-77.ucode \
+  usr/lib/firmware/iwlwifi-cc-a0-77.ucode usr/lib/firmware/iwlwifi-cc-a0-79.ucode \
+  usr/lib/firmware/iwlwifi-so-a0-gf-a0-86.ucode usr/lib/firmware/iwlwifi-so-a0-gf-a0.pnvm \
+  usr/lib/firmware/mediatek/WIFI_RAM_CODE_MT7922_1.bin usr/lib/firmware/mediatek/mt7915_wm.bin \
+  usr/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin usr/lib/firmware/tigon/tg357766.bin \
+  usr/lib/gcc/x86_64-linux-gnu/14/liblto_plugin.so usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 \
+  usr/libexec/gcc/x86_64-linux-gnu/14/cc1 usr/share/doc/couchliteos/examples/steam.ini \
+  usr/share/doc/libfoo1-dev usr/share/doc/libfoo1/copyright \
+  usr/share/locale/en_GB/LC_MESSAGES/foo.mo usr/share/locale/locale.alias | LC_ALL=C sort > "$slim_test/expected"
+diff -u "$slim_test/expected" "$slim_test/after"
+# What stays passes the release profiles' image checks (build.sh lists the image as //path).
+for pattern in $(profile_value general FORBIDDEN_IMAGE_PATHS); do
+  refute rg -q -- "$pattern" <(sed 's|^|//|' "$slim_test/after")
+done
+for removed in usr/share/man/man1/foo.1.gz usr/share/info/foo.info.gz usr/share/doc/libfoo1/changelog.Debian.gz \
+  usr/share/locale/de/LC_MESSAGES/foo.mo usr/share/locale/es/LC_MESSAGES/foo.mo \
+  usr/libexec/gcc/x86_64-linux-gnu/14/lto1 usr/lib/gcc/x86_64-linux-gnu/14/libasan.so \
+  usr/lib/x86_64-linux-gnu/libubsan.so.1.0.0 usr/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin \
+  usr/lib/firmware/ath11k/IPQ8074/hw2.0/m3.bin usr/lib/firmware/qcom/a630_sqe.fw \
+  usr/lib/firmware/mediatek/mt8183/scp.img usr/lib/firmware/mediatek/sof/sof-mt8186.ri \
+  usr/lib/firmware/mediatek/mt7986_wm.bin usr/lib/firmware/mediatek/mt7622pr2h.bin; do
+  matched=0
+  for pattern in $(profile_value general FORBIDDEN_IMAGE_PATHS); do
+    rg -q -- "$pattern" <<< "//$removed" && matched=1
+  done
+  ((matched)) || { echo "no FORBIDDEN_IMAGE_PATHS pattern catches /$removed" >&2; exit 1; }
+done
+rg -q '^slim: removed /usr/lib/firmware/iwlwifi-cc-a0-46\.ucode$' "$slim_test/log"
+rg -q '^slim: removed /usr/lib/firmware/mediatek/mt8183/scp\.img$' "$slim_test/log"
+rg -q '^slim: 1 copyright files kept$' "$slim_test/log"
+# More than one image kernel: iwlwifi firmware is kept.
+mkdir -p "$slim_test/root/lib/modules/6.12.95+deb13-amd64/kernel"
+printf 'x\n' > "$slim_test/root/usr/lib/firmware/iwlwifi-cc-a0-46.ucode"
+PATH="$slim_test/bin:$PATH" COUCHLITEOS_SLIM_ROOT="$slim_test/root" \
+  bash config/live-build/hooks/live/0900-slim.hook.chroot > "$slim_test/log"
+test -f "$slim_test/root/usr/lib/firmware/iwlwifi-cc-a0-46.ucode"
+rm -rf -- "$slim_test"
+# The release profiles fail a build whose image still has what 0900-slim removes.
+for profile in general nvidia; do
+  forbidden=$(profile_value "$profile" FORBIDDEN_IMAGE_PATHS)
+  # Anchored: the application images under /opt keep their own usr/share.
+  for pattern in '^/+usr/share/man/.' '^/+usr/share/info/.' '^/+usr/share/doc/[^/]+/changelog' \
+    '^/+usr/share/locale/([^e/]|e[^n/])[^/]*/' '^/+usr/(lib|libexec)/gcc/.*/lto1$' \
+    '^/+usr/lib/(gcc/.*|x86_64-linux-gnu)/lib(asan|tsan|lsan|ubsan|hwasan)[^/]*$' \
+    '^/+usr/lib/firmware/ath1[0-2]k/(QCA4019|WCN3990|WCN6750|IPQ[0-9]+)/' '^/+usr/lib/firmware/(imx|meson|rockchip|qcom)/' \
+    '^/+usr/lib/firmware/mediatek/(.*mt8[0-9]{3}|mt7622|mt7629|mt798[0-9])'; do
+    [[ " $forbidden " == *" $pattern "* ]] || { echo "profile $profile does not forbid $pattern" >&2; exit 1; }
+  done
+done
+# chiaki-ng: English only, no DevTools; QtWebEngine stays.
+rg -Fq 'rm -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_devtools_resources.pak"' build/configure.sh
+rg -Fq -- "-name '*.pak' ! -name en-US.pak -delete" build/configure.sh
+rg -Fq -- "-name '*.qm' ! -name '*_en.qm' -delete" build/configure.sh
+rg -Fq 'test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_resources.pak"' build/configure.sh
 rg -Fq '"${cache_options[@]}"' build/build.sh
 rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
 rg -q '^RELEASE \?= 0$' Makefile

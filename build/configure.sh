@@ -184,6 +184,12 @@ while IFS='|' read -r name _version _url filename; do
     chiaki-ng)
       test -x "$CHROOT/opt/couchliteos/apps/$name/usr/bin/chiaki"
       test -f "$CHROOT/opt/couchliteos/apps/$name/usr/plugins/platforms/libqwayland-egl.so"
+      # English only and no web developer tools; QtWebEngine itself stays (PSN login).
+      rm -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_devtools_resources.pak"
+      find "$CHROOT/opt/couchliteos/apps/$name/usr/translations/qtwebengine_locales" -name '*.pak' ! -name en-US.pak -delete
+      find "$CHROOT/opt/couchliteos/apps/$name/usr/translations" -maxdepth 1 -name '*.qm' ! -name '*_en.qm' -delete
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/translations/qtwebengine_locales/en-US.pak"
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_resources.pak"
       ;;
   esac
   find "$extract" -depth -delete
