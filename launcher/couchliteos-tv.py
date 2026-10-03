@@ -26,8 +26,10 @@ launcher. `launcher-ready` is written after the first frame is drawn.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
+import subprocess
 import sys
 import threading
 import time
@@ -43,6 +45,7 @@ import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
 import couchliteos_quick as quick
 import couchliteos_session as session
+import couchliteos_softwareupdate as softwareupdate
 import couchliteos_stream as stream
 import couchliteos_theme as theme
 import couchliteos_tvlayout as tvlayout
@@ -55,7 +58,8 @@ try:
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gdk", "4.0")
-    from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 except (ImportError, ValueError) as _error:  # no PyGObject or no GTK 4 typelib
     Gtk = None
     GI_ERROR = str(_error)
@@ -74,6 +78,15 @@ TOAST_TICK_MS = 250
 KEY_HOME_SECONDS = 1.0  # the Home key reaches the window and gamepad-nav: one press, not two
 ART_COLUMNS = 6
 ART_HINT = "A / CROSS OR ENTER CHOOSES  ·  B / CIRCLE OR ESC GOES BACK"
+# Labels that end in "…" on purpose when the text is longer than their box (a tile's title and
+# detail); --dump-layout marks them, and the headless run accepts them shortened.
+ELLIPSIZED_ON_PURPOSE = ("tv-name", "tv-detail")
+BACKDROP_BLUR_WIDTH = 12  # px: a cover shrunk to this and stretched back to the screen is a cheap blur
+BACKDROP_ART_ALPHA = 80  # of 255: the blurred cover over the theme background (dimmed)
+BACKDROP_WALLPAPER_ALPHA = 140  # of 255: the theme's wallpaper, dimmed less
+BACKDROP_MAX_FILE = 20 * 1024 * 1024
+BACKDROP_CACHE = 16
+SCRIPT_STEP_MS = 400
 
 
 def visible_applications() -> apps.LoadResult:
@@ -478,7 +491,201 @@ class Screens:
         self.starting = False
 
 
-class Tv(Screens, session.Session):
+class Look:
+    """The theme on screen: the stylesheets (written again when the theme changes) and the
+    background behind every screen: the focused game's cover, blurred and dimmed, on the home
+    screen, else the theme's wallpaper, else the theme's background colour. Part of Tv."""
+
+    def init_look(self) -> None:
+        self.colours = theme.FALLBACK
+        self.theme_stamp: object = None
+        self.backdrop_textures: dict[tuple, "Gdk.Texture | None"] = {}
+
+    def build_backdrop(self, overlay: "Gtk.Overlay") -> None:
+        """The background picture, with the stack of screens over it."""
+        picture = self.backdrop = Gtk.Picture()
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_can_shrink(True)
+        picture.set_can_target(False)
+        overlay.set_child(picture)
+        overlay.add_overlay(self.stack)
+        overlay.set_measure_overlay(self.stack, True)
+
+    @staticmethod
+    def theme_stamp_now() -> object:
+        """What changes when Settings > APPEARANCE saves another theme or accent."""
+        try:
+            info = theme.CONFIG.stat()
+            return info.st_mtime_ns, info.st_size
+        except OSError:
+            return None
+
+    def load_css(self) -> None:
+        """Every stylesheet (home and its screens, the quick menu) from the current theme, at user
+        priority. GTK 4.14 has no CSS var(), so the colours are written in (not theme.css()'s variables)."""
+        self.theme_stamp = self.theme_stamp_now()
+        colours = self.colours = current_theme()
+        self.css.load_from_data((tvlayout.stylesheet(colours, self.layout)
+                                 + tvscreens.stylesheet(colours, self.layout)).encode(), -1)
+        self.quick_css.load_from_data(quick.stylesheet(colours, self.layout).encode(), -1)
+        self.render_backdrop()
+
+    def theme_tick(self) -> None:
+        """The 1 s tick: a theme or accent saved since the CSS was written is applied now."""
+        if hasattr(self, "layout") and self.theme_stamp_now() != self.theme_stamp:
+            self.load_css()
+
+    def render_backdrop(self) -> None:
+        if not hasattr(self, "backdrop"):
+            return
+        texture = None
+        if self.mode == "home":
+            item = self.model.focused()
+            path = self.cover(item) if item is not None else None
+            texture = self.backdrop_texture(path, blur=True) if path is not None else None
+        if texture is None and self.colours.wallpaper.startswith("/"):
+            texture = self.backdrop_texture(pathlib.Path(self.colours.wallpaper), blur=False)
+        if self.backdrop.get_paintable() is not texture:
+            self.backdrop.set_paintable(texture)
+
+    def backdrop_texture(self, path: pathlib.Path, blur: bool) -> "Gdk.Texture | None":
+        """`path` dimmed over the theme background: for a cover shrunk and stretched back (a blur),
+        a wallpaper at screen size. Kept until the file, the theme or the screen size changes."""
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        width, height = self.size
+        key = (str(path), info.st_mtime_ns, blur, self.colours.colours["background"], width, height)
+        if key in self.backdrop_textures:
+            return self.backdrop_textures[key]
+        texture = None
+        if 0 < info.st_size <= BACKDROP_MAX_FILE and width > 0 and height > 0:
+            try:
+                if blur:
+                    image = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), BACKDROP_BLUR_WIDTH, -1, True)
+                    # A tenth of the screen: Gtk.Picture stretches it the rest of the way, smoothly.
+                    out_w, out_h, alpha = max(1, width // 10), max(1, height // 10), BACKDROP_ART_ALPHA
+                else:
+                    image = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), width, height, True)
+                    out_w, out_h, alpha = width, height, BACKDROP_WALLPAPER_ALPHA
+                scale = max(out_w / image.get_width(), out_h / image.get_height())  # fill it, crop the rest
+                base = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, out_w, out_h)
+                base.fill(int(self.colours.colours["background"], 16) << 8 | 0xFF)
+                image.composite(base, 0, 0, out_w, out_h,
+                                (out_w - image.get_width() * scale) / 2, (out_h - image.get_height() * scale) / 2,
+                                scale, scale, GdkPixbuf.InterpType.BILINEAR, alpha)
+                texture = Gdk.Texture.new_for_pixbuf(base)
+            except GLib.Error as error:
+                display.log(f"tv backdrop {path.name}: {error.message}", session.LOG)
+        if len(self.backdrop_textures) >= BACKDROP_CACHE:
+            self.backdrop_textures.clear()
+        self.backdrop_textures[key] = texture
+        return texture
+
+
+class Script:
+    """`--script` and `--dump-layout`, for tests/tv-headless.sh: steps fed to the key handler one at
+    a time, and a JSON record of every label on screen. Part of Tv."""
+
+    script: list[str] = []
+    script_failed = False
+    dump_dir: pathlib.Path | None = None
+    shot_dir: pathlib.Path | None = None
+
+    def start_script(self) -> None:
+        if self.script:
+            GLib.timeout_add(SCRIPT_STEP_MS, self.script_step)
+
+    def script_step(self) -> bool:
+        """One step: a Gdk key name, `wait:<ms>`, `dump:<name>`, `theme:<name>` (saved as Settings
+        saves it), `open:whatsnew`, `open:update` (writes a downloading status) or `quit`. The next step is timed before this one
+        runs, so a step that waits for an answer (a question) is answered by the next one."""
+        if not self.script:
+            return False
+        step = self.script.pop(0)
+        kind, _, value = step.partition(":")
+        delay = int(value) if kind == "wait" and value.isdigit() else SCRIPT_STEP_MS
+        if self.script:
+            GLib.timeout_add(delay, self.script_step)
+        try:
+            if kind == "wait":
+                pass
+            elif kind == "dump":
+                self.dump_layout(value)
+            elif kind == "theme":
+                theme.save_choice(value, "")
+            elif step == "open:whatsnew":
+                self.open_whatsnew(*whatsnew_versions())
+            elif step == "open:update":  # as if the update service were downloading
+                (self.run_dir / softwareupdate.STATUS).write_text(
+                    json.dumps({"phase": "downloading", "percent": 42, "version": "9.9.9"}), encoding="utf-8")
+                self.watch_update("9.9.9")
+            elif step == "quit":
+                self.application.quit()
+            else:
+                keyval = Gdk.keyval_from_name(step)
+                if keyval in (0, Gdk.KEY_VoidSymbol):
+                    raise ValueError("not a step or a key name")
+                self.on_key(None, keyval, 0, None)
+        except Exception as error:  # noqa: BLE001 - reported, and the run exits non-zero
+            self.script_failed = True
+            print(f"couchliteos-tv: script step {step!r} failed: {error!r}", file=sys.stderr)
+        return False
+
+    def dump_layout(self, name: str) -> None:
+        """<dump dir>/<name>.json: the screen, its size and theme, and every label on screen with its
+        text, font size in px, position, width, natural (one line, unshortened) text width and whether
+        it was shortened; then <shot dir>/<name>.png with grim."""
+        labels = []
+
+        def walk(widget: "Gtk.Widget") -> None:
+            if not widget.get_mapped() or widget.get_opacity() == 0:
+                return
+            if isinstance(widget, Gtk.Label) and widget.get_text().strip():
+                labels.append(self.label_facts(widget))
+            child = widget.get_first_child()
+            while child is not None:
+                walk(child)
+                child = child.get_next_sibling()
+
+        walk(self.window)
+        record = {"name": name, "screen": self.mode, "quick": self.quick_open, "theme": self.colours.name,
+                  "width": self.window.get_width(), "height": self.window.get_height(), "labels": labels}
+        if self.dump_dir is not None:
+            self.dump_dir.mkdir(parents=True, exist_ok=True)
+            (self.dump_dir / f"{name}.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
+        if self.shot_dir is not None:
+            self.shot_dir.mkdir(parents=True, exist_ok=True)
+            self.pump(0.2)  # the frame with this screen on it
+            subprocess.run(["grim", str(self.shot_dir / f"{name}.png")], check=True, timeout=30)
+
+    def label_facts(self, widget: "Gtk.Label") -> dict:
+        font = widget.get_pango_context().get_font_description()
+        size = font.get_size() / Pango.SCALE
+        ok, bounds = widget.compute_bounds(self.window)
+        return {
+            "text": widget.get_text(),
+            "classes": list(widget.get_css_classes()),
+            "font_px": round(size if font.get_size_is_absolute() else size * 96 / 72, 1),
+            "x": round(bounds.get_x()) if ok else 0,
+            "y": round(bounds.get_y()) if ok else 0,
+            "right": round(bounds.get_x() + bounds.get_width()) if ok else 0,
+            "width": widget.get_width(),
+            "natural": widget.create_pango_layout(widget.get_text()).get_pixel_size()[0],
+            "wrap": widget.get_wrap(),
+            "ellipsized": widget.get_layout().is_ellipsized(),
+            "on_purpose": any(name in ELLIPSIZED_ON_PURPOSE for name in widget.get_css_classes()),
+        }
+
+
+def whatsnew_versions() -> tuple[str, str]:
+    """(this version, the one before it) for `open:whatsnew`: what an upgrade from it shows."""
+    versions = [version for version, _features in whatsnew.RELEASES]
+    return versions[0], versions[1] if len(versions) > 1 else ""
+
+
+class Tv(Screens, Look, Script, session.Session):
     def __init__(self, application: "Gtk.Application") -> None:
         self.application = application
         self.window: Gtk.ApplicationWindow | None = None
@@ -504,6 +711,7 @@ class Tv(Screens, session.Session):
             apps_running=self.apps_running, enabled=lambda: not power.smoke_test_active(),
         )
         self.css = Gtk.CssProvider()
+        self.init_look()
         self.init_screens()
         self.init_quick()
 
@@ -516,7 +724,7 @@ class Tv(Screens, session.Session):
         window.set_child(overlay)
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
-        overlay.set_child(self.stack)
+        self.build_backdrop(overlay)
         self.build_quick(overlay)
         self.blank = Gtk.Box()
         self.blank.add_css_class("tv-blank")
@@ -608,9 +816,7 @@ class Tv(Screens, session.Session):
             return
         self.size = size
         self.layout = tvlayout.Layout(*size)
-        colours = current_theme()
-        self.css.load_from_data((tvlayout.stylesheet(colours, self.layout)
-                                 + tvscreens.stylesheet(colours, self.layout)).encode(), -1)
+        self.load_css()
         self.relayout_quick()
         layout = self.layout
         for page in (self.home_page, self.active_page, *(entry[0] for entry in self.pages.values()),
@@ -669,6 +875,7 @@ class Tv(Screens, session.Session):
             for at in tvlayout.visible(len(row.tiles), column):
                 tiles.append(self.tile(row.tiles[at], row.name, index == focus_row and at == focus_column))
         self.render_bar()
+        self.render_backdrop()
 
     def render_bar(self) -> None:
         status = self.model.status()
@@ -684,6 +891,7 @@ class Tv(Screens, session.Session):
     def show(self, name: str) -> None:
         self.mode = name
         self.stack.set_visible_child_name(name)
+        self.render_backdrop()
 
     def show_text(self, name: str, title: str, body: str, hint: str) -> None:
         _box, title_label, body_label, hint_label = self.pages[name]
@@ -979,6 +1187,7 @@ class Tv(Screens, session.Session):
             self.screens_tick()
             return
         self.relayout(self.screen_size())
+        self.theme_tick()
         if self.take_resumed():
             self.idle.resumed()
             self.blank.set_visible(False)
@@ -1113,7 +1322,6 @@ class Tv(Screens, session.Session):
 
     def relayout_quick(self) -> None:
         layout = self.layout
-        self.quick_css.load_from_data(quick.stylesheet(current_theme(), layout).encode(), -1)
         self.quick_width = max(1, round(layout.width * 0.34))
         self.quick_panel.set_size_request(self.quick_width, -1)
         self.quick_panel.set_spacing(layout.px(16))
@@ -1517,6 +1725,7 @@ class Tv(Screens, session.Session):
             self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
             self.render_bar()
         self.continue_start()
+        self.start_script()
         return False
 
     def activate(self, _application) -> None:
@@ -1534,7 +1743,10 @@ class Tv(Screens, session.Session):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="CouchLiteOS TV interface")
-    parser.parse_args(argv)
+    parser.add_argument("--script", default="", help="test steps, comma-separated (Tv.script_step)")
+    parser.add_argument("--dump-layout", metavar="DIR", help="where `dump:<name>` steps write <name>.json")
+    parser.add_argument("--screenshots", metavar="DIR", help="where `dump:<name>` steps write <name>.png (grim)")
+    args = parser.parse_args(argv)
     if Gtk is None:
         print(f"couchliteos-tv: GTK 4 is not available: {GI_ERROR}", file=sys.stderr)
         return INIT_FAILED
@@ -1544,8 +1756,13 @@ def main(argv: list[str] | None = None) -> int:
     GLib.set_prgname("couchliteos-launcher")
     application = Gtk.Application(application_id=APPLICATION_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
     tv = Tv(application)
+    tv.script = [step.strip() for step in args.script.split(",") if step.strip()]
+    tv.dump_dir = pathlib.Path(args.dump_layout) if args.dump_layout else None
+    tv.shot_dir = pathlib.Path(args.screenshots) if args.screenshots else None
     application.connect("activate", tv.activate)
     status = application.run([sys.argv[0]])
+    if tv.script_failed:
+        return 1
     return status if tv.ready_written else INIT_FAILED  # never drew a frame: let the wrapper fall back
 
 

@@ -225,5 +225,46 @@ class ScreensTest(unittest.TestCase):
             tv.after_screen.assert_called()
 
 
+class LookTest(unittest.TestCase):
+    """The theme on screen and the test script, with GTK left out."""
+
+    def test_a_saved_theme_reloads_the_stylesheets_once(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.layout = module.tvlayout.Layout(1920, 1080)
+        tv.load_css = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            with mock.patch.object(module.theme, "CONFIG", config):
+                tv.theme_stamp = tv.theme_stamp_now()
+                tv.theme_tick()
+                tv.load_css.assert_not_called()
+                module.theme.save_choice("slate", "", config)
+                tv.theme_tick()
+                tv.load_css.assert_called_once()
+
+    def test_the_script_times_the_next_step_first_and_reports_a_bad_one(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.script = ["NoSuchKey", "wait:1500", "quit"]
+        tv.on_key = mock.Mock()
+        tv.application = mock.Mock()
+        glib = mock.Mock()
+        gdk = mock.Mock(KEY_VoidSymbol=0xFFFFFF)
+        gdk.keyval_from_name.return_value = 0xFFFFFF
+        with mock.patch.object(module, "GLib", glib, create=True), \
+                mock.patch.object(module, "Gdk", gdk, create=True), mock.patch.object(module.sys, "stderr"):
+            self.assertFalse(tv.script_step())
+            self.assertTrue(tv.script_failed)
+            tv.on_key.assert_not_called()
+            glib.timeout_add.assert_called_with(module.SCRIPT_STEP_MS, tv.script_step)
+            tv.script_step()  # wait:1500 times the step after it
+            glib.timeout_add.assert_called_with(1500, tv.script_step)
+            glib.timeout_add.reset_mock()
+            tv.script_step()
+            glib.timeout_add.assert_not_called()  # the last step
+            tv.application.quit.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

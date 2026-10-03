@@ -75,6 +75,7 @@ test:
 	python3 -m unittest -v tests/test_bluetoothd_helpers.py
 	python3 -m unittest -v tests/test_cage_build.py
 	python3 -m unittest -v tests/test_tv_fallback.py
+	if command -v cage >/dev/null; then ./tests/tv-headless.sh --if-available; else echo 'tv-headless: skipped: cage is not installed'; fi
 	$(MAKE) -C launcher test
 	./build/test-gate.sh mark
 

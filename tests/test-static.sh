@@ -261,6 +261,7 @@ rg -Fq '("/var/log/moonlightos", "/var/log/couchliteos")' scripts/couchliteos-mi
 rg -Fq 'os.lchown' scripts/couchliteos-migrate
 refute rg -q 'os\.chown|shutil\.chown|followlinks=True|shell=True' scripts/couchliteos-migrate
 rg -Fq 'unittest -v tests/test_migrate.py' Makefile
+rg -Fq './tests/tv-headless.sh --if-available' Makefile
 
 refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
 rg -q '^intel-media-va-driver$' config/profiles/intel/package-lists/intel-graphics.list.chroot
