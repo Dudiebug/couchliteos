@@ -422,7 +422,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_display.py launcher/couchliteos_support.py \
   launcher/couchliteos_bluetooth.py launcher/couchliteos_audio.py launcher/gamepad-nav.py \
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
-  launcher/couchliteos_pcstatus.py \
+  launcher/couchliteos_pcstatus.py launcher/couchliteos_recent.py launcher/couchliteos_home.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
   launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py \
   scripts/couchliteos-rdp-secret \
@@ -951,6 +951,14 @@ rg -q 'couchliteos_padcheck.py' launcher/Makefile
 rg -q '^import couchliteos_padcheck as padcheck' launcher/couchliteos-launcher.py
 rg -q '/proc/bus/input/devices' launcher/couchliteos_padcheck.py
 refute rg -q 'evdev|/dev/input' launcher/couchliteos_padcheck.py
+# TV interface model (0.3.0): the home screen's rows and the recently played games
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_home.py" "\$CHROOT/usr/libexec/couchliteos_home.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_recent.py" "\$CHROOT/usr/libexec/couchliteos_recent.py"$' build/configure.sh
+rg -q 'test_home.py' launcher/Makefile
+rg -q 'test_recent.py' launcher/Makefile
+rg -q '^import couchliteos_recent as recent$' launcher/couchliteos-launcher.py
+rg -q 'recent\.record\(recent\.host_key\(host\), app_name\)' launcher/couchliteos-launcher.py
+refute rg -q '^import (curses|gi)' launcher/couchliteos_home.py launcher/couchliteos_recent.py
 
 # SETTINGS > NETWORK is the controller Wi-Fi menu; nmtui stays behind ADVANCED. The module never
 # starts a process or logs, so a Wi-Fi password cannot reach argv or a log through it.

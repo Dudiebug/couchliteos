@@ -79,6 +79,8 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_apps.py" "$CHROOT/usr/libexec/cou
 install -D -m 0644 "$ROOT/launcher/couchliteos_rdp.py" "$CHROOT/usr/libexec/couchliteos_rdp.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_controllers.py" "$CHROOT/usr/libexec/couchliteos_controllers.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_pcstatus.py" "$CHROOT/usr/libexec/couchliteos_pcstatus.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_recent.py" "$CHROOT/usr/libexec/couchliteos_recent.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_home.py" "$CHROOT/usr/libexec/couchliteos_home.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_update.py" "$CHROOT/usr/libexec/couchliteos_update.py"
 install -D -m 0755 "$ROOT/launcher/couchliteos_updater.py" "$CHROOT/usr/libexec/couchliteos-updater"
 install -D -m 0644 "$ROOT/launcher/couchliteos_softwareupdate.py" "$CHROOT/usr/libexec/couchliteos_softwareupdate.py"
