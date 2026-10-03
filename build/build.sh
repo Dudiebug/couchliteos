@@ -182,7 +182,51 @@ built_iso=$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -print -quit)
   exit 1
 }
 
+# The ISO's initrd: zstd after the uncompressed early-microcode archive(s), and without
+# nouveau or its firmware (overlay/etc/initramfs-tools: they load from the root filesystem).
+initrd_check() {
+  python3 - "$1" <<'EOF'
+import re, subprocess, sys
+
+def entries(data, pos=0):
+    """Walk one newc cpio archive from pos: (names, offset after its trailer)."""
+    names = []
+    while data[pos:pos + 6] in (b"070701", b"070702"):
+        size, namesize = int(data[pos + 54:pos + 62], 16), int(data[pos + 94:pos + 102], 16)
+        names.append(data[pos + 110:pos + 109 + namesize].decode(errors="replace"))
+        pos = (pos + 110 + namesize + 3) & ~3
+        pos = (pos + size + 3) & ~3
+        if names[-1] == "TRAILER!!!":
+            break
+    return names, pos
+
+data = open(sys.argv[1], "rb").read()
+pos = 0
+while data[pos:pos + 6] in (b"070701", b"070702"):
+    pos = entries(data, pos)[1]
+    while data[pos:pos + 1] == b"\0":
+        pos += 1
+if data[pos:pos + 4] != b"\x28\xb5\x2f\xfd":
+    sys.exit(f"{sys.argv[1]}: the initrd is not zstd (starts {data[pos:pos + 4].hex()} at byte {pos})")
+main = subprocess.run(["zstd", "-dcq"], input=data[pos:], stdout=subprocess.PIPE, check=True).stdout
+names = []
+offset = 0
+while main[offset:offset + 6] in (b"070701", b"070702"):
+    found, offset = entries(main, offset)
+    names += [name for name in found if name != "TRAILER!!!"]
+    while main[offset:offset + 1] == b"\0":
+        offset += 1
+if not any(re.search(r"/modules/", name) for name in names):
+    sys.exit(f"{sys.argv[1]}: no kernel modules found in the initrd (unreadable archive?)")
+slim = [name for name in names if re.search(r"/nouveau\.ko|/firmware/nvidia/", name)]
+if slim:
+    sys.exit(f"{sys.argv[1]}: the initrd still has nouveau: {slim[0]}")
+print(f"initrd: zstd, no nouveau, {len(names)} entries")
+EOF
+}
+
 image_checks() {
+  initrd_check binary/live/initrd.img
   # Profile checks run against the root filesystem that ships in the ISO.
   listing=$(mktemp)
   unsquashfs -l -d / binary/live/filesystem.squashfs > "$listing"
@@ -198,6 +242,12 @@ image_checks() {
       exit 1
     fi
   done
+  # The initrd is on the ISO only (config/live-build/rootfs/excludes); an installed
+  # system makes its own (scripts/couchliteos-grub-initrd, the updater).
+  if grep -E '^/+boot/initrd\.img-' "$listing"; then
+    echo 'The root filesystem still has an initrd (above); config/rootfs/excludes was not applied' >&2
+    exit 1
+  fi
   grep -E 'updates/dkms/(wl|nvidia-current)[^/]*\.ko' "$listing" || true
   # The build's version pins (build/apt-pins.sh) would hold back the installed system's updates.
   if grep -E '/etc/apt/preferences\.d/couchliteos-pins' "$listing"; then

@@ -924,6 +924,71 @@ rg -Fq 'rm -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_devt
 rg -Fq -- "-name '*.pak' ! -name en-US.pak -delete" build/configure.sh
 rg -Fq -- "-name '*.qm' ! -name '*_en.qm' -delete" build/configure.sh
 rg -Fq 'test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_resources.pak"' build/configure.sh
+# A smaller initrd: zstd, no nouveau (it loads from the root filesystem), on the ISO only.
+rg -q '^zstd$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^COMPRESS=zstd$' overlay/etc/initramfs-tools/conf.d/couchliteos.conf
+rg -q '^COMPRESSLEVEL=19$' overlay/etc/initramfs-tools/conf.d/couchliteos.conf
+initramfs_hook=overlay/etc/initramfs-tools/hooks/couchliteos-slim
+test -x "$initramfs_hook"
+sh -n "$initramfs_hook"
+rg -q '^prereqs\)$' "$initramfs_hook"
+rg -Fq '"${DESTDIR}"/lib/modules/*/kernel/drivers/gpu/drm/nouveau' "$initramfs_hook"
+rg -Fq '"${DESTDIR}/lib/firmware/nvidia"' "$initramfs_hook"
+initramfs_test=$(mktemp -d)
+mkdir -p "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau" \
+  "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915" "$initramfs_test/lib/firmware/nvidia/gk104"
+touch "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau/nouveau.ko.xz" \
+  "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz" \
+  "$initramfs_test/lib/firmware/nvidia/gk104/fecs_inst.bin"
+[[ $("$initramfs_hook" prereqs) == '' ]]
+DESTDIR=$initramfs_test "$initramfs_hook"
+test ! -e "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau"
+test ! -e "$initramfs_test/lib/firmware/nvidia"
+test -e "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz"
+rm -rf -- "$initramfs_test"
+[[ $(< config/live-build/rootfs/excludes) == 'boot/initrd.img-*' ]]
+rg -Fq "grep -E '^/+boot/initrd\.img-' \"\$listing\"" build/build.sh
+# An installed system makes the initrd the image leaves out, before 10_linux looks for it.
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-initrd" "$CHROOT/etc/grub.d/00_couchliteos_initrd"' build/configure.sh
+[[ 00_couchliteos_initrd < 00_header ]]
+sh -n scripts/couchliteos-grub-initrd
+rg -q 'update-initramfs -c -k "\$version" >&2' scripts/couchliteos-grub-initrd
+refute rg -q '^[^#]*(echo|printf|cat)\b[^>]*$' scripts/couchliteos-grub-initrd
+rg -Fq 'mode = "-u" if (target / "boot" / f"initrd.img-{kernel}").exists() else "-c"' launcher/couchliteos_updater.py
+rg -q '^  initrd_check binary/live/initrd\.img$' build/build.sh
+rg -qw zstd docs/BUILDING.md
+if command -v zstd >/dev/null; then
+  eval "$(sed -n '/^initrd_check() {$/,/^}$/p' build/build.sh)"
+  initrd_test=$(mktemp -d)
+  python3 - "$initrd_test" <<'EOF'
+import pathlib, subprocess, sys
+
+def cpio(names):
+    out = b""
+    for name in [*names, "TRAILER!!!"]:
+        body = b"" if name == "TRAILER!!!" else b"x" * 5
+        encoded = name.encode() + b"\0"
+        fields = [1, 0o100644, 0, 0, 1, 0, len(body), 0, 0, 0, 0, len(encoded), 0]
+        header = b"070701" + b"".join(b"%08X" % value for value in fields)
+        out += header + encoded
+        out += b"\0" * (-len(out) % 4) + body
+        out += b"\0" * (-len(out) % 4)
+    return out
+
+directory = pathlib.Path(sys.argv[1])
+early = cpio(["kernel/x86/microcode/GenuineIntel.bin"]) + b"\0" * 512
+modules = ["usr/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz"]
+nouveau = modules + ["usr/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau/nouveau.ko.xz"]
+zstd = lambda data: subprocess.run(["zstd", "-q", "-c"], input=data, stdout=subprocess.PIPE, check=True).stdout
+(directory / "good").write_bytes(early + zstd(cpio(modules)))
+(directory / "nouveau").write_bytes(early + zstd(cpio(nouveau)))
+(directory / "gzip").write_bytes(early + b"\x1f\x8b\x08\x00" + b"\0" * 64)
+EOF
+  [[ $(initrd_check "$initrd_test/good") == 'initrd: zstd, no nouveau, 1 entries' ]]
+  (initrd_check "$initrd_test/nouveau" 2>&1 && exit 1 || true) | rg -q 'still has nouveau: .*/nouveau\.ko\.xz'
+  (initrd_check "$initrd_test/gzip" 2>&1 && exit 1 || true) | rg -q 'is not zstd \(starts 1f8b0800'
+  rm -rf -- "$initrd_test"
+fi
 rg -Fq '"${cache_options[@]}"' build/build.sh
 rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
 rg -q '^RELEASE \?= 0$' Makefile
