@@ -215,6 +215,7 @@ class Session:
     status = ""  # the result line a front end shows; the classic launcher makes this a property
     pending_stream: tuple[str, str] | None = None  # (target, app) while an auto-stream starts
     stream_by_hand = False  # True while a press (not the auto-stream) starts it: wording only
+    pending_game: tuple[str, str] | None = None  # (PC key, app) while a stream starts: its own stream settings
 
     # ------------------------------------------------------------------ environment
 
@@ -338,6 +339,7 @@ class Session:
             return False
         request = self.run_dir / stream.STREAM_REQUEST.name
         self.pending_stream = (host.target, app_name)
+        self.pending_game = (recent.host_key(host), app_name)
         self.stream_by_hand = by_hand
         try:
             try:
@@ -348,6 +350,7 @@ class Session:
             started = self.launch_app(app, auto=True)
         finally:
             self.pending_stream = None
+            self.pending_game = None
             self.stream_by_hand = False
             request.unlink(missing_ok=True)
         if started:
@@ -356,6 +359,19 @@ class Session:
             except (OSError, ValueError):
                 pass  # the order is a convenience: never a reason to fail the stream
         return started
+
+    def apply_stream_settings(self, game: tuple[str, str] | None) -> None:
+        """Moonlight.conf for the Moonlight about to start: the global settings back, then the
+        game's own preset. A failure leaves Moonlight's settings as they are: never a failed start."""
+        def mode() -> stream.Mode | None:
+            output = display.active_output(display.query_outputs())
+            current = output.current_mode if output else None
+            return (current.width, current.height, current.refresh_mhz) if current else None
+
+        try:
+            stream.prepare_stream(game, mode=mode, run_dir=self.run_dir)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, stream.StreamError) as error:
+            display.log(f"stream settings not applied: {error}", LOG)
 
     def launch_app(self, app: apps.Application, *, quiet: bool = False, auto: bool = False, wake: bool = True) -> bool:
         """Start an application. `quiet` skips the failure dialog for a hidden one-off
@@ -387,6 +403,8 @@ class Session:
             return False
         if app.id == "moonlight" and wake and not self.wake_before_moonlight(app, auto):
             return False
+        if app.id == "moonlight":
+            self.apply_stream_settings(self.pending_game if auto else None)
         if auto and self.pending_stream is not None:
             # Written again after the wake wait (it can outlast REQUEST_MAX_AGE) and before each
             # TRY AGAIN: the Moonlight start consumes the request.

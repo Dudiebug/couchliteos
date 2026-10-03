@@ -52,6 +52,8 @@ class Codes:
     KEY_F7 = 65
     KEY_F8 = 66
     KEY_F9 = 67
+    KEY_F10 = 68
+    KEY_S = 31
     KEY_F12 = 88
     KEY_BACK = 158
     KEY_SPACE = 57
@@ -72,6 +74,7 @@ class Codes:
     KEY_RIGHTCTRL = 97
     KEY_LEFTALT = 56
     KEY_RIGHTALT = 100
+    KEY_LEFTSHIFT = 42
     KEY_H = 35
     # Keys the kernel's rc-cec keymap reports for a TV remote.
     KEY_OK = 352
