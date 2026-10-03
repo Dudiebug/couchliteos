@@ -1,0 +1,12 @@
+# CouchLiteOS built-in theme: pure black and white with a yellow focus ring.
+# Text on the focus fill is drawn in black (couchliteos_theme.on_focus).
+[theme]
+name = HIGH CONTRAST
+background = #000000
+surface = #000000
+text = #ffffff
+muted = #ffffff
+accent = #ffff00
+focus = #ffff00
+warning = #ffff00
+error = #ff6060

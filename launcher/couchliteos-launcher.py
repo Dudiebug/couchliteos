@@ -45,6 +45,7 @@ import couchliteos_padcheck as padcheck
 import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
 import couchliteos_phone as phone
+import couchliteos_theme as themes
 
 
 RUN = pathlib.Path("/run/couchliteos")
@@ -67,6 +68,7 @@ SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
 IDLE_SLEEP_NO_WAKE = "IDLE SLEEP OFF: NO CONTROLLER CAN WAKE THIS PC"
 SETTINGS_MENU = (
     "DISPLAY",
+    "APPEARANCE",
     "AUDIO",
     "BLUETOOTH",
     "NETWORK",
@@ -2039,6 +2041,7 @@ class Settings:
     def activate(self) -> bool:
         actions = {
             "DISPLAY": self.run_display,
+            "APPEARANCE": self.run_appearance,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
             "NETWORK": self.run_network,
@@ -2123,6 +2126,48 @@ class Settings:
                 self.status = status
                 if isinstance(chosen, str):
                     notice = self.change_screen_setting("text", chosen, rows, selected)
+
+    def run_appearance(self) -> None:
+        """THEME and ACCENT; a change recolours the launcher and the keyboard at once."""
+        selected = 0
+        notice = ""
+        while True:
+            available, problems = themes.available()
+            name, accent = themes.load_choice()
+            chosen = available.get(name) or available.get(themes.DEFAULT) or themes.FALLBACK
+            rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}", "BACK"]
+            status = self.status
+            # A bad user theme is listed nowhere else: say so until something is chosen.
+            self.status = notice or (f"SKIPPED {problems[0]}".upper()[:76] if problems else status)
+            self.draw("APPEARANCE", rows, selected)
+            self.status, notice = status, ""
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            if selected == 0:
+                value = self.choose("THEME", [(theme.label, theme.name) for theme in available.values()], chosen.name)
+                if isinstance(value, str):
+                    notice = self.change_theme(value, accent)
+            else:
+                choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS)]
+                value = self.choose("ACCENT", choices, accent)
+                if isinstance(value, str):
+                    notice = self.change_theme(chosen.name, value)
+
+    def change_theme(self, name: str, accent: str) -> str:
+        """Save the theme choice and recolour the running foot windows; returns what to tell the user."""
+        try:
+            themes.save_choice(name, accent)
+        except OSError as error:
+            return f"NOT SAVED: {error}".upper()
+        try:
+            themes.apply(themes.current())
+        except OSError:
+            return "SAVED: THE NEW COLOURS SHOW AFTER A RESTART"
+        return ""
 
     def restart_for_picture_size(self) -> None:
         """foot sized its text for the old picture size: restart into DISPLAY so it fits the new one."""

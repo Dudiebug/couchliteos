@@ -104,6 +104,7 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_listview.py" "$CHROOT/usr/libexec
 install -D -m 0755 "$ROOT/launcher/couchliteos_foot.py" "$CHROOT/usr/libexec/couchliteos-foot"
 install -D -m 0644 "$ROOT/launcher/couchliteos_controls.py" "$CHROOT/usr/libexec/couchliteos_controls.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_screenfit.py" "$CHROOT/usr/libexec/couchliteos_screenfit.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_theme.py" "$CHROOT/usr/libexec/couchliteos_theme.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_pointer.py" "$CHROOT/usr/libexec/couchliteos_pointer.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_phone.py" "$CHROOT/usr/libexec/couchliteos_phone.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_input.py" "$CHROOT/usr/libexec/couchliteos_input.py"

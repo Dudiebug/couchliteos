@@ -1027,6 +1027,17 @@ rg -q '^    screenfit = None' launcher/couchliteos_foot.py
 rg -qF '"main.pad=' launcher/couchliteos_foot.py
 refute rg -q 'systemctl|nomodeset' launcher/couchliteos_screenfit.py
 
+# Themes: built-in files in the image, the module in the image and tested; foot gets the colours.
+rg -qF 'couchliteos_theme.py" "$CHROOT/usr/libexec/couchliteos_theme.py"' build/configure.sh
+rg -q '^import couchliteos_theme as themes$' launcher/couchliteos-launcher.py
+rg -q 'couchliteos_theme.py .*gamepad-nav.py' launcher/Makefile
+rg -q 'test_theme.py' launcher/Makefile
+rg -q '^    import couchliteos_theme as theme$' launcher/couchliteos_foot.py
+rg -q '^    import couchliteos_theme as theme$' launcher/couchliteos_osk.py
+for name in midnight slate daylight high-contrast; do
+  test -f "overlay/usr/share/couchliteos/themes/$name.theme"
+done
+
 # FIND GAMING PCS: one mDNS question for _nvstream._tcp.local, standard library only, in the image and tested.
 rg -qF 'couchliteos_discover.py" "$CHROOT/usr/libexec/couchliteos_discover.py"' build/configure.sh
 rg -q '^import couchliteos_discover as discover$' launcher/couchliteos_setup.py
