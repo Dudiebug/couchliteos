@@ -11,7 +11,7 @@ Build on Debian 13 x86_64 (a VM works, and so does the iMac Late 2013 itself):
 
 ```bash
 sudo apt update
-sudo apt install --yes make git live-build curl ca-certificates xorriso   squashfs-tools grub-pc-bin grub-efi-amd64-bin mtools dosfstools
+sudo apt install --yes make git live-build curl ca-certificates xorriso   squashfs-tools zstd apt-utils grub-pc-bin grub-efi-amd64-bin mtools dosfstools
 sudo make build RELEASE=1                  # general ISO
 sudo make build PROFILE=nvidia RELEASE=1   # NVIDIA ISO
 ```

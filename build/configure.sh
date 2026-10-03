@@ -131,6 +131,7 @@ install -D -m 0755 "$ROOT/scripts/couchliteos-nvidia-firmware" "$CHROOT/usr/libe
 install -D -m 0644 "$ROOT/third_party/envytools/extract_firmware.py" "$CHROOT/usr/libexec/couchliteos/envytools-extract-firmware.py"
 install -D -m 0755 "$ROOT/scripts/couchliteos-diagnostics" "$CHROOT/usr/bin/couchliteos-diagnostics"
 install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"
+install -D -m 0755 "$ROOT/scripts/couchliteos-grub-initrd" "$CHROOT/etc/grub.d/00_couchliteos_initrd"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/couchliteos-hardware-report"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
 install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"
@@ -194,6 +195,12 @@ while IFS='|' read -r name _version _url filename; do
     chiaki-ng)
       test -x "$CHROOT/opt/couchliteos/apps/$name/usr/bin/chiaki"
       test -f "$CHROOT/opt/couchliteos/apps/$name/usr/plugins/platforms/libqwayland-egl.so"
+      # English only and no web developer tools; QtWebEngine itself stays (PSN login).
+      rm -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_devtools_resources.pak"
+      find "$CHROOT/opt/couchliteos/apps/$name/usr/translations/qtwebengine_locales" -name '*.pak' ! -name en-US.pak -delete
+      find "$CHROOT/opt/couchliteos/apps/$name/usr/translations" -maxdepth 1 -name '*.qm' ! -name '*_en.qm' -delete
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/translations/qtwebengine_locales/en-US.pak"
+      test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_resources.pak"
       ;;
   esac
   find "$extract" -depth -delete

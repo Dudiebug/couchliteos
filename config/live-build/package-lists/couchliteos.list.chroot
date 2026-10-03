@@ -18,6 +18,8 @@ nftables
 kmod
 udev
 rfkill
+# A zstd initrd (overlay/etc/initramfs-tools/conf.d/couchliteos.conf)
+zstd
 
 # Mesa graphics, Vulkan, VA-API, and diagnostics. GPU-specific firmware and
 # drivers come from the build profile (config/profiles/<profile>/package-lists).

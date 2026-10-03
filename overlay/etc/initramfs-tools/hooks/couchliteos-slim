@@ -1,0 +1,19 @@
+#!/bin/sh
+# CouchLiteOS: leave nouveau and its firmware (about 60 MiB) out of the initrd. Nothing
+# before the root filesystem needs a GPU driver; nouveau then loads from the root
+# filesystem, where its firmware is. mkinitramfs runs depmod after the hooks.
+PREREQ=""
+prereqs()
+{
+	echo "$PREREQ"
+}
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+rm -rf "${DESTDIR}"/lib/modules/*/kernel/drivers/gpu/drm/nouveau \
+	"${DESTDIR}"/usr/lib/modules/*/kernel/drivers/gpu/drm/nouveau \
+	"${DESTDIR}/lib/firmware/nvidia" "${DESTDIR}/usr/lib/firmware/nvidia"
