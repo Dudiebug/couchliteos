@@ -24,13 +24,14 @@ class SettingsFileTest(TempDir):
         settings = inputprefs.load_settings(self.config, self.speed)
         self.assertEqual(settings, inputprefs.Settings())
         self.assertEqual(settings.home, "select-start")
-        self.assertTrue(settings.keyboard_home)
+        self.assertEqual(settings.keyboard_home, inputprefs.DEFAULT_CHORD)
+        self.assertEqual(inputprefs.DEFAULT_CHORD, "KEY_LEFTCTRL+KEY_LEFTALT+KEY_H")
         self.assertEqual((settings.pad_speed, settings.mouse_speed), ("normal", "normal"))
 
     def test_save_and_load_round_trip_every_choice(self):
         for home, _label in inputprefs.HOME_CHOICES:
             for speed, _label in inputprefs.SPEED_CHOICES:
-                for keyboard in (True, False):
+                for keyboard in (inputprefs.DEFAULT_CHORD, "", "KEY_LEFTMETA+KEY_H"):
                     settings = inputprefs.Settings(home=home, keyboard_home=keyboard, pad_speed=speed)
                     inputprefs.save_settings(settings, self.config)
                     self.assertEqual(inputprefs.load_settings(self.config, self.speed), settings)
@@ -60,6 +61,199 @@ class SettingsFileTest(TempDir):
                 self.assertEqual(inputprefs.load_settings(self.config, self.speed).mouse_speed, speed)
         self.speed.unlink()
         self.assertEqual(inputprefs.load_mouse_speed(self.speed), "normal")
+
+
+class ChordTest(TempDir):
+    def test_old_on_and_off_values_become_the_default_chord_and_off(self):
+        for text, chord in (("true", inputprefs.DEFAULT_CHORD), ("on", inputprefs.DEFAULT_CHORD),
+                            ("1", inputprefs.DEFAULT_CHORD), ("false", ""), ("off", ""), ("0", ""), ("none", "")):
+            with self.subTest(text=text):
+                self.config.write_text(f"[input]\nkeyboard_home = {text}\n")
+                self.assertEqual(inputprefs.load_settings(self.config, self.speed).keyboard_home, chord)
+
+    def test_a_saved_chord_is_read_back_in_a_fixed_order_and_a_bad_one_gives_the_default(self):
+        for text, chord in (("KEY_H+KEY_LEFTMETA", "KEY_LEFTMETA+KEY_H"),
+                            ("key_rightalt+key_rightctrl+key_k", "KEY_LEFTCTRL+KEY_LEFTALT+KEY_K"),
+                            ("KEY_H", inputprefs.DEFAULT_CHORD), ("KEY_LEFTMETA+KEY_F5", inputprefs.DEFAULT_CHORD),
+                            ("junk", inputprefs.DEFAULT_CHORD), ("KEY_LEFTMETA+", inputprefs.DEFAULT_CHORD)):
+            with self.subTest(text=text):
+                self.config.write_text(f"[input]\nkeyboard_home = {text}\n")
+                self.assertEqual(inputprefs.load_settings(self.config, self.speed).keyboard_home, chord)
+
+    def test_off_is_saved_as_off_and_read_back_as_nothing(self):
+        inputprefs.save_settings(inputprefs.Settings(keyboard_home=""), self.config)
+        self.assertIn("keyboard_home = off", self.config.read_text())
+        self.assertEqual(inputprefs.load_settings(self.config, self.speed).keyboard_home, "")
+
+    def test_labels(self):
+        self.assertEqual(inputprefs.chord_label(inputprefs.DEFAULT_CHORD), "CTRL+ALT+H")
+        self.assertEqual(inputprefs.chord_label("KEY_RIGHTMETA+KEY_LEFTSHIFT+KEY_H"), "SHIFT+SUPER+H")
+        self.assertEqual(inputprefs.chord_label("KEY_LEFTALT+KEY_F3"), "ALT+F3")
+        self.assertEqual(inputprefs.chord_label(""), "OFF")
+        self.assertEqual(inputprefs.chord_label("nonsense"), "OFF")
+
+    def test_what_can_be_the_home_key(self):
+        ok = [{"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_H"}, {"KEY_LEFTMETA", "KEY_H"}, {"KEY_RIGHTALT", "KEY_G"},
+              {"KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_H"}, {"KEY_LEFTALT", "KEY_F3"}, {"KEY_LEFTCTRL", "KEY_F9"}]
+        for chord in ok:
+            with self.subTest(chord=chord):
+                self.assertIsNone(inputprefs.validate_chord(chord))
+        bad = [set(), {"KEY_H"}, {"KEY_LEFTMETA"}, {"KEY_LEFTCTRL", "KEY_LEFTALT"}, {"KEY_LEFTSHIFT", "KEY_H"},
+               {"KEY_LEFTCTRL", "KEY_H", "KEY_J"}, {"KEY_LEFTCTRL", "KEY_ENTER"}, {"KEY_LEFTALT", "KEY_ESC"},
+               {"KEY_LEFTMETA", "KEY_F5"}, {"KEY_LEFTALT", "KEY_F12"}, {"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F2"},
+               {"KEY_LEFTMETA", "KEY_F3"}, {"KEY_LEFTMETA", "KEY_UP"}, {"KEY_LEFTCTRL", "KEY_C"},
+               {"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_M"}, {"KEY_LEFTALT", "KEY_SPACE"}]
+        for chord in bad:
+            with self.subTest(chord=chord):
+                reason = inputprefs.validate_chord(chord)
+                self.assertTrue(reason)
+                self.assertEqual(reason, reason.upper())
+                self.assertLessEqual(len(reason), 60)
+
+    def test_the_capture_gives_the_keys_held_at_the_first_release_once(self):
+        capture = inputprefs.ChordCapture()
+        self.assertIsNone(capture.feed("KEY_LEFTCTRL", 1))
+        self.assertIsNone(capture.feed("KEY_LEFTALT", 1))
+        self.assertIsNone(capture.feed("KEY_H", 1))
+        self.assertEqual(capture.feed("KEY_H", 0), frozenset({"KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_H"}))
+        self.assertIsNone(capture.feed("KEY_LEFTALT", 0), "the rest of the release is not another try")
+        self.assertIsNone(capture.feed("KEY_LEFTCTRL", 0))
+        self.assertIsNone(capture.feed("KEY_X", 0), "a release without a press")
+        self.assertEqual(capture.held, set())
+        self.assertIsNone(capture.feed("KEY_LEFTMETA", 1))
+        self.assertEqual(capture.feed("KEY_LEFTMETA", 0), frozenset({"KEY_LEFTMETA"}),
+                         "a new try after all keys were up")
+
+
+class FakeKeyboards:
+    """What KeyboardSource gives the capture screen: one scripted round of key events per poll."""
+
+    def __init__(self, rounds, found=True):
+        self.rounds = list(rounds)
+        self.found = found
+        self.closed = False
+        self.clock = lambda: None  # time passes with every look at the keyboards
+
+    def open(self):
+        return self.found
+
+    def poll(self, _timeout):
+        self.clock()
+        return self.rounds.pop(0) if self.rounds else []
+
+    def close(self):
+        self.closed = True
+
+
+class CaptureScreenTest(TempDir):
+    """Settings > CONTROLS > KEYBOARD HOME KEY: hold the keys, let go, confirm."""
+
+    DOWN, UP = 1, 0
+    NOTHING = [-1] * 40  # keys the screen sees while the keyboard is being read
+
+    def capture(self, rounds, keys, settings=None, found=True):
+        launcher = load_launcher()
+        if settings is not None:
+            inputprefs.save_settings(settings, self.config)
+        screen = FakeScreen(keys)
+        menu = launcher.Settings(screen, mock.Mock())
+        source = FakeKeyboards(rounds, found)
+        self.pages = []
+        draw = menu.draw_capture
+
+        def record(lines, hint):
+            draw(lines, hint)
+            self.pages.append(("\n".join(lines), hint))
+
+        ticks = iter(1000 + x * 0.1 for x in range(100000))
+        source.clock = lambda: next(ticks)
+        self.request = self.root / "home.request"
+        self.request.touch()
+        with mock.patch.object(launcher, "read_key", side_effect=lambda window, **_kw: window.getch()), \
+                mock.patch.object(launcher, "HOME_REQUEST", self.request), \
+                mock.patch.object(launcher.time, "monotonic", side_effect=lambda: next(ticks)), \
+                mock.patch.object(inputprefs, "CONFIG", self.config), \
+                mock.patch.object(menu, "draw_capture", side_effect=record):
+            try:
+                self.notice = menu.capture_home_key(source)
+            except RuntimeError as stop:  # the screen never closed
+                self.notice = str(stop)
+        self.source = source
+        return inputprefs.load_settings(self.config, self.speed).keyboard_home
+
+    @staticmethod
+    def chord(*names):
+        """Rounds that press the keys in turn and let go in reverse, like a hand does."""
+        return [[(name, 1)] for name in names] + [[(name, 0)] for name in reversed(names)]
+
+    def test_a_chord_is_set_when_confirmed_and_the_old_key_is_forgotten(self):
+        rounds = self.chord("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_G")
+        saved = self.capture(rounds, self.NOTHING + [10])
+        self.assertEqual(saved, "KEY_LEFTCTRL+KEY_LEFTALT+KEY_G")
+        self.assertEqual(self.notice, "KEYBOARD HOME KEY  CTRL+ALT+G")
+        self.assertTrue(any("SET THE HOME KEY TO CTRL+ALT+G?" in text for text, _hint in self.pages))
+        self.assertTrue(self.source.closed)
+        self.assertFalse(self.request.exists(), "the old key, pressed while capturing, asked for Home")
+
+    def test_the_chord_is_read_at_the_first_release_and_right_hand_keys_count(self):
+        rounds = self.chord("KEY_RIGHTCTRL", "KEY_RIGHTALT", "KEY_K")
+        self.assertEqual(self.capture(rounds, self.NOTHING + [10]), "KEY_LEFTCTRL+KEY_LEFTALT+KEY_K")
+
+    def test_not_confirming_keeps_the_old_key(self):
+        rounds = self.chord("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_G")
+        saved = self.capture(rounds, self.NOTHING + [27])
+        self.assertEqual(saved, inputprefs.DEFAULT_CHORD)
+        self.assertEqual(self.notice, "NOT CHANGED")
+
+    def test_a_chord_with_super_warns_about_the_remote_pc(self):
+        rounds = self.chord("KEY_LEFTMETA", "KEY_H")
+        self.assertEqual(self.capture(rounds, self.NOTHING + [10]), "KEY_LEFTMETA+KEY_H")
+        confirm = [text for text, _hint in self.pages if "SET THE HOME KEY TO SUPER+H?" in text]
+        self.assertTrue(confirm and "SUPER KEY" in confirm[0])
+
+    def test_a_chord_that_cannot_work_says_why_and_keeps_listening(self):
+        rounds = self.chord("KEY_LEFTCTRL", "KEY_C") + self.chord("KEY_LEFTALT", "KEY_F5") + self.chord(
+            "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_G")
+        saved = self.capture(rounds, self.NOTHING + [10])
+        self.assertEqual(saved, "KEY_LEFTCTRL+KEY_LEFTALT+KEY_G", "the third try worked")
+        reasons = {inputprefs.validate_chord({"KEY_LEFTCTRL", "KEY_C"}), inputprefs.validate_chord({"KEY_LEFTALT", "KEY_F5"})}
+        shown = "\n".join(text for text, _hint in self.pages)
+        for reason in reasons:
+            self.assertIn(reason, shown)
+
+    def test_a_key_pressed_alone_is_not_a_chord(self):
+        saved = self.capture(self.chord("KEY_H"), self.NOTHING + [27])
+        self.assertEqual(saved, inputprefs.DEFAULT_CHORD)
+        self.assertIn(inputprefs.validate_chord({"KEY_H"}), "\n".join(text for text, _hint in self.pages))
+
+    def test_esc_on_the_keyboard_cancels_without_asking(self):
+        saved = self.capture(self.chord("KEY_ESC"), self.NOTHING)
+        self.assertEqual((saved, self.notice), (inputprefs.DEFAULT_CHORD, "NOT CHANGED"))
+
+    def test_esc_from_a_pad_cancels_only_when_no_keyboard_key_is_down(self):
+        # An ESC byte while Ctrl is held belongs to a chord under way, not to a B press.
+        rounds = [[("KEY_LEFTCTRL", 1)], [], [], [("KEY_LEFTCTRL", 0)]]
+        keys = [-1, 27, 27, -1] + self.NOTHING + [27]
+        saved = self.capture(rounds, keys)
+        self.assertEqual((saved, self.notice), (inputprefs.DEFAULT_CHORD, "NOT CHANGED"))
+
+
+    def test_y_turns_it_off_and_x_goes_back_to_the_default(self):
+        self.assertEqual(self.capture([], self.NOTHING + [curses.KEY_DC]), "")
+        self.assertEqual(self.notice, "KEYBOARD HOME KEY  OFF")
+        self.assertEqual(self.capture([], self.NOTHING + [curses.KEY_F12],
+                                      inputprefs.Settings(keyboard_home="KEY_LEFTMETA+KEY_H")), inputprefs.DEFAULT_CHORD)
+        self.assertEqual(self.notice, "KEYBOARD HOME KEY  CTRL+ALT+H")
+
+    def test_the_screen_names_the_current_key_and_fits_80x24(self):
+        self.capture([], self.NOTHING + [27], inputprefs.Settings(keyboard_home="KEY_LEFTMETA+KEY_H"))
+        text, hint = self.pages[0]
+        self.assertIn("NOW: SUPER+H", text)
+        self.assertLessEqual(len(hint), 76)
+
+    def test_without_a_keyboard_it_says_so(self):
+        self.assertEqual(self.capture([], [], found=False), inputprefs.DEFAULT_CHORD)
+        self.assertEqual(self.notice, "NO KEYBOARD FOUND")
 
 
 class MouseSpeedTest(TempDir):
@@ -133,13 +327,13 @@ class RowsAndCycleTest(TempDir):
     def test_rows(self):
         self.assertEqual(inputprefs.rows(inputprefs.Settings()), [
             "HOME SHORTCUT  GUIDE OR SELECT+START (HOLD)",
-            "KEYBOARD HOME SHORTCUT (CTRL+ALT+H)  ON",
+            "KEYBOARD HOME KEY  CTRL+ALT+H",
             "CONTROLLER MOUSE SPEED  NORMAL",
             "MOUSE SPEED  NORMAL",
         ])
-        rows = inputprefs.rows(inputprefs.Settings("guide", False, "very-fast", "slow"))
+        rows = inputprefs.rows(inputprefs.Settings("guide", "", "very-fast", "slow"))
         self.assertEqual(rows[0], "HOME SHORTCUT  GUIDE ONLY")
-        self.assertEqual(rows[1], "KEYBOARD HOME SHORTCUT (CTRL+ALT+H)  OFF")
+        self.assertEqual(rows[1], "KEYBOARD HOME KEY  OFF")
         self.assertEqual(rows[2], "CONTROLLER MOUSE SPEED  VERY FAST")
         self.assertEqual(rows[3], "MOUSE SPEED  SLOW")
         self.assertEqual([label for _value, label in inputprefs.HOME_CHOICES],
@@ -155,8 +349,7 @@ class RowsAndCycleTest(TempDir):
         self.assertEqual(inputprefs.cycle(inputprefs.Settings(home="l3-r3"), "home").home, "guide")
         self.assertEqual(inputprefs.cycle(settings, "pad_speed").pad_speed, "fast")
         self.assertEqual(inputprefs.cycle(inputprefs.Settings(pad_speed="slow"), "pad_speed", -1).pad_speed, "very-fast")
-        self.assertFalse(inputprefs.cycle(settings, "keyboard_home").keyboard_home)
-        self.assertFalse(inputprefs.cycle(settings, "keyboard_home", -1).keyboard_home)
+        self.assertEqual(inputprefs.cycle(settings, "keyboard_home"), settings, "the Home key is captured, not cycled")
         self.assertEqual(inputprefs.cycle(settings, "mouse_speed").mouse_speed, "fast")
 
     def test_change_saves_the_controller_choices_to_config_and_the_mouse_speed_to_cage(self):
@@ -209,9 +402,9 @@ class WatcherTest(TempDir):
         clock["now"] = 2.0
         watcher.current()
         self.assertEqual(len(loads), 1, "an unchanged file is not parsed again")
-        inputprefs.save_settings(inputprefs.Settings(home="l3-r3", keyboard_home=False), self.config)
+        inputprefs.save_settings(inputprefs.Settings(home="l3-r3", keyboard_home="KEY_LEFTMETA+KEY_H"), self.config)
         clock["now"] = 3.0
-        self.assertEqual(watcher.current(), inputprefs.Settings(home="l3-r3", keyboard_home=False))
+        self.assertEqual(watcher.current(), inputprefs.Settings(home="l3-r3", keyboard_home="KEY_LEFTMETA+KEY_H"))
         self.config.unlink()
         clock["now"] = 4.0
         self.assertEqual(watcher.current(), inputprefs.Settings(), "a removed file means the defaults")
@@ -247,27 +440,31 @@ class ControlsScreenTest(TempDir):
                 mock.patch.object(inputprefs, "CONFIG", self.config), \
                 mock.patch.object(inputprefs, "MOUSE_SPEED_FILE", self.speed), \
                 mock.patch.object(inputprefs, "signal_compositor", send), \
-                mock.patch.object(launcher.controls, "show") as show:
+                mock.patch.object(launcher.controls, "show") as show, \
+                mock.patch.object(launcher.controls, "show_keys") as show_keys, \
+                mock.patch.object(menu, "capture_home_key", return_value="CAPTURED") as capture:
             menu.run_controls()
+        self.show_keys, self.capture = show_keys, capture
         return frames, show, send
 
     def test_the_rows_render_on_80x24(self):
         frames, _show, _send = self.run_screen([27])
         text = "\n".join(frames[0])
         for row in ("CONTROLS", "HOME SHORTCUT  GUIDE OR SELECT+START (HOLD)",
-                    "KEYBOARD HOME SHORTCUT (CTRL+ALT+H)  ON", "CONTROLLER MOUSE SPEED  NORMAL",
-                    "MOUSE SPEED  NORMAL", "CONTROLLER BUTTONS", "BACK", inputprefs.HELP["home"]):
+                    "KEYBOARD HOME KEY  CTRL+ALT+H", "CONTROLLER MOUSE SPEED  NORMAL",
+                    "MOUSE SPEED  NORMAL", "CONTROLLER BUTTONS", "KEYBOARD KEYS", "BACK", inputprefs.HELP["home"]):
             self.assertIn(row, text)
 
     def test_left_right_and_a_cycle_each_row_and_save(self):
         keys = [curses.KEY_RIGHT, curses.KEY_RIGHT,  # HOME SHORTCUT: L3+R3, then GUIDE ONLY
-                curses.KEY_DOWN, 10,  # keyboard shortcut off
+                curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT,  # the Home key is not cycled
                 curses.KEY_DOWN, curses.KEY_LEFT,  # controller mouse: SLOW
                 curses.KEY_DOWN, curses.KEY_RIGHT,  # mouse: FAST
                 27]
         frames, _show, send = self.run_screen(keys)
         saved = inputprefs.load_settings(self.config, self.speed)
-        self.assertEqual(saved, inputprefs.Settings("guide", False, "slow", "fast"))
+        self.assertEqual(saved, inputprefs.Settings("guide", inputprefs.DEFAULT_CHORD, "slow", "fast"))
+        self.capture.assert_not_called()
         self.assertEqual(self.speed.read_text(), "0.4\n")
         send.assert_called_once_with()
         last = "\n".join(frames[-1])
@@ -276,8 +473,21 @@ class ControlsScreenTest(TempDir):
         self.assertIn("HOME SHORTCUT  GUIDE OR L3+R3 (HOLD)", "\n".join(frames[1]))
 
     def test_controller_buttons_opens_the_help_and_back_leaves(self):
-        _frames, show, _send = self.run_screen([curses.KEY_UP, curses.KEY_UP, 10, curses.KEY_DOWN, 10])
+        # UP wraps to BACK, UP again is KEYBOARD KEYS, UP again is CONTROLLER BUTTONS.
+        _frames, show, _send = self.run_screen(
+            [curses.KEY_UP, curses.KEY_UP, curses.KEY_UP, 10, curses.KEY_DOWN, curses.KEY_DOWN, 10])
         show.assert_called_once()
+        self.show_keys.assert_not_called()
+
+    def test_keyboard_keys_opens_its_page(self):
+        _frames, show, _send = self.run_screen([curses.KEY_UP, curses.KEY_UP, 10, curses.KEY_DOWN, 10])
+        self.show_keys.assert_called_once()
+        show.assert_not_called()
+
+    def test_enter_on_the_home_key_row_opens_capture_and_shows_its_notice(self):
+        frames, _show, _send = self.run_screen([curses.KEY_DOWN, 10, 27])
+        self.capture.assert_called_once_with()
+        self.assertIn("CAPTURED", "\n".join(frames[-1]))
 
 
 if __name__ == "__main__":

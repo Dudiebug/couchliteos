@@ -77,6 +77,9 @@ class Codes:
     KEY_LEFTALT = 56
     KEY_RIGHTALT = 100
     KEY_H = 35
+    KEY_K = 37
+    KEY_LEFTSHIFT = 42
+    KEY_RIGHTSHIFT = 54
 
 
 class Stop(Exception):
@@ -1183,19 +1186,7 @@ class PointerModeTest(unittest.TestCase):
         _pressed, _timeouts, _pads, mouse, _pad = self.drive(script, low=0, high=255)
         self.assertEqual(self.moved(mouse, Codes.REL_X), -int(self.module.POINTER_SPEED * 0.05))
 
-    # SuperTap and watch_home
-
-    def test_a_lone_super_tap_opens_home(self):
-        tap = self.module.SuperTap()
-        for code in (Codes.KEY_LEFTMETA, Codes.KEY_RIGHTMETA):
-            self.assertFalse(tap.feed("kbd", key_event(code, 1)))
-            self.assertTrue(tap.feed("kbd", key_event(code, 0)))
-
-    def test_super_held_until_it_repeats_is_not_a_tap(self):
-        tap = self.module.SuperTap()
-        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
-        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 2)))
-        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+    # watch_home
 
     def test_guide_still_goes_home_while_the_mouse_has_grabbed_the_pad(self):
         # The grab hides the pad from watch_home(), so the pointer path must ask for home itself.
@@ -1241,16 +1232,6 @@ class PointerModeTest(unittest.TestCase):
         self.assertTrue(mouse.closed)
         self.assertEqual(self.clicks(mouse)[-1], (Codes.BTN_LEFT, 0), "the held click is let go")
 
-    def test_super_tap_is_left_to_a_stream_or_remote_desktop(self):
-        for session, remote in (("moonlight", True), ("rdp", True), ("firefox", False)):
-            run = self.run_dir(pointer=False)
-            (run / "app-active").write_text(session + "\n", encoding="ascii")
-            self.assertEqual(self.module.remote_session_in_front(), remote, session)
-            (run / "launcher-focus").touch()
-            self.assertFalse(self.module.remote_session_in_front(), "the launcher has the keyboard")
-        self.run_dir(app=False)
-        self.assertFalse(self.module.remote_session_in_front())
-
     def test_leaving_mouse_mode_forgets_the_sticks(self):
         pads, _mouse = self.pads()
         pads.sticks = {"/dev/input/event3": {Codes.ABS_RY: [-0.9, 0]}}
@@ -1259,35 +1240,6 @@ class PointerModeTest(unittest.TestCase):
         pads.sticks = {"/dev/input/event3": {Codes.ABS_RY: [-0.9, 0]}}
         pads.set_pointer(False, 1.0)
         self.assertEqual(pads.sticks, {})
-
-    def test_super_used_as_a_shortcut_does_not_open_home(self):
-        tap = self.module.SuperTap()
-        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
-        tap.feed("kbd", key_event(Codes.KEY_ENTER, 1))
-        tap.feed("kbd", key_event(Codes.KEY_ENTER, 0))
-        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
-
-    def test_a_key_already_held_and_let_go_during_the_tap_does_not_cancel_it(self):
-        tap = self.module.SuperTap()
-        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
-        tap.feed("kbd", key_event(Codes.KEY_ENTER, 0))
-        tap.feed("kbd", key_event(Codes.KEY_ENTER, 2, Codes.EV_REL))  # not a key at all
-        self.assertTrue(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
-
-    def test_a_release_without_a_press_and_reset_do_not_open_home(self):
-        tap = self.module.SuperTap()
-        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
-        tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1))
-        tap.reset()
-        self.assertFalse(tap.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
-
-    def test_super_taps_are_tracked_per_keyboard(self):
-        tap = self.module.SuperTap()
-        tap.feed("one", key_event(Codes.KEY_LEFTMETA, 1))
-        tap.feed("two", key_event(Codes.KEY_ENTER, 1))  # someone typing on another keyboard
-        self.assertTrue(tap.feed("one", key_event(Codes.KEY_LEFTMETA, 0)))
-        tap.feed("one", key_event(Codes.KEY_LEFTMETA, 1))
-        self.assertFalse(tap.feed("two", key_event(Codes.KEY_LEFTMETA, 0)), "released on a keyboard never pressed")
 
     def watch_keyboards(self, rounds, capabilities=(Codes.KEY_LEFTMETA, Codes.KEY_ENTER)):
         """watch_home() over one fake keyboard: rounds[i] lists (code, value) events select i delivers.
@@ -1329,18 +1281,27 @@ class PointerModeTest(unittest.TestCase):
         sleep.assert_not_called()
         return watched[0], home, keyboard
 
-    def test_a_keyboard_with_a_super_key_is_watched_and_a_tap_goes_home(self):
-        watched, home, keyboard = self.watch_keyboards([[(Codes.KEY_LEFTMETA, 1)], [(Codes.KEY_LEFTMETA, 0)]])
-        self.assertEqual(watched, [keyboard])
-        home.assert_called_once_with()
+    CHORD_KEYS = (Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H, Codes.KEY_LEFTMETA, Codes.KEY_ENTER)
 
-    def test_a_super_shortcut_on_a_keyboard_does_not_go_home(self):
-        _watched, home, _keyboard = self.watch_keyboards(
-            [[(Codes.KEY_LEFTMETA, 1), (Codes.KEY_ENTER, 1)], [(Codes.KEY_ENTER, 0), (Codes.KEY_LEFTMETA, 0)]]
-        )
+    def test_a_lone_super_tap_no_longer_goes_home(self):
+        watched, home, keyboard = self.watch_keyboards(
+            [[(Codes.KEY_LEFTMETA, 1)], [(Codes.KEY_LEFTMETA, 0)]], capabilities=self.CHORD_KEYS)
+        self.assertEqual(watched, [keyboard], "a keyboard with the Home key's keys is watched")
         home.assert_not_called()
 
-    def test_a_device_without_home_guide_or_super_is_not_watched(self):
+    def test_a_keyboard_with_only_a_super_key_is_not_watched_any_more(self):
+        watched, home, _keyboard = self.watch_keyboards(
+            [[(Codes.KEY_LEFTMETA, 1)], [(Codes.KEY_LEFTMETA, 0)]])
+        self.assertEqual(watched, [])
+        home.assert_not_called()
+
+    def test_super_used_as_a_shortcut_on_a_keyboard_does_not_go_home(self):
+        _watched, home, _keyboard = self.watch_keyboards(
+            [[(Codes.KEY_LEFTMETA, 1), (Codes.KEY_ENTER, 1)], [(Codes.KEY_ENTER, 0), (Codes.KEY_LEFTMETA, 0)]],
+            capabilities=self.CHORD_KEYS)
+        home.assert_not_called()
+
+    def test_a_device_without_home_guide_or_the_home_keys_is_not_watched(self):
         watched, home, _keyboard = self.watch_keyboards([[]], capabilities=(Codes.KEY_ENTER,))
         self.assertEqual(watched, [])
         home.assert_not_called()
@@ -1540,10 +1501,20 @@ class HomeShortcutTest(unittest.TestCase):
         self.hold(combo, Codes.BTN_THUMBL, Codes.BTN_THUMBR, now=3.0)
         self.assertTrue(combo.due(4.5))
 
-    # KeyboardHome
+    # HomeChord
 
-    def chord(self, enabled=True):
-        return self.module.KeyboardHome(enabled=lambda: enabled)
+    CTRL_ALT_H = "KEY_LEFTCTRL+KEY_LEFTALT+KEY_H"
+    SUPER_H = "KEY_LEFTMETA+KEY_H"
+
+    def chord(self, text=CTRL_ALT_H):
+        return self.module.HomeChord(chord=lambda: text)
+
+    def press(self, chord, *codes, path="kbd"):
+        """Press the codes in turn; the result of the last press."""
+        result = False
+        for code in codes:
+            result = chord.feed(path, key_event(code, 1))
+        return result
 
     def test_ctrl_alt_h_opens_home_with_either_ctrl_and_either_alt(self):
         for ctrl in (Codes.KEY_LEFTCTRL, Codes.KEY_RIGHTCTRL):
@@ -1555,8 +1526,9 @@ class HomeShortcutTest(unittest.TestCase):
                     self.assertTrue(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
                     self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 2)), "a held H opens it once")
                     self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 0)))
+                    self.assertTrue(chord.feed("kbd", key_event(Codes.KEY_H, 1)), "and again for the next press")
 
-    def test_h_alone_ctrl_h_or_alt_h_do_not(self):
+    def test_the_key_alone_or_with_only_some_of_the_modifiers_does_not(self):
         chord = self.chord()
         self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
         chord.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 1))
@@ -1565,7 +1537,33 @@ class HomeShortcutTest(unittest.TestCase):
         chord.feed("kbd", key_event(Codes.KEY_LEFTALT, 1))
         self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
 
-    def test_ctrl_alt_h_counts_only_on_one_keyboard(self):
+    def test_an_extra_modifier_is_a_different_shortcut(self):
+        chord = self.chord()
+        self.assertFalse(self.press(chord, Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_LEFTSHIFT, Codes.KEY_H))
+        chord = self.chord(self.SUPER_H)
+        self.assertFalse(self.press(chord, Codes.KEY_LEFTMETA, Codes.KEY_LEFTSHIFT, Codes.KEY_H))
+
+    def test_another_key_does_not_open_home_and_events_that_are_not_keys_are_ignored(self):
+        chord = self.chord()
+        self.press(chord, Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT)
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_K, 1)))
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1, Codes.EV_REL)))
+
+    def test_super_h_when_it_is_the_chosen_key_and_ctrl_alt_h_then_is_not(self):
+        chord = self.chord(self.SUPER_H)
+        for code in (Codes.KEY_LEFTMETA, Codes.KEY_RIGHTMETA):
+            self.assertTrue(self.press(chord, code, Codes.KEY_H))
+            chord.feed("kbd", key_event(Codes.KEY_H, 0))
+            chord.feed("kbd", key_event(code, 0))
+        self.assertFalse(self.press(chord, Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H))
+
+    def test_a_lone_super_tap_is_nothing(self):
+        chord = self.chord(self.SUPER_H)
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_LEFTMETA, 1)))
+        self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+        self.assertFalse(self.chord().feed("kbd", key_event(Codes.KEY_LEFTMETA, 0)))
+
+    def test_the_chord_counts_only_on_one_keyboard(self):
         chord = self.chord()
         chord.feed("one", key_event(Codes.KEY_LEFTCTRL, 1))
         chord.feed("two", key_event(Codes.KEY_LEFTALT, 1))
@@ -1575,18 +1573,26 @@ class HomeShortcutTest(unittest.TestCase):
         chord.forget("two")
         self.assertFalse(chord.feed("two", key_event(Codes.KEY_H, 1)), "a keyboard unplugged forgets its keys")
 
-    def test_the_keyboard_shortcut_can_be_turned_off_and_is_read_live(self):
-        chord = self.chord(enabled=False)
-        chord.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 1))
-        chord.feed("kbd", key_event(Codes.KEY_LEFTALT, 1))
+    def test_a_release_without_a_press_and_reset_forget_the_modifiers(self):
+        chord = self.chord()
+        chord.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 0))
+        self.press(chord, Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT)
+        chord.reset()
         self.assertFalse(chord.feed("kbd", key_event(Codes.KEY_H, 1)))
-        self.use(keyboard_home=False)
-        live = self.module.KeyboardHome()
-        live.feed("kbd", key_event(Codes.KEY_LEFTCTRL, 1))
-        live.feed("kbd", key_event(Codes.KEY_LEFTALT, 1))
-        self.assertFalse(live.feed("kbd", key_event(Codes.KEY_H, 1)))
-        self.use(keyboard_home=True)
+
+    def test_off_and_a_chord_of_unknown_keys_never_open_home(self):
+        for text in ("", "KEY_LEFTCTRL+KEY_NOSUCHKEY", "junk"):
+            with self.subTest(text=text):
+                self.assertFalse(self.press(self.chord(text), Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H))
+
+    def test_the_chord_is_read_live_from_the_settings(self):
+        live = self.module.HomeChord()
+        self.use(keyboard_home="")
+        self.assertFalse(self.press(live, Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H))
+        self.use(keyboard_home=self.CTRL_ALT_H)
         self.assertTrue(live.feed("kbd", key_event(Codes.KEY_H, 1)))
+        self.use(keyboard_home=self.SUPER_H)
+        self.assertFalse(live.feed("kbd", key_event(Codes.KEY_H, 1)), "Ctrl and Alt are still held: not Super+H")
 
     # watch_home: the same Home request as Guide, from devices it only watches (never grabs)
 
@@ -1652,6 +1658,7 @@ class HomeShortcutTest(unittest.TestCase):
     PAD = (Codes.BTN_SOUTH, Codes.BTN_SELECT, Codes.BTN_START, Codes.BTN_TL, Codes.BTN_TR,
            Codes.BTN_THUMBL, Codes.BTN_THUMBR)  # no Guide button at all
     KEYBOARD = (Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H, Codes.KEY_ENTER)
+    SUPER_KEYBOARD = (Codes.KEY_LEFTMETA, Codes.KEY_H, Codes.KEY_ENTER)  # no Ctrl or Alt keys
 
     def test_a_pad_without_guide_is_watched_and_the_hold_opens_home_over_a_game(self):
         self.use(home="select-start")
@@ -1686,15 +1693,36 @@ class HomeShortcutTest(unittest.TestCase):
         home, _timeouts, _watched = self.watch(rounds, self.PAD)
         home.assert_not_called()
 
-    def test_ctrl_alt_h_through_watch_home_and_its_off_switch(self):
+    def test_the_home_key_through_watch_home_and_its_off_switch(self):
         rounds = [(0.0, [(Codes.KEY_LEFTCTRL, 1), (Codes.KEY_LEFTALT, 1)]), (0.1, [(Codes.KEY_H, 1)])]
-        self.use(keyboard_home=True)
+        self.use()
         home, _timeouts, watched = self.watch(rounds, self.KEYBOARD)
-        self.assertEqual(len(watched), 1, "a keyboard without Home or Super is watched for Ctrl+Alt+H")
+        self.assertEqual(len(watched), 1, "a keyboard without Home or Guide is watched for the Home key")
         home.assert_called_once_with()
-        self.use(keyboard_home=False)
-        home, _timeouts, _watched = self.watch(rounds, self.KEYBOARD)
+        self.use(keyboard_home="")
+        home, _timeouts, watched = self.watch(rounds, self.KEYBOARD)
         home.assert_not_called()
+        self.assertEqual(watched, [], "nothing to watch a keyboard for")
+
+    def test_a_chosen_super_h_goes_through_watch_home(self):
+        self.use(keyboard_home=self.SUPER_H)
+        rounds = [(0.0, [(Codes.KEY_LEFTMETA, 1)]), (0.1, [(Codes.KEY_H, 1)])]
+        home, _timeouts, watched = self.watch(rounds, self.SUPER_KEYBOARD)
+        self.assertEqual(len(watched), 1)
+        home.assert_called_once_with()
+        home, _timeouts, watched = self.watch(rounds, self.KEYBOARD)
+        self.assertEqual(watched, [], "this keyboard has no Super key")
+        home.assert_not_called()
+
+    def test_a_virtual_keyboard_is_not_watched_for_the_chord_but_a_virtual_pad_still_is(self):
+        self.use()
+        virtual = types.SimpleNamespace(bustype=self.module.BUS_VIRTUAL)
+        with mock.patch.object(self.module, "is_virtual", wraps=self.module.is_virtual):
+            self.assertTrue(self.module.is_virtual(types.SimpleNamespace(info=virtual)))
+            self.assertFalse(self.module.is_virtual(types.SimpleNamespace(info=types.SimpleNamespace(bustype=3))))
+            self.assertFalse(self.module.is_virtual(object()), "no bus information: not virtual")
+        self.assertTrue(self.module.is_pad_or_media({Codes.BTN_MODE}))
+        self.assertFalse(self.module.is_pad_or_media({Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H}))
 
     def test_a_hold_let_go_unseen_does_not_open_home_when_its_time_is_up(self):
         # No event arrives after the release here (the controller mouse grabbed the pad): the timer
@@ -1706,7 +1734,7 @@ class HomeShortcutTest(unittest.TestCase):
         home.assert_not_called()
 
     def test_a_read_error_forgets_holds_and_chords_under_way(self):
-        self.use(home="select-start", keyboard_home=True)
+        self.use(home="select-start")
         rounds = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), OSError(19, "No such device"),
                   (1.6, []), (3.0, [])]
         home, _timeouts, _watched = self.watch(rounds, self.PAD)
@@ -1716,22 +1744,25 @@ class HomeShortcutTest(unittest.TestCase):
         home, _timeouts, _watched = self.watch(rounds, self.KEYBOARD)
         home.assert_not_called()
 
-    def test_ctrl_alt_h_opens_home_over_a_stream_too(self):
-        # Deliberate: Super goes to the remote PC, Ctrl+Alt+H is the keyboard's way home from it.
-        self.use(keyboard_home=True)
-        with mock.patch.object(self.module, "remote_session_in_front", return_value=True):
-            home, _timeouts, _watched = self.watch(
-                [(0.0, [(Codes.KEY_LEFTCTRL, 1), (Codes.KEY_LEFTALT, 1)]), (0.1, [(Codes.KEY_H, 1)]),
-                 (0.2, [(Codes.KEY_LEFTCTRL, 0), (Codes.KEY_LEFTALT, 0), (Codes.KEY_H, 0)]),
-                 (0.3, [(Codes.KEY_LEFTMETA, 1), (Codes.KEY_LEFTMETA, 0)])],
-                (*self.KEYBOARD, Codes.KEY_LEFTMETA))
-        home.assert_called_once_with()  # Ctrl+Alt+H only: the Super tap was the remote PC's
+    def test_the_home_key_opens_home_over_a_stream_too_and_a_super_tap_never_does(self):
+        # Deliberate: the keyboard's way home from a stream or remote desktop (Guide is the pad's).
+        self.use()
+        home, _timeouts, _watched = self.watch(
+            [(0.0, [(Codes.KEY_LEFTCTRL, 1), (Codes.KEY_LEFTALT, 1)]), (0.1, [(Codes.KEY_H, 1)]),
+             (0.2, [(Codes.KEY_LEFTCTRL, 0), (Codes.KEY_LEFTALT, 0), (Codes.KEY_H, 0)]),
+             (0.3, [(Codes.KEY_LEFTMETA, 1), (Codes.KEY_LEFTMETA, 0)])],
+            (*self.KEYBOARD, Codes.KEY_LEFTMETA))
+        home.assert_called_once_with()  # Ctrl+Alt+H only
 
     def test_devices_watched_for_the_shortcuts(self):
         watches = self.module.watches_home
         self.assertTrue(watches({Codes.BTN_SELECT, Codes.BTN_START}))
         self.assertTrue(watches({Codes.BTN_THUMBL, Codes.BTN_THUMBR}))
-        self.assertTrue(watches({Codes.KEY_RIGHTCTRL, Codes.KEY_RIGHTALT, Codes.KEY_H}))
+        self.assertTrue(watches({Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H}, self.CTRL_ALT_H))
+        self.assertFalse(watches({Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H}, self.SUPER_H))
+        self.assertTrue(watches({Codes.KEY_LEFTMETA, Codes.KEY_H}, self.SUPER_H))
+        self.assertFalse(watches({Codes.KEY_LEFTMETA}), "a Super key alone is not a reason to watch a keyboard")
+        self.assertFalse(watches({Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_H}, ""))
         self.assertTrue(watches({Codes.BTN_MODE}))
         self.assertFalse(watches({Codes.BTN_SELECT, Codes.KEY_H, Codes.KEY_ENTER}))
 
@@ -1880,7 +1911,7 @@ class HomeShortcutTest(unittest.TestCase):
 
 
 class MediaKeyTest(unittest.TestCase):
-    """A keyboard's brightness, volume and mute keys, read by watch_home() like the Super key."""
+    """A keyboard's brightness, volume and mute keys, read by watch_home() like the Home key chord."""
 
     @classmethod
     def setUpClass(cls):
@@ -2049,9 +2080,8 @@ class MediaKeyTest(unittest.TestCase):
 
     def test_volume_keys_keep_working_over_a_stream(self):
         # Deliberate: they set this box's (the TV's) volume, not the remote PC's.
-        with mock.patch.object(self.module, "remote_session_in_front", return_value=True):
-            self.watch_media([[(Codes.KEY_VOLUMEDOWN, 1), (Codes.KEY_VOLUMEDOWN, 0)]],
-                             capabilities=(Codes.KEY_VOLUMEDOWN,))
+        self.watch_media([[(Codes.KEY_VOLUMEDOWN, 1), (Codes.KEY_VOLUMEDOWN, 0)]],
+                         capabilities=(Codes.KEY_VOLUMEDOWN,))
         self.assertEqual(self.changes, [("volume", -5)])
 
     def test_steps_still_waiting_hold_back_the_repeats_so_letting_go_stops_at_once(self):

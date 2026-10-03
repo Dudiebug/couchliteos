@@ -441,7 +441,7 @@ class FrameScreen(Screen):
 
 
 class HintTextTest(unittest.TestCase):
-    """Hints must name controller buttons, never bare keyboard keys, and fit 80 columns."""
+    """Hints name controller buttons (Enter and Esc may follow), never F-keys, and fit 80 columns."""
 
     @classmethod
     def setUpClass(cls):
@@ -466,7 +466,7 @@ class HintTextTest(unittest.TestCase):
         self.assertTrue(shown, f"{name}: no hint line was drawn")
         for hint in shown:
             self.assertLessEqual(len(hint), 76, f"{name}: does not fit 80 columns: {hint!r}")
-            self.assertIsNone(re.search(r"\b(ENTER|ESC|F12|F5|F8)\b", hint), f"{name}: names a keyboard key: {hint!r}")
+            self.assertIsNone(re.search(r"\b(F12|F5|F6|F7|F8)\b", hint), f"{name}: names a keyboard key: {hint!r}")
 
     def test_launcher_screens(self):
         module = self.module

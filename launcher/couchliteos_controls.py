@@ -17,6 +17,7 @@ import couchliteos_setup as setup
 PROC_INPUT = pathlib.Path("/proc/bus/input/devices")
 SHOWN = setup.MARKER.parent / "controls-shown"
 TITLE = "CONTROLLER BUTTONS"
+KEYS_TITLE = "KEYBOARD KEYS"
 WIDTH = 76  # the widest line; the screen also fits 80x24
 SLEEP_HOLD_SECONDS = 5  # how long Guide is held to sleep (gamepad-nav)
 BTN_SOUTH = 0x130  # evdev code of the A / Cross button: what makes an input device a gamepad
@@ -85,11 +86,12 @@ def detect_family(path: pathlib.Path = PROC_INPUT) -> str:
 
 
 def table(
-    kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: bool = True,
+    kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: str = inputprefs.DEFAULT_CHORD,
 ) -> list[tuple[list[str], str]]:
     """(button label lines, what the button does) for each row.
 
-    `home` and `keyboard` are the Settings > CONTROLS Home shortcut choices (gamepad-nav HomeCombo).
+    `home` and `keyboard` are the Settings > CONTROLS Home shortcut choices: the pad combo (gamepad-nav
+    HomeCombo) and the keyboard Home key chord ("" for none).
     """
     south, east, north, west, left, right, view, menu, guide = FAMILY_NAMES[kind]
     shortcuts = [f"{left}  {right}  {view}  {menu}"]
@@ -101,7 +103,7 @@ def table(
         ([north], "ON-SCREEN KEYBOARD"),
         ([west], "DELETE A LETTER / CLOSE AN APP"),
         (["D-PAD OR LEFT STICK"], "MOVE (HOLD TO KEEP MOVING)"),
-        (shortcuts, "APP SHORTCUTS (SET IN SETTINGS > APPLICATIONS)"),
+        (shortcuts, "APP SHORTCUTS (SET IN SETTINGS > REMOTE DESKTOP)"),
         ([guide], "OPEN ACTIVE APPLICATIONS FROM ANY APP OR GAME STREAM"),
     ]
     held = f"HELD {inputprefs.HOME_HOLD_SECONDS:g} S"
@@ -109,17 +111,38 @@ def table(
         rows.append(([f"{view} + {menu}", held], f"SAME AS {guide}, BUT NOT WITH {left} OR {right} HELD"))
     elif home == inputprefs.HOME_STICKS:
         rows.append((["L3 + R3 (BOTH STICKS IN)", held], f"SAME AS {guide}"))
-    rows.append((["KEYBOARD: SUPER", "OR CTRL+ALT+H"] if keyboard else ["KEYBOARD: SUPER"], f"SAME AS {guide}"))
+    if keyboard:
+        rows.append(([f"KEYBOARD: {inputprefs.chord_label(keyboard)}"], f"SAME AS {guide}"))
     if can_sleep:
         rows.append(([f"HOLD {guide} {SLEEP_HOLD_SECONDS} S"], "SLEEP"))
     return rows
 
 
+def keyboard_table(keyboard: str = inputprefs.DEFAULT_CHORD) -> list[tuple[list[str], str]]:
+    """(key label lines, what the key does) for the KEYBOARD KEYS page; the same actions as the pad."""
+    home = inputprefs.chord_label(keyboard)
+    return [
+        (["ENTER"], "SELECT / OK"),
+        (["ESC"], "BACK / CANCEL"),
+        (["F12"], "ON-SCREEN KEYBOARD"),
+        (["DELETE"], "DELETE A LETTER / CLOSE AN APP"),
+        (["ARROW KEYS"], "MOVE (HOLD TO KEEP MOVING)"),
+        (["F5  F6  F7  F8"], "APP SHORTCUTS, LIKE LB RB VIEW MENU"),
+        ([home], "OPEN ACTIVE APPLICATIONS FROM ANY APP OR STREAM" if keyboard
+         else "NOT SET: PICK IT IN SETTINGS > CONTROLS"),
+        (["SUPER (WINDOWS)"], "GOES TO THE APP; IT DOES NOT OPEN HOME"),
+        (["BRIGHTNESS, VOLUME"], "CHANGE THIS PC'S SCREEN AND SOUND, IN ANY APP"),
+    ]
+
+
 def rows(
-    kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: bool = True,
+    kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: str = inputprefs.DEFAULT_CHORD,
 ) -> list[str]:
     """The table as text lines of at most WIDTH columns; long descriptions wrap."""
-    cells = table(kind, can_sleep, home, keyboard)
+    return wrap_cells(table(kind, can_sleep, home, keyboard))
+
+
+def wrap_cells(cells: list[tuple[list[str], str]]) -> list[str]:
     column = max(len(line) for label, _text in cells for line in label) + 2
     return [
         f"{label:<{column}}{text}".rstrip()
@@ -160,6 +183,17 @@ def show(
     kind = detect_family(proc)
     shortcut = inputprefs.load_settings(config)
     lines = rows(kind, sleep_supported() if can_sleep is None else can_sleep, shortcut.home, shortcut.keyboard_home)
+    show_lines(screen, TITLE, lines, footer(kind))
+
+
+def show_keys(screen: curses.window, proc: pathlib.Path = PROC_INPUT, config: pathlib.Path | None = None) -> None:
+    """The KEYBOARD KEYS page, with the Home key as saved."""
+    kind = detect_family(proc)
+    lines = wrap_cells(keyboard_table(inputprefs.load_settings(config).keyboard_home))
+    show_lines(screen, KEYS_TITLE, lines, footer(kind))
+
+
+def show_lines(screen: curses.window, title: str, lines: list[str], footer_text: str) -> None:
     while True:
         screen.erase()
         height, width = screen.getmaxyx()
@@ -170,12 +204,12 @@ def show(
                 pass
         title_row = 2 if height >= 16 else 1
         bottom = height - 3 if height >= 16 else height - 2
-        put(screen, title_row, max(1, (width - len(TITLE)) // 2), TITLE)
+        put(screen, title_row, max(1, (width - len(title)) // 2), title)
         left = max(2, (width - max(map(len, lines))) // 2)
         for offset, line in enumerate(lines):
             if title_row + 2 + offset < bottom:
                 put(screen, title_row + 2 + offset, left, line)
-        text = footer(kind)
+        text = footer_text
         put(screen, bottom, max(1, (width - len(text)) // 2), text)
         screen.refresh()
         if screen.getch() in CLOSE_KEYS:

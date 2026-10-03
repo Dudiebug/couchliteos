@@ -24,6 +24,11 @@ RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE
 # What each release added, newest first: one line per feature, at most 66 columns (the screen wraps longer ones at 80x24).
 # An upgrade shows every release newer than the one last seen, newest first.
 RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("0.2.5", (
+        "THE SUPER (WINDOWS) KEY NO LONGER OPENS HOME",
+        "SET YOUR OWN HOME KEY: SETTINGS > CONTROLS > KEYBOARD HOME KEY",
+        "KEYBOARD KEYS HELP: SETTINGS > CONTROLS > KEYBOARD KEYS",
+    )),
     ("0.2.4", (
         "BRIGHTNESS AND VOLUME KEYS WORK; BRIGHTNESS IS IN THE GUIDE MENU",
         "HOME FROM ANY PAD: HOLD SELECT+START. KEYBOARD: CTRL+ALT+H",
@@ -38,7 +43,7 @@ RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "OLDER NVIDIA: VIDEO DECODER FIRMWARE IN SETTINGS > STREAMING",
     )),
     ("0.2.2", (
-        "SOUND ON THE TV OVER HDMI ON MORE PCS: SETTINGS > AUDIO OUTPUT",
+        "SOUND ON THE TV OVER HDMI ON MORE PCS: SETTINGS > AUDIO",
     )),
     ("0.2.1", (
         "STREAM YOUR GAMING PC IN ONE PRESS FROM THE HOME SCREEN",

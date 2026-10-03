@@ -956,6 +956,60 @@ class LauncherTest(unittest.TestCase):
             sleep.assert_not_called()
             self.assertTrue(request.exists(), "the caller's Home check still sees it")
 
+    def use_home_key(self, chord):
+        """Make the launcher's Home key settings read `chord`."""
+        watcher = mock.Mock(current=lambda: self.module.inputprefs.Settings(keyboard_home=chord))
+        return mock.patch.object(self.module, "HOME_SETTINGS", watcher)
+
+    def test_home_chord_bytes_follow_the_chosen_key(self):
+        for chord, expected in (
+            ("KEY_LEFTCTRL+KEY_LEFTALT+KEY_H", (True, {8})),
+            ("KEY_LEFTCTRL+KEY_LEFTALT+KEY_K", (True, {11})),
+            ("KEY_LEFTALT+KEY_G", (True, {ord("g"), ord("G")})),
+            ("KEY_LEFTMETA+KEY_H", (False, {ord("h"), ord("H")})),
+            ("KEY_LEFTCTRL+KEY_LEFTSHIFT+KEY_H", (False, {8})),
+            ("KEY_LEFTALT+KEY_F3", (True, set())),
+            ("", (False, set())),
+        ):
+            with self.subTest(chord=chord), self.use_home_key(chord):
+                has_esc, tail = self.module.home_chord_bytes()
+                self.assertEqual((has_esc, set(tail)), expected)
+
+    def test_super_h_as_the_home_key_drops_only_the_letter_that_follows_a_request(self):
+        # foot sends Super+H as a plain h; gamepad-nav has left a Home request for it.
+        with tempfile.TemporaryDirectory() as directory, self.use_home_key("KEY_LEFTMETA+KEY_H"):
+            request = pathlib.Path(directory) / "home.request"
+            request.touch()
+            screen = Screen([ord("h"), 27])
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep"):
+                self.assertEqual(self.module.read_key(screen), -1)
+                self.assertEqual(self.module.read_key(screen), 27, "its Esc is not part of it: still back")
+            self.assertTrue(request.exists())
+
+    def test_a_typed_h_without_a_home_request_is_a_letter(self):
+        with tempfile.TemporaryDirectory() as directory, self.use_home_key("KEY_LEFTMETA+KEY_H"):
+            screen = Screen([ord("h")])
+            with mock.patch.object(self.module, "HOME_REQUEST", pathlib.Path(directory) / "home.request"), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep") as sleep:
+                self.assertEqual(self.module.read_key(screen), ord("h"))
+            waited = sum(call.args[0] for call in sleep.call_args_list)
+            self.assertAlmostEqual(waited, self.module.HOME_CHORD_WAIT)
+
+    def test_with_the_home_key_off_nothing_is_dropped(self):
+        with tempfile.TemporaryDirectory() as directory, self.use_home_key(""):
+            request = pathlib.Path(directory) / "home.request"
+            request.touch()
+            screen = Screen([27, 8])
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module, "_home_chord_until", 0.0), \
+                    mock.patch.object(self.module.time, "sleep") as sleep:
+                self.assertEqual(self.module.read_key(screen), 27)
+                self.assertEqual(self.module.read_key(screen), 8)
+            sleep.assert_not_called()
+
     def test_a_plain_escape_still_goes_back(self):
         with tempfile.TemporaryDirectory() as directory:
             screen = Screen([27, 8])

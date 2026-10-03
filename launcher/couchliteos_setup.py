@@ -1503,7 +1503,7 @@ class SetupWizard:
 
 SPINNER = "|/-\\"
 ENTER = (curses.KEY_ENTER, 10, 13)
-MENU_FOOTER = "A / CROSS: SELECT   ·   B / CIRCLE: SKIP OR BACK"
+MENU_FOOTER = "A / CROSS OR ENTER: SELECT  ·  B / CIRCLE OR ESC: SKIP OR BACK"
 
 
 def big_lines(text: str, width: int) -> list[str]:

@@ -98,7 +98,7 @@ find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.2.4 ]]
+[[ "$(< VERSION)" == 0.2.5 ]]
 cmp -s VERSION overlay/etc/couchliteos-version
 rg -Fq 'path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso' .github/workflows/build.yml
 rg -Fq 'echo "VERSION=$(< VERSION)" >> "$GITHUB_ENV"' .github/workflows/build.yml
@@ -1033,7 +1033,12 @@ done
 rg -q '^import couchliteos_audio as audio$' launcher/gamepad-nav.py
 rg -q 'KEY_BRIGHTNESSUP.*KEY_BRIGHTNESSDOWN' launcher/gamepad-nav.py
 rg -q 'KEY_VOLUMEUP.*KEY_VOLUMEDOWN' launcher/gamepad-nav.py
-rg -q '\*SUPER_KEYS, \*MEDIA_KEYS\} & keys' launcher/gamepad-nav.py
+rg -q 'ecodes.BTN_MODE, \*MEDIA_KEYS\} & keys' launcher/gamepad-nav.py
+# The Super (Windows) key no longer opens Home; the Home key is a user-set chord from Settings > CONTROLS.
+refute rg -q 'SuperTap|SUPER_KEYS' launcher/gamepad-nav.py
+rg -q '^class HomeChord' launcher/gamepad-nav.py
+rg -q '^DEFAULT_CHORD = "KEY_LEFTCTRL\+KEY_LEFTALT\+KEY_H"$' launcher/couchliteos_input.py
+rg -q '^    def capture_home_key' launcher/couchliteos-launcher.py
 rg -q 'f"BRIGHTNESS  \{percent\}%"' launcher/couchliteos-launcher.py
 rg -q '^ACTION=="add", SUBSYSTEM=="backlight", RUN\+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN\+="/bin/chmod g\+w /sys/class/backlight/%k/brightness"$' \
   overlay/etc/udev/rules.d/70-couchliteos-backlight.rules

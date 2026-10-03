@@ -83,7 +83,6 @@ POINTER_KEYS = {
     ecodes.BTN_TL: ecodes.KEY_PAGEUP,
     ecodes.BTN_TR: ecodes.KEY_PAGEDOWN,
 }
-SUPER_KEYS = frozenset({ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHTMETA})
 # A keyboard's brightness and volume keys (Apple's Fn layer sends the same codes). Cage does not
 # act on them, so gamepad-nav does, the same way the Guide menu's rows do.
 BRIGHTNESS_KEYS = {ecodes.KEY_BRIGHTNESSUP: brightness.STEP, ecodes.KEY_BRIGHTNESSDOWN: -brightness.STEP}
@@ -103,8 +102,10 @@ HOME_COMBOS = {
 HOME_COMBO_CODES = frozenset().union(*(pair | cancel for pair, cancel in HOME_COMBOS.values()))
 # SELECT and START in the launcher: the VIEW and MENU button shortcuts (see PairTaps).
 NAV_TAP_KEYS = {ecodes.BTN_SELECT: ecodes.KEY_F7, ecodes.BTN_START: ecodes.KEY_F8}
-CTRL_KEYS = frozenset({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
-ALT_KEYS = frozenset({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
+# Modifier key codes and the family each belongs to (CTRL, ALT, SHIFT, SUPER), for the keyboard Home key.
+MODIFIER_CODES = {getattr(ecodes, name): family for name, family in inputprefs.MODIFIER_FAMILIES.items()
+                  if hasattr(ecodes, name)}
+BUS_VIRTUAL = 0x06  # uinput devices: the pad's own virtual keyboard, the on-screen keyboard, CEC
 
 
 def app_active() -> bool:
@@ -120,20 +121,6 @@ def app_active() -> bool:
 def app_owns_pad() -> bool:
     """An app or game is running and the launcher has not taken the controller back (not cached)."""
     return APP_ACTIVE.exists() and not LAUNCHER_FOCUS.exists()
-
-
-# Streams and remote desktops pass the Super key on to the remote PC (its Start menu).
-REMOTE_SESSIONS = frozenset({"moonlight", "rdp"})
-
-
-def remote_session_in_front() -> bool:
-    """A stream or remote desktop has the keyboard, so a Super tap belongs to the remote PC."""
-    if LAUNCHER_FOCUS.exists():
-        return False
-    try:
-        return APP_ACTIVE.read_text(encoding="ascii").strip() in REMOTE_SESSIONS
-    except (OSError, UnicodeDecodeError):
-        return False
 
 
 def navigation_blocked(active_osk: bool) -> bool:
@@ -654,36 +641,6 @@ class HomeHold:
         self.pressed.clear()
 
 
-class SuperTap:
-    """The Super (Windows) key pressed and let go on its own opens Home, like Guide.
-
-    Super held with another key (a shortcut) does not; tracked per keyboard.
-    """
-
-    def __init__(self) -> None:
-        self.armed: set[object] = set()
-
-    def feed(self, path: object, event) -> bool:
-        """True when this event completes a lone Super tap; `path` names the keyboard."""
-        if event.type != ecodes.EV_KEY:
-            return False
-        if event.code in SUPER_KEYS:
-            if event.value == 1:
-                self.armed.add(path)
-            elif event.value == 2:
-                self.armed.discard(path)  # held down: not a tap
-            elif event.value == 0 and path in self.armed:
-                self.armed.discard(path)
-                return True
-            return False
-        if event.value == 1:
-            self.armed.discard(path)
-        return False
-
-    def reset(self) -> None:
-        self.armed.clear()
-
-
 def media_action(event, device):
     """What a brightness, volume or mute key does, as a call to make; None for any other event.
 
@@ -851,27 +808,35 @@ class HomeCombo:
         self.spent.clear()
 
 
-class KeyboardHome:
-    """Ctrl+Alt+H opens Home (either Ctrl, either Alt, all on one keyboard); Settings > CONTROLS can turn it off."""
+class HomeChord:
+    """The keyboard Home key (Settings > CONTROLS, Ctrl+Alt+H until it is changed) opens Home.
 
-    def __init__(self, enabled: Callable[[], bool] | None = None) -> None:
-        self.enabled = enabled or (lambda: INPUT_SETTINGS.current().keyboard_home)
+    The modifiers held must be exactly the chord's (either Ctrl, either Alt ...) and all on one keyboard.
+    It fires as the chord's key goes down, once a press, and also over a stream or remote desktop:
+    it is the keyboard's way home from one (Guide is the pad's). A lone Super tap does nothing.
+    """
+
+    def __init__(self, chord: Callable[[], str] | None = None) -> None:
+        self.chord = chord or (lambda: INPUT_SETTINGS.current().keyboard_home)
         self.held: dict[object, set[int]] = {}
 
     def feed(self, path: object, event) -> bool:
-        """True when this event is the H of Ctrl+Alt+H; `path` names the keyboard."""
+        """True when this event is the last key of the chord going down; `path` names the keyboard."""
         if event.type != ecodes.EV_KEY:
             return False
-        if event.code in CTRL_KEYS or event.code in ALT_KEYS:
+        if event.code in MODIFIER_CODES:
             if event.value == 1:
                 self.held.setdefault(path, set()).add(event.code)
             elif event.value == 0:
                 self.held.get(path, set()).discard(event.code)
             return False
-        if event.code != ecodes.KEY_H or event.value != 1:
+        if event.value != 1:
             return False
-        held = self.held.get(path, set())
-        return bool(held & CTRL_KEYS and held & ALT_KEYS) and self.enabled()
+        names = inputprefs.parse_chord(self.chord())
+        if not names or event.code not in chord_key_codes(names):
+            return False
+        wanted = {inputprefs.chord_family(name) for name in names if name in inputprefs.MODIFIER_FAMILIES}
+        return {MODIFIER_CODES[code] for code in self.held.get(path, set())} == wanted
 
     def forget(self, path: object) -> None:
         self.held.pop(path, None)
@@ -937,13 +902,40 @@ def pressed_keys(device) -> list[int] | None:
         return None
 
 
-def watches_home(keys: set[int]) -> bool:
-    """watch_home() reads devices with Home/Guide, Super, a Home shortcut pair, Ctrl+Alt+H,
-    or brightness/volume keys."""
+def chord_key_codes(names) -> set[int]:
+    """The codes of the chord's own (non-modifier) keys; empty when a name is unknown here."""
+    codes = {getattr(ecodes, name, None) for name in names if name not in inputprefs.MODIFIER_FAMILIES}
+    return codes if None not in codes else set()
+
+
+def chord_codes(chord: str) -> set[int]:
+    """Every key the chord needs a keyboard to have: its key plus one key of each modifier family."""
+    names = inputprefs.parse_chord(chord)
+    key = chord_key_codes(names)
+    if not key:
+        return set()
+    return key | {min(code for code, family in MODIFIER_CODES.items() if family == inputprefs.chord_family(name))
+                  for name in names if name in inputprefs.MODIFIER_FAMILIES}
+
+
+def is_pad_or_media(keys: set[int]) -> bool:
+    """Keys that make a device worth watching whatever its bus: Home/Guide, a pad pair, media keys."""
+    return watches_home(keys, "")
+
+
+def is_virtual(device) -> bool:
+    return getattr(getattr(device, "info", None), "bustype", None) == BUS_VIRTUAL
+
+
+def watches_home(keys: set[int], chord: str | None = None) -> bool:
+    """watch_home() reads devices with Home/Guide, a Home shortcut pair, the keys of the keyboard
+    Home chord, or brightness/volume keys."""
+    chord = INPUT_SETTINGS.current().keyboard_home if chord is None else chord
     pairs = (pair for pair, _cancel in HOME_COMBOS.values())
-    return bool({ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *SUPER_KEYS, *MEDIA_KEYS} & keys) or any(
+    needed = chord_codes(chord)
+    return bool({ecodes.KEY_HOME, ecodes.KEY_HOMEPAGE, ecodes.BTN_MODE, *MEDIA_KEYS} & keys) or any(
         pair <= keys for pair in pairs
-    ) or (ecodes.KEY_H in keys and bool(CTRL_KEYS & keys) and bool(ALT_KEYS & keys))
+    ) or (bool(needed) and needed <= keys)
 
 
 def is_hold_press(event) -> bool:
@@ -971,9 +963,8 @@ def request_home() -> None:
 def watch_home() -> None:
     devices: dict[str, InputDevice] = {}
     hold = HomeHold()
-    tap = SuperTap()
     combo = HomeCombo()  # SELECT+START or L3+R3 held: watched, never grabbed, so it works over any app
-    chord = KeyboardHome()
+    chord = HomeChord()  # the keyboard Home key: also watched, never grabbed
     media = MediaRepeat()
     in_game = False  # the hold under way began while an app had the controller
 
@@ -986,7 +977,6 @@ def watch_home() -> None:
         paths = set(glob.glob("/dev/input/event*"))
         for path in set(devices) - paths:
             gone = devices.pop(path)
-            tap.armed.discard(id(gone))
             combo.forget(path)
             chord.forget(path)
             media.forget(path)
@@ -996,7 +986,7 @@ def watch_home() -> None:
             try:
                 device = InputDevice(path)
                 keys = set(device.capabilities().get(ecodes.EV_KEY, []))
-                if watches_home(keys):
+                if watches_home(keys) and not (is_virtual(device) and not is_pad_or_media(keys)):
                     devices[path] = device
                 else:
                     device.close()
@@ -1014,10 +1004,9 @@ def watch_home() -> None:
                         # Looked at before request_home() brings the launcher forward: the Guide
                         # press itself takes the focus, so later the launcher always "has" it.
                         in_game = app_owns_pad()
-                    tapped = tap.feed(id(device), event) and not remote_session_in_front()
-                    # Unlike a Super tap, Ctrl+Alt+H is not passed to a stream or remote desktop in
+                    # The keyboard Home key is not held back from a stream or remote desktop in
                     # front: it is the keyboard's way home from one (Guide is the pad's).
-                    if tapped or is_home_event(event) or chord.feed(path, event):
+                    if is_home_event(event) or chord.feed(path, event):
                         request_home()
                     # Deliberately also during a stream or remote desktop: the volume and
                     # brightness keys control this box (the TV's sound), not the remote PC.
@@ -1034,7 +1023,6 @@ def watch_home() -> None:
                 request_sleep()
         except OSError:
             hold.reset()
-            tap.reset()
             combo.reset()
             chord.reset()
             media.reset()

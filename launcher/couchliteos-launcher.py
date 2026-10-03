@@ -99,16 +99,17 @@ REMOTE_TEST_KEYS = {
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / CIRCLE CANCEL"
-# Hints name controller buttons (A / CROSS is Enter, B / CIRCLE is Esc), never keyboard keys.
-LIST_HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
-CONTROLS_HINT = "LEFT/RIGHT OR A / CROSS CHANGES  ·  B / CIRCLE GOES BACK"
+# Hints name controller buttons first; where it fits they add the keyboard key (Enter, Esc).
+# F5-F12 are never named: the controller's X, LB, RB, SELECT and START send them.
+LIST_HINT = "A / CROSS OR ENTER SELECTS  ·  B / CIRCLE OR ESC GOES BACK"
+CONTROLS_HINT = "LEFT/RIGHT OR A / CROSS CHANGES  ·  B / CIRCLE OR ESC GOES BACK"
 BUTTONS_HINT = "A / CROSS SELECTS  ·  LEFT/RIGHT MOVES A BUTTON  ·  B / CIRCLE BACK"
-FORM_HINT = "A / CROSS EDITS  ·  LEFT/RIGHT TOGGLES  ·  B / CIRCLE BACK"
+FORM_HINT = "A / CROSS EDITS  ·  LEFT/RIGHT TOGGLES  ·  B / CIRCLE OR ESC BACK"
 DONE_HINT = "A / CROSS OR B / CIRCLE"
 # Settings > DISPLAY > SCREEN EDGES / TEXT SIZE (saved in screen.json, read by the foot wrapper at start).
 SCREEN_EDGES_HELP = "PICK THE SMALLEST EDGE WHERE YOU CAN SEE THE WHOLE BORDER."
 TEXT_SIZE_HELP = "SMALLER FITS MORE ON THE SCREEN  ·  LARGER IS EASIER TO READ"
-SCREEN_CHOICE_HINT = "A / CROSS PICKS  ·  B / CIRCLE GOES BACK"
+SCREEN_CHOICE_HINT = "A / CROSS PICKS  ·  B / CIRCLE OR ESC GOES BACK"
 SCREEN_RESTART_MESSAGE = "RESTARTING THE LAUNCHER TO APPLY. THIS TAKES A FEW SECONDS."
 SCREEN_NEXT_START_MESSAGE = "SAVED. IT APPLIES THE NEXT TIME COUCHLITEOS STARTS."
 # foot sizes its text for the picture size it starts on, so a new picture size restarts it too.
@@ -182,9 +183,11 @@ def focus_launcher() -> None:
         pass
 
 
-# Ctrl+Alt+H reaches the launcher as ESC then Ctrl+H while gamepad-nav turns it into a Home
-# request. Home is handled like Guide, so that ESC (back) and Ctrl+H are dropped: an ESC waits
-# this long for the request to show up, and the Ctrl+H is dropped within HOME_CHORD_TAIL.
+# The keyboard Home key (Ctrl+Alt+H until it is changed) reaches the launcher as bytes foot
+# makes of the chord (Ctrl+Alt+H is ESC then Ctrl+H) while gamepad-nav turns it into a Home
+# request. Home is handled like Guide, so those bytes are dropped: an ESC (a chord with Alt)
+# waits this long for the request to show up, and the chord's own letter is dropped within
+# HOME_CHORD_TAIL (a chord without Alt, such as Super+H, waits for the request the same way).
 # Only a request this fresh counts: one left by a Guide press in Settings (which only the
 # main menu answers) must not swallow every later B / Esc.
 HOME_CHORD_WAIT = 0.05
@@ -196,6 +199,22 @@ HOME_CHORD_FRESH = 0.5
 HOME_CHORD_TAIL = 1.0
 CTRL_H = 8
 _home_chord_until = 0.0
+HOME_SETTINGS = inputprefs.Watcher()  # the saved Home key, re-read when config.ini changes
+
+
+def home_chord_bytes() -> tuple[bool, frozenset[int]]:
+    """(foot starts the chord with ESC, the other bytes it sends) for the saved keyboard Home key."""
+    names = inputprefs.parse_chord(HOME_SETTINGS.current().keyboard_home)
+    keys = [name[4:] for name in names if name not in inputprefs.MODIFIER_FAMILIES]
+    families = {inputprefs.chord_family(name) for name in names if name in inputprefs.MODIFIER_FAMILIES}
+    if len(keys) != 1:
+        return False, frozenset()
+    key = keys[0]
+    if len(key) != 1:
+        return "ALT" in families, frozenset()
+    if "CTRL" in families and key.isalpha():
+        return "ALT" in families, frozenset({ord(key) & 0x1F})
+    return "ALT" in families, frozenset({ord(key.lower()), ord(key.upper())})
 
 
 def home_chord_pending() -> bool:
@@ -221,23 +240,32 @@ def read_key(screen: curses.window, *, keyboard: bool = True) -> int:
 
 
 def without_home_chord(key: int, wait: float = HOME_CHORD_WAIT) -> int:
-    """-1 for the ESC, Ctrl+H foot sends for Ctrl+Alt+H (gamepad-nav has left a Home request
-    for it), so the shortcut is not also taken as B / Esc; any other key unchanged. An ESC
-    waits up to `wait` seconds for the request."""
+    """-1 for the bytes foot sends for the keyboard Home key (gamepad-nav has left a Home request
+    for it), so the shortcut is not also taken as B / Esc or a typed letter; any other key
+    unchanged. An ESC, or the letter of a chord without Alt, waits up to `wait` seconds for the request."""
     global _home_chord_until
-    if key == 27:
-        waited = 0.0
-        while waited < wait and not home_chord_pending():
-            step = min(HOME_CHORD_POLL, wait - waited)
-            time.sleep(step)
-            waited += step
-        if home_chord_pending():  # left for the caller's Home check, like a Guide press
+    has_esc, tail = home_chord_bytes()
+    if key == 27 and has_esc:
+        if wait_for_home_request(wait):  # left for the caller's Home check, like a Guide press
             _home_chord_until = time.monotonic() + HOME_CHORD_TAIL
             return -1
-    elif key == CTRL_H and time.monotonic() < _home_chord_until:
-        _home_chord_until = 0.0
-        return -1
+    elif key in tail:
+        if has_esc:
+            if time.monotonic() < _home_chord_until:
+                _home_chord_until = 0.0
+                return -1
+        elif wait_for_home_request(wait):
+            return -1
     return key
+
+
+def wait_for_home_request(wait: float) -> bool:
+    waited = 0.0
+    while waited < wait and not home_chord_pending():
+        step = min(HOME_CHORD_POLL, wait - waited)
+        time.sleep(step)
+        waited += step
+    return home_chord_pending()
 
 
 def claim_screen_restart(marker: str) -> bool:
@@ -260,6 +288,68 @@ def setup_ui(screen: curses.window) -> setup.CursesUI:
     """The setup wizard's screens, reading keys without the Ctrl+Alt+H chord: the wizard takes
     no Home request (as with Guide), and its ESC must not skip a step."""
     return setup.CursesUI(screen, read_key=lambda: without_home_chord(screen.getch(), HOME_CHORD_SETUP_WAIT))
+
+
+class KeyboardSource:
+    """The keyboards' key presses for the capture screen, read from evdev (watched, never grabbed)."""
+
+    BUS_VIRTUAL = 0x06  # the pad's own virtual keyboard and the on-screen keyboard are not typed on
+
+    def __init__(self) -> None:
+        self.devices: list = []
+
+    def open(self) -> bool:
+        try:
+            import evdev  # python3-evdev, already part of the image
+            import glob
+        except ImportError:
+            return False
+        codes = evdev.ecodes
+        for path in glob.glob("/dev/input/event*"):
+            try:
+                device = evdev.InputDevice(path)
+                keys = set(device.capabilities().get(codes.EV_KEY, []))
+                if {codes.KEY_A, codes.KEY_LEFTCTRL} <= keys and device.info.bustype != self.BUS_VIRTUAL:
+                    self.devices.append(device)
+                else:
+                    device.close()
+            except OSError:
+                pass
+        return bool(self.devices)
+
+    def poll(self, timeout: float) -> list[tuple[str, int]]:
+        """(key name, 1 down / 0 up) for what arrived within `timeout` seconds."""
+        import select
+        from evdev import ecodes
+
+        found: list[tuple[str, int]] = []
+        try:
+            readable = select.select(self.devices, [], [], timeout)[0]
+        except (OSError, ValueError):
+            return found
+        for device in readable:
+            try:
+                events = list(device.read())
+            except BlockingIOError:
+                continue
+            except OSError:
+                self.devices.remove(device)
+                continue
+            for event in events:
+                if event.type == ecodes.EV_KEY and event.value in (0, 1):
+                    name = ecodes.KEY.get(event.code)
+                    name = name if isinstance(name, str) else (name or [""])[0]
+                    if name.startswith("KEY_"):
+                        found.append((name, event.value))
+        return found
+
+    def close(self) -> None:
+        for device in self.devices:
+            try:
+                device.close()
+            except OSError:
+                pass
+        self.devices.clear()
 
 
 def flush_input() -> None:
@@ -2072,7 +2162,7 @@ class Settings:
         notice = ""  # what the last change did, shown until the next press
         while True:
             settings = inputprefs.load_settings()
-            rows = [*inputprefs.rows(settings), controls.TITLE, "BACK"]
+            rows = [*inputprefs.rows(settings), controls.TITLE, controls.KEYS_TITLE, "BACK"]
             field = inputprefs.FIELDS[selected] if selected < len(inputprefs.FIELDS) else ""
             status = self.status
             self.status = notice or inputprefs.HELP.get(field) or status
@@ -2082,11 +2172,94 @@ class Settings:
             selected = move_selection(selected, key, len(rows))
             if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
                 return
-            if key in ENTER_KEYS and selected == len(rows) - 2:
+            if key in ENTER_KEYS and selected == len(rows) - 3:
                 controls.show(self.screen)
+            elif key in ENTER_KEYS and selected == len(rows) - 2:
+                controls.show_keys(self.screen)
+            elif field == "keyboard_home":
+                if key in ENTER_KEYS:  # picked by pressing it, not cycled with LEFT/RIGHT
+                    notice = self.capture_home_key()
             elif selected < len(inputprefs.FIELDS) and key in (curses.KEY_LEFT, curses.KEY_RIGHT, *ENTER_KEYS):
                 step = -1 if key == curses.KEY_LEFT else 1
                 _settings, notice = inputprefs.change(settings, inputprefs.FIELDS[selected], step)
+
+    CAPTURE_HINT = "B / CIRCLE OR ESC: CANCEL  ·  Y / SQUARE: OFF  ·  X / TRIANGLE: RESET"
+    CAPTURE_QUIET = 0.4  # seconds after a keyboard press before a pad button or lone Esc counts
+
+    def draw_capture(self, lines: list[str], hint: str) -> None:
+        self.screen.erase()
+        height, _width = self.screen.getmaxyx()
+        draw_border(self.screen)
+        add_centered(self.screen, max(2, height // 8), "KEYBOARD HOME KEY")
+        center = max(6, height // 2 - 2)
+        for offset, line in enumerate(lines):
+            add_centered(self.screen, center + 2 * offset, line)
+        add_centered(self.screen, height - 3, hint)
+        self.screen.refresh()
+
+    def capture_home_key(self, source: KeyboardSource | None = None) -> str:
+        """Settings > CONTROLS > KEYBOARD HOME KEY: hold the keys, let go, confirm. What to tell the user."""
+        source = source or KeyboardSource()
+        if not source.open():
+            return "NO KEYBOARD FOUND"
+        capture = inputprefs.ChordCapture()
+        message = ""
+        last_press = 0.0
+        try:
+            while True:
+                settings = inputprefs.load_settings()
+                lines = ["HOLD THE KEYS YOU WANT, THEN LET GO", f"NOW: {inputprefs.chord_label(settings.keyboard_home)}"]
+                self.draw_capture([*lines, message] if message else lines, self.CAPTURE_HINT)
+                for name, value in source.poll(0.05):
+                    last_press = time.monotonic()
+                    chord = capture.feed(name, value)
+                    if chord is None:
+                        continue
+                    if chord == {"KEY_ESC"}:
+                        return "NOT CHANGED"
+                    message = inputprefs.validate_chord(chord) or ""
+                    if not message:
+                        return self.confirm_home_key(source, settings, chord)
+                key = read_key(self.screen, keyboard=False)
+                if key == -1 or capture.held or time.monotonic() - last_press < self.CAPTURE_QUIET:
+                    continue  # nothing, or bytes of a keyboard chord still arriving
+                if key == 27:
+                    return "NOT CHANGED"
+                if key == curses.KEY_DC:
+                    return self.save_home_key(settings, "")
+                if key == curses.KEY_F12:
+                    return self.save_home_key(settings, inputprefs.DEFAULT_CHORD)
+        finally:
+            source.close()
+            flush_input()
+            HOME_REQUEST.unlink(missing_ok=True)  # the old key, pressed while capturing, asked for Home
+
+    def confirm_home_key(self, source: KeyboardSource, settings: inputprefs.Settings, chord: frozenset[str]) -> str:
+        text = inputprefs.canonical_chord(chord)
+        label = inputprefs.chord_label(text)
+        lines = [f"SET THE HOME KEY TO {label}?"]
+        if "SUPER" in label.split("+"):
+            lines.append("A STREAM'S REMOTE PC ALSO GETS THE SUPER KEY")
+        until = time.monotonic() + self.CAPTURE_QUIET
+        while time.monotonic() < until:  # the chord's own bytes arrive at curses now: drop them
+            source.poll(0.05)
+            read_key(self.screen, keyboard=False)
+        while True:
+            self.draw_capture(lines, "A / CROSS OR ENTER: YES  ·  B / CIRCLE OR ESC: NO")
+            source.poll(0.05)
+            key = read_key(self.screen, keyboard=False)
+            if key in ENTER_KEYS:
+                return self.save_home_key(settings, text)
+            if key == 27:
+                return "NOT CHANGED"
+
+    @staticmethod
+    def save_home_key(settings: inputprefs.Settings, text: str) -> str:
+        try:
+            inputprefs.save_settings(dataclasses.replace(settings, keyboard_home=text))
+        except OSError as error:
+            return f"COULD NOT SAVE: {error}".upper()
+        return f"{inputprefs.ROW_KEYBOARD}  {inputprefs.chord_label(text)}"
 
     def run_sleep_settings(self) -> None:
         settings = power.load_settings()  # as saved: its sleep value may belong to another PC

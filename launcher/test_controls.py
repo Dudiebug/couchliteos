@@ -253,15 +253,22 @@ class HomeShortcutRowsTest(unittest.TestCase):
         self.assertNotIn("VIEW + MENU", guide_only)
         self.assertNotIn("HELD", guide_only)
 
-    def test_the_keyboard_row_follows_its_switch(self):
-        self.assertIn("CTRL+ALT+H", self.text(keyboard=True))
-        self.assertNotIn("CTRL+ALT+H", self.text(keyboard=False))
-        self.assertIn("SUPER", self.text(keyboard=False))
+    def test_the_keyboard_row_follows_the_saved_home_key(self):
+        self.assertIn("KEYBOARD: CTRL+ALT+H", self.text())
+        self.assertIn("KEYBOARD: SUPER+H", self.text(keyboard="KEY_LEFTMETA+KEY_H"))
+        self.assertNotIn("CTRL+ALT+H", self.text(keyboard="KEY_LEFTMETA+KEY_H"))
+        off = self.text(keyboard="")
+        self.assertNotIn("KEYBOARD:", off)
+        self.assertNotIn("SUPER", off, "the Super key no longer goes Home")
+
+    def test_the_shortcut_help_points_at_the_screen_that_sets_it(self):
+        self.assertIn("SETTINGS > REMOTE DESKTOP", self.text())
+        self.assertNotIn("SETTINGS > APPLICATIONS", self.text())
 
     def test_every_choice_fits_76_columns_and_the_80x24_screen(self):
         for family in ("xbox", "playstation", "nintendo", "generic"):
             for home in ("guide", "select-start", "l3-r3"):
-                for keyboard in (True, False):
+                for keyboard in (controls.inputprefs.DEFAULT_CHORD, "", "KEY_LEFTALT+KEY_LEFTSHIFT+KEY_G"):
                     lines = controls.rows(family, True, home=home, keyboard=keyboard)
                     with self.subTest(family=family, home=home, keyboard=keyboard):
                         self.assertTrue(all(len(line) <= 76 and line == line.upper() and line.isascii()
@@ -271,13 +278,32 @@ class HomeShortcutRowsTest(unittest.TestCase):
     def test_the_screen_reads_the_saved_choice(self):
         with tempfile.TemporaryDirectory() as directory:
             config = pathlib.Path(directory) / "config.ini"
-            controls.inputprefs.save_settings(controls.inputprefs.Settings(home="l3-r3", keyboard_home=False), config)
+            controls.inputprefs.save_settings(controls.inputprefs.Settings(home="l3-r3", keyboard_home="KEY_LEFTMETA+KEY_H"), config)
             screen = FakeScreen([10])
             controls.show(screen, can_sleep=True, proc=pathlib.Path(directory) / "devices", config=config)
         text = "\n".join(item[2] for item in screen.drawn)
         self.assertIn("L3 + R3", text)
         self.assertNotIn("CTRL+ALT+H", text)
-        self.assertIn("SUPER", text)
+        self.assertIn("KEYBOARD: SUPER+H", text)
+
+    def test_the_keyboard_keys_page_names_every_launcher_key_and_the_saved_home_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            controls.inputprefs.save_settings(controls.inputprefs.Settings(keyboard_home="KEY_LEFTMETA+KEY_H"), config)
+            screen = FakeScreen([10])
+            controls.show_keys(screen, proc=pathlib.Path(directory) / "devices", config=config)
+        text = chr(10).join(item[2] for item in screen.drawn)
+        for needle in ("KEYBOARD KEYS", "ENTER", "ESC", "F12", "F5  F6  F7  F8", "DELETE", "ARROW KEYS", "SUPER+H",
+                       "BRIGHTNESS, VOLUME", "IT DOES NOT OPEN HOME"):
+            self.assertIn(needle, text)
+
+    def test_the_keyboard_keys_page_fits_80x24_and_says_when_home_has_no_key(self):
+        for keyboard in (controls.inputprefs.DEFAULT_CHORD, "", "KEY_LEFTCTRL+KEY_LEFTALT+KEY_SEMICOLON"):
+            lines = controls.wrap_cells(controls.keyboard_table(keyboard))
+            with self.subTest(keyboard=keyboard):
+                self.assertTrue(all(len(line) <= 76 and line == line.upper() for line in lines), lines)
+                self.assertLessEqual(len(lines), 24 - 7)
+        self.assertIn("NOT SET", " ".join(controls.wrap_cells(controls.keyboard_table(""))))
 
 
 class GamepadNavMappingTest(unittest.TestCase):
@@ -512,7 +538,7 @@ class LauncherHookTest(unittest.TestCase):
 
     def test_settings_row_opens_the_screen(self):
         launcher = load_launcher()
-        screen = FakeScreen([curses.KEY_UP, curses.KEY_UP, 10, 27])  # BACK, CONTROLLER BUTTONS, A, then B
+        screen = FakeScreen([curses.KEY_UP, curses.KEY_UP, curses.KEY_UP, 10, 27])  # BACK, KEYBOARD KEYS, CONTROLLER BUTTONS, A, then B
         settings = launcher.Settings(screen, mock.Mock())
         settings.selected = launcher.SETTINGS_MENU.index("CONTROLS")
         with mock.patch.object(launcher.controls, "show") as show, mock.patch.object(
