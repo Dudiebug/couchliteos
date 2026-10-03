@@ -46,6 +46,7 @@ assets.
 sudo make build                      # test ISO
 sudo make build RELEASE=1            # release ISO
 sudo make build PROFILE=nvidia RELEASE=1
+sudo make build RELEASE=1 FRESH=1    # release ISO, every package installed afresh
 ```
 
 `make build` runs these steps:
@@ -53,12 +54,12 @@ sudo make build PROFILE=nvidia RELEASE=1
 1. Runs `make test`, unless `make test` already passed for this exact source tree
    (see [Tests run once](#tests-run-once)).
 2. Runs `make configure`.
-3. Builds with `build/build.sh` (`build/build.sh --release` for `RELEASE=1`).
+3. Builds with `build/build.sh` (`--release` for `RELEASE=1`, `--fresh` for `FRESH=1`).
 
 | | Test build | Release build (`RELEASE=1`) |
 |---|---|---|
 | squashfs compression | zstd level 9: about 9 times faster to make, about 13% larger | xz: smallest |
-| Reuses an installed chroot (`COUCHLITEOS_LB_CACHE`) | yes | never: packages are always installed afresh |
+| Reuses an installed chroot (`COUCHLITEOS_LB_CACHE`) | yes, unless `FRESH=1` | yes, unless `FRESH=1` |
 
 Publish only release builds: `make release-assets` refuses an ISO whose squashfs is not
 xz. Test builds are for checking a change. The image kernel
@@ -150,15 +151,18 @@ The directory holds three things:
   the package indices the Debian mirror serves at that moment, and the debootstrap and
   live-build versions.
 - **`chroot-<key>.tar.zst`: the chroot with every package installed,** taken before the
-  includes are copied and the hooks run. A test build starts from it when the key
-  matches. The key covers:
+  includes are copied and the hooks run. A build starts from it when the key matches,
+  release builds included. The key covers:
   - everything in the bootstrap key;
   - every lb config file;
   - the package lists;
   - the apt sources, keys and pins;
   - the preseeds;
   - local packages;
-  - the files copied before packages.
+  - the files copied before packages;
+  - the hooks that install or remove packages, and the sources they build: the Cage hook
+    installs its build dependencies and purges them again, so a change to it or to
+    `config/cage/` is a new key.
 
   A snapshot older than 7 days is deleted and rebuilt
   (`COUCHLITEOS_CHROOT_CACHE_DAYS` changes the limit). The newest two snapshots are kept,
@@ -177,8 +181,33 @@ What still runs when the chroot is reused:
   plain `lb chroot` and installs everything.
 
 A changed package list, apt source, pin or Debian archive is a new key, so it installs
-packages afresh. Release builds never reuse the chroot, but they save one for later test
-builds. Do not run two builds against one cache directory at the same time.
+packages afresh, and so does a snapshot older than 7 days. `FRESH=1` (`build/build.sh
+--fresh`) always installs every package, and saves a new snapshot for the builds after
+it. Do not run two builds against one cache directory at the same time.
+
+## Repeat release builds
+
+A repeat build is fast only if it finds what the last build left behind. Build every
+release from one kept build directory:
+
+- **Keep the checkout.** Update the source in place (`git pull`, or a sync that does not
+  delete files). Do not delete `build/` between builds: `build/.tests-passed` lets
+  `make build` skip the tests it already ran (see [Tests run once](#tests-run-once)), and
+  `build/downloads` holds the application images and the Cage tarball.
+- **Keep the cache outside the checkout** and pass it to every build, test or release:
+
+  ```bash
+  sudo COUCHLITEOS_LB_CACHE=/var/cache/couchliteos-lb make build RELEASE=1
+  sudo COUCHLITEOS_LB_CACHE=/var/cache/couchliteos-lb make build PROFILE=nvidia RELEASE=1
+  ```
+
+  Without `COUCHLITEOS_LB_CACHE` every build bootstraps and installs everything.
+- **Use `FRESH=1`** when a package came from somewhere the key does not see, or to check
+  that a release still builds from nothing.
+
+The build log says which way the chroot stage went: `lb-cache: restored the installed
+chroot ...` for a reuse, `lb-cache: fresh build, installing packages afresh` for
+`FRESH=1`.
 
 ## Tests run once
 

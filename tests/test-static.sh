@@ -805,6 +805,10 @@ rg -q 'squashfs_options=\(--chroot-squashfs-compression-type zstd --chroot-squas
 rg -Fq '"${squashfs_options[@]}"' build/build.sh
 rg -Fq '"${cache_options[@]}"' build/build.sh
 rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
+# Release builds reuse a matching chroot snapshot too; only --fresh (FRESH=1) installs afresh.
+rg -Fq -- '--fresh) fresh=1 ;;' build/build.sh
+rg -Fq 'lb_cache_chroot_stage "$COUCHLITEOS_LB_CACHE" $((fresh ? 0 : 1))' build/build.sh
+rg -Fq '$(if $(filter 1,$(FRESH)),--fresh)' Makefile
 rg -q '^RELEASE \?= 0$' Makefile
 rg -Fq 'sudo make build RELEASE=1' .github/workflows/build.yml
 rg -Fq '[[ $compression == 4 ]]' tools/release-assets.sh

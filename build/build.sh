@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds the ISO from the work tree `make configure` prepared.
 #   build/build.sh            test build: zstd squashfs (fast to make, a little larger)
-#   build/build.sh --release  release build: xz squashfs, and never a reused chroot
+#   build/build.sh --release  release build: xz squashfs
+#   build/build.sh --fresh    install every package, even with a matching chroot snapshot
 # Environment:
 #   COUCHLITEOS_LB_CACHE=/dir   share the bootstrap root, the installed chroot and the
 #                               package caches between builds (build/lb-cache.sh)
@@ -20,10 +21,12 @@ PROFILE=${PROFILE:-general}
 VERSION=$(< "$ROOT/VERSION")
 
 release=0
+fresh=0
 for arg in "$@"; do
   case $arg in
     --release) release=1 ;;
-    *) echo "usage: build/build.sh [--release]" >&2; exit 64 ;;
+    --fresh) fresh=1 ;;
+    *) echo "usage: build/build.sh [--release] [--fresh]" >&2; exit 64 ;;
   esac
 done
 
@@ -156,10 +159,11 @@ lb_binary() {
 }
 
 # `lb build` is these five stages; they run one by one to time them and, with a
-# shared cache, to reuse the installed chroot.
+# shared cache, to reuse the installed chroot (release builds too: apt still upgrades
+# it and the includes and hooks still run; --fresh installs everything).
 timed bootstrap lb bootstrap
 if [[ -n ${COUCHLITEOS_LB_CACHE:-} ]]; then
-  timed chroot lb_cache_chroot_stage "$COUCHLITEOS_LB_CACHE" $((release ? 0 : 1))
+  timed chroot lb_cache_chroot_stage "$COUCHLITEOS_LB_CACHE" $((fresh ? 0 : 1))
 else
   timed chroot lb chroot
 fi
