@@ -34,6 +34,7 @@ KEY_ACTIONS = {
     "Home": "home",
     "F12": "keyboard",
     "F9": "hold-y",  # gamepad-nav sends F9 while Y / Square is held (CHANGE ARTWORK)
+    "F10": "hold-x",  # and F10 while X / Triangle is held (STREAM SETTINGS)
     "F5": "shortcut:lb", "F6": "shortcut:rb", "F7": "shortcut:view", "F8": "shortcut:menu",
 }
 HOME_HINT = "A / CROSS OR ENTER OPENS  ·  B / CIRCLE OR ESC GOES BACK"
@@ -41,6 +42,7 @@ ACTIVE_HINT = "A / CROSS OR ENTER RESUMES  ·  Y / SQUARE OR DELETE CLOSES  ·  
 FAILURE_HINT = "A / CROSS OR ENTER TRIES AGAIN  ·  B / CIRCLE OR ESC GOES BACK"
 QUESTION_HINT = "A / CROSS OR ENTER: YES  ·  B / CIRCLE OR ESC: NO"
 WAIT_HINT = "PRESS ANY BUTTON TO CANCEL"
+STREAM_SETTINGS_HINT = "LEFT / RIGHT CHANGES  ·  A / CROSS OR ENTER ON SAVE SAVES  ·  B / CIRCLE OR ESC GOES BACK"
 
 
 def action(key_name: str | None) -> str | None:

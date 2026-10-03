@@ -461,7 +461,7 @@ class Tv(session.Session):
             self.status = ""  # a press dismisses the last result
             self.home_status.set_label("")
         handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key,
-                   "art": self.art_key}.get(self.mode)
+                   "art": self.art_key, "streamset": self.stream_settings_key}.get(self.mode)
         if handler is not None:
             handler(name)
         return True
@@ -492,6 +492,8 @@ class Tv(session.Session):
             self.open_active()
         elif name == "hold-y":
             self.change_artwork()
+        elif name == "hold-x":
+            self.open_stream_settings()
         elif name.startswith("shortcut:"):
             tag = name.split(":", 1)[1]
             app = next((item for item in visible_applications().applications if item.shortcut == tag), None)
@@ -668,11 +670,31 @@ class Tv(session.Session):
         self.quick_css = Gtk.CssProvider()
 
     def quick_stream_items(self) -> list[quick.Item]:
-        """Rows at the top of the quick menu while a stream runs (R1: the preset and SHOW STATS)."""
-        return []
+        """Rows at the top of the quick menu while Moonlight runs: the stream's preset and SHOW STATS."""
+        if not (self.run_dir / "moonlight-ready").exists():
+            self.stats_on = False  # a new stream starts without Moonlight's statistics
+            return []
+        return [
+            quick.Item("preset", "STREAM PRESET", stream.active_preset() or stream.DEFAULT, selectable=False),
+            quick.Item("stats", "SHOW STATS", "ON" if getattr(self, "stats_on", False) else "OFF", ("stats",)),
+        ]
 
     def quick_extra_action(self, action: tuple) -> None:
-        """A quick_stream_items row was chosen (R1)."""
+        """SHOW STATS: back to Moonlight, where gamepad-nav types its statistics shortcut."""
+        if action != ("stats",):
+            return
+        self.close_quick(resume=False)
+        app = self.app_by_id("moonlight")
+        if app is None or not self.focus_app(app):
+            self.status = "MOONLIGHT HAS NO WINDOW: STATISTICS NOT SHOWN"
+            self.show("home")
+            self.render_home()
+            return
+        try:
+            (self.run_dir / "moonlight-stats.request").touch()  # gamepad-nav sends Ctrl+Alt+Shift+S
+            self.stats_on = not getattr(self, "stats_on", False)
+        except OSError as error:
+            display.log(f"tv stats request failed: {error!r}", session.LOG)
 
     def build_quick(self, overlay: "Gtk.Overlay") -> None:
         """The quick menu panel (right edge) and the toast card (top right), over every screen."""
@@ -995,6 +1017,96 @@ class Tv(session.Session):
             return
         self.status = ""
         self.render_art()
+
+    # ------------------------------------------------------------------ stream settings
+
+    def open_stream_settings(self) -> None:
+        """Hold X on a game: STREAM SETTINGS, a preset or CUSTOM kept for that game alone."""
+        item = self.model.focused()
+        if item is None or not item.action or item.action[0] != "stream":
+            return
+        _kind, host, app = item.action
+        try:
+            output = display.active_output(display.query_outputs())
+        except Exception:  # noqa: BLE001 - without the mode the screen still saves; it only cannot preview
+            output = None
+        current = output.current_mode if output else None
+        mode = (current.width, current.height, current.refresh_mhz) if current else None
+        key = host.uuid or host.name  # recent.host_key: the key start_stream looks it up by
+        self.stream_form = (key, app, item.label, mode, stream.video_decode(),
+                            stream.SettingsForm(stream.game_settings(key, app)))
+        self.status = ""
+        self.render_stream_settings()
+        self.show("streamset")
+
+    def render_stream_settings(self) -> None:
+        if "streamset" not in self.pages:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box.set_valign(Gtk.Align.CENTER)
+            title = label("", "tv-title", xalign=0.5, wrap=True)
+            rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            rows.set_halign(Gtk.Align.CENTER)
+            hint = label("", "tv-prompt", xalign=0.5, wrap=True)
+            hint.set_justify(Gtk.Justification.CENTER)
+            for widget in (title, rows, hint):
+                box.append(widget)
+            self.stack.add_named(box, "streamset")
+            self.pages["streamset"] = (box, title, rows, hint)
+        box, title, rows, hint = self.pages["streamset"]
+        layout = self.layout
+        for side in ("start", "end", "top", "bottom"):
+            getattr(box, f"set_margin_{side}")(layout.margin_x if side in ("start", "end") else layout.margin_y)
+        box.set_spacing(layout.px(16))
+        _key, _app, name, mode, decode, form = self.stream_form
+        title.set_label(f"STREAM SETTINGS: {name}")
+        clear(rows)
+        width = max(1, round(layout.width * 0.5))
+        for index, (_row, text, value) in enumerate(form.rows()):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            row.add_css_class("tv-item")
+            row.set_size_request(width, -1)
+            if index == form.index:
+                row.add_css_class("tv-focused")
+            row.append(label(text))
+            if value:
+                row.append(label(f"‹ {value} ›" if index == form.index else value, xalign=1.0, ellipsize=False))
+            rows.append(row)
+        settings = form.settings()
+        plan = stream.game_plan(settings, mode, decode) if settings is not None else None
+        if settings is None:
+            about = "USES THE SETTINGS FROM SETTINGS > STREAMING"
+        elif plan is None:
+            about = "NO DISPLAY MODE DETECTED: THE PRESET IS WORKED OUT WHEN THE GAME STARTS"
+        else:
+            about = f"ON THIS TV: {stream.describe(plan)}"
+        hint.set_label(f"{about}\n{self.status or tvlayout.STREAM_SETTINGS_HINT}")
+
+    def stream_settings_key(self, name: str) -> None:
+        key, app, _name, _mode, _decode, form = self.stream_form
+        if name in ("up", "down"):
+            form.move(1 if name == "down" else -1)
+        elif name in ("left", "right"):
+            form.adjust(1 if name == "right" else -1)
+        elif name in ("back", "home"):
+            self.status = ""
+            self.show("home")
+            self.render_home()
+            return
+        elif name == "activate":
+            if form.rows()[form.index][0] != "save":
+                form.adjust(1)
+            else:
+                settings = form.settings()
+                try:
+                    stream.save_game(key, app, settings)
+                    self.status = f"STREAM SETTINGS SAVED: {settings.preset if settings else stream.DEFAULT}"
+                except (OSError, ValueError) as error:
+                    self.status = f"NOT SAVED: {error}".upper()
+                self.show("home")
+                self.render_home()
+                return
+        self.status = ""
+        self.render_stream_settings()
 
     # ------------------------------------------------------------------ start
 

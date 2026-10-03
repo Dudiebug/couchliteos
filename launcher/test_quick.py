@@ -93,7 +93,7 @@ class PromptTest(unittest.TestCase):
                     text = quick.prompt(family, entries, separator)
                     self.assertTrue(quick.names_keyboard_keys(text), text)
         for text in (tvlayout.HOME_HINT, tvlayout.ACTIVE_HINT, tvlayout.FAILURE_HINT, tvlayout.QUESTION_HINT,
-                     tvlayout.WAIT_HINT):
+                     tvlayout.WAIT_HINT, tvlayout.STREAM_SETTINGS_HINT):
             self.assertTrue(quick.names_keyboard_keys(text), text)
         tv = load_tv()
         self.assertTrue(quick.names_keyboard_keys(tv.BACK_HINT))

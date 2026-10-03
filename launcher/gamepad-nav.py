@@ -25,7 +25,9 @@ import couchliteos_pads as padprefs
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
-        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8, ecodes.KEY_F9,
+        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8, ecodes.KEY_F9, ecodes.KEY_F10,
+        # SHOW STATS in the quick menu: Moonlight's Ctrl+Alt+Shift+S
+        ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_S,
         # controller mouse (pointer mode): browser back, play/pause, page up/down
         ecodes.KEY_BACK, ecodes.KEY_SPACE, ecodes.KEY_PAGEUP, ecodes.KEY_PAGEDOWN]
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
@@ -56,8 +58,14 @@ _last_state = False
 REPEAT_DELAY = 0.4
 REPEAT_INTERVAL = 0.12
 # Y / Square sends Delete when pressed and, held this long in the launcher, F9 once too
-# (the TV interface's CHANGE ARTWORK on a game).
+# (the TV interface's CHANGE ARTWORK on a game). X / Triangle likewise sends F12, then F10
+# (STREAM SETTINGS on a game).
 Y_HOLD_SECONDS = 0.6
+# The quick menu's SHOW STATS leaves this request; Moonlight gets Ctrl+Alt+Shift+S once it has the
+# screen again. A request the stream never took (it ended) goes stale.
+STATS_REQUEST = RUN / "moonlight-stats.request"
+STATS_REQUEST_MAX_AGE = 10.0
+STATS_CHORD = (ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_S)
 # The left stick counts as a D-pad press past STICK_ENGAGE of full deflection and as let
 # go again below STICK_RELEASE, so drift and jitter near the edge do not flutter.
 STICK_ENGAGE = 0.6
@@ -334,6 +342,7 @@ class Pads:
         self.combo = HomeCombo()  # the mouse grabs the pads, hiding the Home shortcut from watch_home()
         self.taps = PairTaps()  # SELECT and START act when let go while they are the Home hold
         self.y_holds: dict[str, float] = {}  # path -> when Y went down, until let go or F9 sent
+        self.x_holds: dict[str, float] = {}  # the same for X and F10
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -380,6 +389,7 @@ class Pads:
     def drop(self, path: str) -> None:
         self.holds.pop(path, None)
         self.y_holds.pop(path, None)
+        self.x_holds.pop(path, None)
         self.idents.pop(path, None)
         self.combo.forget(path)
         self.taps.forget(path)
@@ -489,11 +499,13 @@ class Pads:
             return False
         # Only here, in the launcher: a stream or an app reads the pad itself, unswapped.
         swaps = PAD_SETTINGS.current().swaps(self.idents.get(path, ""))
-        if event.type == ecodes.EV_KEY and event.value in (0, 1) and swaps.get(event.code, event.code) == ecodes.BTN_WEST:
+        button = swaps.get(event.code, event.code)
+        if event.type == ecodes.EV_KEY and event.value in (0, 1) and button in (ecodes.BTN_WEST, ecodes.BTN_NORTH):
+            holds = self.y_holds if button == ecodes.BTN_WEST else self.x_holds
             if event.value:
-                self.y_holds[path] = now
+                holds[path] = now
             else:
-                self.y_holds.pop(path, None)
+                holds.pop(path, None)
         key = key_for_event(event, swaps)
         if key:
             emit(ui, key)
@@ -573,6 +585,7 @@ class Pads:
         self.pointer_tick = now
         self.holds.clear()
         self.y_holds.clear()
+        self.x_holds.clear()
         self.combo.reset()
         self.taps.reset()
         self.pointer.open() if on else self.pointer.close()
@@ -603,7 +616,8 @@ class Pads:
         moving += [self.combo.timeout(now)] if self.pointer_on and self.combo.started else []
         return min([1.0, *moving,
                     *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None),
-                    *(max(0.0, since + Y_HOLD_SECONDS - now) for since in self.y_holds.values())])
+                    *(max(0.0, since + Y_HOLD_SECONDS - now) for since in (*self.y_holds.values(),
+                                                                           *self.x_holds.values()))])
 
     def pump(self, ui: UInput) -> None:
         """Wait up to a second for input from any pad and translate it."""
@@ -628,6 +642,7 @@ class Pads:
         if blocked:
             self.holds.clear()  # an app owns the controller now; do not keep stepping its menus
             self.y_holds.clear()
+            self.x_holds.clear()
             self.taps.reset()  # nor send a SELECT/START pressed before it on release
         for path, dev in list(self.devices.items()):
             if dev not in readable:
@@ -658,17 +673,50 @@ class Pads:
             self.send_y_holds(ui, now)
 
     def send_y_holds(self, ui: UInput, now: float) -> None:
-        """F9 once for each pad holding Y / Square long enough."""
-        for path, since in list(self.y_holds.items()):
-            if now - since >= Y_HOLD_SECONDS:
-                del self.y_holds[path]
-                emit(ui, ecodes.KEY_F9)
+        """F9 once for each pad holding Y / Square long enough, F10 for X / Triangle."""
+        for holds, key in ((self.y_holds, ecodes.KEY_F9), (self.x_holds, ecodes.KEY_F10)):
+            for path, since in list(holds.items()):
+                if now - since >= Y_HOLD_SECONDS:
+                    del holds[path]
+                    emit(ui, key)
 
 
 def emit(ui: UInput, key: int) -> None:
     ui.write(ecodes.EV_KEY, key, 1)
     ui.write(ecodes.EV_KEY, key, 0)
     ui.syn()
+
+
+def emit_chord(ui: UInput, keys: Iterable[int]) -> None:
+    """Press `keys` in order, then let them go in reverse (a shortcut such as Ctrl+Alt+Shift+S)."""
+    keys = list(keys)
+    for key in keys:
+        ui.write(ecodes.EV_KEY, key, 1)
+        ui.syn()
+    for key in reversed(keys):
+        ui.write(ecodes.EV_KEY, key, 0)
+        ui.syn()
+
+
+def send_stats_request(ui: UInput, now: float | None = None) -> bool:
+    """Moonlight's statistics shortcut for the quick menu's SHOW STATS, once Moonlight has the
+    screen (the launcher let it go); True when it was sent."""
+    try:
+        age = (time.time() if now is None else now) - STATS_REQUEST.stat().st_mtime
+    except OSError:
+        return False
+    if not 0 <= age <= STATS_REQUEST_MAX_AGE:
+        STATS_REQUEST.unlink(missing_ok=True)
+        return False
+    try:
+        front = APP_ACTIVE.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        front = ""
+    if front != "moonlight" or LAUNCHER_FOCUS.exists():
+        return False
+    STATS_REQUEST.unlink(missing_ok=True)
+    emit_chord(ui, STATS_CHORD)
+    return True
 
 
 def arrow_for_event(event) -> tuple[int, int | None] | None:
@@ -1220,6 +1268,7 @@ def run() -> None:
     pads = Pads()
     threading.Thread(target=watch_cec, args=(ui,), daemon=True).start()
     while True:
+        send_stats_request(ui)
         pads.rescan()
         if not pads.devices:
             pads.sync_touchpads(False)  # no pad left to stream with: a leftover touchpad is a plain one
