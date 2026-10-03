@@ -17,9 +17,9 @@ It is built on Debian 13 and is not a general-purpose desktop.
   with chiaki-ng.
 - **Couch-first controls:** every screen works with an Xbox, PlayStation or
   generic controller, a keyboard, or the TV remote over HDMI-CEC. Home (Guide,
-  PS, or the Super key) opens a menu over any app: switch apps, close one, change
-  volume and brightness, type with the on-screen keyboard, or use the controller
-  as a mouse.
+  PS, or a keyboard shortcut you choose, Ctrl+Alt+H by default) opens a menu over
+  any app: switch apps, close one, change volume and brightness, type with the
+  on-screen keyboard, or use the controller as a mouse.
 - **Setup wizard** on first start: TV picture and text size, sound, network,
   controllers and Bluetooth.
 - **Web apps and browsers** (Firefox and Google Chrome) for streaming services and
