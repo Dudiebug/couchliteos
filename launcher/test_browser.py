@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 """couchliteos-browser (root side): apt arguments, refusals, status phases, refresh, request file, web apps."""
 
 import json

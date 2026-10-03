@@ -24,10 +24,10 @@ import stat
 import tempfile
 
 BUILTIN_DIR = pathlib.Path("/usr/share/couchliteos/themes")
-CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
+CONFIG = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "config.ini"
 SECTION = "appearance"
 # The OSC string of the current theme, for the on-screen keyboard's foot window.
-OSK_FILE = pathlib.Path("/run/couchliteos/theme.osc")
+OSK_FILE = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "theme.osc"
 SUFFIX = ".theme"
 DEFAULT = "midnight"
 FIELDS = ("background", "surface", "text", "muted", "accent", "focus", "warning", "error")

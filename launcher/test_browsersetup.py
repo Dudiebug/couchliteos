@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 """ADD A WEB BROWSER: rows, the request file, progress from the status file, NOT NOW."""
 
 import curses

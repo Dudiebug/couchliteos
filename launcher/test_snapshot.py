@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 """The snapshot before an update: one slot, replaced only once the new one is complete."""
 
 import hashlib

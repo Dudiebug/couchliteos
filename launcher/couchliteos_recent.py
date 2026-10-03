@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import pathlib
 import time
 from collections.abc import Callable, Iterable
@@ -22,7 +23,7 @@ from typing import TypeVar
 
 import couchliteos_stream as stream
 
-PATH = pathlib.Path("/var/lib/couchliteos/recent.json")
+PATH = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "recent.json"
 LIMIT = 200
 VERSION = 1
 MAX_BYTES = 256 * 1024  # 200 entries of the longest names fit with room to spare

@@ -22,7 +22,7 @@ import couchliteos_browser as browser
 import couchliteos_listview as listview
 import couchliteos_softwareupdate as softwareupdate
 
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 TITLE = "ADD A WEB BROWSER"
 NOT_NOW = "NOT NOW"
 INTRO = "A WEB BROWSER INSTALLS FROM THE INTERNET. PICK ONE:"

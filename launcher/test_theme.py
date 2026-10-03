@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 """Themes: parsing and rejects, the contrast check on every built-in, foot/OSC/CSS output,
 the accent override, the saved choice, and Settings > APPEARANCE recolouring the running windows."""
 

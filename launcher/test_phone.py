@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 """TYPE ON PHONE: the one-time form server and the launcher's text field."""
 
 import http.client
