@@ -1002,12 +1002,19 @@ class RunTest(TmpCase):
         put(self.env.root, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=general\nISO_SUFFIX=\n")
         self.status = RecordingStatus(self.env.run_dir / "update-status.json")
         self.applied = []
+        self.saved = []
+        self.save_error = None
 
     def apply(self, path, env, status, **kwargs):
         self.applied.append((path, kwargs))
 
-    def run_update(self, apply=None):
-        return updater.run(self.env, self.status, apply=apply or self.apply)
+    def save(self, env, status):
+        self.saved.append(len(self.applied))
+        if self.save_error:
+            raise self.save_error
+
+    def run_update(self, apply=None, **kwargs):
+        return updater.run(self.env, self.status, apply=apply or self.apply, save=self.save, **kwargs)
 
     def final(self):
         return json.loads(self.status.path.read_text())
@@ -1124,6 +1131,39 @@ class RunTest(TmpCase):
         self.assertEqual(self.final()["message"], "UPDATE FAILED: SEE /var/log/couchliteos/update.log")
         self.assertNotIn("secret", json.dumps(self.final()))
 
+    def test_the_box_is_saved_after_the_download_and_before_the_install(self):
+        self.assertEqual(self.run_update(), 0)
+        self.assertEqual(self.saved, [0], "saved once, before apply ran")
+        self.assertIn("verifying", self.status.phases())
+
+    def test_a_failed_save_stops_the_update_before_anything_is_installed(self):
+        self.save_error = updater.UpdateFailed("NOT ENOUGH FREE SPACE TO SAVE THE CURRENT VERSION: NEED 7 GB.")
+        self.assertEqual(self.run_update(), 1)
+        self.assertEqual(self.final()["phase"], "failed")
+        self.assertIn("SAVE THE CURRENT VERSION", self.final()["message"])
+        self.assertEqual(self.applied, [])
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+        self.assertTrue((self.env.cache_dir / ISO_NAME).exists(), "the verified ISO is kept for a retry")
+
+    def test_no_snapshot_skips_the_save(self):
+        self.assertEqual(self.run_update(save_first=False), 0)
+        self.assertEqual(self.saved, [])
+        self.assertEqual(len(self.applied), 1)
+
+    def test_nothing_is_saved_when_there_is_nothing_newer_or_on_a_live_boot(self):
+        put(self.env.root, "etc/couchliteos-version", "0.2.2\n")
+        self.run_update()
+        (self.env.root / "run/live/medium").mkdir(parents=True)
+        put(self.env.root, "etc/couchliteos-version", "0.2.1\n")
+        self.assertEqual(self.run_update(), 1)
+        self.assertEqual(self.saved, [])
+
+    def test_the_default_install_does_not_save_a_second_time(self):
+        with mock.patch.object(updater, "apply_iso") as apply_iso:
+            self.assertEqual(updater.run(self.env, self.status, save=self.save), 0)
+        self.assertEqual(self.saved, [0])
+        self.assertFalse(apply_iso.call_args.kwargs["save_first"])
+
     def test_a_missing_version_file_refuses_to_guess(self):
         (self.env.root / "etc/couchliteos-version").unlink()
         self.assertEqual(self.run_update(), 1)
@@ -1147,8 +1187,13 @@ class ApplyIsoTest(TmpCase):
         self.iso = self.tmp / "update.iso"
         self.iso.write_bytes(b"iso")
         self.status = RecordingStatus(self.env.run_dir / "update-status.json")
+        self.saved = []
+
+    def save(self, env, status):
+        self.saved.append(len(self.mounts()))
 
     def apply(self, **kwargs):
+        kwargs.setdefault("save", self.save)
         return updater.apply_iso(self.iso, self.env, self.status, **kwargs)
 
     def mounts(self):
@@ -1171,6 +1216,30 @@ class ApplyIsoTest(TmpCase):
             ["umount", "-R", f"{r}/proc"], ["umount", "-R", f"{r}/mnt"], ["umount", "-R", r],
             ["umount", "-R", f"{w}/iso"],
         ])
+
+    def test_the_box_is_saved_after_the_iso_is_checked_and_before_the_box_is_mounted(self):
+        self.apply()
+        self.assertEqual(self.saved, [2], "after the ISO and its squashfs, before the bind mount of /")
+
+    def test_no_snapshot_skips_the_save(self):
+        self.apply(save_first=False)
+        self.assertEqual(self.saved, [])
+        self.assertEqual(len(self.env.runner.commands("chroot")), 1)
+
+    def test_a_failed_save_stops_before_the_new_updater_runs(self):
+        def failing(env, status):
+            raise updater.UpdateFailed("COULD NOT SAVE THE CURRENT VERSION")
+
+        with self.assertRaises(updater.UpdateFailed):
+            self.apply(save=failing)
+        self.assertEqual(self.env.runner.commands("chroot"), [])
+        self.assertNotIn(["mount", "--bind", "/", f"{self.new}/mnt"], self.mounts())
+
+    def test_an_iso_of_another_profile_is_refused_before_saving(self):
+        put(self.new, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=nvidia\n")
+        with self.assertRaises(updater.UpdateFailed):
+            self.apply()
+        self.assertEqual(self.saved, [])
 
     def test_the_layout_is_checked_before_anything_is_mounted(self):
         self.apply()
@@ -1520,6 +1589,26 @@ class MainTest(TmpCase):
             self.assertEqual(self.main("apply-iso", "/x.iso"), 1)
         self.assertEqual(json.loads(self.status_path.read_text())["message"], "UNSUPPORTED DISK LAYOUT")
         self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+
+    def test_no_snapshot_is_passed_on_by_run_and_apply_iso(self):
+        with mock.patch.object(updater, "run", return_value=0) as run:
+            self.main("run")
+            self.assertTrue(run.call_args.kwargs["save_first"])
+            self.main("run", "--no-snapshot")
+            self.assertFalse(run.call_args.kwargs["save_first"])
+        with mock.patch.object(updater, "apply_iso") as apply:
+            self.main("apply-iso", "/x.iso", "--no-reboot")
+            self.assertTrue(apply.call_args.kwargs["save_first"])
+            self.main("apply-iso", "/x.iso", "--no-reboot", "--no-snapshot")
+            self.assertFalse(apply.call_args.kwargs["save_first"])
+
+    def test_delete_snapshot_deletes_and_leaves_the_update_status_alone(self):
+        with mock.patch.object(updater.snapshot, "delete", return_value=True) as delete:
+            self.assertEqual(self.main("delete-snapshot"), 0)
+        self.assertEqual(delete.call_args.args, (self.env, self.env.root))
+        self.assertFalse(self.status_path.exists())
+        with mock.patch.object(updater.snapshot, "delete", return_value=False):
+            self.assertEqual(self.main("delete-snapshot"), 1)
 
     def test_apply_root_needs_a_status_file_and_passes_force(self):
         with mock.patch.object(updater, "apply_root") as apply:

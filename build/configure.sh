@@ -83,6 +83,7 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_recent.py" "$CHROOT/usr/libexec/c
 install -D -m 0644 "$ROOT/launcher/couchliteos_home.py" "$CHROOT/usr/libexec/couchliteos_home.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_update.py" "$CHROOT/usr/libexec/couchliteos_update.py"
 install -D -m 0755 "$ROOT/launcher/couchliteos_updater.py" "$CHROOT/usr/libexec/couchliteos-updater"
+install -D -m 0644 "$ROOT/launcher/couchliteos_snapshot.py" "$CHROOT/usr/libexec/couchliteos_snapshot.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_softwareupdate.py" "$CHROOT/usr/libexec/couchliteos_softwareupdate.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_errors.py" "$CHROOT/usr/libexec/couchliteos_errors.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_whatsnew.py" "$CHROOT/usr/libexec/couchliteos_whatsnew.py"

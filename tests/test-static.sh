@@ -424,7 +424,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
   launcher/couchliteos_pcstatus.py launcher/couchliteos_recent.py launcher/couchliteos_home.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
-  launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py \
+  launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py launcher/couchliteos_snapshot.py \
   scripts/couchliteos-rdp-secret \
   scripts/couchliteos-host-address scripts/couchliteos-support-export \
   scripts/couchliteos-bluetoothd scripts/couchliteos-hwdetect
@@ -771,6 +771,17 @@ rg -q '^boot_and_wait update-apply COUCHLITEOS_SMOKE_UPDATE_APPLIED$' tests/qemu
 rg -q '^boot_and_wait update-check COUCHLITEOS_SMOKE_UPDATE_READY$' tests/qemu-install-smoke.sh
 # The updater is plain standard-library Python with no shell strings and no network credentials.
 refute rg -n 'shell=True|os\.system|^import requests|Authorization|Cookie' launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py
+# Every update first saves the running system as one rolling snapshot (squashfs, zstd).
+rg -q '^squashfs-tools$' config/live-build/package-lists/couchliteos.list.chroot
+rg -Fq '"$ROOT/launcher/couchliteos_snapshot.py" "$CHROOT/usr/libexec/couchliteos_snapshot.py"' build/configure.sh
+rg -q '^import couchliteos_snapshot as snapshot' launcher/couchliteos_updater.py
+rg -q 'test_snapshot.py' launcher/Makefile
+rg -q '^PathExists=/run/couchliteos/snapshot-delete$' services/couchliteos-snapshot-delete.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/snapshot-delete$' services/couchliteos-snapshot-delete.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater delete-snapshot$' services/couchliteos-snapshot-delete.service
+rg -q '^systemctl enable couchliteos-snapshot-delete.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q 'test -s /var/lib/couchliteos/snapshot/previous.squashfs' scripts/couchliteos-qemu-smoke
+refute rg -n 'shell=True|os\.system' launcher/couchliteos_snapshot.py
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh

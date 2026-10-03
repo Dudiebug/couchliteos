@@ -6,6 +6,10 @@ shows what the service writes to /run/couchliteos/update-status.json. While the 
 downloaded B asks the service to stop (update-cancel); once the install has started it cannot be
 stopped safely, so B only says to wait.
 
+The service saves the running system first (couchliteos_snapshot). This screen shows that saved
+version, turns SAVE BEFORE UPDATE on or off (config.ini, the launcher's own file) and asks the root
+service to delete it (/run/couchliteos/snapshot-delete, couchliteos-snapshot-delete.path).
+
 Everything the screen needs from outside is injected, so the tests use fakes.
 """
 
@@ -20,13 +24,18 @@ from typing import Any, Callable
 
 import couchliteos_confirm as confirmation
 import couchliteos_listview as listview
+import couchliteos_snapshot as snapshot
 import couchliteos_update as update
 
 RUN = pathlib.Path("/run/couchliteos")
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
+DELETE_REQUEST = "snapshot-delete"
 TITLE = "SOFTWARE UPDATE"
 CHECK, INSTALL, BACK = "CHECK FOR UPDATES", "INSTALL UPDATE", "BACK"
 HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
+SAVE_ON, SAVE_OFF, DELETE_SAVED = "SAVE BEFORE UPDATE: ON", "SAVE BEFORE UPDATE: OFF", "DELETE SAVED VERSION"
+NO_SAVED = "SAVED VERSION: NONE"
+DELETING = "DELETING THE SAVED VERSION..."
 LIVE_TEXT = (
     "UPDATES INSTALL ON A BOX THAT RUNS FROM ITS DISK. ON A USB STICK: WRITE THE NEW ISO TO THE ISO STICK "
     "AND KEEP THE PERSISTENCE STICK."
@@ -50,9 +59,12 @@ ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 ESC = 27
 PHASE_TEXT = {
     "checking": "CHECKING FOR UPDATES...", "downloading": "DOWNLOADING...", "verifying": "CHECKING THE DOWNLOAD...",
-    "installing": "INSTALLING...", "restarting": "RESTARTING...",
+    "saving": "SAVING THE CURRENT VERSION...", "installing": "INSTALLING...", "restarting": "RESTARTING...",
 }
-PHASE_HINT = {"downloading": "B / CIRCLE CANCELS THE DOWNLOAD", "installing": "KEEP THE BOX PLUGGED IN"}
+PHASE_HINT = {
+    "downloading": "B / CIRCLE CANCELS THE DOWNLOAD", "saving": "KEEP THE BOX PLUGGED IN",
+    "installing": "KEEP THE BOX PLUGGED IN",
+}
 
 
 def default_fetch(current: str) -> update.Release:
@@ -114,6 +126,9 @@ class SoftwareUpdate:
         fetch: Callable[[str], update.Release] = default_fetch, run_dir: pathlib.Path = RUN,
         clock: Callable[[], float] = time.monotonic,
         record: Callable[[str], None] = lambda _version: None,
+        saved: Callable[[], snapshot.Snapshot | None] = snapshot.info,
+        save_first: Callable[[], bool] = snapshot.enabled,
+        set_save_first: Callable[[bool], None] = snapshot.set_enabled,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -127,6 +142,9 @@ class SoftwareUpdate:
         self.run_dir = pathlib.Path(run_dir)
         self.clock = clock
         self.record = record  # tells the Home screen's update notice what this check found
+        self.saved = saved
+        self.save_first = save_first
+        self.set_save_first = set_save_first
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
@@ -137,7 +155,24 @@ class SoftwareUpdate:
     def rows(self) -> list[str]:
         if self.live:
             return [BACK]
-        return ([INSTALL] if self.release else []) + [CHECK, BACK]
+        rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
+        return rows + ([DELETE_SAVED] if self._saved() else []) + [BACK]
+
+    def _saved(self) -> snapshot.Snapshot | None:
+        try:
+            return self.saved()
+        except Exception:  # noqa: BLE001 - an unreadable snapshot is shown as none
+            return None
+
+    def _save_first(self) -> bool:
+        try:
+            return self.save_first()
+        except Exception:  # noqa: BLE001
+            return True
+
+    def saved_line(self) -> str:
+        saved = self._saved()
+        return f"SAVED VERSION: {saved.describe()}" if saved else NO_SAVED
 
     def box_line(self) -> str:
         name = self.profile.get("PROFILE_NAME", "").upper()
@@ -159,7 +194,7 @@ class SoftwareUpdate:
     def draw_main(self) -> None:
         height, width, row = self.frame()
         wrap = max(8, width - 8)
-        lines = [(self.box_line(), 0), ("", 0)]
+        lines = [(self.box_line(), 0)] + ([] if self.live else [(self.saved_line(), 0)]) + [("", 0)]
         if self.live:
             lines += [(text, 0) for text in textwrap.wrap(LIVE_TEXT, wrap)] + [("", 0), (update.RELEASES_TEXT, 0)]
         elif self.result:
@@ -192,8 +227,40 @@ class SoftwareUpdate:
                 if choice == CHECK:
                     self.check()
                     self.selected = 0  # INSTALL UPDATE when there is one, else CHECK again
+                elif choice in (SAVE_ON, SAVE_OFF):
+                    self.toggle_save_first(choice == SAVE_OFF)
+                elif choice == DELETE_SAVED:
+                    self.delete_saved()
                 else:
                     self.install()
+
+    # -- the saved version -----------------------------------------------------------------------
+
+    def toggle_save_first(self, on: bool) -> None:
+        try:
+            self.set_save_first(on)
+        except OSError:
+            self.result = "COULD NOT SAVE THE SETTING"
+            return
+        self.result = "" if on else "UPDATES NOW INSTALL WITHOUT SAVING THE CURRENT VERSION FIRST"
+
+    def delete_saved(self) -> None:
+        saved = self._saved()
+        if saved is None:
+            return
+        question = (
+            f"DELETE THE SAVED VERSION ({saved.version})? THE BOX CAN THEN NOT GO BACK TO IT. "
+            "THE NEXT UPDATE SAVES A NEW ONE."
+        )
+        if not self.confirm(self.screen, question):
+            return
+        try:
+            (self.run_dir / DELETE_REQUEST).touch()
+        except OSError as error:
+            self.result = f"COULD NOT DELETE THE SAVED VERSION: {error.strerror or 'ERROR'}".upper()
+            return
+        self.result = DELETING
+        self.selected = 0
 
     # -- checking and installing -----------------------------------------------------------------
 
@@ -275,7 +342,7 @@ class SoftwareUpdate:
                 phase = state.get("phase") if isinstance(state.get("phase"), str) else ""
                 shown = _text(state.get("version"), version)
                 text = PHASE_TEXT.get(phase, "WORKING...") if phase else "STARTING THE UPDATE SERVICE..."
-                if phase in ("downloading", "installing", "checking", "verifying"):
+                if phase in ("downloading", "saving", "installing", "checking", "verifying"):
                     text = _text(state.get("message"), text)
                 hint = "CANCELLING..." if cancelling and phase == "downloading" else note or PHASE_HINT.get(phase, "")
                 self.draw_progress(shown, text, _percent(state.get("percent")) if phase else None, frame, hint)
@@ -307,7 +374,7 @@ class SoftwareUpdate:
                         except OSError:
                             cancelling = False
                             note = "COULD NOT CANCEL"
-                    elif phase == "installing":
+                    elif phase in ("saving", "installing"):
                         note = "INSTALLING: PLEASE WAIT"
                     elif phase not in ("downloading", "restarting"):
                         note = "PLEASE WAIT"

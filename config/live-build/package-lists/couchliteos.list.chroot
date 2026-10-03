@@ -77,6 +77,7 @@ tailscale=1.102.3
 
 # Software update: couchliteos-updater copies the new system over the installed one
 rsync
+squashfs-tools
 
 # Debian Installer integration
 debian-installer-launcher

@@ -4,9 +4,14 @@
 Installed as /usr/libexec/couchliteos-updater. The launcher (user couchliteos) only touches
 request files below /run/couchliteos; couchliteos-update.service runs `run` as root.
 
-    run                                       check, download, verify, install, reboot
-    apply-iso PATH [--force] [--no-reboot]    install from an ISO file or device (offline updates)
+    run [--no-snapshot]                       check, download, verify, save, install, reboot
+    apply-iso PATH [--force] [--no-reboot] [--no-snapshot]
+                                              install from an ISO file or device (offline updates)
     apply-root TARGET --status FILE [--force] the install step itself
+    delete-snapshot                           remove the saved previous version (Settings)
+
+Before anything is written, `run` and `apply-iso` save the running system as the one snapshot
+(couchliteos_snapshot) unless --no-snapshot is given or config.ini says [update] snapshot = off.
 
 `apply-iso` mounts the ISO's squashfs and runs the NEW image's copy of this program with
 `apply-root /mnt` inside a chroot of it (the running disk is bind-mounted at /mnt), so the logic
@@ -41,6 +46,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator
 
+import couchliteos_snapshot as snapshot
 import couchliteos_update as update
 
 RUN_DIR = pathlib.Path("/run/couchliteos")
@@ -54,7 +60,7 @@ UPDATER_REL = "usr/libexec/couchliteos-updater"
 VERSION_REL = "etc/couchliteos-version"
 PROFILE_REL = "usr/share/couchliteos/profile.conf"
 
-PHASES = ("checking", "downloading", "verifying", "installing", "restarting", "failed", "cancelled", "uptodate")
+PHASES = ("checking", "downloading", "verifying", "saving", "installing", "restarting", "failed", "cancelled", "uptodate")
 GIB = 1 << 30
 SPACE_MARGIN = 4 * GIB      # free space needed on top of the download
 SPACE_FOR_INSTALL = 3 * GIB  # free space needed on the box to copy the new files in
@@ -93,6 +99,7 @@ ETC_KEEP = (
 )
 SYSTEM_EXCLUDES = (
     "/dev/", "/proc/", "/sys/", "/run/", "/tmp/", "/mnt/", "/media/", "/lost+found", "/boot/efi/", "/boot/grub/",
+    "/boot/couchliteos-previous/",  # the snapshot's boot copy (couchliteos_snapshot)
     "/home/", "/root/", "/usr/local/", "/swapfile", "/etc/", "/var/",
     "/usr/lib/locale/locale-archive",  # generated on the box by locale-gen
 )
@@ -162,6 +169,7 @@ class Env:
     """Everything the updater touches outside its own arguments, replaceable in tests."""
 
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    popen: Callable[..., subprocess.Popen] = subprocess.Popen  # commands whose progress is followed
     lchown: Callable[[str, int, int], None] = os.lchown
     chown: Callable[[str, int, int], None] = os.chown
     free_bytes: Callable[[pathlib.Path], int] = _free_bytes
@@ -931,6 +939,24 @@ def _boot_menu(target: pathlib.Path, env: Env, log: Callable[[str], None], step)
                 raise UpdateFailed(MSG_BOOT_MENU)
 
 
+# ------------------------------------------------------------------ the snapshot before an update
+
+
+def save_snapshot(env: Env, status: Status, root: pathlib.Path | None = None) -> None:
+    """Save `root` (default: this box) as the one snapshot, unless config.ini turned that off.
+
+    Runs before anything of the box is written, so a failure leaves the box as it was.
+    """
+    root = env.root if root is None else pathlib.Path(root)
+    if not snapshot.enabled(root):
+        env.note("snapshot: off in config.ini")
+        return
+    try:
+        snapshot.create(env, status, root)
+    except snapshot.SnapshotFailed as error:
+        raise UpdateFailed(error.message) from error
+
+
 # ------------------------------------------------------------------ apply-iso (the handover)
 
 
@@ -941,8 +967,12 @@ def is_block_device(path: pathlib.Path) -> bool:
         return False
 
 
-def apply_iso(source: pathlib.Path, env: Env, status: Status, *, force: bool = False) -> None:
-    """Open the ISO and run its own updater against this box (see the module docstring)."""
+def apply_iso(
+    source: pathlib.Path, env: Env, status: Status, *, force: bool = False, save_first: bool = True,
+    save: Callable[[Env, Status], None] | None = None,
+) -> None:
+    """Open the ISO, save this box (unless `save_first` is off), then run the ISO's own updater
+    against it (see the module docstring)."""
     status.set("installing", "INSTALLING THE UPDATE... KEEP THE BOX PLUGGED IN.")
     refuse_live(env)
     refuse_layout(env)
@@ -966,6 +996,9 @@ def apply_iso(source: pathlib.Path, env: Env, status: Status, *, force: bool = F
         if update.read_profile(new / PROFILE_REL).get("PROFILE_NAME") != \
                 update.read_profile(env.root / PROFILE_REL).get("PROFILE_NAME"):
             raise UpdateFailed(MSG_OTHER_BOX)
+        if save_first:
+            (save or save_snapshot)(env, status)
+            status.set("installing", "INSTALLING THE UPDATE... KEEP THE BOX PLUGGED IN.")
         mount(["--bind", "/"], new / "mnt", rslave=True)
         mount(["-t", "proc", "proc"], new / "proc")
         mount(["--rbind", "/sys"], new / "sys", rslave=True)
@@ -987,9 +1020,12 @@ def reboot(env: Env) -> None:
     sh(env, ["systemctl", "reboot"])
 
 
-def run(env: Env, status: Status, apply: Callable[..., None] | None = None) -> int:
-    """Check, download, verify, install, restart. Returns the exit status of the service."""
-    apply = apply or apply_iso
+def run(
+    env: Env, status: Status, apply: Callable[..., None] | None = None, *, save_first: bool = True,
+    save: Callable[[Env, Status], None] | None = None,
+) -> int:
+    """Check, download, verify, save, install, restart. Returns the exit status of the service."""
+    apply = apply or (lambda iso, env, status: apply_iso(iso, env, status, save_first=False))
     (env.run_dir / CANCEL_NAME).unlink(missing_ok=True)  # a cancel from an earlier run must not count
     try:
         status.set("checking", "CHECKING FOR UPDATES...")
@@ -1015,6 +1051,8 @@ def run(env: Env, status: Status, apply: Callable[..., None] | None = None) -> i
             env.note(f"release assets: {error}")
             raise UpdateFailed(update.not_ready(release, profile) or "THIS RELEASE HAS NO FILE FOR THIS BOX") from error
         iso = download_iso(asset, expected_sha(sums, asset.name), env, status)
+        if save_first:
+            (save or save_snapshot)(env, status)
         apply(iso, env, status)
         clean_cache(env.cache_dir)
         status.set("restarting", "RESTARTING...", 100)
@@ -1053,11 +1091,14 @@ def _guarded(env: Env, status: Status, action: Callable[[], None]) -> int:
 def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     parser = argparse.ArgumentParser(prog="couchliteos-updater", description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("run", help="check for, download and install the newest release (the service)")
+    service = commands.add_parser("run", help="check for, download and install the newest release (the service)")
+    service.add_argument("--no-snapshot", action="store_true", help="do not save the current version first")
     iso = commands.add_parser("apply-iso", help="install from an ISO file or device")
     iso.add_argument("path")
     iso.add_argument("--force", action="store_true", help="allow the same or an older version")
     iso.add_argument("--no-reboot", action="store_true")
+    iso.add_argument("--no-snapshot", action="store_true", help="do not save the current version first")
+    commands.add_parser("delete-snapshot", help="remove the saved previous version")
     root = commands.add_parser("apply-root", help="install step; runs inside the new image")
     root.add_argument("target")
     root.add_argument("--status", required=True)
@@ -1077,9 +1118,16 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     status = Status(env.run_dir / STATUS_NAME)
     try:
         with acquire_lock(env.run_dir / LOCK_NAME):
+            if args.command == "delete-snapshot":  # leaves the update status alone: no update ran
+                try:
+                    return 0 if snapshot.delete(env, env.root) else 1
+                except OSError as error:
+                    env.note(f"snapshot: delete failed: {error}")
+                    return 1
             if args.command == "run":
-                return run(env, status)
-            code = _guarded(env, status, lambda: apply_iso(pathlib.Path(args.path), env, status, force=args.force))
+                return run(env, status, save_first=not args.no_snapshot)
+            code = _guarded(env, status, lambda: apply_iso(
+                pathlib.Path(args.path), env, status, force=args.force, save_first=not args.no_snapshot))
             if code == 0 and not args.no_reboot:
                 reboot(env)
             return code

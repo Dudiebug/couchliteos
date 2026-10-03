@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import couchliteos_snapshot as snapshot
 import couchliteos_softwareupdate as su
 import couchliteos_update as update
 
@@ -89,6 +90,9 @@ class UiTest(unittest.TestCase):
         self.apps = False
         self.fetches = []
         self.fetch_result = release()
+        self.saved = None
+        self.save_on = True
+        self.settings = []
 
     # -- fakes ---------------------------------------------------------------------------------
 
@@ -117,12 +121,17 @@ class UiTest(unittest.TestCase):
             read_key=self.read_key, confirm=self.confirm, apps_running=lambda: self.apps,
             keep_awake=self.keep_awake, current="0.2.1", profile={"PROFILE_NAME": "general", "ISO_SUFFIX": ""},
             live=False, fetch=self.fetch, run_dir=self.tmp, clock=lambda: self.now,
+            saved=lambda: self.saved, save_first=lambda: self.save_on, set_save_first=self.set_save_first,
         )
         values.update(overrides)
         return su.SoftwareUpdate(self.screen, **values)
 
     def keep_awake(self):
         self.awake += 1
+
+    def set_save_first(self, on):
+        self.settings.append(on)
+        self.save_on = on
 
     def service(self, phase, percent=None, message="", version="0.2.2"):
         """What couchliteos-update.service writes, as a script item."""
@@ -178,6 +187,76 @@ class MainScreenTest(UiTest):
         self.script = [ENTER, DOWN, UP, ESC]
         self.make().run()
         self.assertTrue(self.screen.frames)
+
+
+SAVED = snapshot.Snapshot("0.2.0", "2026-10-02T09:00:00Z", 1_812_000_000, "a" * 64, "6.12.48+deb13-amd64")
+
+
+class SavedVersionTest(UiTest):
+    def test_the_saved_version_is_shown_with_its_date_and_size(self):
+        self.saved = SAVED
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("SAVED VERSION: 0.2.0, SAVED 2 OCT 2026, 1.8 GB", self.screen.frames[0])
+        self.assertIn("DELETE SAVED VERSION", self.screen.frames[0])
+
+    def test_without_a_saved_version_there_is_nothing_to_delete(self):
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("SAVED VERSION: NONE", self.screen.frames[0])
+        self.assertNotIn("DELETE SAVED VERSION", self.screen.frames[0])
+
+    def test_a_live_boot_shows_no_saved_version_rows(self):
+        self.saved = SAVED
+        self.script = [ESC]
+        self.make(live=True).run()
+        for text in ("SAVED VERSION", "SAVE BEFORE UPDATE"):
+            self.assertNotIn(text, self.screen.frames[0])
+
+    def test_save_before_update_turns_off_and_on(self):
+        self.script = [DOWN, ENTER, ENTER, ESC]
+        self.make().run()
+        self.assertEqual(self.settings, [False, True])
+        self.assertIn("SAVE BEFORE UPDATE: OFF", self.screen.frames[2])
+        self.assertIn("UPDATES NOW INSTALL WITHOUT SAVING THE CURRENT VERSION FIRST", flat(self.screen.frames[2]))
+        self.assertIn("SAVE BEFORE UPDATE: ON", self.screen.frames[3])
+
+    def test_a_setting_that_cannot_be_written_says_so(self):
+        def failing(_on):
+            raise PermissionError(13, "Permission denied")
+
+        self.script = [DOWN, ENTER, ESC]
+        self.make(set_save_first=failing).run()
+        self.assertIn("COULD NOT SAVE THE SETTING", self.screen.frames[-1])
+
+    def test_delete_asks_first_then_asks_the_service(self):
+        self.saved = SAVED
+        self.script = [DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertIn("DELETE THE SAVED VERSION (0.2.0)? THE BOX CAN THEN NOT GO BACK TO IT.", self.questions[0])
+        self.assertTrue((self.tmp / "snapshot-delete").exists())
+        self.assertIn("DELETING THE SAVED VERSION...", self.screen.frames[-1])
+
+    def test_no_to_delete_changes_nothing(self):
+        self.saved = SAVED
+        self.answer = False
+        self.script = [DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertFalse((self.tmp / "snapshot-delete").exists())
+
+    def test_the_richest_screen_fits_80x24(self):
+        self.saved = SAVED
+        self.script = [ENTER, DOWN, DOWN, DOWN, DOWN, ESC]
+        self.make().run()
+        self.assertIn("INSTALL UPDATE", self.screen.frames[-1])
+
+    def test_saving_is_shown_with_its_percentage_while_the_service_works(self):
+        self.script = [ENTER, ENTER, self.service("saving", 40, "SAVING THE CURRENT VERSION... 40%"),
+                       self.service("failed", None, "NOT ENOUGH FREE SPACE"), ENTER, ESC]
+        self.make().run()
+        self.assertTrue(self.frames_with("SAVING THE CURRENT VERSION... 40%"))
+        self.assertTrue(self.frames_with("KEEP THE BOX PLUGGED IN"))
 
 
 class CheckTest(UiTest):
