@@ -227,6 +227,13 @@ EOF
 
 image_checks() {
   initrd_check binary/live/initrd.img
+  # The installer carries module udebs for its own kernel only (0200-installer-trim.hook.binary).
+  installer_abis=$(find binary -path 'binary/pool*' -name '*-di_*.udeb' -printf '%f\n' |
+    sed -n -E 's/^(kernel-image|.+-modules)-(.+)-di_.*/\2/p' | sort -u)
+  if (($(wc -l <<< "$installer_abis") > 1)); then
+    printf 'The installer has module udebs for more than one kernel:\n%s\n' "$installer_abis" >&2
+    exit 1
+  fi
   # Profile checks run against the root filesystem that ships in the ISO.
   listing=$(mktemp)
   unsquashfs -l -d / binary/live/filesystem.squashfs > "$listing"

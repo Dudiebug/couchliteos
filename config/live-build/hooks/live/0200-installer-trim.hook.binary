@@ -1,0 +1,100 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# Remove what the text installer cannot use from the ISO, then rewrite the package
+# indexes and the Release hashes for what remains:
+#   - kernel module udebs for a kernel other than the installer's (install/vmlinuz);
+#   - the graphical installer (GTK, cairo, pango, fonts, rootskel-gtk, cdebconf-gtk),
+#     which `--debian-installer-gui false` never starts. Speech synthesis stays.
+# Every removed file is printed to the build log. Binary hooks run on the build host
+# (apt-ftparchive is in apt-utils), in the ISO tree; tests run it one level up.
+[[ -d install || ! -d binary/install ]] || cd binary
+fail() { echo "installer trim: $*" >&2; exit 1; }
+[[ -f install/vmlinuz ]] || { echo 'installer trim: no installer on this image'; exit 0; }
+command -v apt-ftparchive >/dev/null || fail 'apt-ftparchive is required (apt install apt-utils)'
+
+removed=$(mktemp)
+trap 'rm -f -- "$removed"' EXIT
+drop() {
+  rm -f -- "$1"
+  printf '%s\n' "${1#./}" >> "$removed"
+  printf 'installer trim: removed %s\n' "${1#./}"
+}
+
+# The installer kernel's release: the bzImage header points to its version string
+# (16-bit offset at 0x20e, from 0x200), "6.12.94+deb13-amd64 (debian-kernel@...) #1 ...".
+version_offset=$(od -An -tu2 -j $((0x20e)) -N 2 install/vmlinuz | tr -d ' ')
+[[ $version_offset =~ ^[0-9]+$ ]] || fail 'cannot read the version of install/vmlinuz'
+installer_abi=$(dd if=install/vmlinuz bs=1 skip=$((version_offset + 0x200)) count=128 status=none |
+  tr '\0' '\n' | head -n 1 | cut -d ' ' -f 1)
+[[ $installer_abi =~ ^[0-9]+\.[0-9]+[^\ ]*$ ]] || fail "unexpected install/vmlinuz version: $installer_abi"
+echo "installer trim: installer kernel $installer_abi"
+
+udebs=()
+while IFS= read -r -d '' udeb; do
+  udebs+=("$udeb")
+done < <(find . -path './pool*' -type f -name '*.udeb' -print0 | LC_ALL=C sort -z)
+((${#udebs[@]})) || fail 'no udebs on the image'
+
+own_modules=0
+for udeb in "${udebs[@]}"; do
+  package=${udeb##*/}
+  package=${package%%_*}
+  # Kernel module udebs: <name>-modules-<abi>-di and kernel-image-<abi>-di.
+  if [[ $package =~ ^(kernel-image|.+-modules)-(.+)-di$ ]]; then
+    if [[ ${BASH_REMATCH[2]} == "$installer_abi" ]]; then
+      own_modules=$((own_modules + 1))
+    else
+      drop "$udeb"
+    fi
+    continue
+  fi
+  case $package in
+    libgtk*-udeb|libcairo*-udeb|libpango*-udeb|fonts-*|rootskel-gtk|cdebconf-gtk*)
+      drop "$udeb" ;;
+  esac
+done
+((own_modules > 0)) || fail "no module udebs for the installer kernel $installer_abi"
+
+# Package indexes: leave out the stanzas whose file is gone (plain POSIX awk: the build
+# host's awk is mawk). Then Release, with the header live-build wrote, over the new files.
+if [[ -s $removed ]]; then
+  while IFS= read -r -d '' packages; do
+    awk 'BEGIN { RS = ""; ORS = "\n\n" }
+      $0 !~ /(^|\n)Filename: / { print; next }
+      {
+        file = $0
+        sub(/^(.*\n)?Filename: /, "", file)
+        sub(/\n.*/, "", file)
+        if ((getline line < file) < 0) next
+        close(file)
+        print
+      }' "$packages" > "$packages.new"
+    mv -- "$packages.new" "$packages"
+    gzip -9 -n -c "$packages" > "$packages.gz"
+    if [[ -e $packages.xz ]]; then
+      xz -9 -c "$packages" > "$packages.xz"
+    fi
+    printf 'installer trim: rewrote %s (%s packages)\n' "${packages#./}" "$(grep -c '^Package: ' "$packages")"
+  done < <(find dists -type f -name Packages -print0)
+
+  while IFS= read -r -d '' release; do
+    suite=${release%/Release}
+    options=()
+    while IFS= read -r line; do
+      [[ $line =~ ^(Origin|Label|Suite|Version|Codename|Date|Architectures|Components|Description):\ (.*)$ ]] || continue
+      options+=(-o "APT::FTPArchive::Release::${BASH_REMATCH[1]}=${BASH_REMATCH[2]}")
+    done < <(sed '/^[A-Za-z0-9]*Sum:$\|^SHA[0-9]*:$/,$d' "$release")
+    # Hashed without the old Release in the tree.
+    old=$(mktemp)
+    mv -- "$release" "$old"
+    if ! apt-ftparchive "${options[@]}" release "$suite" > "$old.new"; then
+      mv -- "$old" "$release"
+      fail "apt-ftparchive release failed for $suite"
+    fi
+    mv -- "$old.new" "$release"
+    chmod 0644 "$release"
+    rm -f -- "$old"
+    echo "installer trim: rewrote ${release#./}"
+  done < <(find dists -mindepth 2 -maxdepth 2 -type f -name Release -print0)
+fi

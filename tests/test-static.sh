@@ -989,6 +989,92 @@ EOF
   (initrd_check "$initrd_test/gzip" 2>&1 && exit 1 || true) | rg -q 'is not zstd \(starts 1f8b0800'
   rm -rf -- "$initrd_test"
 fi
+# Installer trim: module udebs for the installer's kernel only, no graphical installer,
+# indexes and Release hashes rewritten for what remains.
+trim_hook=config/live-build/hooks/live/0200-installer-trim.hook.binary
+test -x "$trim_hook"
+refute rg -q 'gensub|asort|PROCINFO' "$trim_hook"
+rg -Fq "installer_abis=\$(find binary -path 'binary/pool*' -name '*-di_*.udeb' -printf '%f\\n' |" build/build.sh
+if command -v apt-ftparchive >/dev/null; then
+  trim_test=$(mktemp -d)
+  python3 - "$trim_test" <<'EOF'
+import pathlib, sys
+
+iso = pathlib.Path(sys.argv[1]) / "binary"
+kernel = bytearray(0x4000)
+kernel[0x20E:0x210] = (0x3000).to_bytes(2, "little")
+version = b"6.12.94+deb13-amd64 (debian-kernel@lists.debian.org) #1 SMP PREEMPT_DYNAMIC Debian 6.12.94-1\0"
+kernel[0x3200:0x3200 + len(version)] = version
+(iso / "install").mkdir(parents=True)
+(iso / "install/vmlinuz").write_bytes(kernel)
+udebs = {
+    "nic-modules-6.12.94+deb13-amd64-di": "l/linux-signed-amd64",
+    "kernel-image-6.12.94+deb13-amd64-di": "l/linux-signed-amd64",
+    "nic-modules-6.12.38+deb13-amd64-di": "l/linux-signed-amd64",
+    "kernel-image-6.12.38+deb13-amd64-di": "l/linux-signed-amd64",
+    "libgtk2.0-0-udeb": "g/gtk+2.0",
+    "libcairo2-udeb": "c/cairo",
+    "libpango1.0-udeb": "p/pango1.0",
+    "fonts-dejavu-udeb": "f/fonts-dejavu",
+    "rootskel-gtk": "r/rootskel-gtk",
+    "cdebconf-gtk-udeb": "c/cdebconf",
+    "cdebconf-newt-udeb": "c/cdebconf",
+    "espeakup-udeb": "e/espeakup",
+    "libespeak-ng1-udeb": "e/espeak-ng",
+}
+stanzas = []
+for package, directory in udebs.items():
+    name = f"pool/main/{directory}/{package}_1.0_amd64.udeb"
+    (iso / name).parent.mkdir(parents=True, exist_ok=True)
+    (iso / name).write_bytes(package.encode())
+    stanzas.append(f"Package: {package}\nVersion: 1.0\nFilename: {name}\nSize: {len(package)}\n")
+udeb_index = iso / "dists/trixie/main/debian-installer/binary-amd64"
+udeb_index.mkdir(parents=True)
+(udeb_index / "Packages").write_text("\n".join(stanzas))
+deb_index = iso / "dists/trixie/main/binary-amd64"
+deb_index.mkdir(parents=True)
+(iso / "pool/main/g/grub2").mkdir(parents=True)
+(iso / "pool/main/g/grub2/grub-pc_2.12-9_amd64.deb").write_bytes(b"grub")
+(deb_index / "Packages").write_text("Package: grub-pc\nVersion: 2.12-9\nFilename: pool/main/g/grub2/grub-pc_2.12-9_amd64.deb\n")
+(deb_index / "Release").write_text("Archive: trixie\nComponent: main\nArchitecture: amd64\n")
+(iso / "dists/stable").symlink_to("trixie")
+(iso / "dists/trixie/Release").write_text(
+    "Origin: Debian\nLabel: Debian\nSuite: trixie\nVersion: 13\nCodename: trixie\n"
+    "Date: Sat, 03 Oct 2026 12:00:00 +0000\nArchitectures: amd64\nComponents: main\n"
+    "Description: Last updated: Sat, 03 Oct 2026 12:00:00 +0000\nMD5Sum:\n 0 0 stale\nSHA256:\n 0 0 stale\n")
+EOF
+  (cd "$trim_test" && bash "$ROOT/$trim_hook") > "$trim_test/log"
+  trim_iso=$trim_test/binary
+  for package in nic-modules-6.12.38+deb13-amd64-di kernel-image-6.12.38+deb13-amd64-di libgtk2.0-0-udeb \
+    libcairo2-udeb libpango1.0-udeb fonts-dejavu-udeb rootskel-gtk cdebconf-gtk-udeb; do
+    [[ -z $(find "$trim_iso/pool" -name "${package}_*") ]]
+    refute rg -qFx "Package: $package" "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
+    rg -q "^installer trim: removed pool/main/[^ ]+/${package//+/\\+}_1\.0_amd64\.udeb\$" "$trim_test/log"
+  done
+  for package in nic-modules-6.12.94+deb13-amd64-di kernel-image-6.12.94+deb13-amd64-di cdebconf-newt-udeb \
+    espeakup-udeb libespeak-ng1-udeb; do
+    [[ -n $(find "$trim_iso/pool" -name "${package}_*") ]]
+    rg -qFx "Package: $package" "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
+  done
+  rg -q '^installer trim: installer kernel 6\.12\.94\+deb13-amd64$' "$trim_test/log"
+  cmp <(gzip -dc "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages.gz") \
+    "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages"
+  rg -q '^Package: grub-pc$' "$trim_iso/dists/trixie/main/binary-amd64/Packages"
+  trim_release=$trim_iso/dists/trixie/Release
+  for field in 'Origin: Debian' 'Suite: trixie' 'Version: 13' 'Codename: trixie' \
+    'Date: Sat, 03 Oct 2026 12:00:00 \+0000' 'Architectures: amd64' 'Components: main'; do
+    rg -q "^$field\$" "$trim_release"
+  done
+  refute rg -q 'stale' "$trim_release"
+  udeb_sha=$(sha256sum < "$trim_iso/dists/trixie/main/debian-installer/binary-amd64/Packages" | cut -d ' ' -f 1)
+  rg -q "^ $udeb_sha +[0-9]+ main/debian-installer/binary-amd64/Packages\$" "$trim_release"
+  rg -q ' main/binary-amd64/Release$' "$trim_release"
+  test -L "$trim_iso/dists/stable"
+  # The installer's own kernel must have module udebs: a tree without them fails.
+  rm -f "$trim_iso"/pool/main/l/linux-signed-amd64/*6.12.94*
+  (cd "$trim_test" && bash "$ROOT/$trim_hook" 2>&1 && exit 1 || true) | rg -q 'no module udebs for the installer kernel'
+  rm -rf -- "$trim_test"
+fi
 rg -Fq '"${cache_options[@]}"' build/build.sh
 rg -Fq './build/build.sh $(if $(filter 1,$(RELEASE)),--release)' Makefile
 rg -q '^RELEASE \?= 0$' Makefile
