@@ -88,6 +88,15 @@ def mark_front_app(app: apps.Application, run: pathlib.Path) -> None:
         pass
 
 
+def request_osk(run: pathlib.Path, masked: bool = False) -> None:
+    """Open the on-screen keyboard over the app in front (couchliteos-osk-session); one at a time."""
+    if (run / "osk-active").exists():  # a second request would queue another
+        return
+    if masked:
+        (run / "osk-masked").touch()
+    (run / "start-osk").touch()
+
+
 def rdp_application(connection: rdp.Connection) -> apps.Application:
     """Launchable entry for a saved connection that is not pinned to the launcher."""
     return apps.Application(
@@ -292,6 +301,15 @@ class Session:
         )
         os.chmod(run / "session.env", 0o640)
         self.set_launcher_focus(False)
+
+    def type_into(self, app: apps.Application) -> str | None:
+        """Bring `app` to the front and open the on-screen keyboard over it; the text is typed into
+        the app when the keyboard closes. None when it worked, else what went wrong."""
+        if not self.focus_app(app):
+            return f"COULD NOT FOCUS {app.name}: CLOSE IT, THEN START IT AGAIN"
+        request_osk(self.run_dir)
+        self.status = f"TYPING INTO {app.name}"
+        return None
 
     def request(self, name: str) -> None:
         (self.run_dir / name).touch()

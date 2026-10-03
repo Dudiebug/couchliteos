@@ -10,13 +10,17 @@
 # Setup does not decide: couchliteos-tv runs the setup wizard itself, as the classic curses screen
 # on top of it (couchliteos-launcher --screen setup), before its home screen.
 #
-# "Could not start" is exit status 3 (couchliteos-tv: no GTK, no display, no renderer) or any
-# other failure before it wrote launcher-ready (a crash in the GL driver, a Python error). Once
-# it is up, its exit status is passed on and systemd restarts the service as before.
-#
 # $RUN_DIR/interface records which one is on screen, for the QEMU smoke tests and the support
 # export: `tv` or `classic` on the first line, why on the second (forced by the setting, or the
 # fallback after which exit status; the cairo retry for `tv`).
+#
+# "Could not start" is exit status 3 (couchliteos-tv: no GTK, no display, no renderer), any
+# other failure before it wrote launcher-ready (a crash in the GL driver, a Python error), no
+# launcher-ready within READY_SECONDS (a hang before the first frame: it is killed), or death by a
+# signal within EARLY_SECONDS of launcher-ready (a renderer that drew one frame, then crashed).
+# couchliteos-tv writes launcher-ready after its first frame is painted. Once it is up, its exit
+# status is passed on and systemd restarts the service as before. Two TV attempts and the classic
+# launcher fit in the unit's 45 s ExecStartPost wait (2 x 12 s, then foot).
 # The COUCHLITEOS_* variables below exist for tests/test_tv_fallback.py.
 set -u
 
@@ -27,6 +31,9 @@ FOOT=${COUCHLITEOS_FOOT:-/usr/libexec/couchliteos-foot}
 LAUNCHER=${COUCHLITEOS_LAUNCHER:-/usr/libexec/couchliteos-launcher}
 CONFIG=$STATE_DIR/config.ini
 INIT_FAILED=3
+READY_SECONDS=${COUCHLITEOS_READY_SECONDS:-12}
+EARLY_SECONDS=${COUCHLITEOS_EARLY_SECONDS:-5}
+READY=$RUN_DIR/launcher-ready
 
 say() {
   printf 'couchliteos-session: %s\n' "$*" >&2
@@ -59,11 +66,45 @@ interface() {
     }' "$CONFIG" 2>/dev/null
 }
 
+# Microseconds since the epoch (bash 5).
+now_us() {
+  printf '%s' "${EPOCHREALTIME/./}"
+}
+
 # Run the TV interface; 0 when it came up (its exit status is in $status), 1 when it could not start.
 try_tv() {
-  "$@"
+  rm -f -- "$READY"  # an earlier attempt's mark must not count for this one
+  "$@" &
+  local pid=$! ready_at="" deadline
+  trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP  # systemd stopping the unit stops the TV too
+  deadline=$(( $(now_us) + READY_SECONDS * 1000000 ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ -e $READY ]]; then
+      ready_at=$(now_us)
+      break
+    fi
+    if (( $(now_us) >= deadline )); then
+      say "no first frame within $READY_SECONDS s: stopping the TV interface"
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      status=$?
+      trap - TERM INT HUP
+      return 1
+    fi
+    sleep 0.1
+  done
+  wait "$pid"
   status=$?
-  if [[ $status == "$INIT_FAILED" ]] || { [[ $status != 0 ]] && [[ ! -e $RUN_DIR/launcher-ready ]]; }; then
+  trap - TERM INT HUP
+  [[ -z $ready_at && -e $READY ]] && ready_at=$(now_us)  # written just before it exited
+  if [[ $status == "$INIT_FAILED" ]] || { [[ $status != 0 ]] && [[ -z $ready_at ]]; }; then
+    return 1
+  fi
+  if (( status > 128 )) && (( $(now_us) - ready_at < EARLY_SECONDS * 1000000 )); then
+    say "the TV interface died (signal $(( status - 128 ))) right after its first frame"
+    rm -f -- "$READY"
     return 1
   fi
   return 0

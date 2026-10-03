@@ -153,6 +153,17 @@ def stream_owns_pad() -> bool:
     return app in STREAM_APPS and not LAUNCHER_FOCUS.exists()
 
 
+def launcher_in_front() -> bool:
+    """The launcher's window has the screen: it took the controller back, or nothing runs. A terminal
+    app (it writes no app-active: it reads these keys) must never get the launcher's F9 / F10."""
+    if LAUNCHER_FOCUS.exists():
+        return True
+    try:
+        return not any(item.name != "launcher-ready" for item in RUN.glob("*-ready"))
+    except OSError:
+        return False
+
+
 def effective_home_choice(choice: str) -> str:
     """The Home shortcut in force: Guide is the stream's while one is in front, so a pad that chose
     "Guide only" still gets the Select+Start hold as its way home."""
@@ -678,7 +689,8 @@ class Pads:
             for path, since in list(holds.items()):
                 if now - since >= Y_HOLD_SECONDS:
                     del holds[path]
-                    emit(ui, key)
+                    if launcher_in_front():
+                        emit(ui, key)
 
 
 def emit(ui: UInput, key: int) -> None:

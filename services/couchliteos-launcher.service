@@ -31,9 +31,10 @@ ExecStartPre=/usr/bin/rm -f /run/couchliteos/launcher-ready /run/couchliteos/ses
 # (systemd expands $$ and %% itself, so the shell sees $ and %.)
 ExecStartPre=/bin/bash -c 'f=/var/log/couchliteos/launcher.log; if [ "$$(stat -c %%s "$$f" 2>/dev/null || echo 0)" -gt 5242880 ]; then tail -c 5242880 "$$f" > "$$f.1.new" && mv -f "$$f.1.new" "$$f.1" && : > "$$f"; fi; exit 0'
 # couchliteos-session runs the TV interface, retries it without GL, then falls back to the
-# classic launcher (curses in foot); the wait below covers all three starts.
+# classic launcher (curses in foot); the wait below (45 s) covers all three starts, each TV
+# attempt getting 12 s for its first frame.
 ExecStart=/bin/bash -o pipefail -c '/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1 | /usr/bin/tee -a /var/log/couchliteos/launcher.log'
-ExecStartPost=/bin/bash -c 'for i in {1..300}; do if test -e /run/couchliteos/launcher-ready; then echo COUCHLITEOS_LAUNCHER_READY; exit 0; fi; sleep 0.1; done; exit 1'
+ExecStartPost=/bin/bash -c 'for i in {1..450}; do if test -e /run/couchliteos/launcher-ready; then echo COUCHLITEOS_LAUNCHER_READY; exit 0; fi; sleep 0.1; done; exit 1'
 Restart=always
 RestartSec=2
 TTYPath=/dev/tty1

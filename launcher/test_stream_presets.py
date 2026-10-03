@@ -428,7 +428,7 @@ class TvStreamRowsTest(unittest.TestCase):
         with mock.patch.object(stream, "active_preset", return_value="QUALITY"):
             rows = tv.quick_stream_items()
         self.assertEqual([(row.label, row.value, row.selectable) for row in rows],
-                         [("STREAM PRESET", "QUALITY", False), ("SHOW STATS", "OFF", True)])
+                         [("STREAM PRESET", "QUALITY", False), ("SHOW STATS", "", True)])
         with mock.patch.object(stream, "active_preset", return_value=""):
             self.assertEqual(tv.quick_stream_items()[0].value, "DEFAULT")
 
@@ -440,11 +440,7 @@ class TvStreamRowsTest(unittest.TestCase):
         tv.close_quick.assert_called_once_with(resume=False)
         tv.focus_app.assert_called_once_with(MOONLIGHT)
         self.assertTrue((self.run / "moonlight-stats.request").exists())
-        self.assertEqual(tv.quick_stream_items()[1].value, "ON")
-        (self.run / "moonlight-ready").unlink()
-        tv.quick_stream_items()
-        (self.run / "moonlight-ready").touch()
-        self.assertEqual(tv.quick_stream_items()[1].value, "OFF", "a new stream starts without statistics")
+        self.assertEqual(tv.quick_stream_items()[1].value, "", "no ON / OFF: the request may never be sent")
 
     def test_show_stats_without_a_moonlight_window_says_so(self):
         tv = self.tv()

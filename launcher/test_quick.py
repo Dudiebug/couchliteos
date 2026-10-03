@@ -81,12 +81,13 @@ class PromptTest(unittest.TestCase):
     def test_prompts_name_the_glyph_and_the_keyboard_key(self):
         self.assertEqual(quick.prompt("xbox", quick.HOME_PROMPT), "Ⓐ OR ENTER  OPEN    Ⓑ OR ESC  BACK")
         self.assertEqual(quick.prompt("playstation", quick.ACTIVE_PROMPT),
-                         "✕ OR ENTER  RESUME    □ OR DELETE  CLOSE    ○ OR ESC  BACK")
+                         "✕ OR ENTER  RESUME    □ OR DELETE  CLOSE    △ OR F12  TYPE INTO IT    ○ OR ESC  BACK")
         self.assertIn("LEFT / RIGHT  CHANGE", quick.prompt("xbox", quick.QUICK_CHANGE_PROMPT))
 
     def test_every_hint_shown_has_a_keyboard_equivalent(self):
         prompts = [quick.HOME_PROMPT, quick.ACTIVE_PROMPT, quick.QUICK_PROMPT, quick.QUICK_CHANGE_PROMPT,
-                   quick.QUICK_BRIGHTNESS_PROMPT, quick.QUICK_PROMPT[:1] + quick.ACTIVE_PROMPT[-1:]]
+                   quick.QUICK_BRIGHTNESS_PROMPT, quick.QUICK_PROMPT[:1] + quick.ACTIVE_PROMPT[-1:],
+                   quick.MOUSE_PROMPT]
         for family in quick.GLYPHS:
             for entries in prompts:
                 for separator in ("    ", "\n"):
@@ -97,6 +98,7 @@ class PromptTest(unittest.TestCase):
             self.assertTrue(quick.names_keyboard_keys(text), text)
         tv = load_tv()
         self.assertTrue(quick.names_keyboard_keys(tv.BACK_HINT))
+        self.assertTrue(quick.names_keyboard_keys(tv.CHOICE_HINT))
         self.assertTrue(quick.names_keyboard_keys(
             "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE"))
 
@@ -195,6 +197,14 @@ class QuickMenuTest(unittest.TestCase):
         self.assertEqual(found["restart"], ("power", "reboot"))
         self.assertEqual(found["off"], ("power", "poweroff"))
         self.assertEqual(set(quick.POWER_QUESTIONS), {"reboot", "poweroff"})
+
+    def test_sleep_asks_first_and_says_when_nothing_can_wake_this_pc(self):
+        self.assertEqual(quick.power_question("suspend", True), ("SLEEP", "SLEEP NOW?"))
+        title, question = quick.power_question("suspend", False)
+        self.assertEqual(title, "SLEEP")
+        self.assertIn("NOTHING CONNECTED CAN WAKE THIS PC: USE ITS POWER BUTTON", question)
+        for request in ("reboot", "poweroff"):
+            self.assertEqual(quick.power_question(request, True), quick.POWER_QUESTIONS[request])
 
     def test_a_broken_source_shows_unavailable(self):
         fake, menu = self.menu(volume=None)
@@ -402,18 +412,22 @@ class TvQuickMenuTest(unittest.TestCase):
         tv.home_request_arrived(quick.GUIDE)
         tv.open_quick.assert_called_once_with()
 
-    def test_power_rows_ask_first_and_sleep_does_not(self):
+    def test_power_rows_ask_first(self):
         tv = bare_tv()
         tv.close_quick = mock.Mock()
+        tv.can_wake = False
         tv.ask.return_value = "no"
         tv.quick_action(("power", "poweroff"))
         tv.request.assert_not_called()
+        tv.quick_action(("power", "suspend"))
+        tv.request.assert_not_called()
+        self.assertIn("NOTHING CONNECTED CAN WAKE THIS PC", tv.ask.call_args.args[1])
         tv.ask.return_value = "yes"
         tv.quick_action(("power", "reboot"))
         tv.request.assert_called_once_with("reboot")
         tv.quick_action(("power", "suspend"))
         tv.request.assert_called_with("suspend")
-        self.assertEqual(tv.ask.call_count, 2)
+        self.assertEqual(tv.ask.call_count, 4)
 
     def test_back_returns_to_the_app_guide_was_tapped_over(self):
         app = types.SimpleNamespace(id="google-chrome", name="GOOGLE CHROME")

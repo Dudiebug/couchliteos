@@ -814,6 +814,9 @@ class PointerModeTest(unittest.TestCase):
             patcher = mock.patch.object(self.module, attribute, run / name)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(self.module, "RUN", run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for attribute, value in (("_last_state_check", -1e9), ("_last_state", False)):
             patcher = mock.patch.object(self.module, attribute, value)
             patcher.start()
@@ -2221,6 +2224,21 @@ class HomeShortcutTest(unittest.TestCase):
         pressed, _timeouts, pads, _mouse, _pad = self.drive(script, run=run)
         self.assertEqual(pressed, [(0.0, Codes.KEY_F12)])
         self.assertEqual(pads.x_holds, {})
+
+    def test_y_and_x_holds_never_reach_a_terminal_app(self):
+        # nmtui and other terminal apps write no app-active: the pad still types into them, but the
+        # launcher's F9 / F10 shortcuts are not theirs.
+        run = self.run_dir(app=False, pointer=False)
+        (run / "launcher-ready").touch()
+        (run / "terminal-ready").touch()
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1), (Codes.EV_KEY, Codes.BTN_NORTH, 1)]), (0.7, []), (1.5, [])]
+        pressed, _timeouts, pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(sorted(pressed), sorted([(0.0, Codes.KEY_DELETE), (0.0, Codes.KEY_F12)]))
+        self.assertEqual((pads.y_holds, pads.x_holds), ({}, {}))
+        (run / "launcher-focus").touch()  # Home: the launcher has the screen over the app
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertIn((0.7, Codes.KEY_F9), pressed)
+        self.assertIn((0.7, Codes.KEY_F10), pressed)
 
     # SHOW STATS (the quick menu during a stream)
 

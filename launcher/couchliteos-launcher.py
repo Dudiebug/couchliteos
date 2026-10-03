@@ -163,11 +163,7 @@ def mark_front_app(app: apps.Application) -> None:
 
 
 def request_osk(masked: bool = False) -> None:
-    if (RUN / "osk-active").exists():  # one keyboard at a time; a second request would queue another
-        return
-    if masked:
-        (RUN / "osk-masked").touch()
-    (RUN / "start-osk").touch()
+    session.request_osk(RUN, masked)  # one keyboard at a time
 
 
 rdp_application = session.rdp_application  # launchable entry for a saved connection that is not pinned
@@ -3165,18 +3161,7 @@ class StreamingSettings(RemoteDesktopSettings):
     """Couch to game: start a stream at boot, wake the gaming PC, and tune the stream."""
 
     TITLE = "STREAMING"
-    WAKE_RESULTS = {
-        "up": "{} IS ALREADY AWAKE AND ANSWERING.",
-        "woke": "{} IS AWAKE.",
-        "awake": "{} IS ON BUT SUNSHINE IS NOT ANSWERING. START SUNSHINE ON THE PC, THEN TRY AGAIN.",
-        "timeout": f"{{}} DID NOT ANSWER WITHIN {int(stream.WAKE_TIMEOUT)} SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
-        "cancelled": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
-        "home": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
-        "sent": "WAKE REQUEST SENT TO {}. IT CAN TAKE A MINUTE TO START.",
-        "noaddr": "WAKE REQUEST NOT SENT: NO ADDRESS IS KNOWN FOR {}.",
-        "nonetwork": "NO NETWORK. CONNECT ETHERNET OR WI-FI, THEN TRY AGAIN.",
-        "nomac": stream.NO_MAC,
-    }
+    WAKE_RESULTS = stream.WAKE_RESULTS  # the TV interface's WAKE PC says the same
 
     @staticmethod
     def ident(host: stream.Host) -> str:
@@ -3333,6 +3318,8 @@ class StreamingSettings(RemoteDesktopSettings):
         if stream.moonlight_running(RUN):
             self.message(title, "CLOSE MOONLIGHT FIRST. IT WOULD OVERWRITE THE NEW SETTINGS WHEN IT EXITS.")
             return
+        if not self.restore_global(title):
+            return
         try:
             output = display.active_output(display.query_outputs())
         except (OSError, RuntimeError, subprocess.SubprocessError):
@@ -3388,8 +3375,20 @@ class StreamingSettings(RemoteDesktopSettings):
             'CHOOSE THE ONE FOR AUTO-STREAM AND WAKE PC IN THE "PC" ROW.'
         )
 
+    def restore_global(self, title: str) -> bool:
+        """The last game's own stream settings out of Moonlight.conf first: OPTIMIZE and SMOOTHER
+        STREAM change the global settings, never a game's plan that the next start puts back."""
+        try:
+            stream.restore_global(run_dir=RUN)
+        except (OSError, stream.StreamError) as error:
+            self.message(title, f"NOT CHANGED: {error}".upper())
+            return False
+        return True
+
     def smoother(self) -> None:
         title = "SMOOTHER STREAM"
+        if not self.restore_global(title):
+            return
         try:
             old, new = stream.lower_bitrate(run_dir=RUN)
         except (OSError, stream.StreamError) as error:

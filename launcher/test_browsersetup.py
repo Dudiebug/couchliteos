@@ -116,6 +116,7 @@ class BrowserSetupTest(unittest.TestCase):
         self.script = [ENTER, self.status("failed", message), ENTER, ESC]
         self.assertFalse(self.make().run())
         self.assertIn(bs.PRESS_A, self.screen.frames[-2])
+        self.assertEqual(bs.PRESS_A, "PRESS A / CROSS OR ENTER", "the keyboard's key is named too")
         self.assertIn(message, flat(self.screen.frames[-1]))
 
     def test_a_service_that_never_answers_counts_as_not_started(self):

@@ -40,6 +40,7 @@ import couchliteos_artwork as artwork
 import couchliteos_controllers as controllers
 import couchliteos_controls as controls
 import couchliteos_display as display
+import couchliteos_errors as errors
 import couchliteos_home as home
 import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
@@ -74,6 +75,12 @@ RELOAD_SECONDS = 5  # how often the rows are read again (pairing, apps added in 
 AUTOSTREAM_SECONDS = 5
 REPO_THEMES = pathlib.Path(__file__).resolve().parents[1] / "overlay/usr/share/couchliteos/themes"
 BACK_HINT = "B / CIRCLE OR ESC GOES BACK"
+CHOICE_HINT = "A / CROSS OR ENTER CHOOSES  ·  B / CIRCLE OR ESC GOES BACK"
+# A failure screen's buttons (couchliteos_errors) that open a classic screen on top.
+FAILURE_SCREENS = {errors.NETWORK.id: "network", errors.SUPPORT.id: "support-file",
+                   errors.BLUETOOTH.id: "bluetooth"}
+WAKE_PC = errors.Action("WAKE PC", "wake-pc")  # Moonlight's failures, as the classic launcher's
+errors.register_action(WAKE_PC, app_ids=("moonlight",))
 TOAST_TICK_MS = 250
 KEY_HOME_SECONDS = 1.0  # the Home key reaches the window and gamepad-nav: one press, not two
 ART_COLUMNS = 6
@@ -421,7 +428,11 @@ class Screens:
         if code:
             display.log(f"tv: --screen {name} exited with {code}", session.LOG)
             self.status = f"{name.upper().replace('-', ' ')} CLOSED WITH AN ERROR ({code})"
-        session.focus_launcher()
+        # A Guide / Home press the screen did not take must not open the quick menu later.
+        self.home_request.unlink(missing_ok=True)
+        if not self.child_left_an_app():
+            session.focus_launcher()
+            self.set_launcher_focus(True)
         self.after_screen()
         if (self.run_dir / tvscreens.REOPEN_SETUP).exists():
             self.open_screen("setup")  # it restarted for a new picture size: carry on at the next step
@@ -431,6 +442,15 @@ class Screens:
             self.watch_update(version)
         elif self.starting:
             self.continue_start()
+
+    def child_left_an_app(self) -> bool:
+        """The closed classic screen started something that now has the screen and the controller
+        (CONNECT for Remote Desktop): its start let go of launcher-focus and the app runs. Raising
+        this window over it would leave gamepad-nav dropping every press."""
+        run = self.run_dir
+        if (run / session.LAUNCHER_FOCUS_NAME).exists():
+            return False
+        return (run / "app-active").exists() or self.any_app_running()
 
     def after_screen(self) -> None:
         """A classic screen closed: whatever it changed (apps, pairing, theme, sleep, display) shows here."""
@@ -455,15 +475,23 @@ class Screens:
     def screens_tick(self) -> None:
         """The 1 s tick while a classic screen is on top or an update runs: nothing else happens."""
         # Guide / Home (a tap or a held shortcut) does nothing else here: the quick menu cannot be
-        # drawn over a classic screen's window, and an update cannot be left. The press is taken (so
-        # it does not open the quick menu later) and a classic screen is put back in front.
-        pressed = quick.take_request(self.home_request) is not None
+        # drawn over a classic screen's window, and an update cannot be left. A classic screen's own
+        # loops (an app it started, ACTIVE APPLICATIONS) wait for the same file, so it is left for
+        # them; gamepad-nav raised this window with it, so the screen is put back in front, once per
+        # press. on_child_exit drops a press the screen never took.
         if self.mode == "update" and self.progress is not None:
             self.update_tick()
         if self.child_pid is not None:
             self.idle.keep_awake()  # the classic screen blanks the screen itself
-            if pressed:
-                session.focus_launcher(tvscreens.CHILD_TITLE)  # gamepad-nav raised this window
+            try:
+                stamp = self.home_request.stat().st_mtime_ns
+            except OSError:
+                stamp = None
+            if stamp is not None and stamp != getattr(self, "child_home_seen", None):
+                self.child_home_seen = stamp
+                session.focus_launcher(tvscreens.CHILD_TITLE)
+        else:
+            quick.take_request(self.home_request)  # an update cannot be left: the press is dropped
 
     # ------------------------------------------------------------------ the start
 
@@ -695,6 +723,8 @@ class Tv(Screens, Look, Script, session.Session):
         self.busy_depth = 0  # > 0 while a start or a wait runs its own loop
         self.busy_pressed = False
         self.answer: str | None = None  # what the message screen's keys chose
+        self.choices: list[str] = []  # the message screen's buttons (choose), focus at choice
+        self.choice = 0
         self.active_index = 0
         self.ready_written = False
         self.size = (0, 0)
@@ -885,8 +915,18 @@ class Tv(Screens, Look, Script, session.Session):
         self.bar_battery.set_visible(bool(status.battery))
         self.bar_update.set_label(f"UPDATE {status.update}" if status.update else "")
         self.bar_update.set_visible(bool(status.update))
-        self.home_status.set_label(self.status)
+        self.home_status.set_label(self.home_line())
         self.home_prompt.set_label(quick.prompt(self.family, quick.HOME_PROMPT))
+
+    def home_line(self) -> str:
+        """The home screen's status line: the last result, else, on a live stick, the installed
+        system it can update (as the classic home's footer; the bar shows a newer release)."""
+        if self.status or self.updates.installed:
+            return self.status
+        try:
+            return update.disk_notice(self.updates.current)
+        except Exception:  # noqa: BLE001 - a notice must never take the home screen down
+            return ""
 
     def show(self, name: str) -> None:
         self.mode = name
@@ -901,19 +941,33 @@ class Tv(Screens, Look, Script, session.Session):
         if self.mode != name:
             self.show(name)
 
+    def active_rows(self) -> tuple[list[apps.Application], apps.Application | None, list[str]]:
+        """ACTIVE APPLICATIONS as the classic Guide menu has it: the running apps, the CONTROLLER
+        MOUSE switch for the app in front (the last one brought there), QUICK MENU, BACK TO HOME."""
+        running = self.running_applications()
+        modes = self.pointer_modes
+        front = next((app for app in running if app.id == modes.front), running[0] if running else None)
+        rows = [f"{app.name}  RUNNING" for app in running]
+        if front is not None:
+            rows.append(f"CONTROLLER MOUSE ({front.name})  {'ON' if modes.enabled(front) else 'OFF'}")
+        return running, front, rows + ["QUICK MENU", "BACK TO HOME"]
+
     def render_active(self) -> None:
         clear(self.active_list)
-        running = self.running_applications()
-        rows = [f"{app.name}  RUNNING" for app in running] + ["QUICK MENU", "BACK TO HOME"]
+        running, front, rows = self.active_rows()
         self.active_index = min(self.active_index, len(rows) - 1)
         for index, text in enumerate(rows):
             item = label(text, "tv-item", xalign=0.5, ellipsize=False)  # centred: its own width
             if index == self.active_index:
                 item.add_css_class("tv-focused")
             self.active_list.append(item)
-        on_app = self.active_index < len(running)
-        self.active_hint.set_label(self.status or quick.prompt(
-            self.family, quick.ACTIVE_PROMPT if on_app else quick.QUICK_PROMPT[:1] + quick.ACTIVE_PROMPT[-1:]))
+        if self.active_index < len(running):
+            entries = quick.ACTIVE_PROMPT
+        elif front is not None and self.active_index == len(running):
+            entries = quick.MOUSE_PROMPT
+        else:
+            entries = quick.QUICK_PROMPT[:1] + quick.ACTIVE_PROMPT[-1:]
+        self.active_hint.set_label(self.status or quick.prompt(self.family, entries))
 
     # ------------------------------------------------------------------ the main loop's own loops
 
@@ -955,12 +1009,79 @@ class Tv(Screens, Look, Script, session.Session):
             self.busy_depth -= 1
         return self.answer
 
+    def choose(self, title: str, body: str, choices: list[str]) -> int | None:
+        """A message with buttons: LEFT / RIGHT or UP / DOWN picks one, A / Enter chooses it (its
+        index); B / Esc and Home are None."""
+        self.choices, self.choice = list(choices), 0
+        try:
+            answer = self.ask(title, body, self.choice_hint())
+        finally:
+            self.choices = []
+        return self.choice if answer == "yes" else None
+
+    def choice_hint(self) -> str:
+        buttons = "   ".join(f"[ {text} ]" if index == self.choice else text for index, text in enumerate(self.choices))
+        return f"{buttons}\n{CHOICE_HINT}"
+
     def show_launch_failure(
         self, label_text: str, message: str, app: apps.Application | None = None, *, retry: bool = True
     ) -> str:
-        answer = self.ask(f"{label_text} DID NOT START", message.upper(),
-                          tvlayout.FAILURE_HINT if retry else BACK_HINT)
-        return "retry" if answer == "yes" and retry else "dismiss"
+        """The classic launcher's failure screen (couchliteos_errors): what went wrong, what to do,
+        and its buttons. NETWORK SETTINGS, SAVE SUPPORT FILE and BLUETOOTH SETTINGS open the classic
+        screen on top and come back here, as WAKE PC does, with TRY AGAIN one press away."""
+        failure = errors.describe_failure(
+            label_text, message, app_id=app.id if app else "", app_kind=app.kind if app else "",
+            online=stream.link_up(), retry=retry,
+        )
+        if not controllers.bluetooth_present():
+            failure = failure.without_bluetooth()
+        actions = [action for action in failure.actions if action.id in FAILURE_SCREENS
+                   or action.id in (errors.RETRY.id, errors.DISMISS.id, WAKE_PC.id)]
+        while True:
+            index = self.choose(failure.title, f"{failure.detail}\n\n{failure.hint}", [action.label for action in actions])
+            choice = actions[index].id if index is not None else errors.DISMISS.id
+            if choice in (errors.RETRY.id, errors.DISMISS.id):
+                return choice
+            if choice == WAKE_PC.id:
+                self.wake_from_failure()
+            else:
+                self.wait_for_screen(FAILURE_SCREENS[choice])
+
+    def wake_from_failure(self) -> None:
+        """WAKE PC on a Moonlight failure: wake the default PC and say how it went."""
+        try:
+            host = stream.default_host(stream.load_hosts(), stream.load_settings())
+        except (OSError, ValueError):
+            host = None
+        if host is None:
+            self.ask("WAKE PC", "NO GAMING PC IS PAIRED YET.", BACK_HINT)
+            return
+        if not stream.link_up():
+            result = "nonetwork"
+        else:
+            self.busy_pressed = False
+            try:
+                result = stream.wake_and_wait(
+                    host, force=True, sleep=self.pump,
+                    tick=lambda elapsed: self.wait_tick(
+                        f"WAKING {host.label}...  {session.SPINNER[int(elapsed * 4) % len(session.SPINNER)]}",
+                        f"{int(elapsed)} OF {int(stream.WAKE_TIMEOUT)} SECONDS"),
+                )
+            except OSError as error:
+                self.ask("WAKE PC", f"WAKE FAILED: {error}".upper(), BACK_HINT)
+                return
+        self.ask("WAKE PC", stream.WAKE_RESULTS.get(result, "{}").format(host.label), BACK_HINT)
+
+    def wait_for_screen(self, name: str) -> None:
+        """Open a classic screen on top and wait for it to close (a failure screen's button)."""
+        if not self.open_screen(name):
+            return
+        self.busy_depth += 1
+        try:
+            while self.child_pid is not None:
+                self.pump(0.1)
+        finally:
+            self.busy_depth -= 1
 
     def prepare_remote_desktop(self, app: apps.Application) -> bool:
         # The certificate check and the password prompt are curses screens for now: the whole
@@ -1047,7 +1168,7 @@ class Tv(Screens, Look, Script, session.Session):
             return True
         if self.status and self.mode == "home":
             self.status = ""  # a press dismisses the last result
-            self.home_status.set_label("")
+            self.home_status.set_label(self.home_line())
         handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key,
                    "art": self.art_key, "streamset": self.stream_settings_key, **self.screen_keys()}.get(self.mode)
         if handler is not None:
@@ -1055,6 +1176,11 @@ class Tv(Screens, Look, Script, session.Session):
         return True
 
     def message_key(self, name: str) -> None:
+        if self.choices and name in ("left", "right", "up", "down"):
+            step = 1 if name in ("right", "down") else -1
+            self.choice = max(0, min(len(self.choices) - 1, self.choice + step))
+            self.pages["message"][3].set_label(self.choice_hint())
+            return
         if name == "activate":
             self.answer = "yes"
         elif name in ("back", "home"):
@@ -1093,17 +1219,33 @@ class Tv(Screens, Look, Script, session.Session):
                 self.after_launch()
 
     def active_key(self, name: str) -> None:
-        running = self.running_applications()
-        count = len(running) + 2  # QUICK MENU, BACK TO HOME
+        running, front, rows = self.active_rows()
+        count = len(rows)
+        quick_row = count - 2  # QUICK MENU, then BACK TO HOME
         if name in ("up", "down"):
             self.active_index = max(0, min(count - 1, self.active_index + (1 if name == "down" else -1)))
             self.status = ""
-        elif name == "activate" and self.active_index == len(running):
+        elif name == "keyboard":
+            # X / Triangle: type into the focused app, or the one in front from any other row.
+            target = running[self.active_index] if self.active_index < len(running) else front
+            if target is None:
+                self.status = "NO APP IS RUNNING TO TYPE INTO"
+            else:
+                problem = self.type_into(target)
+                if problem is None:
+                    self.show("home")
+                    self.render_home()
+                    return
+                self.status = problem
+        elif front is not None and self.active_index == len(running) and name in ("activate", "left", "right"):
+            on = self.pointer_modes.toggle(front)
+            self.status = f"CONTROLLER MOUSE {'ON' if on else 'OFF'} FOR {front.name}"
+        elif name == "activate" and self.active_index == quick_row:
             self.status = ""
             self.show("home")
             self.open_quick()
             return
-        elif name in ("back", "home") or (name == "activate" and self.active_index > len(running)):
+        elif name in ("back", "home") or (name == "activate" and self.active_index > quick_row):
             self.status = ""
             self.show("home")
             self.render_home()
@@ -1270,11 +1412,12 @@ class Tv(Screens, Look, Script, session.Session):
     def quick_stream_items(self) -> list[quick.Item]:
         """Rows at the top of the quick menu while Moonlight runs: the stream's preset and SHOW STATS."""
         if not (self.run_dir / "moonlight-ready").exists():
-            self.stats_on = False  # a new stream starts without Moonlight's statistics
             return []
         return [
             quick.Item("preset", "STREAM PRESET", stream.active_preset() or stream.DEFAULT, selectable=False),
-            quick.Item("stats", "SHOW STATS", "ON" if getattr(self, "stats_on", False) else "OFF", ("stats",)),
+            # An action, not an ON / OFF row: the shortcut toggles Moonlight's overlay, and only
+            # gamepad-nav knows whether it got to send it (the stream may end first).
+            quick.Item("stats", "SHOW STATS", "", ("stats",)),
         ]
 
     def quick_extra_action(self, action: tuple) -> None:
@@ -1290,7 +1433,6 @@ class Tv(Screens, Look, Script, session.Session):
             return
         try:
             (self.run_dir / "moonlight-stats.request").touch()  # gamepad-nav sends Ctrl+Alt+Shift+S
-            self.stats_on = not getattr(self, "stats_on", False)
         except OSError as error:
             display.log(f"tv stats request failed: {error!r}", session.LOG)
 
@@ -1426,7 +1568,7 @@ class Tv(Screens, Look, Script, session.Session):
         elif action[0] == "power":
             self.close_quick(resume=False)
             request = action[1]
-            question = quick.POWER_QUESTIONS.get(request)
+            question = quick.power_question(request, self.can_wake)
             if question is not None:
                 answer = self.ask(*question, tvlayout.QUESTION_HINT)
                 self.show("home")
@@ -1708,17 +1850,29 @@ class Tv(Screens, Look, Script, session.Session):
     # ------------------------------------------------------------------ start
 
     def on_map(self, window) -> None:
-        def first_frame(*_args) -> bool:
-            if not self.ready_written:
-                self.ready_written = True
-                try:
-                    (self.run_dir / "launcher-ready").touch()
-                except OSError as error:
-                    print(f"couchliteos-tv: cannot write launcher-ready: {error}", file=sys.stderr)
-                GLib.idle_add(self.after_first_frame)
+        # launcher-ready only once the first frame is painted: a tick callback runs in the frame's
+        # UPDATE phase, before the renderer draws, and a GL driver that crashes or hangs in that
+        # first paint must leave no mark (couchliteos-session then retries with cairo).
+        def painted(clock) -> None:
+            clock.disconnect(self.paint_handler)
+            GLib.idle_add(self.first_frame_painted)
+
+        def first_tick(*_args) -> bool:
+            clock = window.get_frame_clock()
+            self.paint_handler = clock.connect("after-paint", painted)
             return False
 
-        window.add_tick_callback(first_frame)
+        window.add_tick_callback(first_tick)
+
+    def first_frame_painted(self) -> bool:
+        if not self.ready_written:
+            self.ready_written = True
+            try:
+                (self.run_dir / "launcher-ready").touch()
+            except OSError as error:
+                print(f"couchliteos-tv: cannot write launcher-ready: {error}", file=sys.stderr)
+            self.after_first_frame()
+        return False
 
     def after_first_frame(self) -> bool:
         if display.restore_saved_mode() is None:

@@ -555,6 +555,21 @@ def probe(
     return "awake" if awake else "down"
 
 
+# What a WAKE PC press led to (wake_and_wait's results, "nonetwork" and "home"), for .format(host.label).
+WAKE_RESULTS = {
+    "up": "{} IS ALREADY AWAKE AND ANSWERING.",
+    "woke": "{} IS AWAKE.",
+    "awake": "{} IS ON BUT SUNSHINE IS NOT ANSWERING. START SUNSHINE ON THE PC, THEN TRY AGAIN.",
+    "timeout": f"{{}} DID NOT ANSWER WITHIN {int(WAKE_TIMEOUT)} SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
+    "cancelled": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
+    "home": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
+    "sent": "WAKE REQUEST SENT TO {}. IT CAN TAKE A MINUTE TO START.",
+    "noaddr": "WAKE REQUEST NOT SENT: NO ADDRESS IS KNOWN FOR {}.",
+    "nonetwork": "NO NETWORK. CONNECT ETHERNET OR WI-FI, THEN TRY AGAIN.",
+    "nomac": NO_MAC,
+}
+
+
 def wake_and_wait(
     host: Host,
     *,

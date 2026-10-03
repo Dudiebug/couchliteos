@@ -658,7 +658,8 @@ class LiveScreenTest(UiTest):
         self.assertIn("PAIRINGS, WI-FI, BLUETOOTH AND SETTINGS ARE KEPT", self.questions[0])
         self.assertTrue((self.tmp / "disk-update").exists())
         self.assertTrue(self.frames_with("COPYING SYSTEM FILES..."))
-        self.assertTrue(self.frames_with("REMOVE THE USB STICK, THEN CHOOSE REBOOT ON THE HOME SCREEN"))
+        # Both home screens: the classic one has REBOOT, the TV one POWER > RESTART.
+        self.assertTrue(self.frames_with("REMOVE THE USB STICK, THEN RESTART: REBOOT OR POWER > RESTART ON THE HOME SCREEN"))
         self.assertIn("REMOVE THE USB STICK", flat(self.screen.frames[-1]), "the main screen keeps saying so")
 
     def test_no_means_no_request_and_running_apps_must_close_first(self):

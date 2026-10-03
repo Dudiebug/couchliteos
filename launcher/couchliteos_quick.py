@@ -108,7 +108,8 @@ def prompt(family: str, entries: Sequence[tuple[str, str]], separator: str = "  
 
 
 HOME_PROMPT = (("activate", "OPEN"), ("back", "BACK"))
-ACTIVE_PROMPT = (("activate", "RESUME"), ("close", "CLOSE"), ("back", "BACK"))
+ACTIVE_PROMPT = (("activate", "RESUME"), ("close", "CLOSE"), ("keyboard", "TYPE INTO IT"), ("back", "BACK"))
+MOUSE_PROMPT = (("activate", "ON / OFF"), ("back", "BACK"))  # ACTIVE APPLICATIONS' CONTROLLER MOUSE row
 QUICK_PROMPT = (("activate", "SELECT"), ("back", "CLOSE"))
 QUICK_CHANGE_PROMPT = (("change", "CHANGE"), ("activate", "MUTE"), ("back", "CLOSE"))
 QUICK_BRIGHTNESS_PROMPT = (("change", "CHANGE"), ("back", "CLOSE"))
@@ -286,6 +287,15 @@ POWER_QUESTIONS = {
     "reboot": ("RESTART", "RESTART THIS PC NOW? RUNNING APPLICATIONS ARE CLOSED."),
     "poweroff": ("TURN OFF", "TURN THIS PC OFF NOW? RUNNING APPLICATIONS ARE CLOSED."),
 }
+
+
+def power_question(request: str, can_wake: bool) -> tuple[str, str] | None:
+    """(title, question) the quick menu asks before `request`; SLEEP asks as the classic home and
+    the TV POWER screen do: without a wake source only the power button wakes this PC."""
+    if request == "suspend":
+        return ("SLEEP", "SLEEP NOW?" if can_wake else
+                "SLEEP NOW? NOTHING CONNECTED CAN WAKE THIS PC: USE ITS POWER BUTTON TO WAKE IT.")
+    return POWER_QUESTIONS.get(request)
 
 # ---------------------------------------------------------------------- toasts
 
