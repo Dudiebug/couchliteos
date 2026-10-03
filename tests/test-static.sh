@@ -930,6 +930,13 @@ rg -q 'libxkbcommon-dev libinput-dev\)' config/live-build/hooks/live/0050-cage.h
 rg -qF 'grep -aq /var/lib/couchliteos/mouse-speed "$work/cage-0.2.0/build/cage"' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -q '^FOOT = "/usr/libexec/couchliteos-foot"' launcher/couchliteos_app_runner.py
 refute rg -q '/usr/bin/foot' services/couchliteos-launcher.service scripts/couchliteos-osk-session launcher/couchliteos_app_runner.py
+# TYPE ON PHONE: a one-time form on the home network fills a text field; qrencode draws its QR code
+rg -q 'couchliteos_phone.py" "\$CHROOT/usr/libexec/couchliteos_phone.py"' build/configure.sh
+rg -q '^import couchliteos_phone as phone' launcher/couchliteos-launcher.py
+rg -q 'couchliteos_phone.py' launcher/Makefile
+rg -q 'test_phone.py' launcher/Makefile
+rg -q 'hmac.compare_digest' launcher/couchliteos_phone.py
+rg -q 'secrets.token_urlsafe\(16\)' launcher/couchliteos_phone.py
 # Upgrade notice: a one-time "what's new" screen, only for people who finished setup on an older version
 rg -q 'couchliteos_whatsnew.py' build/configure.sh
 rg -q '^import couchliteos_whatsnew as whatsnew' launcher/couchliteos-launcher.py

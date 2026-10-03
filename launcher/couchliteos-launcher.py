@@ -44,6 +44,7 @@ import couchliteos_input as inputprefs
 import couchliteos_padcheck as padcheck
 import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
+import couchliteos_phone as phone
 
 
 RUN = pathlib.Path("/run/couchliteos")
@@ -101,6 +102,11 @@ REMOTE_TEST_KEYS = {
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / CIRCLE CANCEL"
+# TYPE ON PHONE: SELECT/VIEW (gamepad-nav sends F7 for a tap) or F2 on a keyboard. Y already deletes.
+PHONE_KEYS = (curses.KEY_F2, curses.KEY_F7)
+PHONE_ROW = "SELECT (VIEW) OR F2: TYPE ON PHONE"
+PHONE_HINT = "B / CIRCLE OR ESC CANCELS"
+PHONE_POLL_MS = 500
 # Hints name controller buttons first; where it fits they add the keyboard key (Enter, Esc).
 # F5-F12 are never named: the controller's X, LB, RB, SELECT and START send them.
 LIST_HINT = "A / CROSS OR ENTER SELECTS  ·  B / CIRCLE OR ESC GOES BACK"
@@ -2550,7 +2556,7 @@ class ApplicationsSettings:
         try:
             while True:
                 shown = ("*" * len(value) if masked else value)[-max(1, self.screen.getmaxyx()[1] - 12):] or "_"
-                self.draw(title, [prompt, shown], None)
+                self.draw(title, [prompt, shown, "", PHONE_ROW], None)
                 key = self.screen.get_wch()
                 if isinstance(key, str):
                     if key in {"\n", "\r"}:
@@ -2564,6 +2570,11 @@ class ApplicationsSettings:
                         value += key
                 elif key == curses.KEY_F12:
                     request_osk(masked)
+                elif key in PHONE_KEYS:
+                    typed = self.phone_input(title, prompt, limit, masked=masked)
+                    if typed is not None:  # it fills the field; the user still confirms with A / Enter
+                        value = typed[:limit]
+                    self.screen.timeout(-1)
                 elif key in (curses.KEY_BACKSPACE, curses.KEY_DC):  # Y/Square arrives as KEY_DC
                     value = value[:-1]
         finally:
@@ -2573,6 +2584,61 @@ class ApplicationsSettings:
                 curses.curs_set(0)
             except curses.error:
                 pass
+
+    def phone_input(self, title: str, prompt: str, limit: int, *, masked: bool = False) -> str | None:
+        """TYPE ON PHONE: show a QR code and URL until the phone sends the text, B cancels or it expires."""
+        interfaces = phone.lan_interfaces()
+        if not interfaces:
+            self.status = "TYPE ON PHONE NEEDS A HOME NETWORK CONNECTION"
+            return None
+        try:
+            session = phone.Session(
+                str(interfaces[0].ip), time.monotonic, networks=[interface.network for interface in interfaces],
+                title=title, prompt=prompt, limit=limit, masked=masked,
+            )
+        except OSError:
+            self.status = "COULD NOT START TYPE ON PHONE"
+            return None
+        try:
+            code = phone.qr_lines(session.url)
+            self.screen.timeout(PHONE_POLL_MS)
+            while True:
+                typed = session.poll()
+                if typed is not None:
+                    self.status = TEXT_HINT
+                    return typed
+                if session.expired():
+                    self.status = "TYPE ON PHONE TIMED OUT. PRESS SELECT (VIEW) OR F2 TO TRY AGAIN"
+                    return None
+                self.draw_phone(title, session.url, code)
+                try:
+                    key = self.screen.get_wch()
+                except curses.error:  # no key before the poll timeout
+                    continue
+                if key in ("\x1b", 27):
+                    self.status = TEXT_HINT
+                    return None
+        finally:
+            session.close()
+
+    def draw_phone(self, title: str, url: str, code: list[str]) -> None:
+        self.screen.erase()
+        height, width = self.screen.getmaxyx()
+        draw_border(self.screen)
+        add_centered(self.screen, 1, title)
+        add_centered(self.screen, 2, "SCAN WITH A PHONE ON THE SAME NETWORK, OR OPEN:")
+        add_centered(self.screen, 3, url)
+        top = 5
+        if len(code) <= height - top - 3 and code and max(len(line) for line in code) <= width - 4:
+            column = max(1, (width - max(len(line) for line in code)) // 2)
+            for offset, line in enumerate(code):
+                try:
+                    self.screen.addstr(top + offset, column, line)
+                except curses.error:
+                    pass
+        add_centered(self.screen, height - 3, "THE TEXT FILLS THE FIELD; YOU STILL CONFIRM IT HERE")
+        add_centered(self.screen, height - 2, PHONE_HINT)
+        self.screen.refresh()
 
     def yes_no(self, title: str, prompt: str, *, unsaved: bool = False) -> bool | None:
         selected = 0
