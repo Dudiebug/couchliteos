@@ -199,7 +199,7 @@ class GrubRestoreTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = pathlib.Path(directory.name)
-        self.snapshot = self.root / "var/lib/couchliteos/snapshot"
+        self.snapshot = self.root / "var/lib/couchliteos-update/snapshot"
         self.snapshot.mkdir(parents=True)
         self.snapshot.chmod(0o711)
         (self.snapshot / "previous.json").write_text(SNAPSHOT_JSON)
@@ -210,7 +210,7 @@ class GrubRestoreTest(unittest.TestCase):
 
     def fragment(self, **env):
         values = {"PATH": "/usr/bin:/bin", "COUCHLITEOS_ROOT": str(self.root),
-                  "GRUB_DEVICE_UUID": "0b1c2d3e-aaaa-bbbb-cccc-0123456789ab",
+                  "GRUB_DEVICE_UUID": "0b1c2d3e-aaaa-bbbb-cccc-0123456789ab", "GRUB_FS": "ext4",
                   "GRUB_CMDLINE_LINUX": "", "GRUB_CMDLINE_LINUX_DEFAULT": "quiet ipv6.disable=1"}
         values.update(env)
         return subprocess.run(["sh", str(RESTORE_SCRIPT)], capture_output=True, text=True, check=True,
@@ -252,6 +252,19 @@ class GrubRestoreTest(unittest.TestCase):
         self.assertIn("restore previous version (unknown)", fragment)
         self.assertNotIn("reboot", fragment)
 
+    def test_no_entry_for_a_parent_folder_that_is_a_link(self):
+        parent = self.snapshot.parent
+        moved = parent.with_name("elsewhere")
+        parent.rename(moved)
+        parent.symlink_to(moved)
+        self.assertEqual(self.fragment(), "")
+
+    def test_no_entry_unless_the_root_is_ext2_3_or_4(self):
+        for fs in ("ext2", "ext3", "ext4"):
+            self.assertIn("menuentry", self.fragment(GRUB_FS=fs), fs)
+        for fs in ("btrfs", "xfs", ""):
+            self.assertEqual(self.fragment(GRUB_FS=fs), "", fs)
+
     def test_no_entry_without_a_root_uuid(self):
         self.assertEqual(self.fragment(GRUB_DEVICE_UUID=""), "")
         self.assertEqual(self.fragment(GRUB_DEVICE_UUID="x y"), "")
@@ -265,7 +278,7 @@ class GrubRestoreTest(unittest.TestCase):
     def test_the_restore_service_runs_for_the_entry_or_a_request_before_the_launcher(self):
         unit = (ROOT / "services/couchliteos-restore.service").read_text()
         self.assertRegex(unit, r"(?m)^ConditionKernelCommandLine=\|couchliteos\.restore=1$")
-        self.assertRegex(unit, r"(?m)^ConditionPathExists=\|/var/lib/couchliteos/snapshot/restore-request$")
+        self.assertRegex(unit, r"(?m)^ConditionPathExists=\|/var/lib/couchliteos-update/snapshot/restore-request$")
         self.assertRegex(unit, r"(?m)^Before=couchliteos-launcher\.service")
         self.assertRegex(unit, r"(?m)^Type=oneshot$")
 

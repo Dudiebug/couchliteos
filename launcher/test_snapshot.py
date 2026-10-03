@@ -89,7 +89,8 @@ class SnapshotCase(unittest.TestCase):
         self.free = 100 * GIB
         self.env = updater.Env(
             runner=self.runner, popen=FakePopen, free_bytes=lambda _path: self.free, root=self.root,
-            run_dir=self.tmp / "run", cache_dir=self.tmp / "cache", euid=os.geteuid, log=self.log.append)
+            run_dir=self.tmp / "run", work_dir=self.tmp / "work", cache_dir=self.tmp / "cache", euid=os.geteuid,
+            log=self.log.append)
         self.status = RecordingStatus()
         self.box("0.2.7", b"kernel 0.2.7")
 
@@ -154,7 +155,7 @@ class CreateTest(SnapshotCase):
             self.assertIn(f"{emptied}/*", patterns)
             self.assertIn(f"{emptied}/.*", patterns)
             self.assertNotIn(emptied, patterns, "the directory itself stays: a restore mounts on it")
-        for left_out in ("var/lib/couchliteos/snapshot", "boot/couchliteos-previous",
+        for left_out in ("var/lib/couchliteos-update/snapshot", "boot/couchliteos-previous",
                          "var/lib/couchliteos/home/.cache", "swapfile"):
             self.assertIn(left_out, patterns)
         for kept in ("etc", "var/lib/couchliteos", "var/lib/couchliteos/home/.config", "home", "boot"):
@@ -461,6 +462,122 @@ class SettingTest(SnapshotCase):
         self.assertEqual(create.call_args.args[2], self.tmp / "disk")
 
 
+class PlaceTest(SnapshotCase):
+    """The snapshot lives below root's own /var/lib/couchliteos-update, never the launcher's directory."""
+
+    def test_the_paths_are_below_roots_own_directory(self):
+        self.assertEqual(snapshot.SNAP_REL, "var/lib/couchliteos-update/snapshot")
+        where = snapshot.paths(pathlib.Path("/"))
+        self.assertEqual(where["dir"], pathlib.Path("/var/lib/couchliteos-update/snapshot"))
+        self.assertEqual(where["info"], pathlib.Path("/var/lib/couchliteos-update/snapshot/previous.json"))
+        self.assertEqual(where["image"], pathlib.Path("/var/lib/couchliteos-update/snapshot/previous.squashfs"))
+        for path in where.values():
+            self.assertFalse(str(path).startswith("/var/lib/couchliteos/"), path)
+        self.assertIn(snapshot.SNAP_REL, snapshot.LEFT_OUT)
+
+    def test_create_makes_the_parent_roots_0755_and_the_folder_0711(self):
+        self.create()
+        where = self.where()
+        parent = os.lstat(where["dir"].parent)
+        self.assertEqual((parent.st_uid, stat.S_IMODE(parent.st_mode)), (os.geteuid(), 0o755))
+        found = os.lstat(where["dir"])
+        self.assertEqual((found.st_uid, stat.S_IMODE(found.st_mode)), (os.geteuid(), 0o711))
+
+    def test_a_parent_others_can_write_is_refused_and_create_puts_it_right(self):
+        self.create(b"image A")
+        parent = self.where()["dir"].parent
+        os.chmod(parent, 0o777)
+        self.assertFalse(snapshot.trusted_dir(self.env, self.root))
+        self.assertFalse(snapshot.delete(self.env, self.root))
+        self.assertTrue(snapshot.trusted_dir(self.env, self.root, create=True), "our own directory: mode put right")
+        self.assertEqual(stat.S_IMODE(os.lstat(parent).st_mode), 0o755)
+
+    def test_a_symlinked_parent_is_refused_even_with_create(self):
+        parent = self.where()["dir"].parent
+        shutil.rmtree(parent, ignore_errors=True)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        parent.symlink_to(elsewhere)
+        self.assertFalse(snapshot.trusted_dir(self.env, self.root))
+        self.assertFalse(snapshot.trusted_dir(self.env, self.root, create=True))
+        with self.assertRaises(snapshot.SnapshotFailed) as caught:
+            self.create()
+        self.assertEqual(caught.exception.message, snapshot.MSG_NOT_OURS)
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    @unittest.skipUnless(os.geteuid() == 0, "needs root to give the directory away")
+    def test_a_parent_the_launchers_user_owns_is_refused(self):
+        self.create(b"image A")
+        os.chown(self.where()["dir"].parent, 1000, 1000)
+        self.assertFalse(snapshot.trusted_dir(self.env, self.root))
+        self.assertFalse(snapshot.trusted_dir(self.env, self.root, create=True))
+        self.assertFalse(snapshot.delete(self.env, self.root))
+        self.assertTrue(self.where()["image"].exists())
+
+    def test_the_old_place_of_a_test_build_is_ignored(self):
+        old = self.root / "var/lib/couchliteos/snapshot"
+        put(old, "previous.json", '{"version": "0.3.0-dev"}')
+        put(old, "previous.json.new", "{}")
+        put(old, "restore-request")
+        snapshot.recover(self.env, self.root)
+        self.assertIsNone(snapshot.info(self.root))
+        self.assertFalse(snapshot.requested(self.root))
+        self.assertFalse(snapshot.delete(self.env, self.root), "nothing of ours to delete")
+        self.assertEqual(sorted(os.listdir(old)), ["previous.json", "previous.json.new", "restore-request"])
+
+    def test_the_folders_wrong_mode_is_put_right_only_with_create(self):
+        self.create()
+        os.chmod(self.where()["dir"], 0o755)
+        self.assertFalse(snapshot.trusted_dir(self.env, self.root))
+        self.assertTrue(snapshot.trusted_dir(self.env, self.root, create=True))
+        self.assertEqual(stat.S_IMODE(os.lstat(self.where()["dir"]).st_mode), 0o711)
+
+    def test_recover_puts_the_old_boot_copy_back_when_the_new_one_never_arrived(self):
+        self.create(b"image A")
+        where = self.where()
+        where["boot"].rename(where["boot_old"])  # a crash between the two renames of the boot copy
+        snapshot.recover(self.env, self.root)
+        self.assertFalse(where["boot_old"].exists())
+        self.assertEqual((where["boot"] / "vmlinuz").read_bytes(), b"kernel 0.2.7")
+        self.assertIsNotNone(snapshot.verify(self.root))
+
+    def test_the_json_is_written_through_the_folder_never_a_planted_link(self):
+        self.create(b"image A")
+        secret = put(self.tmp, "secret", "root only\n")
+        info = self.where()["info"]
+        info.unlink()
+        info.symlink_to(secret)
+        self.create(b"image B")
+        self.assertEqual(secret.read_text(), "root only\n")
+        self.assertFalse(info.is_symlink())
+        self.assertEqual(stat.S_IMODE(os.lstat(info).st_mode), 0o644)
+
+
+class AttemptsTest(SnapshotCase):
+    def test_each_try_is_counted_root_only_and_cleared_with_the_request(self):
+        self.create()
+        self.assertTrue(snapshot.request(self.env, self.root))
+        self.assertEqual(snapshot.count_attempt(self.env, self.root), 1)
+        self.assertEqual(snapshot.count_attempt(self.env, self.root), 2)
+        attempts = self.where()["dir"] / snapshot.ATTEMPTS
+        self.assertEqual(stat.S_IMODE(attempts.stat().st_mode), 0o600)
+        snapshot.clear_request(self.env, self.root)
+        self.assertFalse(attempts.exists())
+        self.assertFalse(snapshot.requested(self.root))
+
+    def test_a_count_that_is_not_a_small_number_starts_again(self):
+        self.create()
+        (self.where()["dir"] / snapshot.ATTEMPTS).write_text("lots")
+        self.assertEqual(snapshot.count_attempt(self.env, self.root), 1)
+
+    def test_nothing_is_counted_in_a_folder_that_is_not_ours(self):
+        self.create()
+        self.env.euid = lambda: os.geteuid() + 1
+        self.assertEqual(snapshot.count_attempt(self.env, self.root), 0)
+        self.assertFalse((self.where()["dir"] / snapshot.ATTEMPTS).exists())
+
+
 class SetOptionTest(SnapshotCase):
     def config(self):
         return self.root / "var/lib/couchliteos/config.ini"
@@ -609,7 +726,7 @@ class RealMksquashfsTest(SnapshotCase):
                      "/var/lib/couchliteos/home/.config/moonlight/state", "/var/lib/couchliteos/config.ini"):
             self.assertIn(kept, listing)
         for gone in ("/var/log/syslog", "/var/cache/couchliteos", "/tmp/.X0-lock", "/tmp/file", "/dev/null-ish",
-                     "/var/lib/couchliteos/home/.cache", "/var/lib/couchliteos/snapshot", "/boot/couchliteos-previous"):
+                     "/var/lib/couchliteos/home/.cache", "/var/lib/couchliteos-update/snapshot", "/boot/couchliteos-previous"):
             self.assertNotIn(gone, listing)
         self.assertIsNotNone(snapshot.verify(self.root))
 

@@ -1,14 +1,19 @@
 import testenv  # noqa: F401  (first: scratch run and state directories)
 """couchliteos-browser (root side): apt arguments, refusals, status phases, refresh, request file, web apps."""
 
+import io
 import json
 import os
 import pathlib
+import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import couchliteos_browser as browser
+import couchliteos_safefile as safefile
 
 GIB = 1 << 30
 ROUTE = "default via 192.168.1.1 dev enp2s0\n"
@@ -61,6 +66,7 @@ class Case(unittest.TestCase):
         self.logged = []
         self.env = browser.Env(
             runner=self.runner, free_bytes=lambda _path: self.free, root=self.root, run_dir=self.run_dir,
+            work_dir=self.tmp / "work",
             euid=lambda: 0, log=self.logged.append,
         )
         self.status = RecordingStatus(self.run_dir / browser.STATUS_NAME)
@@ -136,6 +142,30 @@ class InstallTest(Case):
             browser.install(self.env, self.status, browser.BROWSERS["firefox"])
         self.assertEqual(caught.exception.message, browser.MSG_FAILED)
 
+    def test_a_failed_download_is_a_network_problem_and_nothing_is_installed(self):
+        self.runner.replies = {"--download-only": (100, "E: Failed to fetch")}
+        with self.assertRaises(browser.BrowserFailed) as caught:
+            browser.install(self.env, self.status, browser.BROWSERS["chrome"])
+        self.assertEqual(caught.exception.message, browser.MSG_NETWORK)
+        self.assertEqual([call[-1] for call in self.runner.apt()], ["--error-on=any", "google-chrome-stable"])
+        self.assertEqual(self.status.phases()[-1], "downloading")
+
+    def test_a_failed_install_after_the_download_points_at_the_new_log(self):
+        self.runner.replies = {"firefox-esr": (100, "dpkg error")}
+        self.runner.replies["--download-only"] = (0, "")
+        with self.assertRaises(browser.BrowserFailed) as caught:
+            browser.install(self.env, self.status, browser.BROWSERS["firefox"])
+        self.assertEqual(caught.exception.message, "INSTALL FAILED: SEE /var/log/couchliteos-update/browser.log")
+        self.assertNotIn(["clean"], self.runner.apt())
+        self.assertEqual(self.status.phases()[-1], "installing")
+
+    def test_a_failed_remove_says_so(self):
+        self.runner.replies = {"remove": (100, "E: locked")}
+        with self.assertRaises(browser.BrowserFailed) as caught:
+            browser.remove(self.env, self.status, browser.BROWSERS["firefox"])
+        self.assertEqual(caught.exception.message, "COULD NOT REMOVE FIREFOX")
+        self.assertEqual(self.status.phases(), ["removing"])
+
     def test_remove_runs_apt_remove(self):
         browser.remove(self.env, self.status, browser.BROWSERS["chrome"])
         self.assertEqual(self.runner.apt(), [["remove", "-y", "google-chrome-stable"]])
@@ -167,6 +197,15 @@ class RefreshTest(Case):
         browser.refresh(self.env)
         self.assertEqual(self.runner.calls, [])
         self.assertFalse(self.marker.exists())
+
+    def test_a_failed_reinstall_keeps_the_marker_for_the_next_start(self):
+        self.put("usr/bin/firefox-esr")
+        self.runner.replies = {"--reinstall": (100, "dpkg error")}
+        with self.assertRaises(browser.BrowserFailed) as caught:
+            browser.refresh(self.env)
+        self.assertEqual(caught.exception.message, browser.MSG_FAILED)
+        self.assertTrue(self.marker.exists())
+        self.assertNotIn(["clean"], self.runner.apt())
 
     def test_a_failure_keeps_the_marker_for_the_next_start(self):
         self.put("usr/bin/google-chrome-stable")
@@ -221,7 +260,9 @@ class RequestTest(Case):
     def test_a_second_install_while_one_runs_says_so_and_drops_its_request(self):
         import fcntl
         path = self.request("chrome\n")
-        with open(self.run_dir / browser.LOCK_NAME, "a+") as held:
+        self.assertEqual(browser.WORK_DIR, pathlib.Path("/run/couchliteos-update"), "root's own, not the launcher's")
+        safefile.root_dir(self.env.work_dir, os.geteuid())
+        with open(self.env.work_dir / browser.LOCK_NAME, "a+") as held:
             fcntl.flock(held.fileno(), fcntl.LOCK_EX)
             self.assertEqual(browser.main(["request"], self.env), 1)
         self.assertFalse(path.exists())
@@ -230,8 +271,57 @@ class RequestTest(Case):
 
     def test_main_needs_root(self):
         self.env.euid = lambda: 1000
-        self.assertEqual(browser.main(["install", "firefox"], self.env), 2)
+        path = self.request("chrome\n")
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as said:
+            self.assertEqual(browser.main(["install", "firefox"], self.env), 2)
+            self.assertEqual(browser.main(["request"], self.env), 2)
+        self.assertIn("must run as root", said.getvalue())
         self.assertEqual(self.runner.calls, [])
+        self.assertTrue(path.exists(), "the request is not touched")
+        self.assertFalse((self.run_dir / browser.STATUS_NAME).exists())
+
+    def test_an_unexpected_exception_is_a_plain_failure_and_its_traceback_goes_to_the_log(self):
+        self.request("firefox\n")
+        with mock.patch.object(browser, "install", side_effect=KeyError("detail")):
+            self.assertEqual(browser.main(["request"], self.env), 1)
+        self.assertEqual(self.written()["phase"], "failed")
+        self.assertEqual(self.written()["message"], browser.MSG_FAILED)
+        self.assertTrue(any("Traceback" in line and "KeyError" in line for line in self.logged))
+
+    def test_the_lock_is_in_roots_own_directory_and_a_symlinked_one_is_refused(self):
+        self.request("firefox\n")
+        self.assertEqual(browser.main(["request"], self.env), 0)
+        self.assertTrue((self.env.work_dir / browser.LOCK_NAME).is_file())
+        self.assertEqual(stat.S_IMODE(os.lstat(self.env.work_dir).st_mode), 0o700)
+        self.assertFalse((self.run_dir / browser.LOCK_NAME).exists())
+        shutil.rmtree(self.env.work_dir)
+        self.env.work_dir.symlink_to(self.run_dir)  # what the launcher's user could point it at
+        self.request("firefox\n")
+        self.runner.calls.clear()
+        self.assertEqual(browser.main(["request"], self.env), 1)
+        self.assertEqual(self.written()["phase"], "failed")
+        self.assertEqual(self.runner.calls, [])
+        self.assertFalse((self.run_dir / browser.LOCK_NAME).exists())
+
+    def test_the_status_is_never_written_through_a_symlink(self):
+        secret = self.put("etc/shadow", "root:x\n")
+        self.run_dir.mkdir(parents=True)
+        (self.run_dir / browser.STATUS_NAME).symlink_to(secret)
+        browser.Status(self.run_dir / browser.STATUS_NAME).set("checking", "X")
+        self.assertEqual(secret.read_text(), "root:x\n")
+        self.assertEqual(self.written()["phase"], "checking")
+
+    def test_the_log_is_roots_own_and_never_followed_through_a_symlink(self):
+        self.assertEqual(browser.LOG_REL, "var/log/couchliteos-update/browser.log")
+        secret = self.put("etc/shadow", "root:x\n")
+        log = self.root / browser.LOG_REL
+        log.parent.mkdir(parents=True)
+        log.symlink_to(secret)
+        browser.Log(log)("evil")  # never raises
+        self.assertEqual(secret.read_text(), "root:x\n")
+        log.unlink()
+        browser.Log(log)("fine")
+        self.assertEqual(log.read_text(), "fine\n")
 
     def test_refresh_writes_no_status(self):
         self.assertEqual(browser.main(["refresh"], self.env), 0)

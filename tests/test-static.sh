@@ -836,7 +836,23 @@ rg -q '^PathExists=/run/couchliteos/snapshot-delete$' services/couchliteos-snaps
 rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/snapshot-delete$' services/couchliteos-snapshot-delete.service
 rg -q '^ExecStart=/usr/libexec/couchliteos-updater delete-snapshot$' services/couchliteos-snapshot-delete.service
 rg -q '^systemctl enable couchliteos-snapshot-delete.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
-rg -q 'test -s /var/lib/couchliteos/snapshot/previous.squashfs' scripts/couchliteos-qemu-smoke
+rg -q 'test -s /var/lib/couchliteos-update/snapshot/previous.squashfs' scripts/couchliteos-qemu-smoke
+# Root never works by path in a directory the couchliteos user owns: the snapshot, the work dirs,
+# locks and logs are root's own, and root's writes into the user's directories go through
+# couchliteos_safefile (a directory descriptor, O_EXCL|O_NOFOLLOW temporaries, fchmod/fchown).
+rg -q '^SNAP_REL = "var/lib/couchliteos-update/snapshot"' launcher/couchliteos_snapshot.py
+rg -q '^WORK_DIR = pathlib.Path\("/run/couchliteos-update"\)' launcher/couchliteos_updater.py launcher/couchliteos_browser.py
+rg -q '^LOG_REL = "var/log/couchliteos-update/update.log"$' launcher/couchliteos_updater.py
+rg -q '^LOG_REL = "var/log/couchliteos-update/browser.log"$' launcher/couchliteos_browser.py
+rg -q '^d /run/couchliteos-update 0700 root root -$' overlay/etc/tmpfiles.d/couchliteos.conf
+rg -q '^d /var/log/couchliteos-update 0755 root root -$' overlay/etc/tmpfiles.d/couchliteos.conf
+rg -q '^d /var/lib/couchliteos-update 0755 root root -$' overlay/etc/tmpfiles.d/couchliteos.conf
+rg -Fq '"$ROOT/launcher/couchliteos_safefile.py" "$CHROOT/usr/libexec/couchliteos_safefile.py"' build/configure.sh
+rg -q 'test_safefile.py' launcher/Makefile
+rg -q '^import couchliteos_safefile as safefile$' launcher/couchliteos_updater.py launcher/couchliteos_snapshot.py launcher/couchliteos_browser.py
+refute rg -n 'tempfile\.mkstemp|os\.chmod\(temporary|os\.chown\(temporary' launcher/couchliteos_updater.py launcher/couchliteos_snapshot.py launcher/couchliteos_browser.py
+refute rg -n 'run_dir / (PROBE_DIR|DISK_DIR|DISK_IMAGE_DIR|LOCK_NAME)|dir=env\.run_dir|run_dir / "update"' launcher/couchliteos_updater.py launcher/couchliteos_browser.py
+rg -q 'couchliteos-update' scripts/couchliteos-support-export
 refute rg -n 'shell=True|os\.system' launcher/couchliteos_snapshot.py
 # RESTORE PREVIOUS VERSION: Settings asks through a path unit, a boot service restores before the
 # launcher, and a boot menu entry starts the saved kernel with couchliteos.restore=1.
@@ -845,7 +861,9 @@ rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/restore-request$' services/
 rg -q '^ExecStart=/usr/libexec/couchliteos-updater request-restore$' services/couchliteos-restore-request.service
 rg -q '^ExecStart=/usr/libexec/couchliteos-updater restore$' services/couchliteos-restore.service
 rg -q '^ConditionKernelCommandLine=\|couchliteos\.restore=1$' services/couchliteos-restore.service
-rg -q '^ConditionPathExists=\|/var/lib/couchliteos/snapshot/restore-request$' services/couchliteos-restore.service
+rg -q '^ConditionPathExists=\|/var/lib/couchliteos-update/snapshot/restore-request$' services/couchliteos-restore.service
+rg -q '^Before=couchliteos-bluetooth\.service couchliteos-audio\.service$' services/couchliteos-restore.service
+rg -q 'ext2\|ext3\|ext4' scripts/couchliteos-grub-restore
 rg -q '^Before=couchliteos-launcher\.service' services/couchliteos-restore.service
 rg -q '^systemctl enable couchliteos-restore-request.path couchliteos-restore.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"' build/configure.sh
