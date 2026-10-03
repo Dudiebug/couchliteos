@@ -1,0 +1,5 @@
+# Sources couchliteos-browser installs Firefox and Google Chrome from (with sources.list.d/).
+# It passes these to apt itself, so it does not depend on what /etc/apt holds.
+deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian trixie main
+deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian trixie-updates main
+deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian-security trixie-security main

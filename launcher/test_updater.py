@@ -1485,6 +1485,18 @@ class ApplyRootTest(TmpCase):
         self.assertEqual(set(self.status.phases()[:-1]), {"installing"})
         self.assertEqual(self.status.version, "0.2.2")
 
+    def test_a_box_with_a_browser_gets_the_browser_refresh_marker(self):
+        marker = self.target / "var/lib/couchliteos-update/browser-refresh"
+        self.apply()
+        self.assertFalse(marker.exists(), "no browser installed: nothing to refresh")
+        status = self.read("var/lib/dpkg/status")
+        put(self.target, "var/lib/dpkg/status",
+            status + "\nPackage: firefox-esr\nStatus: install ok installed\nArchitecture: amd64\n")
+        put(self.target, "etc/couchliteos-version", "0.2.1\n")
+        self.apply()
+        self.assertTrue(marker.exists())
+        self.assertIn("firefox-esr", self.read("var/lib/dpkg/status"), "the browser stays a box package")
+
     def test_exit_code_24_from_rsync_is_fine(self):
         self.fail = {"/etc/": (24, "some files vanished")}
         self.apply()

@@ -179,7 +179,7 @@ wait_for_marker 'COUCHLITEOS_SMOKE_USBIP_READY' 30 || fail 'USB/IP daemon did no
 wait_for_marker 'COUCHLITEOS_SMOKE_BLUETOOTH_READY' 30 || fail 'Bluetooth control service or launcher-survival check failed.'
 
 # A QEMU fw_cfg flag activates the otherwise inert smoke driver inside the
-# guest. It reports success only after all three real application processes
+# guest. It reports success only after both real application processes (Moonlight, chiaki-ng)
 # have remained alive for five seconds.
 wait_for_marker 'COUCHLITEOS_SMOKE_APPS_READY' 180 || fail 'Applications did not remain running.'
 capture_screen
@@ -188,4 +188,4 @@ wait_for_marker 'COUCHLITEOS_SMOKE_RDP_READY' 180 || fail 'Remote Desktop restar
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
-echo 'QEMU smoke test passed: no-backend live boot, launcher/setup readiness, configured apps, OSK, Bluetooth, USB/IP, Moonlight, Chiaki-ng, Firefox, Google Chrome, and Remote Desktop started.'
+echo 'QEMU smoke test passed: no-backend live boot, launcher/setup readiness, configured apps, OSK, Bluetooth, USB/IP, Moonlight, Chiaki-ng, and Remote Desktop started.'

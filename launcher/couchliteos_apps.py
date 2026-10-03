@@ -42,6 +42,8 @@ class Application:
     command: str = ""
     arguments: str = ""
     request: str = ""
+    # The program the tile needs; while it is missing the tile is hidden (a browser installed on demand).
+    binary: str = ""
     connection: str = ""
     shortcut: str = ""
     status_id: str = ""
@@ -113,6 +115,9 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
     command = _scalar(section.get("command", "").strip(), "command", MAX_COMMAND)
     arguments = _scalar(section.get("arguments", "").strip(), "arguments", MAX_ARGUMENTS)
     request = _scalar(section.get("request", "").strip(), "request", 64)
+    binary = _scalar(section.get("binary", "").strip(), "binary", MAX_COMMAND)
+    if binary and not pathlib.PurePath(binary).is_absolute():
+        raise ManifestError("binary must be an absolute path")
     connection = _scalar(section.get("connection", "").strip(), "connection", 32)
     shortcut = _scalar(section.get("shortcut", "").strip().lower(), "shortcut", 16)
     if shortcut and shortcut not in SHORTCUTS:
@@ -163,6 +168,7 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
         command=command,
         arguments=arguments,
         request=request,
+        binary=binary,
         connection=connection,
         shortcut=shortcut,
         status_id=status_id,
@@ -241,6 +247,11 @@ def load_applications(
     return LoadResult(tuple(applications), tuple(errors))
 
 
+def installed(app: Application, root: pathlib.Path = pathlib.Path("/")) -> bool:
+    """False when the app names a `binary` that is not there (Firefox or Chrome before it is installed)."""
+    return not app.binary or (root / app.binary.lstrip("/")).exists()
+
+
 def visible_applications(**kwargs: object) -> LoadResult:
     result = load_applications(**kwargs)
     return LoadResult(
@@ -296,6 +307,8 @@ def serialize(app: Application) -> str:
         "order": str(app.order),
         "return_to_launcher": "true",
     }
+    if app.binary:
+        parser["app"]["binary"] = app.binary
     if app.connection:
         parser["app"]["connection"] = app.connection
     if app.shortcut:

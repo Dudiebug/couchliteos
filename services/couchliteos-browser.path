@@ -1,0 +1,9 @@
+[Unit]
+Description=Install the web browser the launcher asked for
+
+[Path]
+PathExists=/run/couchliteos/browser-install
+Unit=couchliteos-browser.service
+
+[Install]
+WantedBy=graphical.target
