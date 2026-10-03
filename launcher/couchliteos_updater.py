@@ -7,11 +7,15 @@ request files below /run/couchliteos; couchliteos-update.service runs `run` as r
     run [--no-snapshot]                       check, download, verify, save, install, reboot
     apply-iso PATH [--force] [--no-reboot] [--no-snapshot]
                                               install from an ISO file or device (offline updates)
-    apply-root TARGET --status FILE [--force] the install step itself
+    apply-root TARGET --status FILE [--force] [--snapshot-done] [--no-snapshot]
+                                              the install step itself
     delete-snapshot                           remove the saved previous version (Settings)
 
 Before anything is written, `run` and `apply-iso` save the running system as the one snapshot
 (couchliteos_snapshot) unless --no-snapshot is given or config.ini says [update] snapshot = off.
+`apply-iso` then passes --snapshot-done to the new image's `apply-root`. An older updater (0.2.x)
+does not know that flag and passes nothing, so `apply-root` saves TARGET itself first: the update
+from 0.2.x to this version can be undone too.
 
 `apply-iso` mounts the ISO's squashfs and runs the NEW image's copy of this program with
 `apply-root /mnt` inside a chroot of it (the running disk is bind-mounted at /mnt), so the logic
@@ -844,14 +848,22 @@ def unmount(env: Env, mountpoint: str, log: Callable[[str], None] | None = None)
 
 
 def apply_root(
-    target: pathlib.Path, status: Status, env: Env, *, force: bool = False, image: pathlib.Path = pathlib.Path("/")
+    target: pathlib.Path, status: Status, env: Env, *, force: bool = False, image: pathlib.Path = pathlib.Path("/"),
+    save_first: bool = True, save: Callable[..., None] | None = None,
 ) -> None:
-    """Replace the system files of the box at `target` with those of the image at `image`."""
+    """Replace the system files of the box at `target` with those of the image at `image`.
+
+    With `save_first` (the caller did not save the box: an updater older than 0.3.0), `target` is
+    saved as the snapshot before anything of it is written.
+    """
     target, image = pathlib.Path(target), pathlib.Path(image)
     new_version = preflight(target, image, env, force)
     log = Log(target / LOG_REL)
     status.version = new_version
-    log(f"update to {new_version} from {_read_version(target / VERSION_REL)} (force={force})")
+    log(f"update to {new_version} from {_read_version(target / VERSION_REL)} (force={force}, save={save_first})")
+    if save_first:
+        # Inside the new image the default log is on its read-only squashfs: note into the box's log.
+        (save or save_snapshot)(dataclasses.replace(env, log=log), status, target)
 
     def step(message: str, percent: int) -> None:
         log(message)
@@ -974,6 +986,14 @@ def is_block_device(path: pathlib.Path) -> bool:
         return False
 
 
+def handles_snapshot_done(updater: pathlib.Path) -> bool:
+    """Whether an image's updater takes --snapshot-done; an older one (a downgrade) would refuse it."""
+    try:
+        return b"--snapshot-done" in updater.read_bytes()
+    except OSError:
+        return False
+
+
 def apply_iso(
     source: pathlib.Path, env: Env, status: Status, *, force: bool = False, save_first: bool = True,
     save: Callable[[Env, Status], None] | None = None,
@@ -1014,6 +1034,8 @@ def apply_iso(
         argv = ["chroot", str(new), f"/{UPDATER_REL}", "apply-root", "/mnt", "--status", str(status.path)]
         if force:
             argv.append("--force")
+        if handles_snapshot_done(new / UPDATER_REL):  # saved above (or skipped on purpose): not again
+            argv.append("--snapshot-done")
         if sh(env, argv).returncode != 0:
             reported = read_status(status.path)
             message = reported.get("message") if reported.get("phase") == "failed" else None
@@ -1110,6 +1132,8 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     root.add_argument("target")
     root.add_argument("--status", required=True)
     root.add_argument("--force", action="store_true")
+    root.add_argument("--snapshot-done", action="store_true", help="the caller already saved TARGET (0.3.0 and later)")
+    root.add_argument("--no-snapshot", action="store_true", help="do not save TARGET first")
     args = parser.parse_args(argv)
     env = env or Env()
     if env.euid() != 0:
@@ -1120,7 +1144,9 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
 
     if args.command == "apply-root":
         status = Status(pathlib.Path(args.status))
-        return _guarded(env, status, lambda: apply_root(pathlib.Path(args.target), status, env, force=args.force))
+        return _guarded(env, status, lambda: apply_root(
+            pathlib.Path(args.target), status, env, force=args.force,
+            save_first=not (args.snapshot_done or args.no_snapshot)))
 
     status = Status(env.run_dir / STATUS_NAME)
     try:
