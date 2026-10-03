@@ -148,6 +148,7 @@ rg -q 'debian-security trixie-security main$' overlay/usr/share/couchliteos/apt/
 # The tool's Chrome source is the one the image's /etc/apt gets.
 chrome_source=$(cat overlay/usr/share/couchliteos/apt/sources.list.d/google-chrome.list)
 rg -Fq "$chrome_source" config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'python3 -m compileall -q /usr/libexec/couchliteos_*.py' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -Fq 'Dir::Etc::sourcelist={APT_DIR}/sources.list' launcher/couchliteos_browser.py
 rg -Fq 'Dir::Etc::sourceparts={APT_DIR}/sources.list.d' launcher/couchliteos_browser.py
 rg -Fq 'APT_DIR = "/usr/share/couchliteos/apt"' launcher/couchliteos_browser.py
