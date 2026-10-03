@@ -20,6 +20,7 @@ import couchliteos_cec as cec
 import couchliteos_audio as audio
 import couchliteos_brightness as brightness
 import couchliteos_input as inputprefs
+import couchliteos_pads as padprefs
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
@@ -97,6 +98,8 @@ MEDIA_KEYS = frozenset({*BRIGHTNESS_KEYS, *VOLUME_KEYS, ecodes.KEY_MUTE})
 ACPI_VIDEO_KEYS = "Video Bus"
 # Settings > CONTROLS (the launcher saves them in config.ini): re-read when the file changes.
 INPUT_SETTINGS = inputprefs.Watcher()
+# Settings > CONTROLLERS: the player order and each pad's SWAP A/B and SWAP X/Y, same file.
+PAD_SETTINGS = padprefs.Watcher()
 # The Home shortcut's held pair, and the buttons that cancel it: Moonlight quits a stream on
 # Select+Start+L1+R1, so SELECT+START with a shoulder button held is left to Moonlight.
 HOME_COMBOS = {
@@ -312,6 +315,7 @@ class Pads:
         self.devices: dict[str, InputDevice] = {}
         self.grabbed: set[str] = set()
         self.ignored: set[str] = set()  # nodes already seen to be something else
+        self.idents: dict[str, str] = {}  # path -> the pad's id in Settings > CONTROLLERS
         self.touchpads: dict[str, InputDevice] = {}  # PlayStation pad touchpads, held back from the pointer during a stream
         self.touch_grabbed: set[str] = set()
         self.clock = time.monotonic
@@ -333,6 +337,7 @@ class Pads:
         for path in set(self.touchpads) - paths:
             self.drop_touchpad(path)
         self.ignored &= paths
+        added = False
         for path in sorted(paths - set(self.devices) - set(self.touchpads) - self.ignored):
             dev = None
             try:
@@ -347,15 +352,28 @@ class Pads:
                 if not self.devices:
                     save_identity(dev)
                 self.devices[path] = dev
+                self.idents[path] = padprefs.pad_id(dev)
+                added = True
             except OSError:
                 if dev is not None:
                     try:
                         dev.close()
                     except OSError:
                         pass
+        if added:
+            self.light_players()
+
+    def light_players(self) -> None:
+        """Set the player lights in the Settings > CONTROLLERS order when a pad arrives."""
+        try:
+            found = [padprefs.from_device(path, dev) for path, dev in self.devices.items()]
+            padprefs.set_player_leds(padprefs.ordered(found, PAD_SETTINGS.current().order))
+        except Exception:  # lights are a nicety: never stop the pad working over them
+            pass
 
     def drop(self, path: str) -> None:
         self.holds.pop(path, None)
+        self.idents.pop(path, None)
         self.combo.forget(path)
         self.taps.forget(path)
         self.sticks.pop(path, None)
@@ -462,7 +480,8 @@ class Pads:
             if tapped is not None:
                 emit(ui, NAV_TAP_KEYS[tapped])
             return False
-        key = key_for_event(event)
+        # Only here, in the launcher: a stream or an app reads the pad itself, unswapped.
+        key = key_for_event(event, PAD_SETTINGS.current().swaps(self.idents.get(path, "")))
         if key:
             emit(ui, key)
         return False
@@ -638,8 +657,11 @@ def arrow_for_event(event) -> tuple[int, int | None] | None:
     return None
 
 
-def key_for_event(event) -> int | None:
+def key_for_event(event, swaps: dict[int, int] | None = None) -> int | None:
+    """The launcher key for a press; `swaps` (Settings > CONTROLLERS SWAP A/B, SWAP X/Y) reads one
+    button as another first."""
     if event.type == ecodes.EV_KEY and event.value == 1:
+        code = (swaps or {}).get(event.code, event.code)
         return {
             ecodes.BTN_SOUTH: ecodes.KEY_ENTER,
             ecodes.BTN_EAST: ecodes.KEY_ESC,
@@ -656,7 +678,7 @@ def key_for_event(event) -> int | None:
             ecodes.BTN_DPAD_DOWN: ecodes.KEY_DOWN,
             ecodes.BTN_DPAD_LEFT: ecodes.KEY_LEFT,
             ecodes.BTN_DPAD_RIGHT: ecodes.KEY_RIGHT,
-        }.get(event.code)
+        }.get(code)
     if event.type == ecodes.EV_ABS:
         if event.code == ecodes.ABS_HAT0X and event.value:
             return ecodes.KEY_RIGHT if event.value > 0 else ecodes.KEY_LEFT
