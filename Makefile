@@ -60,6 +60,7 @@ test:
 	python3 -m unittest -v tests/test_rdp_secret.py
 	python3 -m unittest -v tests/test_hwdetect.py
 	python3 -m unittest -v tests/test_faster.py
+	python3 -m unittest -v tests/test_boot_time.py
 	python3 -m unittest -v tests/test_lb_cache.py
 	python3 -m unittest -v tests/test_fast_build.py
 	python3 -m unittest -v tests/test_moonlight_prefs.py

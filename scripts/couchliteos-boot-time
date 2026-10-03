@@ -1,0 +1,152 @@
+#!/usr/bin/python3 -I
+"""Record how long this boot took to reach the launcher.
+
+Runs once per boot, after the launcher first writes /run/couchliteos/launcher-ready.
+The launcher time is counted from the start of the kernel (CLOCK_BOOTTIME), so it
+leaves out the firmware and GRUB. It is printed at once to the console as
+COUCHLITEOS_BOOT_SECONDS=<n> (tests/qemu-smoke.sh reads it from the serial port).
+Then, once systemd says the boot has finished, one line with both numbers and
+systemd's own stages goes to /var/log/couchliteos/boot-time.log.
+
+Never fails: a missing number is written as "?".
+"""
+
+import datetime
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+
+READY = pathlib.Path("/run/couchliteos/launcher-ready")
+LOG = pathlib.Path("/var/log/couchliteos/boot-time.log")
+BUILD_INFO = pathlib.Path("/usr/share/couchliteos/build-info")
+# systemd-analyze answers only once every boot job has finished.
+ANALYZE_WAIT = 90
+ANALYZE_RETRY = 2
+# The log keeps the last KEEP_LINES boots once it reaches MAX_LINES.
+MAX_LINES = 400
+KEEP_LINES = 200
+
+# systemd's timespan units (format_timespan); "μs" in a UTF-8 locale, "us" otherwise.
+UNITS = {"d": 86400, "h": 3600, "min": 60, "s": 1, "ms": 0.001, "us": 0.000001, "μs": 0.000001}
+SPAN = re.compile(r"(\d+(?:\.\d+)?)(min|ms|us|μs|d|h|s)(?![A-Za-z])")
+STAGE = re.compile(r"^(.+?)\s*\(([a-z]+)\)$")
+STAGES = ("firmware", "loader", "kernel", "initrd", "userspace", "total")
+
+
+def parse_timespan(text):
+    """Seconds in a systemd timespan such as "1min 5.234s" or "812ms"; None if none."""
+    found = SPAN.findall(text)
+    if not found:
+        return None
+    return sum(float(number) * UNITS[unit] for number, unit in found)
+
+
+def parse_analyze(output):
+    """Stage name -> seconds from `systemd-analyze time`; {} if the boot has not finished.
+
+    "Startup finished in 2.1s (firmware) + 1.0s (loader) + 1.5s (kernel)
+    + 2.3s (initrd) + 6.8s (userspace) = 13.7s"
+    """
+    for line in output.splitlines():
+        if "Startup finished in " not in line:
+            continue
+        body = line.split("Startup finished in ", 1)[1]
+        parts, _, total = body.partition(" = ")
+        stages = {}
+        for part in parts.split(" + "):
+            match = STAGE.match(part.strip())
+            if match:
+                seconds = parse_timespan(match.group(1))
+                if seconds is not None:
+                    stages[match.group(2)] = seconds
+        seconds = parse_timespan(total)
+        if seconds is not None:
+            stages["total"] = seconds
+        return stages
+    return {}
+
+
+def ready_seconds(ready_mtime, now, since_boot):
+    """Seconds from the kernel start to launcher-ready.
+
+    `now` and `ready_mtime` are wall-clock times and `since_boot` is CLOCK_BOOTTIME
+    read at `now`, so the file's age is taken off the time since boot. A wall clock
+    that moved in between could give a time outside 0..since_boot; it is kept inside.
+    """
+    return min(max(0.0, since_boot - (now - ready_mtime)), since_boot)
+
+
+def analyze(runner=subprocess.run, sleep=time.sleep, wait=ANALYZE_WAIT):
+    """Stages from `systemd-analyze time`, retried until the boot has finished."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            result = runner(
+                ["systemd-analyze", "--no-pager", "time"],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            stages = parse_analyze(result.stdout) if result.returncode == 0 else {}
+        except (OSError, subprocess.SubprocessError):
+            stages = {}
+        if stages or time.monotonic() >= deadline:
+            return stages
+        sleep(ANALYZE_RETRY)
+
+
+def version(build_info=None):
+    try:
+        for line in (build_info or BUILD_INFO).read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("CouchLiteOS: "):
+                return line.split(": ", 1)[1].strip() or "?"
+    except OSError:
+        pass
+    return "?"
+
+
+def log_line(when, release, ready, stages):
+    def seconds(value):
+        return "?" if value is None else f"{value:.1f}"
+
+    fields = [when, f"version={release}", f"launcher_ready={seconds(ready)}"]
+    fields += [f"{name}={seconds(stages.get(name))}" for name in STAGES]
+    return " ".join(fields)
+
+
+def append(log, line):
+    """Add one line; past MAX_LINES lines keep only the last KEEP_LINES."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        lines = []
+    if len(lines) + 1 > MAX_LINES:
+        log.write_text("\n".join(lines[-(KEEP_LINES - 1):] + [line]) + "\n", encoding="utf-8")
+    else:
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+
+
+def main():
+    try:
+        mtime = os.lstat(READY).st_mtime
+    except OSError:
+        print("couchliteos-boot-time: the launcher is not ready; nothing to record", file=sys.stderr)
+        return 0
+    ready = ready_seconds(mtime, time.time(), time.clock_gettime(time.CLOCK_BOOTTIME))
+    print(f"COUCHLITEOS_BOOT_SECONDS={ready:.1f}", flush=True)
+    stages = analyze()
+    when = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    line = log_line(when, version(), ready, stages)
+    try:
+        append(LOG, line)
+    except OSError as error:
+        print(f"couchliteos-boot-time: cannot write {LOG}: {error}", file=sys.stderr)
+    print(line, file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

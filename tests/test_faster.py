@@ -260,6 +260,20 @@ class BootTimingTest(unittest.TestCase):
         self.assertIn("unit-29.service", report)
         self.assertNotIn("unit-30.service", report)
 
+    def test_support_export_adds_the_last_twenty_boot_times(self):
+        exporter = load_script("support_exporter_boot_log", ROOT / "scripts/couchliteos-support-export")
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(exporter, "command_output", return_value=""), \
+                mock.patch.dict(exporter.os.environ, {"COUCHLITEOS_SUPPORT_LOG_DIR": directory}):
+            report = exporter.boot_timing_report()
+            self.assertIn("$ tail -n 20 boot-time.log\nNo boot times recorded.\n", report)
+            pathlib.Path(directory, "boot-time.log").write_text(
+                "".join(f"boot {n} launcher_ready=9.{n % 10}\n" for n in range(30)))
+            report = exporter.boot_timing_report()
+        self.assertIn("boot 10 launcher_ready", report)
+        self.assertIn("boot 29 launcher_ready", report)
+        self.assertNotIn("boot 9 launcher_ready", report)
+
     def test_boot_timing_file_is_redacted_and_named_in_the_archive(self):
         exporter = load_script("support_exporter_collect", ROOT / "scripts/couchliteos-support-export")
         fake = "FAKE-TIMING-SECRET-424242"

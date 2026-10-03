@@ -168,6 +168,14 @@ def boot_timing_report() -> str:
         if limit:
             output = "".join(output.splitlines(keepends=True)[:limit])
         sections.append(f"$ {label}\n{output}")
+    # One line per boot, written by couchliteos-boot-time; the last 20 boots.
+    log_dir = pathlib.Path(os.environ.get("COUCHLITEOS_SUPPORT_LOG_DIR", "/var/log/couchliteos"))
+    try:
+        data, _ = read_regular_tail(log_dir / "boot-time.log", 64 * 1024)
+        boots = "".join(data.decode("utf-8", errors="replace").splitlines(keepends=True)[-20:])
+    except OSError:
+        boots = ""
+    sections.append("$ tail -n 20 boot-time.log\n" + (boots or "No boot times recorded.\n"))
     return "\n".join(sections)
 
 
