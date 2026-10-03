@@ -117,7 +117,8 @@ refute rg -q 'couchliteos-network-ready.service' services/couchliteos-{moonlight
 rg -q 'COUCHLITEOS_LAUNCHER_READY' services/couchliteos-launcher.service tests/qemu-smoke.sh
 rg -q 'StandardOutput=journal\+console' services/couchliteos-launcher.service
 refute rg -q '^Environment=WAYLAND_DISPLAY=' services/couchliteos-launcher.service
-rg -q '/usr/bin/cage -s -- /usr/libexec/couchliteos-foot --fullscreen' services/couchliteos-launcher.service
+rg -q '/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1' services/couchliteos-launcher.service
+rg -qF 'exec "$FOOT" --fullscreen --title "CouchLiteOS Launcher" "$LAUNCHER"' scripts/couchliteos-session
 rg -q '^Environment=QT_QPA_PLATFORM=xcb$' services/couchliteos-moonlight.service
 rg -q '^Environment=QT_QPA_PLATFORM=wayland$' services/couchliteos-chiaki.service
 rg -q '^Environment=MOZ_ENABLE_WAYLAND=1$' services/couchliteos-firefox.service
@@ -350,7 +351,8 @@ rg -q '^rfkill$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^wlr-randr$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q 'qrencode -t ANSIUTF8' scripts/couchliteos-tailscale-enrollment
 rg -q "trap 'rm -f --.*URL_FILE.*' EXIT" scripts/couchliteos-tailscale
-refute rg -q 'gir1.2-gtk|libfuse' config/live-build/package-lists/couchliteos.list.chroot
+refute rg -q 'libfuse' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^gir1.2-gtk-4.0$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q 'OVMF_VARS_4M.fd' tests/qemu-smoke.sh
 rg -q 'unit=1,file=' tests/qemu-smoke.sh
 rg -q 'screendump' tests/qemu-smoke.sh
@@ -465,6 +467,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_bluetooth.py launcher/couchliteos_audio.py launcher/gamepad-nav.py \
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
   launcher/couchliteos_pcstatus.py launcher/couchliteos_recent.py launcher/couchliteos_home.py \
+  launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
   launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py launcher/couchliteos_snapshot.py \
   launcher/couchliteos_browser.py launcher/couchliteos_browsersetup.py \
@@ -985,7 +988,7 @@ rg -qF "+libinput       = dependency('libinput')" config/cage/cage-0.2.0-pointer
 rg -q 'libxkbcommon-dev libinput-dev\)' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -qF 'grep -aq /var/lib/couchliteos/mouse-speed "$work/cage-0.2.0/build/cage"' config/live-build/hooks/live/0050-cage.hook.chroot
 rg -q '^FOOT = "/usr/libexec/couchliteos-foot"' launcher/couchliteos_app_runner.py
-refute rg -q '/usr/bin/foot' services/couchliteos-launcher.service scripts/couchliteos-osk-session launcher/couchliteos_app_runner.py
+refute rg -q '/usr/bin/foot' services/couchliteos-launcher.service scripts/couchliteos-session scripts/couchliteos-osk-session launcher/couchliteos_app_runner.py
 # TYPE ON PHONE: a one-time form on the home network fills a text field; qrencode draws its QR code
 rg -q 'couchliteos_phone.py" "\$CHROOT/usr/libexec/couchliteos_phone.py"' build/configure.sh
 rg -q '^import couchliteos_phone as phone' launcher/couchliteos-launcher.py
@@ -1024,8 +1027,19 @@ rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_recent.py" "\$CHROOT/usr
 rg -q 'test_home.py' launcher/Makefile
 rg -q 'test_recent.py' launcher/Makefile
 rg -q '^import couchliteos_recent as recent$' launcher/couchliteos-launcher.py
-rg -q 'recent\.record\(recent\.host_key\(host\), app_name\)' launcher/couchliteos-launcher.py
+rg -q 'recent\.record\(recent\.host_key\(host\), app_name\)' launcher/couchliteos_session.py
 refute rg -q '^import (curses|gi)' launcher/couchliteos_home.py launcher/couchliteos_recent.py
+# TV interface (0.3.0): GTK shell, shared session logic, fallback wrapper. Only couchliteos-tv touches gi.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_session.py" "\$CHROOT/usr/libexec/couchliteos_session.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_tvlayout.py" "\$CHROOT/usr/libexec/couchliteos_tvlayout.py"$' build/configure.sh
+rg -q '^import couchliteos_session as session$' launcher/couchliteos-launcher.py launcher/couchliteos-tv.py
+rg -q '^class Launcher\(session.Session\):$' launcher/couchliteos-launcher.py
+rg -q 'test_session.py' launcher/Makefile
+rg -q 'test_tvlayout.py' launcher/Makefile
+rg -q 'tests/test_tv_fallback.py' Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py
+rg -q '^INIT_FAILED = 3$' launcher/couchliteos-tv.py
+rg -q '^INIT_FAILED=3$' scripts/couchliteos-session
 
 # Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)
 rg -q 'couchliteos_pads.py' build/configure.sh

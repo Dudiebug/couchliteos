@@ -168,6 +168,20 @@ class InstalledTest(unittest.TestCase):
         self.assertTrue(home.installed(firefox, self.root))
         self.assertTrue(home.installed(chiaki, self.root))
 
+    def test_a_manifest_binary_is_judged_by_the_apps_module_rule(self):
+        # The shipped Firefox manifest names /usr/bin/firefox-esr; Chrome's names its program too.
+        firefox = app("firefox", request="start-firefox", binary="/usr/bin/firefox-esr")
+        chrome = app("google-chrome", kind="command", command="/usr/bin/google-chrome-stable",
+                     binary="/opt/google/chrome/chrome")
+        for item in (firefox, chrome):
+            self.assertFalse(home.installed(item, self.root))
+            self.assertEqual(home.installed(item, self.root), apps.installed(item, self.root))
+        self.binary("usr/bin/firefox-esr")
+        self.binary("opt/google/chrome/chrome")
+        for item in (firefox, chrome):  # the binary decides, not the command
+            self.assertTrue(home.installed(item, self.root))
+            self.assertEqual(home.installed(item, self.root), apps.installed(item, self.root))
+
     def test_remote_desktop_and_unknown_requests_always_show(self):
         self.assertTrue(home.installed(app("work-pc", kind="rdp", connection="work-pc"), self.root))
         self.assertTrue(home.installed(app("other", request="start-other"), self.root))

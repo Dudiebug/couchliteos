@@ -1,0 +1,73 @@
+#!/bin/bash
+# Cage's client in couchliteos-launcher.service: the TV interface (GTK 4), or the classic
+# launcher (curses in foot) when the TV interface cannot start. A broken renderer must
+# never leave a black screen:
+#
+#   [appearance] interface = classic   the classic launcher, nothing else is tried
+#   setup not complete                 the classic launcher (the setup wizard is a curses screen)
+#   otherwise                          couchliteos-tv; if it could not start, once more with
+#                                      GSK_RENDERER=cairo (no GL); then the classic launcher
+#
+# "Could not start" is exit status 3 (couchliteos-tv: no GTK, no display, no renderer) or any
+# other failure before it wrote launcher-ready (a crash in the GL driver, a Python error). Once
+# it is up, its exit status is passed on and systemd restarts the service as before.
+# The COUCHLITEOS_* variables below exist for tests/test_tv_fallback.py.
+set -u
+
+STATE_DIR=${COUCHLITEOS_STATE_DIR:-/var/lib/couchliteos}
+RUN_DIR=${COUCHLITEOS_RUN_DIR:-/run/couchliteos}
+TV=${COUCHLITEOS_TV:-/usr/libexec/couchliteos-tv}
+FOOT=${COUCHLITEOS_FOOT:-/usr/libexec/couchliteos-foot}
+LAUNCHER=${COUCHLITEOS_LAUNCHER:-/usr/libexec/couchliteos-launcher}
+CONFIG=$STATE_DIR/config.ini
+INIT_FAILED=3
+
+say() {
+  printf 'couchliteos-session: %s\n' "$*" >&2
+}
+
+classic() {
+  say "starting the classic launcher: $1"
+  exec "$FOOT" --fullscreen --title "CouchLiteOS Launcher" "$LAUNCHER"
+}
+
+# [appearance] interface, lower case; empty when unset or unreadable.
+interface() {
+  awk '
+    /^[[:space:]]*\[/ { section = tolower($0); gsub(/[][[:space:]]/, "", section); next }
+    section == "appearance" && index($0, "=") {
+      key = tolower(substr($0, 1, index($0, "=") - 1)); gsub(/[[:space:]]/, "", key)
+      if (key == "interface") {
+        value = tolower(substr($0, index($0, "=") + 1)); gsub(/[[:space:]]/, "", value)
+        print value; exit
+      }
+    }' "$CONFIG" 2>/dev/null
+}
+
+# Run the TV interface; 0 when it came up (its exit status is in $status), 1 when it could not start.
+try_tv() {
+  "$@"
+  status=$?
+  if [[ $status == "$INIT_FAILED" ]] || { [[ $status != 0 ]] && [[ ! -e $RUN_DIR/launcher-ready ]]; }; then
+    return 1
+  fi
+  return 0
+}
+
+choice=$(interface)
+if [[ $choice == classic ]]; then
+  classic "[appearance] interface = classic"
+fi
+if [[ ! -e $STATE_DIR/setup-complete ]]; then
+  classic "setup is not complete"
+fi
+
+status=0
+if try_tv "$TV"; then
+  exit "$status"
+fi
+say "the TV interface could not start (exit $status); trying again without GL"
+if try_tv env GSK_RENDERER=cairo "$TV"; then
+  exit "$status"
+fi
+classic "the TV interface could not start with cairo either (exit $status)"

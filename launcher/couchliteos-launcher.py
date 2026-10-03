@@ -49,6 +49,7 @@ import couchliteos_pointer as pointer
 import couchliteos_phone as phone
 import couchliteos_theme as themes
 import couchliteos_recent as recent
+import couchliteos_session as session
 
 
 # The tests point both at a scratch directory (testenv.py).
@@ -94,8 +95,8 @@ SETTINGS_MENU = (
     "BACK",
 )
 UPDATE_SUFFIX = "  -  UPDATE AVAILABLE"  # on the SETTINGS row while a newer release is known
-STREAM_WINDOW_WORDS = {"moonlight": "moonlight", "chiaki-ng": "chiaki"}  # found in the listed window of a stream
-SPINNER = "|/-\\"
+STREAM_WINDOW_WORDS = session.STREAM_WINDOW_WORDS  # found in the listed window of a stream
+SPINNER = session.SPINNER
 SAVE_FAILED = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
@@ -142,32 +143,16 @@ STATUS_HOLD_SECONDS = 15.0
 
 
 def application_result() -> apps.LoadResult:
-    system_dir = apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
-    result = apps.load_applications(system_dir=system_dir)
-    # Firefox and Chrome have no tile until they are installed (ADD A WEB BROWSER).
-    return apps.LoadResult(tuple(app for app in result.applications if apps.installed(app)), result.errors)
+    return session.application_result()
 
 
 def set_launcher_focus(held: bool) -> None:
-    try:
-        if held:
-            LAUNCHER_FOCUS.touch()
-        else:
-            LAUNCHER_FOCUS.unlink(missing_ok=True)
-    except OSError:
-        pass
+    session.set_launcher_focus(held, LAUNCHER_FOCUS)
 
 
 def mark_front_app(app: apps.Application) -> None:
     """Name `app` in app-active, as its start did, so Guide follows the app brought to the front."""
-    if app.terminal:
-        return  # its start leaves the file alone too: gamepad-nav types into a terminal app
-    active = RUN / "app-active"
-    try:
-        active.write_text(app.id + "\n", encoding="ascii")
-        os.chmod(active, 0o640)
-    except OSError:
-        pass
+    session.mark_front_app(app, RUN)
 
 
 def request_osk(masked: bool = False) -> None:
@@ -178,19 +163,11 @@ def request_osk(masked: bool = False) -> None:
     (RUN / "start-osk").touch()
 
 
-def rdp_application(connection: rdp.Connection) -> apps.Application:
-    """Launchable entry for a saved connection that is not pinned to the launcher."""
-    return apps.Application(
-        id=connection.id, name=connection.name.upper(), kind="rdp",
-        connection=connection.id, status_id=connection.id,
-    )
+rdp_application = session.rdp_application  # launchable entry for a saved connection that is not pinned
 
 
 def active_rdp_session() -> str | None:
-    try:
-        return rdp.read_connection_id(RUN / rdp.SESSION.name)
-    except (OSError, UnicodeError, ValueError):
-        return None
+    return session.active_rdp_session(RUN)
 
 
 def rdp_log(message: str) -> None:
@@ -200,17 +177,11 @@ def rdp_log(message: str) -> None:
 # Set by Launcher: blanks the screen when idle and swallows the key that wakes it.
 IDLE_GUARD: power.IdleGuard | None = None
 # Which running apps the controller drives as a mouse (browsers, web apps).
-POINTER_MODES = pointer.Modes()
+POINTER_MODES = session.POINTER_MODES
 
 
 def focus_launcher() -> None:
-    try:
-        subprocess.run(
-            ["wlrctl", "toplevel", "focus", "title:CouchLiteOS Launcher"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
+    session.focus_launcher()
 
 
 # The keyboard Home key (Ctrl+Alt+H until it is changed) reaches the launcher as bytes foot
@@ -615,7 +586,10 @@ def draw_border(screen: curses.window) -> None:
         pass
 
 
-class Launcher:
+class Launcher(session.Session):
+    """The classic home screen. Starting, resuming and closing apps is couchliteos_session's
+    (shared with the TV interface); this class supplies the curses screens for it."""
+
     def __init__(self, screen: curses.window) -> None:
         self.screen = screen
         self.selected = 0
@@ -686,6 +660,40 @@ class Launcher:
             self.summary = self._status = network_summary()
             self.last_status_update = now
 
+    # couchliteos_session reads this module's RUN, LAUNCHER_FOCUS and POINTER_MODES at call time.
+    @property
+    def run_dir(self) -> pathlib.Path:
+        return RUN
+
+    @property
+    def home_request(self) -> pathlib.Path:
+        return HOME_REQUEST
+
+    @property
+    def pointer_modes(self) -> pointer.Modes:
+        return POINTER_MODES
+
+    def set_launcher_focus(self, held: bool) -> None:
+        set_launcher_focus(held)
+
+    def application_result(self) -> apps.LoadResult:
+        return application_result()
+
+    def active_rdp_session(self) -> str | None:
+        return active_rdp_session()
+
+    def launch_wait_begin(self) -> None:
+        self.screen.timeout(100)
+
+    def launch_wait(self) -> None:
+        read_key(self.screen)  # permits curses to process resize/input state
+
+    def launch_wait_end(self) -> None:
+        self.screen.timeout(1000)
+
+    def prepare_remote_desktop(self, app: apps.Application) -> bool:
+        return RemoteDesktopSettings(self.screen, self).prepare_launch(app)
+
     def reload_applications(self) -> None:
         result = application_result()
         self.applications = tuple(
@@ -741,21 +749,6 @@ class Launcher:
         del self.menu[len(self.stream_row) + len(self.applications):]
         self.menu += self.fixed_controls()
         self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
-
-    def prepare_session(self) -> None:
-        RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
-        display_name = os.environ.get("DISPLAY", ":0")
-        wayland = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
-        if not display_name.startswith(":") or "/" in display_name or "/" in wayland:
-            raise RuntimeError("Cage supplied an invalid display environment")
-        (RUN / "session.env").write_text(
-            f"DISPLAY={display_name}\nWAYLAND_DISPLAY={wayland}\n", encoding="utf-8"
-        )
-        os.chmod(RUN / "session.env", 0o640)
-        set_launcher_focus(False)
-
-    def request(self, name: str) -> None:
-        (RUN / name).touch()
 
     def apps_running(self) -> bool:
         try:
@@ -835,14 +828,10 @@ class Launcher:
 
         Only while nothing runs and the launcher is in front: never over an app or a stream."""
         version = self.updates.to_offer()
-        if not version or HOME_REQUEST.exists() or (RUN / "app-active").exists() or self.any_app_running():
-            return
-        if (RUN / "osk-active").exists() or (RUN / "start-osk").exists():
-            return  # the on-screen keyboard is up or on its way
         guard = IDLE_GUARD
+        if not version or not self.may_offer_update(blanked=guard is not None and guard.timer.blanked):
+            return  # never over an app, a stream or the keyboard; on a blank screen, ask when someone is looking
         if guard is not None:
-            if guard.timer.blanked:
-                return  # the screen is blank: ask when someone is looking
             guard.keep_awake()  # the question is activity: no blanking or sleep while it waits
         self.updates.mark_offered(version)  # before the question: a crash cannot make it come back
         if confirmation.confirm(self.screen, f"COUCHLITEOS {version} IS AVAILABLE. OPEN SOFTWARE UPDATE NOW?"):
@@ -1076,39 +1065,6 @@ class Launcher:
             return False
         return self.start_stream(host, config.app)
 
-    @property
-    def stream_word(self) -> str:
-        return "STREAM" if self.stream_by_hand else "AUTO-STREAM"
-
-    def start_stream(self, host: stream.Host, app_name: str, *, by_hand: bool = False) -> bool:
-        """Start Moonlight streaming `app_name` from `host`, for the auto-stream and the STREAM row.
-
-        `by_hand` (the row) only changes the wording of the wake wait and its failures."""
-        app = self.app_by_id("moonlight")
-        if app is None:
-            self.status = "MOONLIGHT IS UNAVAILABLE"
-            return False
-        request = RUN / stream.STREAM_REQUEST.name
-        self.pending_stream = (host.target, app_name)
-        self.stream_by_hand = by_hand
-        try:
-            try:
-                stream.write_stream_request(host.target, app_name, request)
-            except (OSError, ValueError) as error:
-                self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
-                return False
-            started = self.launch_app(app, auto=True)
-        finally:
-            self.pending_stream = None
-            self.stream_by_hand = False
-            request.unlink(missing_ok=True)
-        if started:
-            try:
-                recent.record(recent.host_key(host), app_name)  # the home screen's GAMES row shows it first
-            except (OSError, ValueError):
-                pass  # the order is a convenience: never a reason to fail the stream
-        return started
-
     def stream_selected_pc(self) -> bool:
         """The STREAM <PC> row: stream the PC and application chosen in Settings > STREAMING, no countdown."""
         try:
@@ -1125,228 +1081,20 @@ class Launcher:
 
     @staticmethod
     def read_app_status(app_id: str) -> str:
-        path = RUN / f"{app_id}-status"
-        try:
-            if path.is_symlink() or path.stat().st_size > 512:
-                return ""
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return ""
-        return lines[0][:240] if lines else ""
-
-    def launch_app(self, app: apps.Application, *, quiet: bool = False, auto: bool = False, wake: bool = True) -> bool:
-        """Start an application. `quiet` skips the failure dialog for a hidden one-off
-        application whose caller explains a failed start in its own words. `auto` marks an
-        auto-stream; `wake=False` skips waking the default PC (pairing may be for another one)."""
-        label, app_id = app.name, app.status_id
-        ready = RUN / f"{app_id}-ready"
-        if ready.exists():
-            if self.focus_app(app):
-                self.status = f"RESUMED {label}"
-                return True
-            self.status = f"{label} IS RUNNING BUT HAS NO WINDOW: CLOSE IT UNDER SETTINGS > ACTIVE APPLICATIONS"
-            return False
-        if app.kind == "command":
-            # couchliteos-configured-app.service runs one app at a time; a request
-            # queued behind it would start unasked when the running app closes.
-            other = next((item for item in self.running_applications()
-                          if item.kind == "command" and item.id != app.id), None)
-            if other is not None:
-                self.show_launch_failure(
-                    label, f"{other.name} IS STILL RUNNING. CLOSE IT FIRST: PRESS HOME, THEN CLOSE IT "
-                           "IN ACTIVE APPLICATIONS."
-                )
-                self.status = f"{label} NOT STARTED: {other.name} IS RUNNING"
-                return False
-        state = RUN / f"{app_id}-status"
-        if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
-            return False
-        if app.id == "moonlight" and wake and not self.wake_before_moonlight(app, auto):
-            return False
-        if auto and self.pending_stream is not None:
-            # Written again after the wake wait (it can outlast REQUEST_MAX_AGE) and before each
-            # TRY AGAIN: the Moonlight start consumes the request.
-            try:
-                stream.write_stream_request(*self.pending_stream, RUN / stream.STREAM_REQUEST.name)
-            except (OSError, ValueError) as error:
-                self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
-                return False
-        ready.unlink(missing_ok=True)
-        state.unlink(missing_ok=True)
-        POINTER_MODES.apply(app)
-        set_launcher_focus(False)  # the starting app takes the controller
-        if app.kind == "request":
-            self.request(app.request)
-        elif app.kind == "rdp":
-            rdp.write_session_request(app.connection, RUN / rdp.REQUEST.name)
-        else:
-            apps.atomic_write(RUN / "launch-app.request", app.id + "\n")
-
-        deadline = time.monotonic() + 18
-        failure_since: float | None = None
-        frame = 0
-        self.screen.timeout(100)
-        try:
-            while time.monotonic() < deadline:
-                self.draw_launching(label, SPINNER[frame % len(SPINNER)])
-                frame += 1
-                if ready.exists():
-                    self.status = f"{label} STARTED"
-                    return True
-
-                app_state = self.read_app_status(app_id)
-                now = time.monotonic()
-                if app_state.startswith("exited:"):
-                    # It ran and quit on its own before the ready mark (e.g. nmtui).
-                    self.status = f"{label} EXITED"
-                    return True
-                if app_state.startswith("failed:"):
-                    if failure_since is None:
-                        failure_since = now
-                    # App units retry after two seconds. A persistent failure for
-                    # longer than that means retries have not recovered startup.
-                    if now - failure_since >= 2.75:
-                        if not quiet and self.show_launch_failure(label, app_state.removeprefix("failed:").strip(), app=app) == "retry":
-                            return self.launch_app(app, quiet=quiet, auto=auto, wake=wake)
-                        self.status = f"{label} FAILED TO START"
-                        return False
-                else:
-                    failure_since = None
-                read_key(self.screen)  # permits curses to process resize/input state
-        finally:
-            self.screen.timeout(1000)
-
-        last_state = self.read_app_status(app_id)
-        if app.kind == "rdp" and not (RUN / rdp.SESSION.name).exists():
-            # The session never picked up the request: do not leave it (or a
-            # typed password) waiting in /run for a later start.
-            (RUN / rdp.REQUEST.name).unlink(missing_ok=True)
-            (RUN / rdp.HANDOFF.name).unlink(missing_ok=True)
-        elif app.kind == "request":
-            (RUN / app.request).unlink(missing_ok=True)
-        elif app.kind == "command":
-            # Never leave a request behind to start the app unasked later.
-            (RUN / "launch-app.request").unlink(missing_ok=True)
-        message = (
-            last_state.removeprefix("failed:").strip()
-            if last_state.startswith("failed:")
-            else "THE APPLICATION DID NOT BECOME READY BEFORE THE STARTUP TIMEOUT"
-        )
-        if not quiet and self.show_launch_failure(label, message, app=app) == "retry":
-            return self.launch_app(app, quiet=quiet, auto=auto, wake=wake)
-        self.status = f"{label} START TIMED OUT"
-        return False
-
-    def app_by_id(self, app_id: str) -> apps.Application | None:
-        return next(
-            (app for app in application_result().applications if app.id == app_id and app.enabled),
-            None,
-        )
-
-    def launch_by_id(self, app_id: str) -> bool:
-        app = self.app_by_id(app_id)
-        if app is None:
-            self.status = f"{app_id.upper()} IS NOT AVAILABLE: CHECK SETTINGS > APPLICATIONS"
-            return False
-        return self.launch_app(app)
+        return session.read_app_status(app_id, RUN)
 
     @staticmethod
     def focus_app(app: apps.Application) -> bool:
-        matches = {
-            "firefox": ("app_id:firefox-esr", "app_id:firefox", "title:Mozilla Firefox"),
-            "google-chrome": ("app_id:google-chrome", "title:Google Chrome"),
-            "moonlight": ("app_id:moonlight", "title:Moonlight"),
-            "chiaki-ng": ("app_id:chiaki", "app_id:io.github.streetpea.Chiaki4deck", "title:Chiaki"),
-        }.get(app.id)
-        if matches is None:
-            matches = (f"title:{app.name}",)
-            if app.kind == "command" and not app.terminal:
-                # Windows of user-added apps (Chrome kiosk pages, Steam, ...) are not
-                # titled with the stored name, but their app_id follows the binary.
-                binary = pathlib.PurePath(app.command).name
-                ids = dict.fromkeys((binary.removesuffix("-stable"), binary))
-                matches = tuple(f"app_id:{item}" for item in ids) + matches
-        if app.kind == "rdp":
-            matches = (f"app_id:{rdp.WAYLAND_APP_ID}", f"title:{app.name}")
-        for match in matches:
-            try:
-                result = subprocess.run(
-                    ["wlrctl", "toplevel", "focus", match], check=False,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                )
-            except subprocess.TimeoutExpired:
-                continue  # one slow answer is not "no window": try the next match
-            except (OSError, subprocess.SubprocessError):
-                return False
-            if result.returncode == 0:
-                POINTER_MODES.apply(app)
-                mark_front_app(app)
-                set_launcher_focus(False)
-                return True
-        keyword = STREAM_WINDOW_WORDS.get(app.id)
-        if keyword is not None and Launcher.focus_listed_toplevel(keyword):
-            POINTER_MODES.apply(app)
-            mark_front_app(app)
-            set_launcher_focus(False)
-            return True
-        return False
+        return session.focus_app(app, run=RUN, launcher_focus=LAUNCHER_FOCUS, pointer_modes=POINTER_MODES)
 
     @staticmethod
     def focus_listed_toplevel(keyword: str) -> bool:
-        """A stream window the exact matches missed: take it from what the compositor lists, by whatever
-        app id or title it really has. A miss writes the list to the journal, so the names show up there."""
-        try:
-            listing = subprocess.run(
-                ["wlrctl", "toplevel", "list"], check=False, capture_output=True, text=True, timeout=2,
-            ).stdout or ""
-        except (OSError, subprocess.SubprocessError):
-            return False
-        lines = [line.strip() for line in listing.splitlines() if line.strip()]
-        windows = [line.partition(":")[::2] for line in lines  # wlrctl prints "app_id: title"
-                   if "couchliteos" not in line.lower()]
-        windows = [(app_id.strip(), title.strip()) for app_id, title in windows]
-        # A window whose app id names the client; failing that one with no app id whose title does
-        # (never another program's window that merely mentions it, such as a browser tab).
-        for by_app_id in (True, False):
-            for app_id, title in windows:
-                if keyword not in (app_id if by_app_id else (title if not app_id else "")).lower():
-                    continue
-                for match in (f"app_id:{app_id}" if app_id else "", f"title:{title}" if title else ""):
-                    if not match:
-                        continue
-                    try:
-                        result = subprocess.run(
-                            ["wlrctl", "toplevel", "focus", match], check=False,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                        )
-                    except (OSError, subprocess.SubprocessError):
-                        continue
-                    if result.returncode == 0:
-                        return True
-        # The launcher's own terminal is the screen: the journal is not reachable from here, a log file is.
-        display.log(f"no window for {keyword}; the compositor lists: {lines!r}",
-                    pathlib.Path("/var/log/couchliteos/launcher.log"))
-        return False
+        return session.focus_listed_toplevel(keyword)
 
     @staticmethod
     def any_app_running() -> bool:
         """True when any app or stream shows a sign of life in /run/couchliteos, or when that cannot be told."""
-        try:
-            return any(item.name != "launcher-ready" for item in RUN.glob("*-ready"))
-        except Exception:
-            return True  # not knowing means do not restart
-
-    def running_applications(self) -> list[apps.Application]:
-        running = [
-            app for app in application_result().applications
-            if app.enabled and (RUN / f"{app.status_id}-ready").exists()
-        ]
-        session = active_rdp_session()
-        if session and session not in {app.id for app in running} and (RUN / f"{session}-ready").exists():
-            connection = rdp.get_connection(session)
-            if connection is not None:
-                running.append(rdp_application(connection))
-        return running
+        return session.any_app_running(RUN)
 
     @staticmethod
     def volume_row() -> str:
@@ -1481,7 +1229,7 @@ class Launcher:
                     return
                 status = f"COULD NOT FOCUS {app.name}: PRESS {CLOSE_BUTTON} TO CLOSE IT, THEN START IT AGAIN"
             elif key in (curses.KEY_DC, ord("x")):
-                (RUN / f"close-{app.status_id}").touch()
+                self.close_app(app)
                 status = f"CLOSING {app.name}"
 
     def activate(self) -> None:
