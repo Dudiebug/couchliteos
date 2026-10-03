@@ -1013,7 +1013,7 @@ def run(env: Env, status: Status, apply: Callable[..., None] | None = None) -> i
             sums = fetch_sums(update.sums_asset(release), env)
         except update.UpdateError as error:
             env.note(f"release assets: {error}")
-            raise UpdateFailed("THIS RELEASE HAS NO FILE FOR THIS BOX") from error
+            raise UpdateFailed(update.not_ready(release, profile) or "THIS RELEASE HAS NO FILE FOR THIS BOX") from error
         iso = download_iso(asset, expected_sha(sums, asset.name), env, status)
         apply(iso, env, status)
         clean_cache(env.cache_dir)

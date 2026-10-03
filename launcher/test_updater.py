@@ -1061,6 +1061,17 @@ class RunTest(TmpCase):
         self.assertEqual(self.run_update(), 1)
         self.assertEqual(self.final()["message"], "THIS RELEASE HAS NO FILE FOR THIS BOX")
 
+    def test_a_release_whose_nvidia_iso_is_not_out_yet_says_so(self):
+        put(self.env.root, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=nvidia\nISO_SUFFIX=nvidia\nRELEASE=1\n")
+        names = ["couchliteos-0.2.2-amd64.iso", "SHA256SUMS"]  # the NVIDIA ISO is published later
+        self.routes[API] = json.dumps({"tag_name": "v0.2.2", "assets": [
+            {"name": name, "size": len(ISO_BYTES), "browser_download_url": f"{BASE_URL}{name}"} for name in names
+        ]}).encode()
+        self.assertEqual(self.run_update(), 1)
+        self.assertEqual(self.final()["message"], "THE NVIDIA VERSION OF 0.2.2 IS NOT READY YET. TRY AGAIN LATER.")
+        self.assertEqual(self.applied, [])
+        self.assertEqual([url for url, _r, _t in self.net.requests], [API])
+
     def test_github_being_unreachable_points_at_the_network_settings(self):
         self.routes[API] = urllib.error.URLError("offline")
         self.assertEqual(self.run_update(), 1)

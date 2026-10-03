@@ -105,6 +105,7 @@ class State:
     checked_at: float = 0.0  # last successful check
     attempted_at: float = 0.0  # last attempt, successful or not
     prompted: str = ""  # the release the owner was last offered on the Home screen
+    no_file: str = ""  # the latest release, when it has no ISO for this box (yet): Home does not offer it
 
 
 def _number(value: str) -> float:
@@ -125,12 +126,14 @@ def load_state(path: pathlib.Path = STATE) -> State:
     enabled = section.get("enabled", "true").strip().lower()
     latest = section.get("latest", "").strip()
     prompted = section.get("prompted", "").strip()
+    no_file = section.get("no_file", "").strip()
     return State(
         enabled=configparser.ConfigParser.BOOLEAN_STATES.get(enabled, True),
         latest=latest if parse_version(latest) is not None else "",
         checked_at=_number(section.get("checked_at", "0")),
         attempted_at=_number(section.get("attempted_at", "0")),
         prompted=prompted if parse_version(prompted) is not None else "",
+        no_file=no_file if parse_version(no_file) is not None else "",
     )
 
 
@@ -142,6 +145,7 @@ def save_state(state: State, path: pathlib.Path = STATE) -> None:
         f"checked_at = {state.checked_at:.0f}\n"
         f"attempted_at = {state.attempted_at:.0f}\n"
         f"prompted = {state.prompted}\n"
+        f"no_file = {state.no_file}\n"
     )
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -279,6 +283,20 @@ def pick_iso(release: Release, suffix: str) -> Asset:
     raise UpdateError(f"release {release.version} has no {wanted}")
 
 
+def not_ready(release: Release, profile: dict[str, str]) -> str:
+    """The message when this release profile's ISO is missing but the general one is there.
+
+    The NVIDIA ISO is published some time after the general one; legacy profiles
+    (RELEASE=0) never get one, so they keep the plain "no file" message."""
+    suffix = profile.get("ISO_SUFFIX", "")
+    if not suffix or profile.get("RELEASE") != "1":
+        return ""
+    names = {asset.name for asset in release.assets}
+    if iso_name(release.version, suffix) in names or iso_name(release.version, "") not in names:
+        return ""
+    return f"THE {suffix.upper()} VERSION OF {release.version} IS NOT READY YET. TRY AGAIN LATER."
+
+
 def sums_asset(release: Release) -> Asset:
     for asset in release.assets:
         if asset.name == SUMS_NAME:
@@ -325,12 +343,14 @@ class Checker:
         self,
         current: str | None = None,
         state_path: pathlib.Path = STATE,
-        fetch: Callable[[str], str] = fetch_latest,
+        fetch: Callable[[str], Release | str] = fetch_release,
         clock: Callable[[], float] = time.time,
         online: Callable[[], bool] = has_default_route,
         live: Callable[[], bool] = is_live,
+        profile: dict[str, str] | None = None,
     ) -> None:
         self.current = installed_version() if current is None else current
+        self.suffix = (read_profile() if profile is None else profile).get("ISO_SUFFIX", "")
         self.state_path = state_path
         self.fetch = fetch
         self.clock = clock
@@ -361,8 +381,9 @@ class Checker:
         """The newer release to offer the owner now: once per release, and never on a live stick."""
         latest = self.available()
         with self._lock:
-            prompted = self._state.prompted
-        return latest if latest and self.installed and latest != prompted else ""
+            prompted, no_file = self._state.prompted, self._state.no_file
+        # A release without an ISO for this box (the NVIDIA one comes later) cannot be installed yet.
+        return latest if latest and self.installed and latest not in (prompted, no_file) else ""
 
     def mark_offered(self, version: str) -> None:
         self._update(prompted=version)
@@ -402,13 +423,20 @@ class Checker:
         if not self.online():
             return
         try:
-            latest = self.fetch(self.current)
+            found = self.fetch(self.current)
         except Exception:  # never let a network or parsing problem reach the launcher
             self._failed = True
             self._update(attempted_at=now)
             return
+        latest, no_file = found, ""  # a bare version (tests) counts as having a file
+        if isinstance(found, Release):
+            latest = found.version
+            try:
+                pick_iso(found, self.suffix)
+            except UpdateError:
+                no_file = latest
         self._checked, self._failed = True, False
-        self._update(latest=latest, checked_at=now, attempted_at=now)
+        self._update(latest=latest, checked_at=now, attempted_at=now, no_file=no_file)
 
     def start(self) -> None:
         def loop() -> None:
