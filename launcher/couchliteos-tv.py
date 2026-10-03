@@ -22,10 +22,12 @@ import argparse
 import os
 import pathlib
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_apps as apps
+import couchliteos_artwork as artwork
 import couchliteos_controllers as controllers
 import couchliteos_display as display
 import couchliteos_home as home
@@ -63,6 +65,8 @@ NOT_YET = {
     "software-update": ("SOFTWARE UPDATE", "SOFTWARE UPDATE IS NOT IN THE TV INTERFACE YET."),
 }
 BACK_HINT = "B / CIRCLE OR ESC GOES BACK"
+ART_COLUMNS = 6
+ART_HINT = "A / CROSS OR ENTER CHOOSES  ·  B / CIRCLE OR ESC GOES BACK"
 
 
 def visible_applications() -> apps.LoadResult:
@@ -248,8 +252,11 @@ class Tv(session.Session):
             box.add_css_class("tv-focused")
         box.set_size_request(layout.tile_width, layout.tile_height(row))
         if row != home.SYSTEM:
-            # A generated title card: the PC's initial on a game, the app's own on an app.
-            mark = label(tvlayout.initial(item.detail or item.label), "tv-initial", xalign=0.5)
+            # A game's cover art when there is some, else a generated title card: the PC's
+            # initial on a game, the app's own on an app.
+            mark = self.art_picture(self.cover(item)) if row == home.GAMES else None
+            if mark is None:
+                mark = label(tvlayout.initial(item.detail or item.label), "tv-initial", xalign=0.5)
             mark.set_vexpand(True)
             box.append(mark)
         name = label(item.label, "tv-name", xalign=0.5 if row == home.SYSTEM else 0.0)
@@ -436,7 +443,8 @@ class Tv(session.Session):
         if self.status and self.mode == "home":
             self.status = ""  # a press dismisses the last result
             self.home_status.set_label("")
-        handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key}.get(self.mode)
+        handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key,
+                   "art": self.art_key}.get(self.mode)
         if handler is not None:
             handler(name)
         return True
@@ -465,6 +473,8 @@ class Tv(session.Session):
             self.run_action(model.activate())
         elif name == "home":
             self.open_active()
+        elif name == "hold-y":
+            self.change_artwork()
         elif name.startswith("shortcut:"):
             tag = name.split(":", 1)[1]
             app = next((item for item in visible_applications().applications if item.shortcut == tag), None)
@@ -597,6 +607,7 @@ class Tv(session.Session):
                 self.render_home()
         self.was_running = running
         if self.mode == "home":
+            self.art_tick()
             self.render_bar()
             self.offer_update()
         elif self.mode == "active":
@@ -613,6 +624,163 @@ class Tv(session.Session):
             self.open_view("software-update")
         else:
             self.show("home")
+
+    # ------------------------------------------------------------------ artwork
+
+    def art_worker(self) -> artwork.Worker:
+        """The background cover lookup, made on first use."""
+        worker = getattr(self, "_art_worker", None)
+        if worker is None:
+            worker = self._art_worker = artwork.Worker()
+        return worker
+
+    def cover(self, item: home.Tile) -> pathlib.Path | None:
+        """A game tile's cover file (picked, Moonlight's, or looked up), None for the title card."""
+        if not item.action or item.action[0] != "stream":
+            return None
+        _kind, host, app = item.action
+        try:
+            return self.art_worker().art(host.uuid or host.name, app, host.app_id(app), host.label)
+        except Exception as error:  # noqa: BLE001 - no art is never a reason to lose the home screen
+            display.log(f"tv artwork failed: {error!r}", session.LOG)
+            return None
+
+    def art_picture(self, path: pathlib.Path | None, width: int = -1, height: int = -1) -> "Gtk.Picture | None":
+        """A picture of a cover file; textures are kept until the file changes."""
+        if path is None:
+            return None
+        textures = self.__dict__.setdefault("_art_textures", {})
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        texture = textures.get(str(path), (None, None))
+        if texture[0] != stamp:
+            try:
+                texture = (stamp, Gdk.Texture.new_from_filename(str(path)))
+            except GLib.Error:
+                return None
+            if len(textures) > 64:
+                textures.clear()
+            textures[str(path)] = texture
+        picture = Gtk.Picture.new_for_paintable(texture[1])
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_can_shrink(True)
+        picture.set_size_request(width, height)
+        return picture
+
+    def art_tick(self) -> None:
+        if self.art_worker().take_changed():
+            self.render_home()
+
+    def change_artwork(self) -> None:
+        """Hold Y on a game: up to 12 covers to pick from, RESET and TITLE CARD."""
+        item = self.model.focused()
+        if item is None or not item.action or item.action[0] != "stream":
+            return
+        _kind, host, app = item.action
+        worker = self.art_worker()
+        found: list[pathlib.Path] = []
+        done = threading.Event()
+
+        def look() -> None:
+            try:
+                if artwork.lookup_enabled():  # with LOOKUP OFF no name leaves the box
+                    found.extend(worker.choices(app))
+            except Exception:  # noqa: BLE001 - no covers still leaves RESET and TITLE CARD
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=look, name="artwork-choices", daemon=True).start()
+        self.busy_depth += 1
+        self.busy_pressed = False
+        try:
+            while not done.is_set():
+                if self.wait_tick(f"LOOKING FOR COVERS FOR {item.label}", "PLEASE WAIT"):
+                    self.status = "CHANGE ARTWORK CANCELLED"
+                    self.show("home")
+                    self.render_home()
+                    return
+        finally:
+            self.busy_depth -= 1
+        self.art_choice = (host, app, item.label, [*found, None, artwork.TITLE_CARD])
+        self.art_index = 0
+        if not found:
+            self.status = "NO COVERS FOUND" if artwork.lookup_enabled() else "ARTWORK LOOKUP IS OFF IN SETTINGS > APPEARANCE"
+        self.render_art()
+        self.show("art")
+
+    def render_art(self) -> None:
+        """CHANGE ARTWORK: covers in rows of ART_COLUMNS, then RESET and TITLE CARD."""
+        if "art" not in self.pages:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box.set_valign(Gtk.Align.CENTER)
+            title = label("", "tv-title", xalign=0.5, wrap=True)
+            grid = Gtk.Grid()
+            grid.set_halign(Gtk.Align.CENTER)
+            hint = label("", "tv-prompt", xalign=0.5, wrap=True)
+            for widget in (title, grid, hint):
+                box.append(widget)
+            self.stack.add_named(box, "art")
+            self.pages["art"] = (box, title, grid, hint)
+        box, title, grid, hint = self.pages["art"]
+        layout = self.layout
+        box.set_margin_start(layout.margin_x)
+        box.set_margin_end(layout.margin_x)
+        box.set_margin_top(layout.margin_y)
+        box.set_margin_bottom(layout.margin_y)
+        box.set_spacing(layout.px(16))
+        grid.set_row_spacing(layout.gap)
+        grid.set_column_spacing(layout.gap)
+        _host, _app, name, choices = self.art_choice
+        title.set_label(f"CHANGE ARTWORK: {name}")
+        hint.set_label(self.status or ART_HINT)
+        while (child := grid.get_first_child()) is not None:
+            grid.remove(child)
+        width = max(1, min(layout.px(180), (layout.width - 2 * layout.margin_x) // ART_COLUMNS - layout.gap))
+        covers = len(choices) - 2
+        for index, choice in enumerate(choices):
+            cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            cell.add_css_class("tv-tile")
+            if index == self.art_index:
+                cell.add_css_class("tv-focused")
+            picture = self.art_picture(choice, width, width * 3 // 2) if index < covers else None
+            if picture is not None:
+                cell.append(picture)
+            else:
+                text = "RESET" if choice is None else "TITLE CARD" if choice == artwork.TITLE_CARD else "NO PREVIEW"
+                cell.set_size_request(width, -1)
+                cell.append(label(text, "tv-name", xalign=0.5, ellipsize=False))
+            if index < covers:
+                grid.attach(cell, index % ART_COLUMNS, index // ART_COLUMNS, 1, 1)
+            else:  # RESET and TITLE CARD share the last row
+                grid.attach(cell, (index - covers) * 3, (covers + ART_COLUMNS - 1) // ART_COLUMNS, 3, 1)
+
+    def art_key(self, name: str) -> None:
+        host, app, _name, choices = self.art_choice
+        last = len(choices) - 1
+        if name in ("left", "right"):
+            self.art_index = max(0, min(last, self.art_index + (1 if name == "right" else -1)))
+        elif name in ("up", "down"):
+            self.art_index = max(0, min(last, self.art_index + (ART_COLUMNS if name == "down" else -ART_COLUMNS)))
+        elif name in ("back", "home"):
+            self.status = ""
+            self.show("home")
+            self.render_home()
+            return
+        elif name == "activate":
+            choice = choices[self.art_index]
+            try:
+                self.art_worker().pick(host.uuid or host.name, app, choice)
+                self.status = {None: "ARTWORK RESET", artwork.TITLE_CARD: "TITLE CARD CHOSEN"}.get(choice, "ARTWORK CHANGED")
+            except OSError as error:
+                self.status = f"NOT SAVED: {error}".upper()
+            self.show("home")
+            self.render_home()
+            return
+        self.status = ""
+        self.render_art()
 
     # ------------------------------------------------------------------ start
 

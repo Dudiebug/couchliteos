@@ -51,6 +51,7 @@ class Codes:
     KEY_F6 = 64
     KEY_F7 = 65
     KEY_F8 = 66
+    KEY_F9 = 67
     KEY_F12 = 88
     KEY_BACK = 158
     KEY_SPACE = 57

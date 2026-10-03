@@ -25,7 +25,7 @@ import couchliteos_pads as padprefs
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
-        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8,
+        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8, ecodes.KEY_F9,
         # controller mouse (pointer mode): browser back, play/pause, page up/down
         ecodes.KEY_BACK, ecodes.KEY_SPACE, ecodes.KEY_PAGEUP, ecodes.KEY_PAGEDOWN]
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
@@ -55,6 +55,9 @@ _last_state = False
 # A held direction repeats like a keyboard: a pause, then steady steps.
 REPEAT_DELAY = 0.4
 REPEAT_INTERVAL = 0.12
+# Y / Square sends Delete when pressed and, held this long in the launcher, F9 once too
+# (the TV interface's CHANGE ARTWORK on a game).
+Y_HOLD_SECONDS = 0.6
 # The left stick counts as a D-pad press past STICK_ENGAGE of full deflection and as let
 # go again below STICK_RELEASE, so drift and jitter near the edge do not flutter.
 STICK_ENGAGE = 0.6
@@ -330,6 +333,7 @@ class Pads:
         self.carry = [0.0, 0.0, 0.0, 0.0]  # x, y, wheel, horizontal wheel not yet sent
         self.combo = HomeCombo()  # the mouse grabs the pads, hiding the Home shortcut from watch_home()
         self.taps = PairTaps()  # SELECT and START act when let go while they are the Home hold
+        self.y_holds: dict[str, float] = {}  # path -> when Y went down, until let go or F9 sent
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -375,6 +379,7 @@ class Pads:
 
     def drop(self, path: str) -> None:
         self.holds.pop(path, None)
+        self.y_holds.pop(path, None)
         self.idents.pop(path, None)
         self.combo.forget(path)
         self.taps.forget(path)
@@ -483,7 +488,13 @@ class Pads:
                 emit(ui, NAV_TAP_KEYS[tapped])
             return False
         # Only here, in the launcher: a stream or an app reads the pad itself, unswapped.
-        key = key_for_event(event, PAD_SETTINGS.current().swaps(self.idents.get(path, "")))
+        swaps = PAD_SETTINGS.current().swaps(self.idents.get(path, ""))
+        if event.type == ecodes.EV_KEY and event.value in (0, 1) and swaps.get(event.code, event.code) == ecodes.BTN_WEST:
+            if event.value:
+                self.y_holds[path] = now
+            else:
+                self.y_holds.pop(path, None)
+        key = key_for_event(event, swaps)
         if key:
             emit(ui, key)
         return False
@@ -561,6 +572,7 @@ class Pads:
         self.sticks.clear()  # a stick held across the switch must not keep moving or scrolling
         self.pointer_tick = now
         self.holds.clear()
+        self.y_holds.clear()
         self.combo.reset()
         self.taps.reset()
         self.pointer.open() if on else self.pointer.close()
@@ -590,7 +602,8 @@ class Pads:
         moving = [POINTER_TICK] if self.pointer_on and self.pointer_moving() else []
         moving += [self.combo.timeout(now)] if self.pointer_on and self.combo.started else []
         return min([1.0, *moving,
-                    *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None)])
+                    *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None),
+                    *(max(0.0, since + Y_HOLD_SECONDS - now) for since in self.y_holds.values())])
 
     def pump(self, ui: UInput) -> None:
         """Wait up to a second for input from any pad and translate it."""
@@ -614,6 +627,7 @@ class Pads:
         blocked = navigation_blocked(active_osk) and not pointer
         if blocked:
             self.holds.clear()  # an app owns the controller now; do not keep stepping its menus
+            self.y_holds.clear()
             self.taps.reset()  # nor send a SELECT/START pressed before it on release
         for path, dev in list(self.devices.items()):
             if dev not in readable:
@@ -641,6 +655,14 @@ class Pads:
                 key = hold.repeat(now)
                 if key:
                     emit(ui, key)
+            self.send_y_holds(ui, now)
+
+    def send_y_holds(self, ui: UInput, now: float) -> None:
+        """F9 once for each pad holding Y / Square long enough."""
+        for path, since in list(self.y_holds.items()):
+            if now - since >= Y_HOLD_SECONDS:
+                del self.y_holds[path]
+                emit(ui, ecodes.KEY_F9)
 
 
 def emit(ui: UInput, key: int) -> None:
