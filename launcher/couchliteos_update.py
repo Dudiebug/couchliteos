@@ -35,6 +35,8 @@ LIVE_MEDIUM = pathlib.Path("/run/live/medium")
 CMDLINE = pathlib.Path("/proc/cmdline")
 SUMS_NAME = "SHA256SUMS"
 STATE = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "update-check.ini"
+# Live USB only: the installed systems couchliteos-find-installs.service found on the disks (root writes it).
+INSTALLS = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "installs.json"
 ROUTE4 = pathlib.Path("/proc/net/route")
 ROUTE6 = pathlib.Path("/proc/net/ipv6_route")
 RTF_UP = 0x1
@@ -328,6 +330,30 @@ def is_live(medium: pathlib.Path = LIVE_MEDIUM, cmdline: pathlib.Path = CMDLINE)
         return False
 
 
+def read_installs(path: pathlib.Path = INSTALLS) -> list[dict[str, str]]:
+    """[{"device", "version", "profile", "disk"}] (couchliteos_updater.write_installs); [] when unknown."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    keys = ("device", "version", "profile", "disk")
+    if not isinstance(data, list):
+        return []
+    return [
+        {key: item[key] for key in keys} for item in data
+        if isinstance(item, dict) and all(isinstance(item.get(key), str) for key in keys)
+    ]
+
+
+def disk_notice(current: str, path: pathlib.Path = INSTALLS) -> str:
+    """Home on the live USB: the one installed system found is older than this stick."""
+    installs = read_installs(path)
+    if len(installs) != 1 or not (parse_version(installs[0]["version"]) is None
+                                  or is_newer(current, installs[0]["version"])):
+        return ""
+    return f"INSTALLED SYSTEM {installs[0]['version']} FOUND: UPDATE IT IN SETTINGS > SOFTWARE UPDATE"
+
+
 def notice(state: State, current: str, installed: bool = False) -> str:
     if state.enabled and is_newer(state.latest, current):
         if installed:  # a box on its disk updates itself
@@ -368,6 +394,10 @@ class Checker:
         return self._state.enabled
 
     def notice(self) -> str:
+        if not self.installed:  # the live USB offers to update the system on the disk first
+            found = disk_notice(self.current)
+            if found:
+                return found
         with self._lock:
             return notice(self._state, self.current, self.installed)
 

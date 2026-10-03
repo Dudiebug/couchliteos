@@ -1,0 +1,15 @@
+[Unit]
+Description=Look for an installed CouchLiteOS or MoonlightOS system on the disks (live USB only)
+# The live launcher then offers UPDATE THE INSTALLED SYSTEM. Each partition not in use is
+# mounted read-only for a moment; nothing on the disks is written.
+ConditionKernelCommandLine=boot=live
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/couchliteos-updater find-installs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target

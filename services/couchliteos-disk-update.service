@@ -1,0 +1,17 @@
+[Unit]
+Description=Update the installed CouchLiteOS system from the live USB stick (requested by the launcher)
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Drop the request first, or this path unit would start another update the moment this one ends.
+ExecStartPre=/usr/bin/rm -f /run/couchliteos/disk-update
+# The updater refuses on a box that runs from its disk. It takes only the one installed system
+# it finds itself, never a device named by the launcher.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Updating the installed CouchLiteOS system" /usr/libexec/couchliteos-updater apply-disk --found
+# Saving the old system and copying the new one take as long as they take.
+TimeoutStartSec=infinity
+Nice=10
+StandardOutput=journal
+StandardError=journal

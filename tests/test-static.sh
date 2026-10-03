@@ -830,6 +830,22 @@ rg -q '^ExecStart=/usr/libexec/couchliteos-updater delete-snapshot$' services/co
 rg -q '^systemctl enable couchliteos-snapshot-delete.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -q 'test -s /var/lib/couchliteos/snapshot/previous.squashfs' scripts/couchliteos-qemu-smoke
 refute rg -n 'shell=True|os\.system' launcher/couchliteos_snapshot.py
+# The live USB updates an older install on the disk (apply-disk): found by a root service, requested
+# by the launcher through a path unit, proven in QEMU by tests/qemu-legacy-smoke.sh.
+rg -q '^ConditionKernelCommandLine=boot=live$' services/couchliteos-find-installs.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater find-installs$' services/couchliteos-find-installs.service
+rg -q '^PathExists=/run/couchliteos/disk-update$' services/couchliteos-disk-update.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/disk-update$' services/couchliteos-disk-update.service
+rg -q 'couchliteos-updater apply-disk --found$' services/couchliteos-disk-update.service
+rg -q '^systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path$' \
+  config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q 'UPDATE THE INSTALLED SYSTEM \(KEEPS PAIRINGS AND SETTINGS\)' launcher/couchliteos_softwareupdate.py
+rg -q 'test_apply_disk.py' launcher/Makefile
+rg -q '^  disk-update\)$' scripts/couchliteos-qemu-smoke
+rg -q '^  disk-update-check\)$' scripts/couchliteos-qemu-smoke
+rg -q '^boot_and_wait disk-update COUCHLITEOS_SMOKE_DISK_UPDATED 2700$' tests/qemu-legacy-smoke.sh
+rg -q '^boot_and_wait disk-update-check COUCHLITEOS_SMOKE_DISK_UPDATE_READY 240$' tests/qemu-legacy-smoke.sh
+bash -n tests/qemu-legacy-smoke.sh
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh
