@@ -489,6 +489,26 @@ def collect(bundle: pathlib.Path) -> None:
     add_command(bundle, "logs/kernel-log.txt", ["dmesg", "--color=never"])
 
     log_dir = pathlib.Path(os.environ.get("COUCHLITEOS_SUPPORT_LOG_DIR", "/var/log/couchliteos"))
+    add_log_dir(bundle, log_dir, "logs/couchliteos")
+    # Root's own logs (update.log, browser.log): /var/log/couchliteos-update, next to the other.
+    update_log_dir = pathlib.Path(os.environ.get("COUCHLITEOS_SUPPORT_UPDATE_LOG_DIR", f"{log_dir}-update"))
+    add_log_dir(bundle, update_log_dir, "logs/couchliteos-update")
+
+    config = pathlib.Path(
+        os.environ.get("COUCHLITEOS_SUPPORT_CONFIG", "/var/lib/couchliteos/config.ini")
+    )
+    add_file(bundle, "configuration/config.ini.sanitized", config, config=True)
+    write_text(
+        bundle / "REDACTION.txt",
+        "Sensitive values and enrollment URLs were replaced with [REDACTED]. "
+        "Application/browser profiles and private state directories are not collected. "
+        "Saved Remote Desktop passwords and session password handoffs are never read; "
+        "Remote Desktop connections are listed without usernames, domains, or passwords.\n",
+    )
+
+
+def add_log_dir(bundle: pathlib.Path, log_dir: pathlib.Path, prefix: str) -> None:
+    """Every regular file of `log_dir` (never a symlink) as prefix/log-NNN.txt, with an INDEX.txt."""
     try:
         entries = sorted(log_dir.iterdir(), key=lambda item: item.name)
     except OSError:
@@ -505,22 +525,10 @@ def collect(bundle: pathlib.Path) -> None:
         copied += 1
         archive_name = f"log-{copied:03d}.txt"
         log_index.append(f"{archive_name} = {safe_terminal_text(entry.name)}")
-        add_file(bundle, f"logs/couchliteos/{archive_name}", entry)
+        add_file(bundle, f"{prefix}/{archive_name}", entry)
     write_text(
-        bundle / "logs/couchliteos/INDEX.txt",
+        bundle / f"{prefix}/INDEX.txt",
         "\n".join(log_index) + ("\n" if log_index else "No regular log files were available.\n"),
-    )
-
-    config = pathlib.Path(
-        os.environ.get("COUCHLITEOS_SUPPORT_CONFIG", "/var/lib/couchliteos/config.ini")
-    )
-    add_file(bundle, "configuration/config.ini.sanitized", config, config=True)
-    write_text(
-        bundle / "REDACTION.txt",
-        "Sensitive values and enrollment URLs were replaced with [REDACTED]. "
-        "Application/browser profiles and private state directories are not collected. "
-        "Saved Remote Desktop passwords and session password handoffs are never read; "
-        "Remote Desktop connections are listed without usernames, domains, or passwords.\n",
     )
 
 

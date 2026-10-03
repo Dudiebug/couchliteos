@@ -208,7 +208,7 @@ class FindInstallsTest(TmpCase):
         self.trees = {"/dev/sda2": moonlightos_0113, "/dev/sdb1": lambda root: put(root, "etc/hostname", "x")}
         self.runner = Runner(self.script)
         self.env = make_env(self.tmp, runner=self.runner)
-        self.probe = self.env.run_dir / "probe"
+        self.probe = self.env.work_dir / "probe"
 
     def script(self, argv):
         if argv[0] == "lsblk":
@@ -227,6 +227,20 @@ class FindInstallsTest(TmpCase):
         self.assertEqual([call[1:] for call in mounts], [
             ["-o", "ro,noload", "/dev/sda2", str(self.probe)], ["-o", "ro,noload", "/dev/sdb1", str(self.probe)]])
         self.assertEqual(len(self.runner.commands("umount")), 2)
+
+    def test_the_probe_is_roots_own_and_a_symlink_put_there_is_refused_before_any_mount(self):
+        updater.find_installs(self.env)
+        self.assertEqual(stat.S_IMODE(os.lstat(self.probe).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.lstat(self.env.work_dir).st_mode), 0o700)
+        self.probe.rmdir()
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        self.probe.symlink_to(elsewhere)
+        self.runner.calls.clear()
+        self.env.log = [].append
+        with self.assertRaises(updater.UpdateFailed):
+            updater.find_installs(self.env)
+        self.assertEqual(self.runner.commands("mount"), [])
 
     def test_partitions_in_use_swap_and_the_iso_are_never_mounted(self):
         updater.find_installs(self.env)
@@ -291,15 +305,35 @@ class LegacyStepsTest(TmpCase):
         updater.move_legacy_dirs(self.tmp, log.append)  # a retry after a failure
         self.assertEqual(len(log), 2, "nothing left to move")
 
-    def test_what_the_snapshot_made_under_the_new_name_joins_the_old_tree(self):
+    def test_what_already_has_the_new_name_joins_the_old_tree_and_roots_own_directories_stay(self):
         moonlightos_0113(self.tmp)
-        put(self.tmp, "var/lib/couchliteos/snapshot/previous.json", "{}")
-        put(self.tmp, "var/log/couchliteos/update.log", "x\n")
+        put(self.tmp, "var/lib/couchliteos-update/snapshot/previous.json", "{}")
+        put(self.tmp, "var/log/couchliteos-update/update.log", "x\n")
+        put(self.tmp, "var/log/couchliteos/display.log", "y\n")
         updater.move_legacy_dirs(self.tmp, lambda _text: None)
-        self.assertTrue((self.tmp / "var/lib/couchliteos/snapshot/previous.json").exists())
+        self.assertTrue((self.tmp / "var/lib/couchliteos-update/snapshot/previous.json").exists())
+        self.assertEqual((self.tmp / "var/log/couchliteos-update/update.log").read_text(), "x\n")
         self.assertTrue((self.tmp / "var/lib/couchliteos/config.ini").exists())
-        self.assertEqual(sorted(os.listdir(self.tmp / "var/log/couchliteos")), ["launcher.log", "update.log"])
+        self.assertEqual(sorted(os.listdir(self.tmp / "var/log/couchliteos")), ["display.log", "launcher.log"])
         self.assertEqual(stat.S_IMODE((self.tmp / "var/lib/couchliteos").stat().st_mode), 0o750)
+
+    def test_a_clash_found_part_way_is_refused_and_leaves_every_file_in_one_of_the_two_trees(self):
+        moonlightos_0113(self.tmp)
+        put(self.tmp, "var/log/couchliteos/a-new.log", "a\n")
+        put(self.tmp, "var/log/couchliteos/launcher.log", "new\n")  # the old tree has this name too
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.move_legacy_dirs(self.tmp, lambda _text: None)
+        self.assertEqual(caught.exception.message, updater.MSG_DISK_LAYOUT)
+        old = self.tmp / "var/log/moonlightos"  # rename:keep
+        # The entry before the clash already joined the old tree; the clashing one stays; nothing is lost.
+        self.assertEqual((old / "a-new.log").read_text(), "a\n")
+        self.assertEqual((old / "launcher.log").read_text(), "old log\n")
+        self.assertEqual(os.listdir(self.tmp / "var/log/couchliteos"), ["launcher.log"])
+        self.assertEqual((self.tmp / "var/log/couchliteos/launcher.log").read_text(), "new\n")
+        self.assertEqual(updater.legacy_conflicts(self.tmp), ["/var/log/couchliteos/launcher.log"],
+                         "apply-disk's preflight names it before anything is written next time")
+        with self.assertRaises(updater.UpdateFailed):
+            updater.move_legacy_dirs(self.tmp, lambda _text: None)  # a retry refuses the same way
 
     def test_a_name_in_both_or_a_symlinked_old_directory_is_a_conflict(self):
         moonlightos_0113(self.tmp)
@@ -380,7 +414,7 @@ class LegacyApplyRootTest(LegacyCase):
         chrooted = [call[2:] for call in self.runner.commands("chroot")]
         self.assertLess(chrooted.index(["grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi"]),
                         chrooted.index(["update-grub"]))
-        log = self.read("var/log/couchliteos/update.log")
+        log = self.read("var/log/couchliteos-update/update.log")
         for text in ("legacy: moved /var/lib/moonlightos to /var/lib/couchliteos",  # rename:keep
                      "legacy: old paths rewritten in config.ini",
                      "the old moonlightos user has the uid couchliteos has",  # rename:keep
@@ -438,8 +472,8 @@ class ApplyDiskTest(LegacyCase):
     def setUp(self):
         super().setUp()
         put(self.env.root, "run/live/medium/live/filesystem.squashfs", "")
-        self.target = self.env.run_dir / "disk"  # what `mount DEVICE run/disk` shows
-        self.disk_image = self.env.run_dir / "disk-image"
+        self.target = self.env.work_dir / "disk"  # what `mount DEVICE work/disk` shows
+        self.disk_image = self.env.work_dir / "disk-image"
         moonlightos_0113(self.target)
         image_tree(self.disk_image)
         self.applied = []
@@ -472,7 +506,7 @@ class ApplyDiskTest(LegacyCase):
         self.assertEqual([call[-1] for call in self.runner.commands("umount")],
                          [str(self.target / "boot/efi"), str(self.disk_image), str(self.target)])
         self.assertEqual(self.status.history[-1], ("updated", updater.MSG_DISK_DONE, 100))
-        log = (self.target / "var/log/couchliteos/update.log").read_text()
+        log = (self.target / "var/log/couchliteos-update/update.log").read_text()
         self.assertIn("apply-disk /dev/sda2: 0.1.13 (general) to 0.3.0 from the USB stick", log)
         self.assertIn("applied", log)
 
@@ -590,6 +624,8 @@ class ApplyDiskMainTest(TmpCase):
 
     def test_the_updated_phase_is_accepted(self):
         updater.Status(self.tmp / "s.json").set("updated", updater.MSG_DISK_DONE, 100)
+        self.assertEqual(updater.read_status(self.tmp / "s.json"),
+                         {"phase": "updated", "percent": 100, "message": updater.MSG_DISK_DONE, "version": ""})
 
 
 # ---------------------------------------------------------------- the live launcher

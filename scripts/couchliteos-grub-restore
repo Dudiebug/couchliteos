@@ -6,19 +6,30 @@
 # kernel that does not boot cannot block the restore; couchliteos.restore=1 starts
 # couchliteos-restore.service, which puts the saved version back and restarts.
 #
-# The snapshot directory's parent belongs to the launcher's user: only a directory that is root's
-# own counts, and only a plain version string from previous.json reaches grub.cfg. The restore
-# itself checks the image again before it uses it. COUCHLITEOS_ROOT is for the tests.
+# The snapshot lives in root's own /var/lib/couchliteos-update: only directories that are root's
+# own count, and only a plain version string from previous.json reaches grub.cfg. The restore
+# itself checks the image again before it uses it. The entry loads only GRUB's ext2 module and
+# reads /boot from the root file system, so it is written only when that is ext2, ext3 or ext4.
+# COUCHLITEOS_ROOT is for the tests.
 set -e
 root=${COUCHLITEOS_ROOT:-}
-snapshot=$root/var/lib/couchliteos/snapshot
+parent=$root/var/lib/couchliteos-update
+snapshot=$parent/snapshot
 boot=$root/boot/couchliteos-previous
+[ -d "$parent" ] && [ ! -L "$parent" ] && [ -O "$parent" ] || exit 0
 [ -d "$snapshot" ] && [ ! -L "$snapshot" ] && [ -O "$snapshot" ] || exit 0
 [ -f "$snapshot/previous.json" ] && [ ! -L "$snapshot/previous.json" ] || exit 0
 [ -s "$boot/vmlinuz" ] && [ -s "$boot/initrd.img" ] || exit 0
 version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([0-9A-Za-z.+~-]\{1,40\}\)",\{0,1\}[[:space:]]*$/\1/p' \
   "$snapshot/previous.json" | head -n 1)
 [ -n "$version" ] || version=unknown
+case ${GRUB_FS:-} in
+  ext2|ext3|ext4) ;;
+  *)
+    echo "couchliteos-grub-restore: the root file system is ${GRUB_FS:-unknown}, not ext2/3/4: no restore entry" >&2
+    exit 0
+    ;;
+esac
 uuid=${GRUB_DEVICE_UUID:-}
 case $uuid in
   ''|*[!0-9A-Fa-f-]*)

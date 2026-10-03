@@ -13,8 +13,11 @@ couchliteos-browser.service then runs `request` as root.
                               dependencies match the new system (couchliteos-browser-refresh.service)
 
 apt always reads CouchLiteOS's own source lists (APT_DIR), so an install does not depend on what
-the Debian installer left in /etc/apt. Standard library only; every system effect goes through
-Env so tests can use fakes.
+the Debian installer left in /etc/apt. /run/couchliteos belongs to the launcher's user: root only
+reads and removes the request there and writes the status through a descriptor of the directory
+(couchliteos_safefile); the lock is in root's own /run/couchliteos-update and the log in
+/var/log/couchliteos-update. Standard library only; every system effect goes through Env so tests
+can use fakes.
 """
 
 from __future__ import annotations
@@ -29,9 +32,10 @@ import pathlib
 import shlex
 import subprocess
 import sys
-import tempfile
 import traceback
 from collections.abc import Callable, Iterable, Iterator
+
+import couchliteos_safefile as safefile
 
 
 @dataclasses.dataclass(frozen=True)
@@ -47,11 +51,12 @@ BROWSERS = {
     "chrome": Browser("chrome", "GOOGLE CHROME", "google-chrome-stable", "/usr/bin/google-chrome-stable"),
 }
 RUN_DIR = pathlib.Path("/run/couchliteos")
+WORK_DIR = pathlib.Path("/run/couchliteos-update")  # root's own: the lock
 REQUEST_NAME = "browser-install"
 STATUS_NAME = "browser-status.json"
 LOCK_NAME = "browser.lock"
 REFRESH_REL = "var/lib/couchliteos-update/browser-refresh"  # written by the updater after an update
-LOG_REL = "var/log/couchliteos/browser.log"
+LOG_REL = "var/log/couchliteos-update/browser.log"
 APT_DIR = "/usr/share/couchliteos/apt"
 APT_OPTIONS = (
     "-o", f"Dir::Etc::sourcelist={APT_DIR}/sources.list",
@@ -67,7 +72,7 @@ MAX_REQUEST = 64
 MSG_NETWORK = "COULD NOT REACH THE INTERNET: CHECK SETTINGS > NETWORK"
 MSG_SPACE = "NOT ENOUGH FREE SPACE: A WEB BROWSER NEEDS ABOUT 1 GB"
 MSG_BUSY = "ANOTHER INSTALL IS RUNNING: TRY AGAIN IN A MINUTE"
-MSG_FAILED = "INSTALL FAILED: SEE /var/log/couchliteos/browser.log"
+MSG_FAILED = "INSTALL FAILED: SEE /var/log/couchliteos-update/browser.log"
 MSG_UNKNOWN = "UNKNOWN WEB BROWSER"
 
 
@@ -80,16 +85,14 @@ class BrowserFailed(Exception):
 
 
 class Log:
-    """Append-only log; never raises."""
+    """Append-only log in root's own directory, never through a symlink; never raises."""
 
     def __init__(self, path: pathlib.Path) -> None:
         self.path = path
 
     def __call__(self, text: str) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8", errors="replace") as stream:
-                stream.write(text.rstrip("\n") + "\n")
+            safefile.append_line(self.path, text)
         except OSError:
             pass
 
@@ -107,6 +110,7 @@ class Env:
     free_bytes: Callable[[pathlib.Path], int] = _free_bytes
     root: pathlib.Path = pathlib.Path("/")
     run_dir: pathlib.Path = RUN_DIR
+    work_dir: pathlib.Path = WORK_DIR
     euid: Callable[[], int] = os.geteuid
     log: Callable[[str], None] | None = None
 
@@ -135,22 +139,17 @@ class Status:
 
 
 def write_atomic(path: pathlib.Path, text: str, mode: int = 0o644) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
+    safefile.write_atomic(path, text, mode)
 
 
 @contextlib.contextmanager
 def acquire_lock(path: pathlib.Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+") as stream:
+    """`path`'s directory is made or checked as root's own first (no symlink, nobody else's)."""
+    try:
+        safefile.root_dir(path.parent, os.geteuid())
+    except OSError as error:
+        raise BrowserFailed(MSG_FAILED) from error
+    with safefile.open_lock(path) as stream:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
@@ -324,7 +323,7 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
         # The request goes first, even when another install holds the lock: the path unit
         # would otherwise start this service again the moment it ends.
         name = read_request(env.run_dir / REQUEST_NAME) if args.command == "request" else getattr(args, "browser", "")
-        with acquire_lock(env.run_dir / LOCK_NAME):
+        with acquire_lock(env.work_dir / LOCK_NAME):
             if args.command == "refresh":
                 refresh(env)
             elif args.command == "remove":

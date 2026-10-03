@@ -114,7 +114,7 @@ case $mode in
     if ! /usr/libexec/couchliteos-updater apply-iso /dev/sr0 --force --no-reboot; then
       echo 'The update did not apply. Status and log follow.' >&2
       cat /run/couchliteos/update-status.json >&2 || true
-      tail -n 80 /var/log/couchliteos/update.log >&2 || true
+      tail -n 80 /var/log/couchliteos-update/update.log >&2 || true
       exit 1
     fi
     sync
@@ -125,14 +125,18 @@ case $mode in
     # Boot 2: the updated system started, kept the owner's state and everything the installer added.
     grep -Fxq 'cold_boot = verified' /var/lib/couchliteos/config.ini
     verify_rdp_state
-    grep -q ' done$' /var/log/couchliteos/update.log
+    grep -q ' done$' /var/log/couchliteos-update/update.log
     # The update saved the system it replaced: one image, its json and the boot copy.
-    test -s /var/lib/couchliteos/snapshot/previous.squashfs
-    unsquashfs -s /var/lib/couchliteos/snapshot/previous.squashfs >/dev/null
-    python3 -c 'import json, sys; json.load(open(sys.argv[1]))["sha256"]' /var/lib/couchliteos/snapshot/previous.json
+    test -s /var/lib/couchliteos-update/snapshot/previous.squashfs
+    unsquashfs -s /var/lib/couchliteos-update/snapshot/previous.squashfs >/dev/null
+    python3 -c 'import json, sys; json.load(open(sys.argv[1]))["sha256"]' /var/lib/couchliteos-update/snapshot/previous.json
     test -s /boot/couchliteos-previous/vmlinuz
     test -s /boot/couchliteos-previous/initrd.img
-    grep 'snapshot: saved' /var/log/couchliteos/update.log | tail -n 1
+    grep 'snapshot: saved' /var/log/couchliteos-update/update.log | tail -n 1
+    # Root's own places: the launcher's user can read the json by name, nothing more.
+    [[ $(stat -c '%U %a' /var/lib/couchliteos-update /var/lib/couchliteos-update/snapshot /run/couchliteos-update) \
+      == $'root 755\nroot 711\nroot 700' ]]
+    runuser -u couchliteos -- cat /var/lib/couchliteos-update/snapshot/previous.json >/dev/null
     test -s "$extras_file"
     while read -r package; do
       dpkg -s "$package" | grep -Fxq 'Status: install ok installed' \
@@ -149,9 +153,9 @@ case $mode in
     # Settings does. The request service writes root's own request and restarts the box.
     printf '\n[qemu-smoke]\nafter_snapshot = yes\n' >> /var/lib/couchliteos/config.ini
     python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
-      /var/lib/couchliteos/snapshot/previous.json > /var/lib/couchliteos-smoke-restore-version
+      /var/lib/couchliteos-update/snapshot/previous.json > /var/lib/couchliteos-smoke-restore-version
     runuser -u couchliteos -- touch /run/couchliteos/restore-request
-    wait_for_file /var/lib/couchliteos/snapshot/restore-request 'the restore request'
+    wait_for_file /var/lib/couchliteos-update/snapshot/restore-request 'the restore request'
     sync
     echo COUCHLITEOS_SMOKE_RESTORE_REQUESTED
     exit 0
@@ -159,7 +163,7 @@ case $mode in
   restore-run)
     # couchliteos-restore.service restores and restarts before the launcher: reaching it means it did not.
     echo 'The launcher started although a restore was requested.' >&2
-    tail -n 40 /var/log/couchliteos/update.log >&2 || true
+    tail -n 40 /var/log/couchliteos-update/update.log >&2 || true
     exit 1
     ;;
   restore-check)
@@ -172,9 +176,9 @@ case $mode in
     fi
     grep -q '^paused_until = [0-9]' /var/lib/couchliteos/config.ini
     verify_rdp_state
-    grep -q '^.* restore to .* done$' /var/log/couchliteos/update.log
-    test ! -e /var/lib/couchliteos/snapshot/restore-request
-    test -s /var/lib/couchliteos/snapshot/previous.squashfs
+    grep -q '^.* restore to .* done$' /var/log/couchliteos-update/update.log
+    test ! -e /var/lib/couchliteos-update/snapshot/restore-request
+    test -s /var/lib/couchliteos-update/snapshot/previous.squashfs
     [[ -z $(dpkg --audit) ]] || { echo 'dpkg --audit is not clean after the restore.' >&2; dpkg --audit >&2; exit 1; }
     id installer-test >/dev/null
     echo COUCHLITEOS_SMOKE_RESTORE_READY
@@ -217,7 +221,7 @@ case $mode in
       echo 'The installed system was not updated. Status and log follow.' >&2
       cat /run/couchliteos/update-status.json >&2 || true
       journalctl -b --no-pager -u couchliteos-disk-update.service | tail -n 80 >&2 || true
-      tail -n 80 /var/log/couchliteos/update.log >&2 || true
+      tail -n 80 /var/log/couchliteos-update/update.log >&2 || true
       exit 1
     fi
     sync
@@ -245,10 +249,10 @@ case $mode in
       echo 'Links to old units that no longer exist were left behind.' >&2
       exit 1
     fi
-    grep -q ' done$' /var/log/couchliteos/update.log
-    grep 'apply-disk ' /var/log/couchliteos/update.log | tail -n 1
-    test -s /var/lib/couchliteos/snapshot/previous.squashfs
-    unsquashfs -s /var/lib/couchliteos/snapshot/previous.squashfs >/dev/null
+    grep -q ' done$' /var/log/couchliteos-update/update.log
+    grep 'apply-disk ' /var/log/couchliteos-update/update.log | tail -n 1
+    test -s /var/lib/couchliteos-update/snapshot/previous.squashfs
+    unsquashfs -s /var/lib/couchliteos-update/snapshot/previous.squashfs >/dev/null
     test -s /boot/couchliteos-previous/vmlinuz
     test -s /etc/grub.d/01_couchliteos_bootcheck
     [[ -z $(dpkg --audit) ]] || { echo 'dpkg --audit is not clean after the update.' >&2; dpkg --audit >&2; exit 1; }

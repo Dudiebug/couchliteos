@@ -1,14 +1,16 @@
 """The one saved copy of the installed system, made before every update so it can be undone.
 
-    /var/lib/couchliteos/snapshot/previous.squashfs   the whole root, zstd (root only, 0600)
-    /var/lib/couchliteos/snapshot/previous.json       version, date, size, sha256, kernel (0644)
+    /var/lib/couchliteos-update/snapshot/previous.squashfs   the whole root, zstd (root only, 0600)
+    /var/lib/couchliteos-update/snapshot/previous.json       version, date, size, sha256, kernel (0644)
     /boot/couchliteos-previous/                       vmlinuz, initrd.img and modules/ (squashfs,
                                                       loop and what they need, in modules/load-order)
 
-The snapshot directory is 0711, not 0700: the launcher (user couchliteos) reads previous.json by
-name for Settings > SOFTWARE UPDATE but cannot list the directory or read the image. Because its
-parent /var/lib/couchliteos belongs to that user, every root use first checks the directory is
-still ours (`trusted_dir`), so a directory put there by the user is never written to or restored.
+The snapshot lives below root's own /var/lib/couchliteos-update (0755), never below the
+launcher user's /var/lib/couchliteos, where that user could swap a directory or a symlink in
+between a check and a use. The snapshot directory is 0711, not 0700: the launcher (user
+couchliteos) reads previous.json by name for Settings > SOFTWARE UPDATE but cannot list the
+directory or read the image. Every root use still checks both directories are ours
+(`trusted_dir`). A 0.3.0 test build kept it in /var/lib/couchliteos/snapshot: that place is ignored.
 
 One slot: the new snapshot is staged next to the old one as `.new` files, `previous.json.new` is
 written last as the commit mark, then the image, the boot copy and the json are moved into place in
@@ -17,7 +19,9 @@ Either way exactly one valid snapshot is left.
 
 RESTORE PREVIOUS VERSION (couchliteos_updater `restore`) puts this image back. Settings asks for it
 with an empty `restore-request` file in the snapshot directory, which only root can write; the boot
-service runs the restore when that file exists. The restore reaches the image only through `hold`.
+service runs the restore when that file exists. A restore that stopped part way keeps the request
+and counts the try in `restore-attempts` next to it, so the next start tries again, twice at most.
+The restore reaches the image only through `hold`.
 
 Every system effect goes through the updater's Env (runner, popen, free_bytes, euid, note), and
 `root` is the system being saved, so the same code saves the running box ("/") or a disk mounted
@@ -38,20 +42,20 @@ import re
 import shutil
 import stat
 import subprocess
-import tempfile
 import time
 from collections.abc import Callable, Iterable
 
+import couchliteos_safefile as safefile
 import couchliteos_update as update
 
-SNAP_REL = "var/lib/couchliteos/snapshot"
+SNAP_REL = "var/lib/couchliteos-update/snapshot"  # below root's own directory, not the launcher's
 BOOT_REL = "boot/couchliteos-previous"
 CONFIG_REL = "var/lib/couchliteos/config.ini"
-IMAGE, INFO, REQUEST = "previous.squashfs", "previous.json", "restore-request"
+IMAGE, INFO, REQUEST, ATTEMPTS = "previous.squashfs", "previous.json", "restore-request", "restore-attempts"
 VERSION_RELS = ("etc/couchliteos-version", "etc/moonlightos-version")
 MODULES = ("squashfs", "loop")  # what the restore needs to open the image on any kernel
 LOAD_ORDER = "load-order"
-DIR_MODE, IMAGE_MODE, INFO_MODE = 0o711, 0o600, 0o644
+DIR_MODE, IMAGE_MODE, INFO_MODE, PARENT_MODE = 0o711, 0o600, 0o644, 0o755
 
 GIB = 1 << 30
 SNAPSHOT_ESTIMATE = 5 * GIB // 2  # a 0.2.x system is about 1.6 to 2 GB as zstd
@@ -66,7 +70,7 @@ LEFT_OUT = (SNAP_REL, BOOT_REL, "var/lib/couchliteos/home/.cache", "swapfile", "
 COMPRESS = ("-comp", "zstd", "-Xcompression-level", "6")
 GENTLY = ("nice", "-n", "19", "ionice", "-c", "3")
 
-MSG_FAILED = "COULD NOT SAVE THE CURRENT VERSION: SEE /var/log/couchliteos/update.log"
+MSG_FAILED = "COULD NOT SAVE THE CURRENT VERSION: SEE /var/log/couchliteos-update/update.log"
 MSG_NOT_OURS = "COULD NOT SAVE THE CURRENT VERSION: THE SNAPSHOT FOLDER IS NOT THE SYSTEM'S"
 SAVING = "SAVING THE CURRENT VERSION..."
 
@@ -77,6 +81,10 @@ class SnapshotFailed(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class NoRoom(SnapshotFailed):
+    """space_plan refused: too little free space for a snapshot. Nothing was written."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -191,7 +199,7 @@ def set_option(key: str, value: str, root: pathlib.Path = pathlib.Path("/")) -> 
     """Rewrite only the `key` line of config.ini's [update], keeping every other line.
 
     config.ini is the launcher's own file in its own directory: root (a restore) writes it as that
-    directory's owner and never follows a link put there.
+    directory's owner, through a descriptor of it (couchliteos_safefile), never following a link.
     """
     path = pathlib.Path(root) / CONFIG_REL
     lines = _read_plain(path).splitlines(keepends=True)
@@ -214,20 +222,11 @@ def set_option(key: str, value: str, root: pathlib.Path = pathlib.Path("/")) -> 
         else:
             lines.insert(start + 1, setting)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".config.ini.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.writelines(lines)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o640)
-        if os.geteuid() == 0:
-            owner = os.stat(path.parent)
-            os.chown(temporary, owner.st_uid, owner.st_gid)
-        os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
+    owner = None
+    if os.geteuid() == 0:
+        found = os.lstat(path.parent)
+        owner = (found.st_uid, found.st_gid)
+    safefile.write_atomic(path, "".join(lines), 0o640, owner)
 
 
 # ------------------------------------------------------------------ space
@@ -261,11 +260,21 @@ def _sh(env, argv: Iterable[object]) -> subprocess.CompletedProcess:
 
 
 def trusted_dir(env, root: pathlib.Path, create: bool = False) -> bool:
-    """The snapshot directory is a real directory owned by us (root) that nobody else can write.
+    """The snapshot directory and its parent are real directories owned by us (root) that nobody
+    else can write.
 
     With `create`, a missing one is made, and a wrong mode on our own directory is put right.
     """
     directory = paths(root)["dir"]
+    try:
+        if create:
+            safefile.root_dir(directory.parent, env.euid(), PARENT_MODE)
+        else:
+            parent = os.lstat(directory.parent)
+            if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != env.euid() or parent.st_mode & 0o022:
+                return False
+    except OSError:
+        return False
     try:
         found = os.lstat(directory)
     except FileNotFoundError:
@@ -393,19 +402,31 @@ def requested(root: pathlib.Path = pathlib.Path("/")) -> bool:
 
 
 def clear_request(env, root: pathlib.Path = pathlib.Path("/")) -> None:
+    """Drop the request and its count of failed tries."""
     with _opened_dir(env, root) as directory:
         if directory is not None:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(REQUEST, dir_fd=directory)
+            for name in (REQUEST, ATTEMPTS):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(name, dir_fd=directory)
+
+
+def count_attempt(env, root: pathlib.Path = pathlib.Path("/")) -> int:
+    """One more restore that stopped part way; returns how many there have been (0: not ours)."""
+    if not trusted_dir(env, root):
+        return 0
+    path = paths(root)["dir"] / ATTEMPTS
+    text = _read_plain(path).strip()
+    count = (int(text) if text.isdigit() and len(text) < 4 else 0) + 1
+    safefile.write_atomic(path, f"{count}\n", 0o600)
+    return count
 
 
 def hold(env, root: pathlib.Path, link: pathlib.Path) -> Snapshot | None:
     """Hard-link the saved image to `link` and check it there; what a restore mounts (root).
 
-    `verify` by path is not enough for a restore: the snapshot directory's parent belongs to the
-    launcher's user, who could put a directory of their own in its place between the check and the
-    mount. So the image is reached through a descriptor of the checked directory, linked into
-    `link`'s directory (root's own, on the same file system) and hashed at the link. Returns None
+    The image is mounted from a checked link of root's own, not by path: the image is reached
+    through a descriptor of the checked directory, linked into `link`'s directory (root's own, on
+    the same file system) and hashed at the link, so what is hashed is what is mounted. Returns None
     when the snapshot is missing, not ours, damaged or has no boot copy.
     """
     link = pathlib.Path(link)
@@ -555,7 +576,7 @@ def create(env, status, root: pathlib.Path = pathlib.Path("/"), *, now: Callable
     plan = space_plan(env.free_bytes(root), old.size if old else 0)
     env.note(f"snapshot: plan {plan}, old {old.version if old else 'none'}")
     if plan == REFUSE:
-        raise SnapshotFailed(
+        raise NoRoom(
             f"NOT ENOUGH FREE SPACE TO SAVE THE CURRENT VERSION: NEED {space_needed_gb()} GB. "
             "FREE SOME SPACE OR TURN OFF SAVE BEFORE UPDATE IN SETTINGS > SOFTWARE UPDATE.")
     if plan == DELETE_OLD_FIRST:
@@ -594,15 +615,4 @@ def create(env, status, root: pathlib.Path = pathlib.Path("/"), *, now: Callable
 
 
 def _write_info(path: pathlib.Path, snapshot: Snapshot) -> None:
-    text = json.dumps(dataclasses.asdict(snapshot), indent=1) + "\n"
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, INFO_MODE)
-        os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
+    safefile.write_atomic(path, json.dumps(dataclasses.asdict(snapshot), indent=1) + "\n", INFO_MODE)
