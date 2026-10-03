@@ -1236,7 +1236,18 @@ class ApplyIsoTest(TmpCase):
 
     def test_force_is_passed_to_the_new_images_updater(self):
         self.apply(force=True)
-        self.assertEqual(self.env.runner.commands("chroot")[0][-1], "--force")
+        self.assertIn("--force", self.env.runner.commands("chroot")[0])
+
+    def test_the_new_updater_is_told_the_box_was_saved(self):
+        put(self.new, "usr/libexec/couchliteos-updater", "#!/usr/bin/python3\n# --snapshot-done\n")
+        for save_first in (True, False):  # skipped on purpose (--no-snapshot, run) counts as handled too
+            self.env.runner.calls.clear()
+            self.apply(save_first=save_first)
+            self.assertEqual(self.env.runner.commands("chroot")[0][-1], "--snapshot-done")
+
+    def test_an_older_updater_in_the_iso_is_not_given_a_flag_it_would_refuse(self):
+        self.apply()
+        self.assertNotIn("--snapshot-done", self.env.runner.commands("chroot")[0])
 
     def test_a_block_device_is_mounted_without_loop(self):
         with mock.patch.object(updater, "is_block_device", return_value=True):
@@ -1349,6 +1360,8 @@ class ApplyRootTest(TmpCase):
         self.snapshots = {}
         self.filters = {}
         self.fail = {}
+        self.saved = []
+        self.save_error = None
         self.runner = Runner(self.script)
         self.env = make_env(self.tmp, runner=self.runner)
         self.status = RecordingStatus(self.tmp / "status.json")
@@ -1377,7 +1390,53 @@ class ApplyRootTest(TmpCase):
         return None
 
     def apply(self, **kwargs):
+        kwargs.setdefault("save", self.save)
         return updater.apply_root(self.target, self.status, self.env, image=self.image, **kwargs)
+
+    def save(self, env, status, root):
+        self.saved.append((root, len(self.runner.calls), self.read("etc/passwd")))
+        env.note("saved")
+        if self.save_error:
+            raise self.save_error
+
+    def test_without_the_callers_snapshot_the_target_is_saved_before_anything_is_written(self):
+        self.apply()
+        self.assertEqual(self.saved, [(self.target, 0, TARGET_PASSWD)], "saved first, accounts still the box's")
+        self.assertIn("saved", self.read("var/log/couchliteos/update.log"), "notes go to the box's own log")
+
+    def test_with_the_callers_snapshot_nothing_is_saved_again(self):
+        self.apply(save_first=False)
+        self.assertEqual(self.saved, [])
+        self.assertTrue(self.runner.commands("rsync"))
+
+    def test_a_failed_save_leaves_the_target_untouched(self):
+        self.save_error = updater.UpdateFailed("COULD NOT SAVE THE CURRENT VERSION")
+        files = {path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()
+                 and "var/log" not in str(path)}
+        with self.assertRaises(updater.UpdateFailed):
+            self.apply()
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual({path: path.read_bytes() for path in self.target.rglob("*") if path.is_file()
+                          and "var/log" not in str(path)}, files)
+        self.assertEqual(self.read("etc/couchliteos-version"), "0.2.1\n")
+
+    def test_a_refused_update_saves_nothing(self):
+        put(self.target, "etc/couchliteos-version", "0.2.2\n")
+        with self.assertRaises(updater.UpdateFailed):
+            self.apply()
+        self.assertEqual(self.saved, [])
+
+    def test_the_real_save_works_on_the_target_and_honours_its_off_setting(self):
+        put(self.target, "var/lib/couchliteos/config.ini", "[update]\nsnapshot = off\n")
+        with mock.patch.object(updater.snapshot, "create") as create:
+            self.apply(save=None)
+        create.assert_not_called()
+        (self.target / "var/lib/couchliteos/config.ini").unlink()
+        with mock.patch.object(updater.snapshot, "create") as create:
+            self.apply(save=None, force=True)
+        env, _status, root = create.call_args.args
+        self.assertEqual(root, self.target)
+        self.assertEqual(env.log.path, self.target / "var/log/couchliteos/update.log")
 
     def after_rsync(self):
         calls = self.runner.calls
@@ -1607,6 +1666,15 @@ class MainTest(TmpCase):
             self.assertTrue(apply.call_args.kwargs["force"])
             with self.assertRaises(SystemExit):
                 self.main("apply-root", "/mnt")
+
+    def test_apply_root_saves_unless_the_caller_did_or_said_not_to(self):
+        with mock.patch.object(updater, "apply_root") as apply:
+            for flags, save_first in (((), True), (("--snapshot-done",), False), (("--no-snapshot",), False)):
+                self.assertEqual(self.main("apply-root", "/mnt", "--status", str(self.tmp / "s.json"), *flags), 0)
+                self.assertEqual(apply.call_args.kwargs["save_first"], save_first, flags)
+
+    def test_this_updater_takes_its_own_snapshot_done_flag(self):
+        self.assertTrue(updater.handles_snapshot_done(pathlib.Path(updater.__file__)))
 
     def test_apply_root_failure_is_written_to_the_given_status_file_and_exits_1(self):
         path = self.tmp / "s.json"
