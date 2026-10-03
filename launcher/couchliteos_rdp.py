@@ -29,10 +29,10 @@ import time
 import couchliteos_apps as apps
 
 
-DATA = pathlib.Path("/var/lib/couchliteos")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
 CONNECTIONS = DATA / "rdp" / "connections.ini"
 SECRETS_NAME = "rdp-secrets"
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST = RUN / "rdp.request"
 SESSION = RUN / "rdp-session"
 HANDOFF = RUN / "rdp-session.secret"

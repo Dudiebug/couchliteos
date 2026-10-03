@@ -6,6 +6,7 @@ parser: the search tests feed packets through `Search` and the screen tests use 
 Shares the wizard fakes in test_setup.py (only `base.<name>` is used, so its tests are not collected twice).
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import errno
 import pathlib
 import random

@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import os
 import pathlib
@@ -551,6 +552,25 @@ class LauncherTest(unittest.TestCase):
         ), mock.patch.object(self.module.subprocess, "run", side_effect=run):
             self.assertTrue(self.module.Launcher.focus_app(self.stream_app("chiaki-ng")))
         self.assertNotIn(["focus", "app_id:couchliteos-launcher"], calls)
+
+    def test_app_active_follows_the_app_brought_to_the_front(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            active = run / "app-active"
+            active.write_text("firefox\n", encoding="ascii")
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", run / "launcher-focus", create=True
+            ):
+                with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")):
+                    self.assertFalse(self.module.Launcher.focus_app(self.stream_app()))
+                self.assertEqual(active.read_text(encoding="ascii"), "firefox\n")  # nothing came to the front
+                with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                    self.assertTrue(self.module.Launcher.focus_app(self.stream_app()))
+                    self.assertEqual(active.read_text(encoding="ascii"), "moonlight\n")
+                    self.assertEqual(active.stat().st_mode & 0o777, 0o640)
+                    # A terminal app leaves it alone, as its start does: gamepad-nav types into it.
+                    self.assertTrue(self.module.Launcher.focus_app(self.terminal_app()))
+                    self.assertEqual(active.read_text(encoding="ascii"), "moonlight\n")
 
     def test_no_stream_window_leaves_the_marker_and_logs_what_the_compositor_lists(self):
         listing = "couchliteos-launcher: CouchLiteOS Launcher\nfoot: TERMINAL\n"

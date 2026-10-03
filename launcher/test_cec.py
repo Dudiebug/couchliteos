@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import os
 import pathlib
 import tempfile
@@ -940,7 +941,7 @@ class ActiveSourceMarkerTest(unittest.TestCase):
         return cec.mark_active_source(active, self.marker, self.logged.append)
 
     def test_it_lives_in_the_runtime_directory_the_launcher_user_owns(self):
-        self.assertEqual(cec.ACTIVE_SOURCE_MARKER, pathlib.Path("/run/couchliteos/cec-active-source"))
+        self.assertEqual(cec.ACTIVE_SOURCE_MARKER, pathlib.Path(os.environ["COUCHLITEOS_RUN_DIR"], "cec-active-source"))
 
     def test_created_and_removed(self):
         self.assertTrue(self.mark(True))

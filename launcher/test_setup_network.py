@@ -4,6 +4,7 @@ This file is separate from test_setup.py on purpose: it carries its own small
 fakes so the network tests do not depend on the other wizard test classes.
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import pathlib
 import re
 import types

@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST = RUN / "support-export.request"
 STATUS = RUN / "support-export.status"
 UNWRITABLE_FILESYSTEMS = {"", "iso9660", "squashfs", "udf"}

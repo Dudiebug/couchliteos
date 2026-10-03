@@ -35,8 +35,9 @@ import couchliteos_display as display
 import couchliteos_stream as streaming
 
 
-MARKER = pathlib.Path("/var/lib/couchliteos/setup-complete")
-STATE = pathlib.Path("/var/lib/couchliteos/setup-state.json")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+MARKER = DATA / "setup-complete"
+STATE = DATA / "setup-state.json"
 # The picture half of DISPLAY AND SOUND, saved before the sound half: a new picture size
 # restarts the launcher (foot sizes its text once, at start), and setup resumes at sound.
 PICTURE = "display-picture"
@@ -592,7 +593,7 @@ class System:
         self,
         *,
         input_devices_path: pathlib.Path = pathlib.Path("/proc/bus/input/devices"),
-        config_root: pathlib.Path = pathlib.Path("/var/lib/couchliteos/home/.config"),
+        config_root: pathlib.Path = DATA / "home" / ".config",
     ) -> None:
         self.input_devices_path = input_devices_path
         self.config_root = config_root

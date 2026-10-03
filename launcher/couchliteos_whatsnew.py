@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import curses
+import os
 import pathlib
 import textwrap
 from collections.abc import Callable, Iterable
@@ -17,7 +18,7 @@ VERSION_FILES = update.VERSION_FILES
 SEEN = setup.MARKER.parent / "whatsnew-seen"
 # /run is always writable, so if SEEN cannot be saved (disk full, read-only) the screen
 # still does not come back when the launcher restarts during the same boot.
-SESSION_SEEN = pathlib.Path("/run/couchliteos/whatsnew-seen")
+SESSION_SEEN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "whatsnew-seen"
 
 RENAME_NOTICE = "MOONLIGHTOS IS NOW CALLED COUCHLITEOS. SAME SYSTEM, NEW NAME."  # rename:keep
 RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE

@@ -17,7 +17,7 @@ import couchliteos_apps as apps
 import couchliteos_rdp as rdp
 
 
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST = RUN / "launch-app.request"
 READY_SECONDS = 5.0
 FOOT = "/usr/libexec/couchliteos-foot"  # picks the font size for the screen, then runs foot

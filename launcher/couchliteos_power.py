@@ -12,7 +12,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+CONFIG = DATA / "config.ini"
 # Present only when QEMU passes the smoke-test flag (scripts/couchliteos-qemu-smoke).
 SMOKE_FLAG = pathlib.Path("/sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.smoke/raw")
 NET = pathlib.Path("/sys/class/net")

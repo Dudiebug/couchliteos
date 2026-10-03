@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import glob
+import os
 import pathlib
 import queue
 import select
@@ -27,16 +28,17 @@ KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8,
         # controller mouse (pointer mode): browser back, play/pause, page up/down
         ecodes.KEY_BACK, ecodes.KEY_SPACE, ecodes.KEY_PAGEUP, ecodes.KEY_PAGEDOWN]
-OSK_ACTIVE = pathlib.Path("/run/couchliteos/osk-active")
-START_OSK = pathlib.Path("/run/couchliteos/start-osk")
-HOME_REQUEST = pathlib.Path("/run/couchliteos/home.request")
-APP_ACTIVE = pathlib.Path("/run/couchliteos/app-active")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+OSK_ACTIVE = RUN / "osk-active"
+START_OSK = RUN / "start-osk"
+HOME_REQUEST = RUN / "home.request"
+APP_ACTIVE = RUN / "app-active"
 # Written by the launcher for apps without controller support (browsers, web apps): the pad drives a mouse.
-POINTER_MODE = pathlib.Path("/run/couchliteos/pointer-mode")
+POINTER_MODE = RUN / "pointer-mode"
 # Touched by the launcher while it holds focus (Home pressed) even though an app runs.
-LAUNCHER_FOCUS = pathlib.Path("/run/couchliteos/launcher-focus")
-CONTROLLER_ID = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
-SLEEP_REQUEST = pathlib.Path("/run/couchliteos/suspend")
+LAUNCHER_FOCUS = RUN / "launcher-focus"
+CONTROLLER_ID = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "launcher-controller.id"
+SLEEP_REQUEST = RUN / "suspend"
 # Holding Guide is also how pads are switched off (8BitDo ~3 s, Xbox ~6 s, PlayStation ~10 s), so the
 # hold is long, and a hold that began in a game never sleeps the box (see app_owns_pad).
 SLEEP_HOLD_SECONDS = 5.0

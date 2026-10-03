@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import contextlib
 import dataclasses
 import importlib.util
@@ -1625,7 +1626,9 @@ class StreamRowTest(LauncherTestCase):
         return [label for label, _action in launcher.menu]
 
     def test_first_row_for_a_paired_pc_with_moonlight_enabled(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # FIXED_CONTROLS has the plain SLEEP row, whether or not this machine can suspend.
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(self.module.power, "can_suspend", return_value=True):
             run = pathlib.Path(directory)
             plain = self.home(run, hosts=())
             launcher = self.home(run)

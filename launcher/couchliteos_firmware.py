@@ -13,11 +13,12 @@ import os
 import pathlib
 import time
 
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST = RUN / "nvidia-firmware.request"
 STATUS = RUN / "nvidia-firmware.status"
 HARDWARE_ENV = pathlib.Path("/run/couchliteos-hardware/hardware.env")
-STORE = pathlib.Path("/var/lib/couchliteos/firmware")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+STORE = DATA / "firmware"
 TITLE = "VIDEO DECODER FIRMWARE"
 ACTIONS = ("install", "remove")
 START_TIMEOUT = 15.0  # seconds for the service to answer before the launcher says it did not start

@@ -20,7 +20,8 @@ import tempfile
 import time
 from typing import Callable
 
-CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+CONFIG = DATA / "config.ini"
 SECTION = "cec"
 OSD_NAME = "CouchLiteOS"
 OP_STANDBY = 0x36
@@ -40,7 +41,8 @@ BUS_CEC = 0x1E
 POWER_STATE = pathlib.Path("/sys/power/state")
 # Exists while the TV is showing this box (we are the active source). The root daemon keeps it up to
 # date as it follows the bus and the pre-sleep hook reads it: no file means "another input, or not known".
-ACTIVE_SOURCE_MARKER = pathlib.Path("/run/couchliteos/cec-active-source")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+ACTIVE_SOURCE_MARKER = RUN / "cec-active-source"
 LOGIND_CAN_SUSPEND = (
     "busctl", "--system", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
     "org.freedesktop.login1.Manager", "CanSuspend",

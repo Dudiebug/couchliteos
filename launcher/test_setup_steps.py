@@ -4,6 +4,7 @@ Shares the fakes in test_setup.py. Only `base.<name>` is used so that the test
 classes in that module are not collected a second time from here.
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import itertools
 import pathlib

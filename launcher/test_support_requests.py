@@ -4,6 +4,7 @@ tests/test_support.py covers destination discovery together with the root export
 (which needs fcntl); these tests need only the launcher module.
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import json
 import os
 import pathlib

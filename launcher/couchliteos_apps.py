@@ -15,8 +15,9 @@ import urllib.parse
 
 
 SYSTEM_DIR = pathlib.Path("/usr/share/couchliteos/apps.d")
-USER_DIR = pathlib.Path("/var/lib/couchliteos/apps.d")
-STATE_FILE = pathlib.Path("/var/lib/couchliteos/apps-state.ini")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+USER_DIR = DATA / "apps.d"
+STATE_FILE = DATA / "apps-state.ini"
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED_IDS = {"settings", "reboot", "poweroff"}

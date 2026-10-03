@@ -10,10 +10,11 @@ launcher restarts.
 
 from __future__ import annotations
 
+import os
 import pathlib
 from typing import Any
 
-FLAG = pathlib.Path("/run/couchliteos/pointer-mode")
+FLAG = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "pointer-mode"
 BROWSER_IDS = frozenset({"firefox", "google-chrome"})
 # User-added web applications run Chrome in kiosk mode (Settings > APPLICATIONS > ADD WEB APPLICATION).
 BROWSER_BINARIES = frozenset({

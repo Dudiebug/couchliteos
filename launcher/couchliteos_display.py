@@ -12,12 +12,13 @@ import tempfile
 from dataclasses import dataclass
 
 
-CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+CONFIG = DATA / "config.ini"
 LOG = pathlib.Path("/var/log/couchliteos/display.log")
 # Present from just before a saved mode is reapplied until the launcher sees
 # its first key press. If it is still there at the next start, that mode
 # blacked out the screen, so it is not applied again.
-PENDING = pathlib.Path("/var/lib/couchliteos/display-restore.pending")
+PENDING = DATA / "display-restore.pending"
 _unconfirmed = False
 OUTPUT_RE = re.compile(r'^(\S+)(?:\s+"(.*)")?$')
 MODE_RE = re.compile(

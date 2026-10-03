@@ -51,7 +51,9 @@ import couchliteos_theme as themes
 import couchliteos_recent as recent
 
 
-RUN = pathlib.Path("/run/couchliteos")
+# The tests point both at a scratch directory (testenv.py).
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
 HOME_REQUEST = RUN / "home.request"
 # Tells gamepad-nav the launcher (not a running app) has focus, so it forwards keys.
 LAUNCHER_FOCUS = RUN / "launcher-focus"
@@ -152,6 +154,18 @@ def set_launcher_focus(held: bool) -> None:
             LAUNCHER_FOCUS.touch()
         else:
             LAUNCHER_FOCUS.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def mark_front_app(app: apps.Application) -> None:
+    """Name `app` in app-active, as its start did, so Guide follows the app brought to the front."""
+    if app.terminal:
+        return  # its start leaves the file alone too: gamepad-nav types into a terminal app
+    active = RUN / "app-active"
+    try:
+        active.write_text(app.id + "\n", encoding="ascii")
+        os.chmod(active, 0o640)
     except OSError:
         pass
 
@@ -548,7 +562,7 @@ def audio_summary() -> str:
 
 
 def controller_summary() -> str:
-    identity = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
+    identity = DATA / "launcher-controller.id"
     try:
         value = identity.read_text(encoding="ascii").strip()
     except OSError:
@@ -557,7 +571,7 @@ def controller_summary() -> str:
 
 
 def configuration_summary(name: str) -> str:
-    root = pathlib.Path("/var/lib/couchliteos/home/.config")
+    root = DATA / "home" / ".config"
     try:
         configured = any(name in path.name.casefold() for path in root.iterdir())
     except OSError:
@@ -1266,11 +1280,13 @@ class Launcher:
                 return False
             if result.returncode == 0:
                 POINTER_MODES.apply(app)
+                mark_front_app(app)
                 set_launcher_focus(False)
                 return True
         keyword = STREAM_WINDOW_WORDS.get(app.id)
         if keyword is not None and Launcher.focus_listed_toplevel(keyword):
             POINTER_MODES.apply(app)
+            mark_front_app(app)
             set_launcher_focus(False)
             return True
         return False

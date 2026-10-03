@@ -1,5 +1,9 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import dataclasses
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -170,6 +174,44 @@ class ApplicationsTest(unittest.TestCase):
         self.assertFalse((self.user / "custom.ini").exists())
         with self.assertRaisesRegex(apps.ManifestError, "system"):
             apps.delete_user_application("terminal", system_dir=SYSTEM, user_dir=self.user)
+
+
+class ScratchDirectoriesTest(unittest.TestCase):
+    """testenv.py keeps the tests off the box's own /run/couchliteos and /var/lib/couchliteos."""
+
+    # What the box uses: the variables are never set outside the tests.
+    DEFAULTS = {
+        "couchliteos_apps.STATE_FILE": "/var/lib/couchliteos/apps-state.ini",
+        "couchliteos_rdp.RUN": "/run/couchliteos",
+        "couchliteos_setup.MARKER": "/var/lib/couchliteos/setup-complete",
+        "couchliteos_stream.MOONLIGHT_CONF":
+            "/var/lib/couchliteos/home/.config/Moonlight Game Streaming Project/Moonlight.conf",
+        "couchliteos_cec.ACTIVE_SOURCE_MARKER": "/run/couchliteos/cec-active-source",
+        "couchliteos_input.MOUSE_SPEED_FILE": "/var/lib/couchliteos/mouse-speed",
+        "couchliteos_osk.REFOCUSED": "/run/couchliteos/osk-refocused",
+        "couchliteos_pointer.FLAG": "/run/couchliteos/pointer-mode",
+        "couchliteos_screenfit.PATH": "/var/lib/couchliteos/screen.json",
+        "couchliteos_whatsnew.SESSION_SEEN": "/run/couchliteos/whatsnew-seen",
+    }
+
+    def test_the_tests_use_scratch_directories(self):
+        import couchliteos_rdp as rdp
+        self.assertEqual(str(apps.DATA), os.environ["COUCHLITEOS_STATE_DIR"])
+        self.assertEqual(str(rdp.RUN), os.environ["COUCHLITEOS_RUN_DIR"])
+        self.assertFalse(str(apps.STATE_FILE).startswith("/var/lib/couchliteos"))
+        self.assertFalse(str(rdp.RUN).startswith("/run/couchliteos"))
+
+    def test_without_the_variables_the_real_directories_are_used(self):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("COUCHLITEOS_RUN_DIR", "COUCHLITEOS_STATE_DIR")}
+        modules = sorted({name.split(".")[0] for name in self.DEFAULTS})
+        code = "".join(f"import {module}\n" for module in modules) + "".join(
+            f"print({name})\n" for name in self.DEFAULTS)
+        output = subprocess.run(
+            [sys.executable, "-c", code], cwd=pathlib.Path(__file__).parent, env=environment,
+            check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        self.assertEqual(output, list(self.DEFAULTS.values()))
 
 
 if __name__ == "__main__":

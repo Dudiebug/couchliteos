@@ -420,6 +420,13 @@ rg -q 'COUCHLITEOS_SMOKE_HWDETECT_READY' scripts/couchliteos-qemu-smoke tests/qe
 rg -q 'COUCHLITEOS_SMOKE_BLUETOOTH_READY' scripts/couchliteos-qemu-smoke tests/qemu-smoke.sh
 refute rg -q -- '-kernel|-initrd' tests/qemu-install-smoke.sh
 rg -q 'qemu_iso_boot.py' tests/qemu-install-smoke.sh
+# The installer skips the account questions (the box logs in as couchliteos by itself); the
+# install test adds its own installer-test login for the update check.
+rg -q '^d-i passwd/make-user boolean false$' config/live-build/includes.installer/preseed.cfg
+rg -q '^d-i passwd/root-login boolean true$' config/live-build/includes.installer/preseed.cfg
+rg -q '^d-i passwd/root-password-crypted password !$' config/live-build/includes.installer/preseed.cfg
+refute rg -q '^d-i passwd/' tests/installer-preseed.cfg
+rg -q '^d-i preseed/late_command string in-target .*useradd .*--groups sudo .*installer-test' tests/installer-preseed.cfg
 rg -q '32G' tests/qemu-install-smoke.sh
 rg -q 'blank_disk=true' tests/qemu-install-smoke.sh
 rg -q 'COUCHLITEOS_SMOKE_INSTALLED_DISK_READY' scripts/couchliteos-qemu-smoke tests/qemu-install-smoke.sh
@@ -631,7 +638,8 @@ rg -q '^systemctl enable couchliteos-suspend.path couchliteos-resume.service$' c
 rg -q 'launcher/couchliteos_power.py' build/configure.sh
 rg -q '"SLEEP", "suspend"' launcher/couchliteos-launcher.py
 rg -q 'couchliteos.smoke' launcher/couchliteos_power.py
-rg -q 'SLEEP_REQUEST = pathlib.Path\("/run/couchliteos/suspend"\)' launcher/gamepad-nav.py
+rg -q '^RUN = pathlib.Path\(os.environ.get\("COUCHLITEOS_RUN_DIR", "/run/couchliteos"\)\)$' launcher/gamepad-nav.py
+rg -q '^SLEEP_REQUEST = RUN / "suspend"$' launcher/gamepad-nav.py
 rg -q 'ATTR\{bDeviceClass\}=="e0".*ATTR\{power/wakeup\}="enabled"' overlay/etc/udev/rules.d/75-couchliteos-wakeup.rules
 rg -q 'ATTR\{bInterfaceClass\}=="e0".*power/wakeup' overlay/etc/udev/rules.d/75-couchliteos-wakeup.rules
 rg -q 'ATTR\{bInterfaceClass\}=="03".*ATTR\{bInterfaceProtocol\}=="01".*power/wakeup' overlay/etc/udev/rules.d/75-couchliteos-wakeup.rules
@@ -707,7 +715,8 @@ rg -q 'import couchliteos_cec as cec' launcher/gamepad-nav.py
 # TV Standby on sleep only when the TV shows this box: the daemon keeps a marker in /run/couchliteos (it is
 # otherwise read-only to the daemon), the sleep hook sends Standby only while the marker exists.
 rg -q '^ReadWritePaths=-/run/couchliteos$' services/couchliteos-cec.service
-rg -q '^ACTIVE_SOURCE_MARKER = pathlib.Path\("/run/couchliteos/cec-active-source"\)$' launcher/couchliteos_cec.py
+rg -q '^RUN = pathlib.Path\(os.environ.get\("COUCHLITEOS_RUN_DIR", "/run/couchliteos"\)\)$' launcher/couchliteos_cec.py
+rg -q '^ACTIVE_SOURCE_MARKER = RUN / "cec-active-source"$' launcher/couchliteos_cec.py
 rg -q 'O_NOFOLLOW' launcher/couchliteos_cec.py
 rg -q 'phys_addr=adapter.phys_addr, marker=cec.ACTIVE_SOURCE_MARKER' scripts/couchliteos-cec
 rg -q 'cec.should_standby_on_sleep\(settings, cec.ACTIVE_SOURCE_MARKER\)' scripts/couchliteos-cec
@@ -1141,7 +1150,8 @@ rg -q '^import couchliteos_input as inputprefs$' launcher/gamepad-nav.py
 rg -q '^import couchliteos_input as inputprefs$' launcher/couchliteos_controls.py
 rg -q 'couchliteos_input.py .*gamepad-nav.py' launcher/Makefile
 rg -q 'test_input.py' launcher/Makefile
-rg -q '^MOUSE_SPEED_FILE = pathlib.Path\("/var/lib/couchliteos/mouse-speed"\)$' launcher/couchliteos_input.py
+rg -q '^DATA = pathlib.Path\(os.environ.get\("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"\)\)$' launcher/couchliteos_input.py
+rg -q '^MOUSE_SPEED_FILE = DATA / "mouse-speed"$' launcher/couchliteos_input.py
 rg -q '^INPUT_SETTINGS = inputprefs.Watcher\(\)$' launcher/gamepad-nav.py
 rg -q '^HOME_HOLD_SECONDS = 1\.5$' launcher/couchliteos_input.py
 refute rg -q 'shell=True|\beval\b|os\.system|\bsudo\b|pkill|killall' launcher/couchliteos_input.py

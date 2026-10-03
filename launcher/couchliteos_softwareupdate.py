@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import curses
 import json
+import os
 import pathlib
 import textwrap
 import time
@@ -27,7 +28,7 @@ import couchliteos_listview as listview
 import couchliteos_snapshot as snapshot
 import couchliteos_update as update
 
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
 DELETE_REQUEST = "snapshot-delete"
 TITLE = "SOFTWARE UPDATE"
