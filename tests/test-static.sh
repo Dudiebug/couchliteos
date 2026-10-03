@@ -875,11 +875,11 @@ refute rg -n 'show_message\("SUPPORT EXPORT' launcher/couchliteos-launcher.py
 
 # Boot speed: an installed system boots straight in (Shift/Esc shows the menu); the live
 # ISO keeps the menu its binary hook writes; the launcher never waits for the network.
-# Boot speed: an installed system boots straight in (3 s hidden window; Shift/Esc shows the
+# Boot speed: an installed system boots straight in (1 s hidden window; Shift/Esc shows the
 # menu); the live ISO keeps the menu its binary hook writes; the launcher never waits for the
 # network.
 rg -q '^GRUB_TIMEOUT_STYLE=hidden$' overlay/etc/default/grub.d/20-couchliteos.cfg
-rg -q '^GRUB_TIMEOUT=3$' overlay/etc/default/grub.d/20-couchliteos.cfg
+rg -q '^GRUB_TIMEOUT=1$' overlay/etc/default/grub.d/20-couchliteos.cfg
 refute rg -q 'hidden|GRUB_TIMEOUT' config/live-build/hooks/live/0100-autoboot.hook.binary
 refute rg -q 'network-online|wait-online|network-ready|tailscale|usbip|firewall' services/couchliteos-launcher.service
 rg -Fq 'systemd-analyze --no-pager critical-chain couchliteos-launcher.service' scripts/couchliteos-diagnostics

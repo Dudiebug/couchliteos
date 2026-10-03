@@ -18,8 +18,6 @@ import re
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable, Iterable
 
 # The project is moving from Dudiebug/moonlightos to Dudiebug/couchliteos on GitHub. Until the
@@ -241,8 +239,14 @@ class Release:
     assets: tuple[Asset, ...] = ()
 
 
-def _release_json(current: str, opener: Callable[..., object], timeout: float) -> dict:
+def _release_json(current: str, opener: Callable[..., object] | None, timeout: float) -> dict:
     """The newest release's JSON. Sends no identifiers beyond the version in the User-Agent."""
+    # Imported here, on the check's own thread, not when the launcher starts: urllib.request
+    # brings http.client and email with it (about 10 ms of the TV interface's start).
+    import urllib.error
+    import urllib.request
+
+    opener = opener or urllib.request.urlopen
     headers = {"User-Agent": f"CouchLiteOS/{current or 'unknown'}", "Accept": "application/vnd.github+json"}
     try:
         for url in API_URLS:
@@ -268,14 +272,14 @@ def _release_json(current: str, opener: Callable[..., object], timeout: float) -
 
 
 def fetch_latest(
-    current: str, opener: Callable[..., object] = urllib.request.urlopen, timeout: float = TIMEOUT
+    current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT
 ) -> str:
     """Return the latest release tag without its `v`."""
     return _release_json(current, opener, timeout)["tag_name"].strip().removeprefix("v")
 
 
 def fetch_release(
-    current: str, opener: Callable[..., object] = urllib.request.urlopen, timeout: float = TIMEOUT
+    current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT
 ) -> Release:
     """The latest release with its downloadable files (malformed entries are ignored)."""
     data = _release_json(current, opener, timeout)

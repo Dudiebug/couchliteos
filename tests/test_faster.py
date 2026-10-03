@@ -7,6 +7,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -26,14 +27,14 @@ def load_script(name, path):
 class InstalledGrubMenuTest(unittest.TestCase):
     """Installed systems boot straight in; the live ISO keeps its own menu."""
 
-    def test_installed_grub_menu_is_hidden_with_a_three_second_timeout(self):
+    def test_installed_grub_menu_is_hidden_with_a_one_second_timeout(self):
         cfg = ROOT / "overlay/etc/default/grub.d/20-couchliteos.cfg"
         # grub-mkconfig sources the file with sh, so evaluate it the same way.
         result = subprocess.run(
             ["sh", "-c", '. "$1"; printf "%s|%s|%s" "$GRUB_TIMEOUT_STYLE" "$GRUB_TIMEOUT" "$GRUB_CMDLINE_LINUX_DEFAULT"', "sh", str(cfg)],
             capture_output=True, text=True, check=True,
         )
-        self.assertEqual(result.stdout, "hidden|3|quiet ipv6.disable=1")
+        self.assertEqual(result.stdout, "hidden|1|quiet loglevel=3 ipv6.disable=1")
 
     def test_live_iso_menu_is_not_changed_by_the_installed_grub_settings(self):
         hook = (ROOT / "config/live-build/hooks/live/0100-autoboot.hook.binary").read_text()
@@ -103,6 +104,35 @@ class GrubBootCheckTest(unittest.TestCase):
         # No grubenv (or an unwritable one) leaves the variable empty, so the menu shows.
         self.assertRegex(fragment, r'(?m)^set (\w+)=$')
         self.assertIn('if [ -s "${prefix}/grubenv" ]; then', fragment)
+
+    def test_failed_boot_menu_overrides_the_header_timeout_in_the_generated_config(self):
+        # Build the start of grub.cfg the way grub-mkconfig does: 00_header with our
+        # settings, then this helper. The one-second hidden timeout must come first, so a
+        # failed boot still gets the visible five-second menu.
+        header = pathlib.Path("/etc/grub.d/00_header")
+        if not header.exists():
+            self.skipTest("grub-mkconfig's 00_header is not installed")
+        cfg = ROOT / "overlay/etc/default/grub.d/20-couchliteos.cfg"
+        settings = subprocess.run(
+            ["sh", "-c", '. "$1"; printf "%s %s" "$GRUB_TIMEOUT_STYLE" "$GRUB_TIMEOUT"', "sh", str(cfg)],
+            capture_output=True, text=True, check=True).stdout.split()
+        env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "GRUB_TIMEOUT_STYLE": settings[0],
+               "GRUB_TIMEOUT": settings[1], "grub_prefix": "/boot/grub", "pkgdatadir": "/usr/share/grub"}
+        generated = subprocess.run(["sh", str(header)], env=env, capture_output=True, text=True)
+        if generated.returncode != 0:
+            self.skipTest("00_header does not run here: " + generated.stderr[-200:])
+        grub_cfg = generated.stdout + self.fragment()
+        hidden = grub_cfg.index("set timeout_style=hidden\n    set timeout=1\n")
+        self.assertLess(hidden, grub_cfg.index("load_env boot_success"))
+        self.assertLess(hidden, grub_cfg.rindex("set timeout_style=menu\n  set timeout=5\n"))
+        # Nothing after the helper's decision sets the timeout again.
+        tail = grub_cfg[grub_cfg.rindex("set timeout=5"):]
+        self.assertEqual(tail.count("set timeout"), 1)
+        if shutil.which("grub-script-check"):
+            with tempfile.NamedTemporaryFile("w", suffix=".cfg") as script:
+                script.write(grub_cfg)
+                script.flush()
+                subprocess.run(["grub-script-check", script.name], check=True)
 
     def test_helper_is_installed_as_an_executable_grub_script_after_the_header(self):
         install = 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"'
@@ -319,6 +349,37 @@ class LauncherOrderingTest(unittest.TestCase):
         # Its own bounded wait (TimeoutStartSec) must stay: it holds multi-user.target, not the launcher.
         text = (ROOT / "services/couchliteos-network-ready.service").read_text()
         self.assertRegex(text, r"(?m)^TimeoutStartSec=\d+$")
+
+    def test_units_ordered_after_the_network_pull_in_their_own_wait(self):
+        # network-ready Wants NetworkManager-wait-online itself, so the global enable in the
+        # chroot hook adds no wait of its own (B2 kept it). Every unit ordered after
+        # network-online.target must also Want it, or the target would not wait at all.
+        units = read_units()
+        self.assertIn("NetworkManager-wait-online.service", units["couchliteos-network-ready.service"]["Wants"])
+        for name, keys in units.items():
+            if "network-online.target" in keys.get("After", []):
+                self.assertIn("network-online.target", keys.get("Wants", []), name)
+
+
+class TvStartImportsTest(unittest.TestCase):
+    """The TV interface does not load the update check's HTTP stack before its first frame."""
+
+    def test_loading_the_tv_interface_leaves_urllib_request_for_the_update_thread(self):
+        script = ROOT / "launcher/couchliteos-tv.py"
+        probe = ("import sys; "
+                 f"exec(compile(open({str(script)!r}).read(), {str(script)!r}, 'exec'), "
+                 f"{{'__name__': 'tv', '__file__': {str(script)!r}}}); "
+                 "print(sorted(m for m in ('urllib.request', 'http.client') if m in sys.modules))")
+        with tempfile.TemporaryDirectory() as directory:
+            env = {"PATH": "/usr/bin:/bin", "HOME": directory,
+                   "COUCHLITEOS_RUN_DIR": directory, "COUCHLITEOS_STATE_DIR": directory}
+            result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                                    env=env, check=True)
+        self.assertEqual(result.stdout.strip(), "[]")
+        # The check still fetches with urllib.request, imported on its own thread.
+        update = (ROOT / "launcher/couchliteos_update.py").read_text()
+        self.assertRegex(update, r"(?m)^    import urllib\.request$")
+        self.assertNotRegex(update, r"(?m)^import urllib\.(request|error)$")
 
 
 class BootTimingTest(unittest.TestCase):
