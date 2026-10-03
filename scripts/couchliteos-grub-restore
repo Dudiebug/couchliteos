@@ -1,0 +1,40 @@
+#!/bin/sh
+# Installed as /etc/grub.d/42_couchliteos_restore: grub-mkconfig runs it after the normal entries.
+#
+# When an update saved the previous version (couchliteos_snapshot), add a boot menu entry that
+# restores it. It starts the SAVED kernel and initrd from /boot/couchliteos-previous/, so a new
+# kernel that does not boot cannot block the restore; couchliteos.restore=1 starts
+# couchliteos-restore.service, which puts the saved version back and restarts.
+#
+# The snapshot directory's parent belongs to the launcher's user: only a directory that is root's
+# own counts, and only a plain version string from previous.json reaches grub.cfg. The restore
+# itself checks the image again before it uses it. COUCHLITEOS_ROOT is for the tests.
+set -e
+root=${COUCHLITEOS_ROOT:-}
+snapshot=$root/var/lib/couchliteos/snapshot
+boot=$root/boot/couchliteos-previous
+[ -d "$snapshot" ] && [ ! -L "$snapshot" ] && [ -O "$snapshot" ] || exit 0
+[ -f "$snapshot/previous.json" ] && [ ! -L "$snapshot/previous.json" ] || exit 0
+[ -s "$boot/vmlinuz" ] && [ -s "$boot/initrd.img" ] || exit 0
+version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([0-9A-Za-z.+~-]\{1,40\}\)",\{0,1\}[[:space:]]*$/\1/p' \
+  "$snapshot/previous.json" | head -n 1)
+[ -n "$version" ] || version=unknown
+uuid=${GRUB_DEVICE_UUID:-}
+case $uuid in
+  ''|*[!0-9A-Fa-f-]*)
+    echo "couchliteos-grub-restore: no file system UUID for the root, no restore entry" >&2
+    exit 0
+    ;;
+esac
+echo "Found the saved CouchLiteOS $version: adding a restore entry" >&2
+cat << EOF
+menuentry 'CouchLiteOS: restore previous version ($version)' --class couchliteos {
+	insmod part_gpt
+	insmod part_msdos
+	insmod ext2
+	search --no-floppy --fs-uuid --set=root $uuid
+	echo 'Restoring the saved CouchLiteOS $version...'
+	linux /boot/couchliteos-previous/vmlinuz root=UUID=$uuid ro ${GRUB_CMDLINE_LINUX:-} ${GRUB_CMDLINE_LINUX_DEFAULT:-} couchliteos.restore=1
+	initrd /boot/couchliteos-previous/initrd.img
+}
+EOF

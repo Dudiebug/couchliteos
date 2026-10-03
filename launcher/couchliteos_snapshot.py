@@ -15,6 +15,10 @@ written last as the commit mark, then the image, the boot copy and the json are 
 that order. A crash before the mark leaves the old snapshot; after it, `recover` finishes the move.
 Either way exactly one valid snapshot is left.
 
+RESTORE PREVIOUS VERSION (couchliteos_updater `restore`) puts this image back. Settings asks for it
+with an empty `restore-request` file in the snapshot directory, which only root can write; the boot
+service runs the restore when that file exists. The restore reaches the image only through `hold`.
+
 Every system effect goes through the updater's Env (runner, popen, free_bytes, euid, note), and
 `root` is the system being saved, so the same code saves the running box ("/") or a disk mounted
 elsewhere (the live ISO updating an installed system). Standard library only.
@@ -43,7 +47,7 @@ import couchliteos_update as update
 SNAP_REL = "var/lib/couchliteos/snapshot"
 BOOT_REL = "boot/couchliteos-previous"
 CONFIG_REL = "var/lib/couchliteos/config.ini"
-IMAGE, INFO = "previous.squashfs", "previous.json"
+IMAGE, INFO, REQUEST = "previous.squashfs", "previous.json", "restore-request"
 VERSION_RELS = ("etc/couchliteos-version", "etc/moonlightos-version")
 MODULES = ("squashfs", "loop")  # what the restore needs to open the image on any kernel
 LOAD_ORDER = "load-order"
@@ -83,13 +87,16 @@ class Snapshot:
     sha256: str
     kernel: str   # the release the boot copy holds
 
+    def saved_on(self) -> str:
+        """"3 OCT 2026"."""
+        try:
+            return time.strftime("%d %b %Y", time.strptime(self.date, "%Y-%m-%dT%H:%M:%SZ")).lstrip("0").upper()
+        except ValueError:
+            return "ON AN UNKNOWN DATE"
+
     def describe(self) -> str:
         """"0.2.7, SAVED 3 OCT 2026, 1.8 GB" for the settings screens."""
-        try:
-            day = time.strftime("%d %b %Y", time.strptime(self.date, "%Y-%m-%dT%H:%M:%SZ")).lstrip("0").upper()
-        except ValueError:
-            day = "ON AN UNKNOWN DATE"
-        return f"{self.version or 'UNKNOWN VERSION'}, SAVED {day}, {self.size / 1e9:.1f} GB"
+        return f"{self.version or 'UNKNOWN VERSION'}, SAVED {self.saved_on()}, {self.size / 1e9:.1f} GB"
 
 
 # ------------------------------------------------------------------ paths and reading (any user)
@@ -165,14 +172,32 @@ def enabled(root: pathlib.Path = pathlib.Path("/")) -> bool:
 
 def set_enabled(on: bool, root: pathlib.Path = pathlib.Path("/")) -> None:
     """Rewrite only the `snapshot` line of [update], keeping every other line of config.ini."""
-    path = pathlib.Path(root) / CONFIG_REL
+    set_option("snapshot", "on" if on else "off", root)
+
+
+def _read_plain(path: pathlib.Path) -> str:
+    """A regular file's text, never through a symlink or from a pipe ("" when there is none)."""
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
-        lines = []
+        return ""
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return ""
+        return stream.read().decode("utf-8", errors="replace")
+
+
+def set_option(key: str, value: str, root: pathlib.Path = pathlib.Path("/")) -> None:
+    """Rewrite only the `key` line of config.ini's [update], keeping every other line.
+
+    config.ini is the launcher's own file in its own directory: root (a restore) writes it as that
+    directory's owner and never follows a link put there.
+    """
+    path = pathlib.Path(root) / CONFIG_REL
+    lines = _read_plain(path).splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
-    setting = f"snapshot = {'on' if on else 'off'}\n"
+    setting = f"{key} = {value}\n"
     section, start = "", None
     for index, line in enumerate(lines):
         header = re.match(r"^\s*\[([^\]]+)\]\s*$", line)
@@ -180,7 +205,7 @@ def set_enabled(on: bool, root: pathlib.Path = pathlib.Path("/")) -> None:
             section = header.group(1).strip().lower()
             if section == "update" and start is None:
                 start = index
-        elif section == "update" and re.match(r"^\s*snapshot\s*[=:]", line):
+        elif section == "update" and re.match(rf"^\s*{re.escape(key)}\s*[=:]", line):
             lines[index] = setting
             break
     else:
@@ -196,6 +221,9 @@ def set_enabled(on: bool, root: pathlib.Path = pathlib.Path("/")) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o640)
+        if os.geteuid() == 0:
+            owner = os.stat(path.parent)
+            os.chown(temporary, owner.st_uid, owner.st_gid)
         os.replace(temporary, path)
     finally:
         with contextlib.suppress(FileNotFoundError):
@@ -320,6 +348,109 @@ def delete(env, root: pathlib.Path = pathlib.Path("/")) -> bool:
             _remove(where[name])
     env.note("snapshot: deleted")
     return True
+
+
+# ------------------------------------------------------------------ restoring (root)
+
+
+@contextlib.contextmanager
+def _opened_dir(env, root: pathlib.Path):
+    """A descriptor of the snapshot directory, checked after opening, or None when it is not ours.
+
+    Names are then resolved through it, so a directory swapped in afterwards is never used.
+    """
+    if not trusted_dir(env, root):
+        yield None
+        return
+    try:
+        descriptor = os.open(paths(root)["dir"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        yield None
+        return
+    try:
+        found = os.fstat(descriptor)
+        ours = found.st_uid == env.euid() and stat.S_IMODE(found.st_mode) == DIR_MODE
+        yield descriptor if ours else None
+    finally:
+        os.close(descriptor)
+
+
+def request(env, root: pathlib.Path = pathlib.Path("/")) -> bool:
+    """Ask for a restore at the next start (Settings). False when there is no snapshot of ours."""
+    if info(root) is None:
+        return False
+    with _opened_dir(env, root) as directory:
+        if directory is None:
+            return False
+        os.close(os.open(REQUEST, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory))
+    env.note("snapshot: restore requested")
+    return True
+
+
+def requested(root: pathlib.Path = pathlib.Path("/")) -> bool:
+    """Only the request's existence counts; what is in it is never read."""
+    return os.path.lexists(paths(root)["dir"] / REQUEST)
+
+
+def clear_request(env, root: pathlib.Path = pathlib.Path("/")) -> None:
+    with _opened_dir(env, root) as directory:
+        if directory is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(REQUEST, dir_fd=directory)
+
+
+def hold(env, root: pathlib.Path, link: pathlib.Path) -> Snapshot | None:
+    """Hard-link the saved image to `link` and check it there; what a restore mounts (root).
+
+    `verify` by path is not enough for a restore: the snapshot directory's parent belongs to the
+    launcher's user, who could put a directory of their own in its place between the check and the
+    mount. So the image is reached through a descriptor of the checked directory, linked into
+    `link`'s directory (root's own, on the same file system) and hashed at the link. Returns None
+    when the snapshot is missing, not ours, damaged or has no boot copy.
+    """
+    link = pathlib.Path(link)
+    try:
+        parent = os.lstat(link.parent)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != env.euid() or parent.st_mode & 0o022:
+        return None
+    with contextlib.suppress(FileNotFoundError):
+        link.unlink()
+    with _opened_dir(env, root) as directory:
+        if directory is None:
+            return None
+        try:
+            descriptor = os.open(INFO, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(descriptor, "rb") as stream:
+                snapshot = _parse(stream.read(1 << 16).decode("utf-8", errors="replace"))
+            if snapshot is None:
+                return None
+            os.link(IMAGE, link, src_dir_fd=directory, follow_symlinks=False)
+        except OSError as error:
+            env.note(f"snapshot: cannot hold the image: {error}")
+            return None
+    boot = paths(root)["boot"]
+    try:
+        found = os.lstat(link)
+        good = (stat.S_ISREG(found.st_mode) and found.st_uid == env.euid() and found.st_size == snapshot.size
+                and all((boot / name).is_file() for name in ("vmlinuz", "initrd.img"))
+                and _sha256(link) == snapshot.sha256)
+    except OSError:
+        good = False
+    if not good:
+        env.note("snapshot: the saved image or its boot copy is damaged")
+        with contextlib.suppress(OSError):
+            link.unlink()
+        return None
+    return snapshot
+
+
+def load_order(root: pathlib.Path = pathlib.Path("/")) -> list[pathlib.Path]:
+    """The boot copy's module files in the order to insmod them (plain names only)."""
+    modules = paths(root)["boot"] / "modules"
+    names = _read(modules / LOAD_ORDER).split()
+    return [modules / name for name in names if re.fullmatch(r"[A-Za-z0-9_.-]+\.ko(\.(xz|zst|gz))?", name)]
 
 
 def excludes() -> list[str]:

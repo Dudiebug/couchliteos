@@ -151,6 +151,95 @@ class GrubBootCheckTest(unittest.TestCase):
         self.assertEqual(sorted(listing.split()), ["boot_success=1", "next_entry=keep"])
 
 
+RESTORE_SCRIPT = ROOT / "scripts/couchliteos-grub-restore"
+SNAPSHOT_JSON = """{
+ "version": "0.2.7",
+ "date": "2026-10-02T09:00:00Z",
+ "size": 1812000000,
+ "sha256": "%s",
+ "kernel": "6.12.48+deb13-amd64"
+}
+""" % ("a" * 64)
+
+
+class GrubRestoreTest(unittest.TestCase):
+    """The boot menu entry that restores the saved previous version (42_couchliteos_restore)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        self.snapshot = self.root / "var/lib/couchliteos/snapshot"
+        self.snapshot.mkdir(parents=True)
+        self.snapshot.chmod(0o711)
+        (self.snapshot / "previous.json").write_text(SNAPSHOT_JSON)
+        boot = self.root / "boot/couchliteos-previous"
+        boot.mkdir(parents=True)
+        (boot / "vmlinuz").write_text("kernel")
+        (boot / "initrd.img").write_text("initrd")
+
+    def fragment(self, **env):
+        values = {"PATH": "/usr/bin:/bin", "COUCHLITEOS_ROOT": str(self.root),
+                  "GRUB_DEVICE_UUID": "0b1c2d3e-aaaa-bbbb-cccc-0123456789ab",
+                  "GRUB_CMDLINE_LINUX": "", "GRUB_CMDLINE_LINUX_DEFAULT": "quiet ipv6.disable=1"}
+        values.update(env)
+        return subprocess.run(["sh", str(RESTORE_SCRIPT)], capture_output=True, text=True, check=True,
+                              env=values).stdout
+
+    def test_the_entry_boots_the_saved_kernel_and_initrd_with_the_restore_flag(self):
+        fragment = self.fragment()
+        self.assertIn("menuentry 'CouchLiteOS: restore previous version (0.2.7)' --class couchliteos {", fragment)
+        self.assertIn("search --no-floppy --fs-uuid --set=root 0b1c2d3e-aaaa-bbbb-cccc-0123456789ab", fragment)
+        self.assertRegex(fragment, r"(?m)^\tlinux /boot/couchliteos-previous/vmlinuz "
+                                   r"root=UUID=0b1c2d3e-aaaa-bbbb-cccc-0123456789ab ro +quiet ipv6\.disable=1 "
+                                   r"couchliteos\.restore=1$")
+        self.assertRegex(fragment, r"(?m)^\tinitrd /boot/couchliteos-previous/initrd\.img$")
+
+    def test_the_entry_is_valid_grub_script(self):
+        if not shutil.which("grub-script-check"):
+            self.skipTest("grub-script-check is not installed")
+        with tempfile.NamedTemporaryFile("w", suffix=".cfg") as cfg:
+            cfg.write(self.fragment())
+            cfg.flush()
+            subprocess.run(["grub-script-check", cfg.name], check=True)
+
+    def test_no_entry_without_a_snapshot_or_its_boot_copy(self):
+        (self.root / "boot/couchliteos-previous/initrd.img").unlink()
+        self.assertEqual(self.fragment(), "")
+        (self.root / "boot/couchliteos-previous/initrd.img").write_text("initrd")
+        (self.snapshot / "previous.json").unlink()
+        self.assertEqual(self.fragment(), "")
+
+    def test_no_entry_for_a_snapshot_folder_that_is_a_link(self):
+        moved = self.snapshot.with_name("elsewhere")
+        self.snapshot.rename(moved)
+        self.snapshot.symlink_to(moved)
+        self.assertEqual(self.fragment(), "")
+
+    def test_only_a_plain_version_reaches_grub_cfg(self):
+        (self.snapshot / "previous.json").write_text(SNAPSHOT_JSON.replace("0.2.7", "0.2.7' ; reboot ; echo '"))
+        fragment = self.fragment()
+        self.assertIn("restore previous version (unknown)", fragment)
+        self.assertNotIn("reboot", fragment)
+
+    def test_no_entry_without_a_root_uuid(self):
+        self.assertEqual(self.fragment(GRUB_DEVICE_UUID=""), "")
+        self.assertEqual(self.fragment(GRUB_DEVICE_UUID="x y"), "")
+
+    def test_installed_after_the_normal_entries(self):
+        install = 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"'
+        self.assertIn(install, (ROOT / "build/configure.sh").read_text().splitlines())
+        self.assertGreater("42_couchliteos_restore", "41_custom")
+        self.assertTrue(RESTORE_SCRIPT.read_text().startswith("#!/bin/sh\n"))
+
+    def test_the_restore_service_runs_for_the_entry_or_a_request_before_the_launcher(self):
+        unit = (ROOT / "services/couchliteos-restore.service").read_text()
+        self.assertRegex(unit, r"(?m)^ConditionKernelCommandLine=\|couchliteos\.restore=1$")
+        self.assertRegex(unit, r"(?m)^ConditionPathExists=\|/var/lib/couchliteos/snapshot/restore-request$")
+        self.assertRegex(unit, r"(?m)^Before=couchliteos-launcher\.service")
+        self.assertRegex(unit, r"(?m)^Type=oneshot$")
+
+
 ORDERING_KEYS = {"After", "Before", "Requires", "Wants", "Requisite", "BindsTo"}
 PULLS = ("After", "Requires", "Wants", "Requisite", "BindsTo")
 

@@ -461,6 +461,122 @@ class SettingTest(SnapshotCase):
         self.assertEqual(create.call_args.args[2], self.tmp / "disk")
 
 
+class SetOptionTest(SnapshotCase):
+    def config(self):
+        return self.root / "var/lib/couchliteos/config.ini"
+
+    def test_a_restore_adds_its_pause_and_keeps_the_rest(self):
+        put(self.root, "var/lib/couchliteos/config.ini", "[update]\nsnapshot = off\n\n[cec]\nenabled = true\n")
+        snapshot.set_option("paused_until", "1790604800", self.root)
+        self.assertEqual(self.config().read_text(),
+                         "[update]\npaused_until = 1790604800\nsnapshot = off\n\n[cec]\nenabled = true\n")
+        snapshot.set_option("paused_until", "1", self.root)
+        self.assertEqual(self.config().read_text().count("paused_until"), 1)
+        self.assertFalse(snapshot.enabled(self.root))
+
+    def test_a_link_in_place_of_config_ini_is_replaced_never_read_or_written_through(self):
+        secret = put(self.tmp, "secret", "[update]\nroot_only = yes\n")
+        self.config().parent.mkdir(parents=True)
+        self.config().symlink_to(secret)
+        snapshot.set_option("paused_until", "5", self.root)
+        self.assertFalse(self.config().is_symlink())
+        self.assertEqual(self.config().read_text(), "[update]\npaused_until = 5\n")
+        self.assertEqual(secret.read_text(), "[update]\nroot_only = yes\n")
+
+    @unittest.skipUnless(os.geteuid() == 0, "needs root to give the file away")
+    def test_written_by_root_it_stays_the_directorys_owners(self):
+        self.config().parent.mkdir(parents=True)
+        os.chown(self.config().parent, 4242, 4343)
+        snapshot.set_option("paused_until", "5", self.root)
+        found = self.config().stat()
+        self.assertEqual((found.st_uid, found.st_gid, stat.S_IMODE(found.st_mode)), (4242, 4343, 0o640))
+
+
+class RestoreSideTest(SnapshotCase):
+    """What the restore uses: the request, the held image and the boot copy's modules."""
+
+    def setUp(self):
+        super().setUp()
+        self.held = self.tmp / "update-dir" / "restore.squashfs"
+        self.held.parent.mkdir()
+        os.chmod(self.held.parent, 0o755)
+
+    def test_a_request_is_root_only_and_needs_a_snapshot(self):
+        self.assertFalse(snapshot.request(self.env, self.root))
+        self.create()
+        self.assertTrue(snapshot.request(self.env, self.root))
+        request = self.where()["dir"] / snapshot.REQUEST
+        self.assertEqual(stat.S_IMODE(request.stat().st_mode), 0o600)
+        self.assertTrue(snapshot.requested(self.root))
+        snapshot.clear_request(self.env, self.root)
+        self.assertFalse(snapshot.requested(self.root))
+        snapshot.clear_request(self.env, self.root)  # twice is fine
+
+    def test_a_request_never_follows_a_link_put_in_its_place(self):
+        self.create()
+        elsewhere = self.tmp / "elsewhere"
+        (self.where()["dir"] / snapshot.REQUEST).symlink_to(elsewhere)
+        with self.assertRaises(OSError):
+            snapshot.request(self.env, self.root)
+        self.assertFalse(elsewhere.exists())
+
+    def test_hold_links_the_checked_image_where_only_root_writes(self):
+        saved = self.create(b"image A")
+        held = snapshot.hold(self.env, self.root, self.held)
+        self.assertEqual(held, saved)
+        self.assertEqual(self.held.read_bytes(), b"image A")
+        self.assertTrue(os.path.samefile(self.held, self.where()["image"]))
+
+    def test_hold_refuses_a_damaged_image_and_leaves_no_link(self):
+        self.create(b"image A")
+        self.where()["image"].write_bytes(b"image Z")
+        self.assertIsNone(snapshot.hold(self.env, self.root, self.held))
+        self.assertFalse(os.path.lexists(self.held))
+
+    def test_hold_refuses_without_the_boot_copy(self):
+        self.create()
+        (self.where()["boot"] / "vmlinuz").unlink()
+        self.assertIsNone(snapshot.hold(self.env, self.root, self.held))
+
+    def test_hold_refuses_a_directory_swapped_in_by_the_user(self):
+        self.create(b"image A")
+        mine = self.where()["dir"].with_name("mine")
+        shutil.copytree(self.where()["dir"], mine)
+        os.chmod(mine, 0o777)  # what a directory the launcher's user made looks like to root
+        shutil.rmtree(self.where()["dir"])
+        mine.rename(self.where()["dir"])
+        self.assertIsNone(snapshot.hold(self.env, self.root, self.held))
+        shutil.rmtree(self.where()["dir"])
+        self.where()["dir"].symlink_to(mine.with_name("gone"))
+        self.assertIsNone(snapshot.hold(self.env, self.root, self.held))
+
+    def test_hold_refuses_a_place_others_can_write(self):
+        self.create()
+        os.chmod(self.held.parent, 0o777)
+        self.assertIsNone(snapshot.hold(self.env, self.root, self.held))
+
+    def test_hold_never_takes_a_symlink_for_the_image(self):
+        self.create(b"image A")
+        target = put(self.tmp, "other.squashfs", b"image A")
+        self.where()["image"].unlink()
+        self.where()["image"].symlink_to(target)
+        self.assertIsNone(snapshot.hold(self.env, self.root, self.held))
+
+    def test_a_stale_link_from_an_interrupted_restore_is_replaced(self):
+        self.create(b"image A")
+        self.held.write_bytes(b"stale")
+        self.assertIsNotNone(snapshot.hold(self.env, self.root, self.held))
+        self.assertEqual(self.held.read_bytes(), b"image A")
+
+    def test_load_order_keeps_plain_module_names_in_their_order(self):
+        put(self.root, "boot/couchliteos-previous/modules/load-order",
+            "squashfs.ko.xz\nloop.ko.zst\n../../etc/shadow\n/abs.ko\nevil;rm.ko\nlz4.ko\n")
+        modules = self.root / "boot/couchliteos-previous/modules"
+        self.assertEqual(snapshot.load_order(self.root),
+                         [modules / "squashfs.ko.xz", modules / "loop.ko.zst", modules / "lz4.ko"])
+        self.assertEqual(snapshot.load_order(self.tmp / "nothing"), [])
+
+
 class WiringTest(unittest.TestCase):
     def test_the_update_never_touches_the_boot_copy_and_saving_is_a_phase(self):
         self.assertIn("/boot/couchliteos-previous/", updater.SYSTEM_EXCLUDES)

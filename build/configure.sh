@@ -131,6 +131,7 @@ install -D -m 0755 "$ROOT/scripts/couchliteos-nvidia-firmware" "$CHROOT/usr/libe
 install -D -m 0644 "$ROOT/third_party/envytools/extract_firmware.py" "$CHROOT/usr/libexec/couchliteos/envytools-extract-firmware.py"
 install -D -m 0755 "$ROOT/scripts/couchliteos-diagnostics" "$CHROOT/usr/bin/couchliteos-diagnostics"
 install -D -m 0755 "$ROOT/scripts/couchliteos-grub-bootcheck" "$CHROOT/etc/grub.d/01_couchliteos_bootcheck"
+install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/couchliteos-hardware-report"
 install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
 install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"

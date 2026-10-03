@@ -73,7 +73,7 @@ rdp_state_absent() {
 
 case $mode in
   # Lets tests/qemu-install-smoke.sh stop waiting as soon as an update mode fails.
-  update-*) trap 'status=$?; [[ $status == 0 ]] || echo COUCHLITEOS_SMOKE_UPDATE_FAILED' EXIT ;;
+  update-*|restore-*) trap 'status=$?; [[ $status == 0 ]] || echo COUCHLITEOS_SMOKE_UPDATE_FAILED' EXIT ;;
 esac
 wait_for_file /run/couchliteos/launcher-ready launcher
 case $mode in
@@ -142,6 +142,42 @@ case $mode in
     id installer-test >/dev/null
     id -nG installer-test | tr ' ' '\n' | grep -Fxq sudo
     echo COUCHLITEOS_SMOKE_UPDATE_READY
+    exit 0
+    ;;
+  restore-apply)
+    # After update-check: change something the restore must undo, then ask for the restore the way
+    # Settings does. The request service writes root's own request and restarts the box.
+    printf '\n[qemu-smoke]\nafter_snapshot = yes\n' >> /var/lib/couchliteos/config.ini
+    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
+      /var/lib/couchliteos/snapshot/previous.json > /var/lib/couchliteos-smoke-restore-version
+    runuser -u couchliteos -- touch /run/couchliteos/restore-request
+    wait_for_file /var/lib/couchliteos/snapshot/restore-request 'the restore request'
+    sync
+    echo COUCHLITEOS_SMOKE_RESTORE_REQUESTED
+    exit 0
+    ;;
+  restore-run)
+    # couchliteos-restore.service restores and restarts before the launcher: reaching it means it did not.
+    echo 'The launcher started although a restore was requested.' >&2
+    tail -n 40 /var/log/couchliteos/update.log >&2 || true
+    exit 1
+    ;;
+  restore-check)
+    # The saved version is back: its version, the settings it had, not the change made after it.
+    [[ $(cat /etc/couchliteos-version) == "$(cat /var/lib/couchliteos-smoke-restore-version)" ]]
+    grep -Fxq 'cold_boot = verified' /var/lib/couchliteos/config.ini
+    if grep -Fxq 'after_snapshot = yes' /var/lib/couchliteos/config.ini; then
+      echo 'A setting made after the snapshot survived the restore.' >&2
+      exit 1
+    fi
+    grep -q '^paused_until = [0-9]' /var/lib/couchliteos/config.ini
+    verify_rdp_state
+    grep -q '^.* restore to .* done$' /var/log/couchliteos/update.log
+    test ! -e /var/lib/couchliteos/snapshot/restore-request
+    test -s /var/lib/couchliteos/snapshot/previous.squashfs
+    [[ -z $(dpkg --audit) ]] || { echo 'dpkg --audit is not clean after the restore.' >&2; dpkg --audit >&2; exit 1; }
+    id installer-test >/dev/null
+    echo COUCHLITEOS_SMOKE_RESTORE_READY
     exit 0
     ;;
   live-persistence-write)

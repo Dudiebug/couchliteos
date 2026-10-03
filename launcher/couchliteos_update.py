@@ -35,6 +35,10 @@ LIVE_MEDIUM = pathlib.Path("/run/live/medium")
 CMDLINE = pathlib.Path("/proc/cmdline")
 SUMS_NAME = "SHA256SUMS"
 STATE = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "update-check.ini"
+# config.ini [update] paused_until: written by a restore (couchliteos_updater) so the check does not
+# offer the update that was just undone. Settings > SOFTWARE UPDATE still checks when asked.
+CONFIG = STATE.parent / "config.ini"
+PAUSE_SECONDS = 7 * 86400.0
 ROUTE4 = pathlib.Path("/proc/net/route")
 ROUTE6 = pathlib.Path("/proc/net/ipv6_route")
 RTF_UP = 0x1
@@ -195,12 +199,25 @@ def has_default_route(route4: pathlib.Path = ROUTE4, route6: pathlib.Path = ROUT
     return False
 
 
-def due(state: State, now: float, *, start: bool = False, retry: bool = False) -> bool:
+def paused_until(path: pathlib.Path = CONFIG) -> float:
+    """config.ini [update] paused_until (seconds since the epoch), 0 when there is none."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(path.read_text(encoding="utf-8", errors="replace"))
+        return _number(parser.get("update", "paused_until", fallback="0").strip())
+    except (OSError, configparser.Error):
+        return 0.0
+
+
+def due(state: State, now: float, *, start: bool = False, retry: bool = False, paused: float = 0.0) -> bool:
     """True when a release should be asked for now.
+
+    `paused`: no check before this time (after a restore). One further away than PAUSE_SECONDS
+    was written by a wrong clock and is ignored.
 
     `start`: no check has succeeded since the launcher started, so the last check (maybe from before
     the reboot) does not count. `retry`: an attempt already failed in this run."""
-    if not state.enabled:
+    if not state.enabled or 0 < paused - now <= PAUSE_SECONDS:
         return False
     # A timestamp in the future (the clock was wrong when it was saved) is stale.
     if not start and state.checked_at and 0 <= now - state.checked_at < CHECK_SECONDS:
@@ -348,8 +365,10 @@ class Checker:
         online: Callable[[], bool] = has_default_route,
         live: Callable[[], bool] = is_live,
         profile: dict[str, str] | None = None,
+        config_path: pathlib.Path = CONFIG,
     ) -> None:
         self.current = installed_version() if current is None else current
+        self.paused_until = paused_until(config_path)  # a restore happens before the launcher starts
         self.suffix = (read_profile() if profile is None else profile).get("ISO_SUFFIX", "")
         self.state_path = state_path
         self.fetch = fetch
@@ -416,7 +435,7 @@ class Checker:
     def check_if_due(self) -> None:
         now = self.clock()
         with self._lock:
-            if not due(self._state, now, start=not self._checked, retry=self._failed):
+            if not due(self._state, now, start=not self._checked, retry=self._failed, paused=self.paused_until):
                 return
         # Runs before anything is recorded: a boot without a network must not use
         # up the start-up check, so the next poll after the network comes up retries.

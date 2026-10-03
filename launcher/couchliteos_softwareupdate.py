@@ -8,7 +8,9 @@ stopped safely, so B only says to wait.
 
 The service saves the running system first (couchliteos_snapshot). This screen shows that saved
 version, turns SAVE BEFORE UPDATE on or off (config.ini, the launcher's own file) and asks the root
-service to delete it (/run/couchliteos/snapshot-delete, couchliteos-snapshot-delete.path).
+service to delete it (/run/couchliteos/snapshot-delete, couchliteos-snapshot-delete.path) or to
+restore it (/run/couchliteos/restore-request, couchliteos-restore-request.path: the service leaves a
+request for couchliteos-restore.service and restarts the box, which restores before the launcher).
 
 Everything the screen needs from outside is injected, so the tests use fakes.
 """
@@ -30,11 +32,12 @@ import couchliteos_update as update
 
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
-DELETE_REQUEST = "snapshot-delete"
+DELETE_REQUEST, RESTORE_REQUEST = "snapshot-delete", "restore-request"
 TITLE = "SOFTWARE UPDATE"
 CHECK, INSTALL, BACK = "CHECK FOR UPDATES", "INSTALL UPDATE", "BACK"
 HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
 SAVE_ON, SAVE_OFF, DELETE_SAVED = "SAVE BEFORE UPDATE: ON", "SAVE BEFORE UPDATE: OFF", "DELETE SAVED VERSION"
+RESTORE = "RESTORE PREVIOUS VERSION"
 NO_SAVED = "SAVED VERSION: NONE"
 DELETING = "DELETING THE SAVED VERSION..."
 LIVE_TEXT = (
@@ -150,6 +153,7 @@ class SoftwareUpdate:
         self.asset: update.Asset | None = None
         self.result = ""
         self.selected = 0
+        self.heading = "UPDATING TO COUCHLITEOS"  # the progress screen's title, before the version
 
     # -- the main screen -----------------------------------------------------------------------
 
@@ -157,7 +161,12 @@ class SoftwareUpdate:
         if self.live:
             return [BACK]
         rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
-        return rows + ([DELETE_SAVED] if self._saved() else []) + [BACK]
+        saved = self._saved()
+        return rows + (self.restore_rows(saved) if saved else []) + [BACK]
+
+    @staticmethod
+    def restore_rows(saved: snapshot.Snapshot) -> list[str]:
+        return [DELETE_SAVED, f"{RESTORE} ({saved.version}, SAVED {saved.saved_on()})"]
 
     def _saved(self) -> snapshot.Snapshot | None:
         try:
@@ -232,6 +241,8 @@ class SoftwareUpdate:
                     self.toggle_save_first(choice == SAVE_OFF)
                 elif choice == DELETE_SAVED:
                     self.delete_saved()
+                elif choice.startswith(RESTORE):
+                    self.restore_saved()
                 else:
                     self.install()
 
@@ -261,6 +272,32 @@ class SoftwareUpdate:
             self.result = f"COULD NOT DELETE THE SAVED VERSION: {error.strerror or 'ERROR'}".upper()
             return
         self.result = DELETING
+        self.selected = 0
+
+    def restore_saved(self) -> None:
+        saved = self._saved()
+        if saved is None:
+            return
+        if self.apps_running():
+            self.result = CLOSE_APPS
+            return
+        question = (
+            f"RESTORE COUCHLITEOS {saved.version}, SAVED {saved.saved_on()}? EVERYTHING CHANGED SINCE THEN IS LOST: "
+            "SETTINGS, PAIRINGS AND APPS ADDED LATER. THE BOX RESTARTS AND RESTORES IT. KEEP IT PLUGGED IN."
+        )
+        if not self.confirm(self.screen, question):
+            return
+        try:
+            (self.run_dir / STATUS).unlink(missing_ok=True)
+            (self.run_dir / RESTORE_REQUEST).touch()
+        except OSError as error:
+            self.result = f"COULD NOT START THE RESTORE: {error.strerror or 'ERROR'}".upper()
+            return
+        self.heading = "RESTORING COUCHLITEOS"
+        try:
+            self.result = self.progress(saved.version)
+        finally:
+            self.heading = "UPDATING TO COUCHLITEOS"
         self.selected = 0
 
     # -- checking and installing -----------------------------------------------------------------
@@ -319,7 +356,7 @@ class SoftwareUpdate:
         self, version: str, text: str, percent: int | None, frame: int, hint: str, with_bar: bool = True
     ) -> None:
         height, width, row = self.frame()
-        _centered(self.screen, row, f"UPDATING TO COUCHLITEOS {version}", curses.A_BOLD)
+        _centered(self.screen, row, f"{self.heading} {version}", curses.A_BOLD)
         for offset, line in enumerate(textwrap.wrap(text, max(8, width - 8))[: max(1, height - 12)]):
             _centered(self.screen, row + 2 + offset, line)
         if with_bar:

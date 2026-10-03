@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/restore-request
+Unit=couchliteos-restore-request.service
+
+[Install]
+WantedBy=graphical.target

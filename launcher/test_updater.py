@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -1340,6 +1341,9 @@ class ApplyIsoTest(TmpCase):
 class ApplyRootTest(TmpCase):
     def setUp(self):
         super().setUp()
+        self.make_trees()
+
+    def make_trees(self):
         self.image = self.tmp / "image"
         self.target = self.tmp / "target"
         put(self.image, "etc/couchliteos-version", "0.2.2\n")
@@ -1720,9 +1724,349 @@ class MainTest(TmpCase):
         run.assert_not_called()
         self.assertFalse(self.status_path.exists(), "the running update's status must not be overwritten")
 
+    def test_restore_runs_the_boot_restore_under_the_lock(self):
+        with mock.patch.object(updater, "restore_at_boot", return_value=0) as restore:
+            self.assertEqual(self.main("restore"), 0)
+        env, status = restore.call_args.args
+        self.assertEqual(status.path, self.status_path)
+        with updater.acquire_lock(self.env.run_dir / "update.lock"):
+            with mock.patch.object(updater, "restore_at_boot") as restore:
+                self.assertEqual(self.main("restore"), 1)
+            restore.assert_not_called()
+
+    def test_request_restore_restarts_only_when_the_request_was_made(self):
+        with mock.patch.object(updater, "request_restore"):
+            self.assertEqual(self.main("request-restore"), 0)
+        self.assertEqual(self.runner.calls[-1], ["systemctl", "reboot"])
+        self.runner.calls.clear()
+        with mock.patch.object(updater, "request_restore", side_effect=updater.UpdateFailed(updater.MSG_NO_SAVED)):
+            self.assertEqual(self.main("request-restore"), 1)
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+        self.assertEqual(json.loads(self.status_path.read_text())["message"], updater.MSG_NO_SAVED)
+
+    def test_apply_root_restore_is_passed_on_and_prints_its_progress(self):
+        with mock.patch.object(updater, "apply_root") as apply:
+            self.main("apply-root", "/mnt", "--status", str(self.tmp / "s.json"), "--force", "--snapshot-done",
+                      "--restore")
+            self.assertTrue(apply.call_args.kwargs["restore"])
+            self.assertFalse(apply.call_args.kwargs["save_first"])
+            self.assertIsNotNone(apply.call_args.args[1].echo)
+            self.main("apply-root", "/mnt", "--status", str(self.tmp / "s.json"))
+            self.assertFalse(apply.call_args.kwargs["restore"])
+            self.assertIsNone(apply.call_args.args[1].echo)
+
     def test_unknown_commands_are_a_usage_error(self):
         with self.assertRaises(SystemExit):
             self.main("explode")
+
+
+# ---------------------------------------------------------------- restore (the saved previous version)
+
+
+class RestoreStepsTest(unittest.TestCase):
+    def steps(self, restore):
+        return updater.rsync_steps(pathlib.Path("/"), pathlib.Path("/mnt"), pathlib.Path("/run/f/a.rules"),
+                                   pathlib.Path("/run/f/e.rules"), restore)
+
+    def test_a_restore_adds_the_state_step_last(self):
+        self.assertEqual([name for name, _ in self.steps(True)], ["system", "etc", "var", "dpkg", "state"])
+        self.assertEqual(self.steps(True)[:4], self.steps(False), "the four update steps are unchanged")
+
+    def test_the_state_step_brings_the_launchers_state_back_but_never_the_snapshot(self):
+        argv = dict(self.steps(True))["state"]
+        self.assertEqual(argv, [*BASE, "--delete-after", "--exclude=/snapshot/",
+                                "/var/lib/couchliteos/", "/mnt/var/lib/couchliteos/"])
+        self.assertIn("/lib/couchliteos/", updater.VAR_EXCLUDES, "only the state step touches it")
+
+
+class ApplyRootRestoreTest(TmpCase):
+    """apply_root with restore=True: the image is the snapshot, mounted, of an older version."""
+
+    def setUp(self):
+        super().setUp()
+        ApplyRootTest.make_trees(self)
+
+    read = ApplyRootTest.read
+    script = ApplyRootTest.script
+
+    def restore(self, **kwargs):
+        put(self.image, "etc/couchliteos-version", "0.2.0\n")
+        put(self.target, "var/lib/couchliteos/config.ini", "[power]\nblank_minutes = 10\n")
+        self.env.wall_clock = lambda: 1_790_000_000.0
+        kwargs.setdefault("save_first", False)
+        return updater.apply_root(self.target, self.status, self.env, image=self.image, restore=True, **kwargs)
+
+    def test_an_older_version_is_fine_without_force(self):
+        self.restore()
+        self.assertEqual(self.read("etc/couchliteos-version"), "0.2.0\n")
+        self.assertEqual(self.status.version, "0.2.0")
+        put(self.target, "etc/couchliteos-version", "0.2.1\n")
+        with self.assertRaises(updater.UpdateFailed):
+            updater.apply_root(self.target, self.status, self.env, image=self.image, save_first=False)
+
+    def test_another_kind_of_box_is_still_refused(self):
+        put(self.image, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=nvidia\n")
+        with self.assertRaises(updater.UpdateFailed):
+            self.restore()
+        self.assertEqual(self.runner.calls, [])
+
+    def test_five_syncs_the_last_one_the_state(self):
+        self.restore()
+        self.assertEqual([call[-1] for call in self.runner.commands("rsync")], [
+            f"{self.target}/", f"{self.target}/etc/", f"{self.target}/var/", f"{self.target}/var/lib/dpkg/",
+            f"{self.target}/var/lib/couchliteos/"])
+        self.assertIn("RESTORING YOUR SETTINGS...", [message for _phase, message, _ in self.status.history])
+
+    def test_nothing_only_the_box_has_is_kept(self):
+        self.restore()
+        self.assertEqual(self.filters, {"system": "", "var/lib/dpkg": ""})
+        self.assertEqual(list(updater.parse_dpkg_status(self.read("var/lib/dpkg/status"))), [("base-files", "amd64")])
+
+    def test_the_update_check_pauses_a_week_and_whats_new_counts_as_seen(self):
+        self.restore()
+        self.assertEqual(self.read("var/lib/couchliteos/config.ini"),
+                         f"[power]\nblank_minutes = 10\n\n[update]\npaused_until = {1_790_000_000 + 7 * 86400}\n")
+        self.assertEqual(self.read("var/lib/couchliteos/whatsnew-seen"), "0.2.0\n")
+        self.assertEqual(update.paused_until(self.target / "var/lib/couchliteos/config.ini"), 1_790_604_800)
+
+    def test_the_log_says_restore(self):
+        self.restore()
+        log = self.read("var/log/couchliteos/update.log")
+        self.assertIn("restore to 0.2.0 from 0.2.1", log)
+        self.assertIn("restore to 0.2.0 done", log)
+        self.assertEqual(self.status.phases()[-1], "restarting")
+
+    def test_a_state_step_that_fails_stops_before_the_boot_menu(self):
+        self.fail["var/lib/couchliteos/"] = (23, "partial transfer")
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            self.restore()
+        self.assertIn("(STATE)", caught.exception.message)
+        self.assertEqual(self.runner.commands("chroot"), [])
+        self.assertEqual(self.read("etc/couchliteos-version"), "0.2.1\n")
+
+
+class EchoStatusTest(TmpCase):
+    def test_each_new_message_is_printed_once(self):
+        said = []
+        status = updater.Status(self.tmp / "s.json", echo=said.append)
+        for message, percent in (("COPYING SYSTEM FILES...", 10), ("COPYING SYSTEM FILES...", 20), ("DONE", 100)):
+            status.set("installing", message, percent)
+        self.assertEqual(said, ["COPYING SYSTEM FILES...", "DONE"])
+
+
+def make_snapshot(root, version="0.2.0", image=b"saved image"):
+    directory = pathlib.Path(root) / "var/lib/couchliteos/snapshot"
+    directory.mkdir(parents=True)
+    directory.chmod(0o711)
+    (directory / "previous.squashfs").write_bytes(image)
+    (directory / "previous.json").write_text(json.dumps({
+        "version": version, "date": "2026-10-02T09:00:00Z", "size": len(image),
+        "sha256": hashlib.sha256(image).hexdigest(), "kernel": "6.12.1"}))
+    put(root, "boot/couchliteos-previous/vmlinuz", "k")
+    put(root, "boot/couchliteos-previous/initrd.img", "i")
+    put(root, "boot/couchliteos-previous/modules/squashfs.ko.xz", "m")
+    put(root, "boot/couchliteos-previous/modules/loop.ko.xz", "m")
+    put(root, "boot/couchliteos-previous/modules/load-order", "squashfs.ko.xz\nloop.ko.xz\n")
+    return directory
+
+
+class RestoreTest(TmpCase):
+    def setUp(self):
+        super().setUp()
+        self.fail = {}
+        self.seen = {}
+        self.runner = Runner(self.script)
+        self.env = make_env(self.tmp, runner=self.runner, euid=os.geteuid, restore_dir=self.tmp / "restore",
+                            sleep=self.slept)
+        self.sleeps = []
+        put(self.env.root, "etc/couchliteos-version", "0.2.1\n")
+        self.snap = make_snapshot(self.env.root)
+        self.status = RecordingStatus(self.env.run_dir / "update-status.json")
+        self.held = self.env.root / "var/lib/couchliteos-update/restore.squashfs"
+
+    def slept(self, seconds):
+        self.sleeps.append(seconds)
+
+    def script(self, argv):
+        if argv[0] == "mount" and "squashfs" in argv:
+            self.seen["mounted"] = pathlib.Path(argv[-2]).read_bytes()
+        if argv[0] == "chroot":
+            tool = self.tmp / "restore/tool"
+            self.seen["tool"] = sorted(path.name for path in tool.iterdir())
+        for key, reply in self.fail.items():
+            if key in " ".join(argv):
+                return reply
+        return None
+
+    def mounts(self):
+        return [call for call in self.runner.calls if call[0] in ("mount", "umount", "chroot", "modprobe", "insmod")]
+
+    def test_the_whole_restore_in_order(self):
+        self.assertEqual(updater.restore(self.env, self.status), "0.2.0")
+        r = str(self.tmp / "restore/root")
+        self.assertEqual(self.mounts(), [
+            ["modprobe", "-a", "squashfs", "loop"],
+            ["mount", "-t", "squashfs", "-o", "ro,loop", str(self.held), r],
+            ["mount", "--bind", "/", f"{r}/mnt"], ["mount", "--make-rslave", f"{r}/mnt"],
+            ["mount", "-t", "proc", "proc", f"{r}/proc"],
+            ["mount", "--rbind", "/sys", f"{r}/sys"], ["mount", "--make-rslave", f"{r}/sys"],
+            ["mount", "--rbind", "/dev", f"{r}/dev"], ["mount", "--make-rslave", f"{r}/dev"],
+            ["mount", "--bind", "/run", f"{r}/run"], ["mount", "--make-rslave", f"{r}/run"],
+            ["chroot", r, "python3", f"{self.tmp}/restore/tool/couchliteos_updater.py", "apply-root", "/mnt",
+             "--status", str(self.status.path), "--force", "--snapshot-done", "--restore"],
+            ["umount", "-R", f"{r}/run"], ["umount", "-R", f"{r}/dev"], ["umount", "-R", f"{r}/sys"],
+            ["umount", "-R", f"{r}/proc"], ["umount", "-R", f"{r}/mnt"], ["umount", "-R", r],
+        ])
+        self.assertEqual([call[0] for call in self.runner.calls[:3]], ["findmnt"] * 3, "the layout is checked first")
+
+    def test_the_held_link_of_the_checked_image_is_mounted_then_removed(self):
+        updater.restore(self.env, self.status)
+        self.assertEqual(self.seen["mounted"], b"saved image")
+        self.assertFalse(os.path.lexists(self.held))
+        self.assertTrue((self.snap / "previous.squashfs").exists(), "the snapshot itself stays")
+
+    def test_todays_updater_and_its_modules_run_inside_and_are_removed_afterwards(self):
+        updater.restore(self.env, self.status)
+        self.assertEqual(self.seen["tool"], ["couchliteos_browser.py", "couchliteos_snapshot.py",
+                                             "couchliteos_update.py", "couchliteos_updater.py"])
+        self.assertFalse((self.tmp / "restore/tool").exists())
+
+    def test_the_copied_tool_is_everything_the_updater_imports(self):
+        import ast
+        names = {path.stem for path in updater.TOOL}
+        for path in updater.TOOL:
+            tree = ast.parse(path.read_text())
+            imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+            imported |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+            ours = {name for name in imported if name.startswith("couchliteos_")}
+            self.assertLessEqual(ours, names - {"couchliteos-updater"} | {"couchliteos_updater"}, path)
+
+    def test_without_the_kernels_modules_the_saved_ones_are_loaded_in_order(self):
+        self.fail["modprobe"] = (1, "modprobe: FATAL: Module squashfs not found")
+        updater.restore(self.env, self.status)
+        modules = self.env.root / "boot/couchliteos-previous/modules"
+        self.assertEqual(self.mounts()[1:3], [["insmod", str(modules / "squashfs.ko.xz")],
+                                              ["insmod", str(modules / "loop.ko.xz")]])
+
+    def test_no_or_a_damaged_snapshot_is_refused_before_any_mount(self):
+        (self.snap / "previous.squashfs").write_bytes(b"saved imagf")
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.restore(self.env, self.status)
+        self.assertEqual(caught.exception.message, updater.MSG_NO_SAVED)
+        self.assertEqual(self.mounts(), [])
+
+    def test_a_snapshot_folder_that_is_not_roots_is_refused(self):
+        self.snap.chmod(0o777)
+        with self.assertRaises(updater.UpdateFailed):
+            updater.restore(self.env, self.status)
+        self.assertEqual(self.mounts(), [])
+
+    def test_live_is_refused(self):
+        (self.env.root / "run/live/medium").mkdir(parents=True)
+        with self.assertRaises(updater.UpdateFailed):
+            updater.restore(self.env, self.status)
+        self.assertEqual(self.runner.calls, [])
+
+    def test_the_inner_updaters_failure_is_passed_on_and_everything_is_unwound(self):
+        def failing(argv):
+            if argv[0] == "chroot":
+                updater.Status(self.status.path).set("failed", "INSTALL FAILED WHILE COPYING FILES (STATE).")
+                return (1, "")
+            return None
+
+        self.runner.script = failing
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.restore(self.env, self.status)
+        self.assertEqual(caught.exception.message, "INSTALL FAILED WHILE COPYING FILES (STATE).")
+        self.assertEqual(self.runner.calls[-1], ["umount", "-R", str(self.tmp / "restore/root")])
+        self.assertFalse(os.path.lexists(self.held))
+
+    def test_at_boot_success_drops_the_request_and_restarts(self):
+        self.assertTrue(updater.snapshot.request(self.env, self.env.root))
+        said = []
+        self.status.echo = said.append
+        self.assertEqual(updater.restore_at_boot(self.env, self.status), 0)
+        self.assertFalse(updater.snapshot.requested(self.env.root))
+        self.assertEqual(self.runner.calls[-1], ["systemctl", "reboot"])
+        self.assertEqual(said[0], "RESTORING THE SAVED VERSION. KEEP THE BOX PLUGGED IN.")
+        self.assertEqual(said[-1], "RESTORED COUCHLITEOS 0.2.0. RESTARTING...")
+        self.assertEqual(self.sleeps, [])
+
+    def test_at_boot_a_failure_says_why_drops_the_request_and_lets_the_box_start(self):
+        self.assertTrue(updater.snapshot.request(self.env, self.env.root))
+        self.fail["chroot"] = (1, "")
+        said = []
+        self.status.echo = said.append
+        self.assertEqual(updater.restore_at_boot(self.env, self.status), 1)
+        self.assertFalse(updater.snapshot.requested(self.env.root))
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+        self.assertIn(updater.MSG_RESTORE, said)
+        self.assertEqual(self.sleeps, [updater.RESTORE_FAILED_PAUSE])
+
+    def test_settings_request_needs_a_snapshot_and_then_restarts(self):
+        updater.request_restore(self.env, self.status)
+        self.assertTrue(updater.snapshot.requested(self.env.root))
+        self.assertEqual(self.status.phases()[-1], "restarting")
+        self.assertEqual(self.status.version, "0.2.0")
+        updater.snapshot.delete(self.env, self.env.root)
+        with self.assertRaises(updater.UpdateFailed):
+            updater.request_restore(self.env, self.status)
+
+
+@unittest.skipUnless(shutil.which("rsync"), "needs rsync")
+class RealRsyncRestoreTest(TmpCase):
+    """apply_root(restore=True) with the real rsync on small trees (chroot and mounts are faked)."""
+
+    def setUp(self):
+        super().setUp()
+        self.image, self.target = self.tmp / "image", self.tmp / "target"
+        for root, version, kernel in ((self.image, "0.2.0", "6.12.1"), (self.target, "0.3.0", "6.12.9")):
+            put(root, "etc/couchliteos-version", version + "\n")
+            put(root, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=general\n")
+            put(root, "etc/passwd", IMAGE_PASSWD)
+            put(root, "etc/group", IMAGE_GROUP)
+            put(root, "etc/shadow", IMAGE_SHADOW)
+            put(root, "etc/gshadow", IMAGE_GSHADOW)
+            put(root, "var/lib/dpkg/status", "Package: base-files\nStatus: install ok installed\nArchitecture: amd64\n")
+            put(root, f"boot/vmlinuz-{kernel}", version)
+            put(root, f"boot/initrd.img-{kernel}", version)
+            put(root, "usr/bin/tool", version)
+        for path in self.image.rglob("*"):  # older files, as a saved version's are
+            os.utime(path, (1_700_000_000, 1_700_000_000), follow_symlinks=False)
+        put(self.image, "var/lib/couchliteos/config.ini", "[qemu-smoke]\ncold_boot = verified\n")
+        put(self.image, "var/lib/couchliteos/home/.config/moonlight/hosts", "old pairing")
+        put(self.target, "var/lib/couchliteos/config.ini", "[qemu-smoke]\ncold_boot = verified\nafter = yes\n")
+        put(self.target, "var/lib/couchliteos/added-later.json", "{}")
+        make_snapshot(self.target)
+        put(self.target, "var/lib/couchliteos/snapshot/restore-request")
+        put(self.target, "boot/couchliteos-previous/vmlinuz", "saved kernel")
+        put(self.target, "usr/bin/new-only", "0.3.0")
+        put(self.target, "etc/fstab", "UUID=box / ext4\n")
+
+        def runner(argv, **kwargs):
+            if argv[0] == "rsync":
+                return subprocess.run(argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, stdout="")
+
+        self.env = make_env(self.tmp, runner=runner, euid=os.geteuid)
+
+    def test_the_box_is_the_saved_version_again_with_its_settings(self):
+        updater.apply_root(self.target, RecordingStatus(self.tmp / "s.json"), self.env, image=self.image,
+                           save_first=False, restore=True)
+        read = lambda rel: (self.target / rel).read_text()  # noqa: E731
+        self.assertEqual(read("etc/couchliteos-version"), "0.2.0\n")
+        self.assertEqual(read("usr/bin/tool"), "0.2.0")
+        self.assertFalse((self.target / "usr/bin/new-only").exists())
+        self.assertEqual(sorted(path.name for path in (self.target / "boot").glob("vmlinuz-*")), ["vmlinuz-6.12.1"])
+        self.assertEqual(read("boot/couchliteos-previous/vmlinuz"), "saved kernel")
+        self.assertTrue(read("var/lib/couchliteos/config.ini").startswith("[qemu-smoke]\ncold_boot = verified\n\n"))
+        self.assertNotIn("after = yes", read("var/lib/couchliteos/config.ini"))
+        self.assertIn("paused_until = ", read("var/lib/couchliteos/config.ini"))
+        self.assertEqual(read("var/lib/couchliteos/home/.config/moonlight/hosts"), "old pairing")
+        self.assertFalse((self.target / "var/lib/couchliteos/added-later.json").exists())
+        self.assertTrue((self.target / "var/lib/couchliteos/snapshot/previous.squashfs").exists())
+        self.assertTrue((self.target / "var/lib/couchliteos/snapshot/restore-request").exists())
+        self.assertEqual(read("etc/fstab"), "UUID=box / ext4\n", "the box's own /etc files stay")
 
 
 class DefaultsTest(unittest.TestCase):

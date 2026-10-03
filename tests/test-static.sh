@@ -827,6 +827,21 @@ rg -q '^ExecStart=/usr/libexec/couchliteos-updater delete-snapshot$' services/co
 rg -q '^systemctl enable couchliteos-snapshot-delete.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -q 'test -s /var/lib/couchliteos/snapshot/previous.squashfs' scripts/couchliteos-qemu-smoke
 refute rg -n 'shell=True|os\.system' launcher/couchliteos_snapshot.py
+# RESTORE PREVIOUS VERSION: Settings asks through a path unit, a boot service restores before the
+# launcher, and a boot menu entry starts the saved kernel with couchliteos.restore=1.
+rg -q '^PathExists=/run/couchliteos/restore-request$' services/couchliteos-restore-request.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/restore-request$' services/couchliteos-restore-request.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater request-restore$' services/couchliteos-restore-request.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater restore$' services/couchliteos-restore.service
+rg -q '^ConditionKernelCommandLine=\|couchliteos\.restore=1$' services/couchliteos-restore.service
+rg -q '^ConditionPathExists=\|/var/lib/couchliteos/snapshot/restore-request$' services/couchliteos-restore.service
+rg -q '^Before=couchliteos-launcher\.service' services/couchliteos-restore.service
+rg -q '^systemctl enable couchliteos-restore-request.path couchliteos-restore.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-grub-restore" "$CHROOT/etc/grub.d/42_couchliteos_restore"' build/configure.sh
+rg -q '^  restore-apply\)$' scripts/couchliteos-qemu-smoke
+rg -q '^  restore-check\)$' scripts/couchliteos-qemu-smoke
+rg -q '^boot_and_wait restore-apply COUCHLITEOS_SMOKE_RESTORE_REQUESTED$' tests/qemu-install-smoke.sh
+rg -q '^boot_and_wait restore-check COUCHLITEOS_SMOKE_RESTORE_READY$' tests/qemu-install-smoke.sh
 
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh
