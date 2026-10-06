@@ -1,0 +1,14 @@
+[Unit]
+Description=Set up storage on the CouchLiteOS live USB stick (requested by the launcher)
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Drop the request first, or this path unit would start setup again the moment it ends.
+ExecStartPre=/usr/bin/rm -f /run/couchliteos/persist-setup-request
+# It refuses on an installed box and on a stick that already keeps data; it finds the stick itself.
+ExecStart=/usr/libexec/couchliteos-persist-setup setup
+TimeoutStartSec=infinity
+StandardOutput=journal
+StandardError=journal

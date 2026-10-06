@@ -17,6 +17,10 @@ found one on the disks (/run/couchliteos/installs.json): /run/couchliteos/disk-u
 couchliteos-disk-update.service (`couchliteos-updater apply-disk --found`), and the same progress
 screen follows it.
 
+A live stick that keeps nothing offers SET UP STORAGE ON THIS STICK:
+/run/couchliteos/persist-setup-request starts couchliteos-persist-setup.service, whose progress
+(/run/couchliteos/persist-setup.json) shows on this screen.
+
 Between releases (installed boxes): the last results of couchliteos-security-update and
 couchliteos-app-update (/var/lib/couchliteos/{security,app}-update.json), INSTALL ... NOW (their
 request files in /run/couchliteos), the [update] auto_security / auto_apps switches, and ROLL BACK
@@ -50,6 +54,23 @@ UPDATE_STARTED = "STARTED: THEY WAIT WHILE A GAME STREAMS. THE RESULTS SHOW HERE
 AUTO = {"auto_security": "AUTOMATIC SECURITY FIXES", "auto_apps": "AUTOMATIC APP UPDATES"}
 ROLL_BACK = "ROLL BACK"
 NOT_CHECKED = "NOT CHECKED YET"
+STORAGE_REQUEST, STORAGE_STATUS = "persist-setup-request", "persist-setup.json"
+SET_UP_STORAGE = "SET UP STORAGE ON THIS STICK"
+STORAGE_QUESTION = (
+    "KEEP SETTINGS, PAIRINGS AND APPS ON THIS STICK? THE FREE SPACE ON IT BECOMES A DATA AREA; "
+    "THE ISO ON IT STAYS. RESTART WHEN IT IS READY."
+)
+STORAGE_STARTED = "SETTING UP STORAGE..."
+MOUNTINFO = pathlib.Path("/proc/self/mountinfo")
+
+
+def has_persistence(mountinfo: pathlib.Path = MOUNTINFO) -> bool:
+    """live-boot mounted a persistence area (the same test as couchliteos-persist-setup)."""
+    try:
+        text = mountinfo.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(" /run/live/persistence/" in line for line in text.splitlines())
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
 DELETE_REQUEST, RESTORE_REQUEST = "snapshot-delete", "restore-request"
 DISK_REQUEST, INSTALLS = "disk-update", "installs.json"
@@ -158,6 +179,7 @@ class SoftwareUpdate:
         hand_off: Callable[[str], None] | None = None,
         installs: Callable[[], list[dict[str, str]]] | None = None,
         state_dir: pathlib.Path = STATE_DIR, config: pathlib.Path = settings.CONFIG,
+        persistent: Callable[[], bool] = has_persistence,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -181,6 +203,7 @@ class SoftwareUpdate:
         self.installs = installs or (lambda: update.read_installs(self.run_dir / INSTALLS))
         self.state_dir = pathlib.Path(state_dir)
         self.config = pathlib.Path(config)
+        self.persistent = persistent
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
@@ -191,7 +214,8 @@ class SoftwareUpdate:
 
     def rows(self) -> list[str]:
         if self.live:
-            return ([UPDATE_DISK] if self.found() else []) + [BACK]
+            storage = [] if self.persistent() else [SET_UP_STORAGE]
+            return ([UPDATE_DISK] if self.found() else []) + storage + [BACK]
         rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
         saved = self._saved()
         rows += [UPDATE_NOW] + self.auto_rows() + self.rollback_rows()
@@ -219,6 +243,20 @@ class SoftwareUpdate:
             message = read_status(self.state_dir / name).get("message")
             lines.append(f"{label}: {message if isinstance(message, str) and message else NOT_CHECKED}")
         return lines
+
+    def storage_line(self) -> str:
+        message = read_status(self.run_dir / STORAGE_STATUS).get("message")
+        return f"STORAGE: {message}" if isinstance(message, str) and message else ""
+
+    def set_up_storage(self) -> None:
+        if not self.confirm(self.screen, STORAGE_QUESTION):
+            return
+        try:
+            (self.run_dir / STORAGE_REQUEST).touch()
+        except OSError:
+            self.result = NOT_STARTED
+            return
+        self.result = STORAGE_STARTED
 
     def update_now(self) -> None:
         try:
@@ -302,6 +340,8 @@ class SoftwareUpdate:
         wrap = max(8, width - 8)
         lines = [(self.box_line(), 0)] + ([] if self.live else [(self.saved_line(), 0)])
         lines += [] if self.live else [(text, 0) for text in self.between_lines()]
+        storage = self.storage_line() if self.live else ""
+        lines += [(storage, curses.A_BOLD)] if storage else []
         lines += [("", 0)]
         found = self.found() if self.live else None
         if found:
@@ -309,6 +349,7 @@ class SoftwareUpdate:
             lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)] if self.result else []
         elif self.live:
             lines += [(text, 0) for text in textwrap.wrap(LIVE_TEXT, wrap)] + [("", 0), (update.RELEASES_TEXT, 0)]
+            lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)] if self.result else []
         elif self.result:
             lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)]
         widest = max([len(text) for text, _attr in lines] + [len(row) + 3 for row in self.rows()])  # ">  " rows
@@ -348,6 +389,8 @@ class SoftwareUpdate:
                     self.restore_saved()
                 elif choice == UPDATE_DISK:
                     self.update_disk()
+                elif choice == SET_UP_STORAGE:
+                    self.set_up_storage()
                 elif choice == UPDATE_NOW:
                     self.update_now()
                 elif choice.startswith(tuple(AUTO.values())):

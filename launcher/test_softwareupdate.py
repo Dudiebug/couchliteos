@@ -126,7 +126,7 @@ class UiTest(unittest.TestCase):
             keep_awake=self.keep_awake, current="0.2.1", profile={"PROFILE_NAME": "general", "ISO_SUFFIX": ""},
             live=False, fetch=self.fetch, run_dir=self.tmp, clock=lambda: self.now,
             saved=lambda: self.saved, save_first=lambda: self.save_on, set_save_first=self.set_save_first,
-            state_dir=self.tmp, config=self.tmp / "config.ini",
+            state_dir=self.tmp, config=self.tmp / "config.ini", persistent=lambda: True,
         )
         values.update(overrides)
         return su.SoftwareUpdate(self.screen, **values)
@@ -664,6 +664,51 @@ class BetweenReleasesTest(UiTest):
         self.make(live=True).run()
         self.assertNotIn("SECURITY FIXES", self.screen.frames[0])
         self.assertNotIn("AUTOMATIC", self.screen.frames[0])
+
+
+class StorageTest(UiTest):
+    """Live stick without persistence: SET UP STORAGE ON THIS STICK (couchliteos-persist-setup)."""
+
+    def test_offered_only_on_a_stick_that_keeps_nothing(self):
+        self.script = [ESC]
+        self.make(live=True, persistent=lambda: False).run()
+        self.assertIn("SET UP STORAGE ON THIS STICK", self.screen.frames[0])
+        self.script = [ESC]
+        self.make(live=True, persistent=lambda: True).run()
+        self.assertNotIn("SET UP STORAGE", self.screen.frames[-1])
+        self.script = [ESC]
+        self.make(live=False, persistent=lambda: False).run()
+        self.assertNotIn("SET UP STORAGE", self.screen.frames[-1])
+
+    def test_asks_first_then_asks_the_root_service(self):
+        self.script = [ENTER, ESC]
+        self.make(live=True, persistent=lambda: False).run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertIn("THE ISO ON IT STAYS", self.questions[0])
+        self.assertTrue((self.tmp / "persist-setup-request").exists())
+
+    def test_no_means_nothing_is_asked(self):
+        self.answer = False
+        self.script = [ENTER, ESC]
+        self.make(live=True, persistent=lambda: False).run()
+        self.assertFalse((self.tmp / "persist-setup-request").exists())
+
+    def test_the_services_progress_is_shown(self):
+        (self.tmp / "persist-setup.json").write_text(json.dumps(
+            {"phase": "done", "message": "STORAGE IS READY: RESTART TO USE IT", "percent": 100}))
+        self.script = [ESC]
+        self.make(live=True, persistent=lambda: False).run()
+        self.assertIn("STORAGE IS READY: RESTART TO USE IT", self.screen.frames[0])
+
+    def test_the_mountinfo_check(self):
+        mountinfo = self.tmp / "mountinfo"
+        mountinfo.write_text("22 1 0:20 / / rw - overlay overlay rw\n"
+                             "30 22 8:1 / /run/live/medium ro - iso9660 /dev/sdb1 ro\n")  # every live boot
+        self.assertFalse(su.has_persistence(mountinfo))
+        mountinfo.write_text("40 22 8:3 /home /home rw - ext4 /dev/sdb3 rw\n"
+                             "41 22 8:3 / /run/live/persistence/sdb3 rw - ext4 /dev/sdb3 rw\n")
+        self.assertTrue(su.has_persistence(mountinfo))
+        self.assertFalse(su.has_persistence(self.tmp / "missing"))
 
 
 class StatusReadTest(unittest.TestCase):

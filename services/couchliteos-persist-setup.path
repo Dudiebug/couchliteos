@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/persist-setup-request
+Unit=couchliteos-persist-setup.service
+
+[Install]
+WantedBy=graphical.target

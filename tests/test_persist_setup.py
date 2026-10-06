@@ -107,6 +107,45 @@ class Base(unittest.TestCase):
                            log=lambda text: None, **kwargs)
 
 
+class RootPathsTest(Base):
+    """Root's setup never writes through a name in the couchliteos user's /run/couchliteos."""
+
+    def test_the_work_dir_is_roots_own(self):
+        self.assertFalse(str(persist.WORK_DIR).startswith("/run/couchliteos/"))
+        self.assertTrue(str(persist.STATUS_FILE).startswith("/run/couchliteos/"))  # the launcher reads it
+
+    def test_the_status_never_follows_a_symlink(self):
+        victim = self.tmp / "victim"
+        victim.write_text("keep\n")
+        (self.tmp / "status.json").symlink_to(victim)
+        persist.Status(self.tmp / "status.json").set("failed", "NO")
+        self.assertEqual(victim.read_text(), "keep\n")
+        self.assertEqual(json.loads((self.tmp / "status.json").read_text())["phase"], "failed")
+
+    def test_setup_refuses_a_work_dir_others_could_swap(self):
+        work = self.tmp / "work"
+        work.symlink_to(self.tmp)
+        with self.assertRaises(PermissionError):
+            persist.setup(self.env(FakeRunner()), dry_run=False)
+
+
+class RequestUnitTest(unittest.TestCase):
+    """The launcher asks; couchliteos-persist-setup.path starts the root service."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def test_the_path_unit_starts_setup_and_drops_the_request_first(self):
+        path_unit = (self.ROOT / "services/couchliteos-persist-setup.path").read_text()
+        service = (self.ROOT / "services/couchliteos-persist-setup.service").read_text()
+        self.assertIn("PathExists=/run/couchliteos/persist-setup-request", path_unit)
+        self.assertIn("ExecStartPre=/usr/bin/rm -f /run/couchliteos/persist-setup-request", service)
+        self.assertIn("ExecStart=/usr/libexec/couchliteos-persist-setup setup", service)
+
+    def test_the_hook_enables_it(self):
+        hook = (self.ROOT / "config/live-build/hooks/live/0100-couchliteos.hook.chroot").read_text()
+        self.assertIn("couchliteos-persist-setup.path", hook)
+
+
 class ConfTest(unittest.TestCase):
     def test_bind_mounts_only_and_the_known_paths(self):
         conf = persist.persistence_conf()

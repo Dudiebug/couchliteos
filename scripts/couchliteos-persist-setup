@@ -41,6 +41,7 @@ from typing import Callable, Iterable
 sys.path.insert(0, "/usr/libexec")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "launcher"))
 import couchliteos_liveslot as liveslot  # noqa: E402
+import couchliteos_safefile as safefile  # noqa: E402
 
 GIB = 1 << 30
 MIB = 1 << 20
@@ -49,7 +50,7 @@ VENTOY_CAP = 16 * GIB
 FAT32_MAX = 4 * GIB - 1
 ALIGN = MIB  # partitions start on 1 MiB boundaries
 STATUS_FILE = pathlib.Path("/run/couchliteos/persist-setup.json")
-WORK_DIR = pathlib.Path("/run/couchliteos/persist-setup")
+WORK_DIR = pathlib.Path("/run/couchliteos-persist-setup")  # root's own: the mount points
 VENTOY_EFI_LABEL = "VTOYEFI"
 LINUX_GPT_TYPE = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 
@@ -133,13 +134,8 @@ class Status:
 
     def set(self, phase: str, message: str, percent: int | None = None) -> None:
         text = json.dumps({"phase": phase, "message": message, "percent": percent})
-        with contextlib.suppress(OSError):
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, temporary = tempfile.mkstemp(prefix=".persist.", dir=self.path.parent)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(text + "\n")
-            os.chmod(temporary, 0o644)
-            os.replace(temporary, self.path)
+        with contextlib.suppress(OSError):  # /run/couchliteos is the launcher's: never follow a name there
+            safefile.write_atomic(self.path, text + "\n", 0o644)
 
 
 # ------------------------------------------------------------------ persistence.conf
@@ -547,6 +543,8 @@ def setup(env: Env, dry_run: bool, iso: str = "", size_bytes: int = 0) -> int:
         raise SetupError(MSG_ALREADY)
     if not dry_run and env.euid() != 0:
         raise SetupError("SETUP MUST RUN AS ROOT")
+    if not dry_run:
+        safefile.root_dir(env.work_dir, os.geteuid())
     medium = detect(env)
     if medium.kind == "ventoy":
         with ventoy_mounted(env, medium, writable=not dry_run) as root:
