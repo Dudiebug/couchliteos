@@ -2,9 +2,9 @@
 Description=CouchLiteOS: record how long this boot took to reach the launcher
 After=couchliteos-launcher.service
 Wants=couchliteos-launcher.service
-# Once per boot, and only once the launcher is really up (the launcher's own restarts
-# do not run it again).
-ConditionPathExists=/run/couchliteos/launcher-ready
+# Once per boot (the launcher's own restarts do not run it again). The script waits for
+# launcher-ready: a condition here would skip the unit for the whole boot when the
+# launcher's first start fails and a restart comes up.
 
 [Service]
 # Not oneshot: systemd-analyze answers only once the boot has finished, and a oneshot
@@ -14,7 +14,8 @@ User=couchliteos
 Group=couchliteos
 # The "-" makes a non-zero exit count as success: this unit must never fail the boot.
 ExecStart=-/usr/libexec/couchliteos-boot-time
-RuntimeMaxSec=150
+# Longer than READY_WAIT + ANALYZE_WAIT in the script.
+RuntimeMaxSec=900
 # COUCHLITEOS_BOOT_SECONDS=<n> reaches the serial console for tests/qemu-smoke.sh.
 StandardOutput=journal+console
 StandardError=journal

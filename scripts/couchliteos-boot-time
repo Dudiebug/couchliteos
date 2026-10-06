@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I
 """Record how long this boot took to reach the launcher.
 
-Runs once per boot, after the launcher first writes /run/couchliteos/launcher-ready.
+Runs once per boot, after the launcher first writes /run/couchliteos/launcher-ready
+(it waits up to READY_WAIT seconds for it: the unit can start before the first frame).
 The launcher time is counted from the start of the kernel (CLOCK_BOOTTIME), so it
 leaves out the firmware and GRUB. It is printed at once to the console as
 COUCHLITEOS_BOOT_SECONDS=<n> (tests/qemu-smoke.sh reads it from the serial port).
@@ -22,6 +23,8 @@ import time
 READY = pathlib.Path("/run/couchliteos/launcher-ready")
 LOG = pathlib.Path("/var/log/couchliteos/boot-time.log")
 BUILD_INFO = pathlib.Path("/usr/share/couchliteos/build-info")
+# How long to wait for the launcher's first frame, in seconds.
+READY_WAIT = 600
 # systemd-analyze answers only once every boot job has finished.
 ANALYZE_WAIT = 90
 ANALYZE_RETRY = 2
@@ -129,10 +132,20 @@ def append(log, line):
             stream.write(line + "\n")
 
 
+def ready_mtime():
+    """When the launcher wrote launcher-ready, waiting for it; None if it never did."""
+    for attempt in range(READY_WAIT + 1):
+        try:
+            return os.lstat(READY).st_mtime
+        except OSError:
+            if attempt == READY_WAIT:
+                return None
+            time.sleep(1)
+
+
 def main():
-    try:
-        mtime = os.lstat(READY).st_mtime
-    except OSError:
+    mtime = ready_mtime()
+    if mtime is None:
         print("couchliteos-boot-time: the launcher is not ready; nothing to record", file=sys.stderr)
         return 0
     ready = ready_seconds(mtime, time.time(), time.clock_gettime(time.CLOCK_BOOTTIME))

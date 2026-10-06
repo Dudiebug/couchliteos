@@ -175,18 +175,46 @@ class LogTest(unittest.TestCase):
 
     def test_main_without_the_launcher_does_nothing(self):
         log = self.dir / "boot-time.log"
-        with mock.patch.multiple(boot_time, READY=self.dir / "missing", LOG=log), \
+        sleeps = []
+        with mock.patch.multiple(boot_time, READY=self.dir / "missing", LOG=log, READY_WAIT=5), \
+                mock.patch.object(boot_time.time, "sleep", sleeps.append), \
                 contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(boot_time.main(), 0)
         self.assertEqual(stdout.getvalue(), "")
         self.assertFalse(log.exists())
+        self.assertEqual(sleeps, [1] * 5)
+
+    def test_main_waits_for_a_launcher_that_is_slow_to_start(self):
+        # The unit starts once the launcher service has, which can be before (or, after a
+        # failed first start, long before) the launcher draws its first frame.
+        ready = self.dir / "launcher-ready"
+        log = self.dir / "boot-time.log"
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 3:
+                ready.touch()
+
+        with mock.patch.multiple(boot_time, READY=ready, LOG=log, BUILD_INFO=self.dir / "none",
+                                 analyze=lambda: {}), \
+                mock.patch.object(boot_time.time, "sleep", sleep), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(boot_time.main(), 0)
+        self.assertEqual(sleeps, [1, 1, 1])
+        self.assertRegex(stdout.getvalue(), r"^COUCHLITEOS_BOOT_SECONDS=[0-9.]+\n$")
+        self.assertTrue(log.exists())
 
 
 class UnitTest(unittest.TestCase):
     def test_unit_runs_after_the_launcher_and_does_not_hold_the_boot(self):
         unit = (ROOT / "services/couchliteos-boot-time.service").read_text()
         self.assertRegex(unit, r"(?m)^After=couchliteos-launcher\.service$")
-        self.assertRegex(unit, r"(?m)^ConditionPathExists=/run/couchliteos/launcher-ready$")
+        # Checked when the job starts, a condition skips the unit for the whole boot when the
+        # launcher's first start fails; the script waits for launcher-ready instead.
+        self.assertNotIn("ConditionPathExists", unit)
+        runtime = int(re.search(r"(?m)^RuntimeMaxSec=(\d+)$", unit).group(1))
+        self.assertGreater(runtime, boot_time.READY_WAIT + boot_time.ANALYZE_WAIT)
         # A oneshot still running would keep systemd-analyze from ever answering.
         self.assertRegex(unit, r"(?m)^Type=exec$")
         self.assertRegex(unit, r"(?m)^StandardOutput=journal\+console$")

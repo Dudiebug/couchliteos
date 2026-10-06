@@ -1523,7 +1523,7 @@ python3 -m py_compile scripts/couchliteos-boot-time
 rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-boot-time" "$CHROOT/usr/libexec/couchliteos-boot-time"' build/configure.sh
 rg -q '^systemctl enable couchliteos-boot-time.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -q '^After=couchliteos-launcher.service$' services/couchliteos-boot-time.service
-rg -q '^ConditionPathExists=/run/couchliteos/launcher-ready$' services/couchliteos-boot-time.service
+refute rg -q '^ConditionPathExists=' services/couchliteos-boot-time.service
 rg -q '^ExecStart=-/usr/libexec/couchliteos-boot-time$' services/couchliteos-boot-time.service
 rg -q '^User=couchliteos$' services/couchliteos-boot-time.service
 rg -q '^StandardOutput=journal\+console$' services/couchliteos-boot-time.service
