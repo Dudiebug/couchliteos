@@ -151,7 +151,8 @@ boot_and_wait() {
   local boot=(-boot order=c)
   [[ $mode != disk-update ]] || boot=(-boot order=d -drive "file=$NEW_ISO,media=cdrom,readonly=on")
   printf '\n=== %s ===\n' "$mode" >> "$BOOT_LOG"
-  qemu-system-x86_64 "${common[@]}" "${boot[@]}" -monitor none \
+  find "$monitor" -delete 2>/dev/null || true
+  qemu-system-x86_64 "${common[@]}" "${boot[@]}" -monitor "unix:$monitor,server=on,wait=off" \
     -netdev user,id=net0 -device e1000,netdev=net0 \
     -fw_cfg "name=opt/couchliteos.smoke,string=$mode" \
     -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE" \
@@ -160,6 +161,10 @@ boot_and_wait() {
   for _ in $(seq 1 $((limit * SCALE))); do
     ! grep -q COUCHLITEOS_SMOKE_UPDATE_FAILED "$BOOT_LOG" || break
     if grep -q "$marker" "$BOOT_LOG"; then
+      # What the screen shows then (after the update: What's New on the first start).
+      python3 -c 'import sys, time; sys.path.insert(0, sys.argv[1]); from tests.qemu_iso_boot import connect_monitor
+with connect_monitor(sys.argv[2]) as monitor: monitor.sendall(f"screendump {sys.argv[3]}\n".encode()); time.sleep(1)' \
+        "$ROOT" "$monitor" "$SCREENSHOT_DIR/$mode.ppm"
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       pid=

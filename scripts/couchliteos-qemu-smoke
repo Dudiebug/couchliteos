@@ -211,6 +211,8 @@ case $mode in
     data=/run/couchliteos-seed/var/lib/$name
     [[ -e $data/config.ini ]] || install -m 0640 -o 1000 -g "$(stat -c %g "$data")" /dev/null "$data/config.ini"
     printf '\n[qemu-smoke]\nlegacy_update = verified\nold_path = /var/lib/%s/marker\n' "$name" >> "$data/config.ini"
+    # The owner finished setup on the old system, so the new one greets them with What's New.
+    [[ -e $data/setup-complete ]] || install -m 0644 -o 1000 -g "$(stat -c %g "$data")" /dev/null "$data/setup-complete"
     pairing="$data/home/.config/Moonlight Game Streaming Project/Moonlight.conf"
     [[ -e $pairing ]] || install -D -m 0640 -o 1000 -g "$(stat -c %g "$data")" /dev/null "$pairing"
     printf '[qemu]\nqemu-legacy-pairing=1\n' >> "$pairing"
@@ -261,6 +263,21 @@ case $mode in
       echo 'Links to old units that no longer exist were left behind.' >&2
       exit 1
     fi
+    # The owner finished setup before the update, so the TV interface (checked above) opens
+    # What's New first: due() records the version as seen just before drawing it, and the notes
+    # from 0.2.0 on tell them how to get the old look back (the host screendumps the screen).
+    for _ in $(seq 1 "$(scaled 600)"); do
+      [[ $(cat /run/couchliteos/whatsnew-seen 2>/dev/null) == "$(cat /etc/couchliteos-version)" ]] && break
+      sleep 0.1
+    done
+    [[ $(cat /run/couchliteos/whatsnew-seen) == "$(cat /etc/couchliteos-version)" ]]
+    [[ $(cat /var/lib/couchliteos/whatsnew-seen) == "$(cat /etc/couchliteos-version)" ]]
+    test -e /var/lib/couchliteos/setup-complete
+    PYTHONPATH=/usr/libexec python3 -c '
+import couchliteos_whatsnew as whatsnew, couchliteos_update as update
+renamed, releases = whatsnew.notes(update.installed_version(), "0.2.0")
+assert any("INTERFACE > CLASSIC" in line for _, lines in releases for line in lines), releases
+'
     grep -q ' done$' /var/log/couchliteos-update/update.log
     grep 'apply-disk ' /var/log/couchliteos-update/update.log | tail -n 1
     test -s /var/lib/couchliteos-update/snapshot/previous.squashfs
