@@ -309,6 +309,34 @@ updater.refuse_layout(updater.Env())
     echo COUCHLITEOS_SMOKE_LIVE_PERSISTENCE_READY
     exit 0
     ;;
+  live-persist-setup)
+    # A dd-written stick: ask for SET UP STORAGE as the launcher does, with this session's state
+    # already there, and wait for the root service to finish.
+    [[ $(/usr/libexec/couchliteos-persist-setup status) == *'"medium": "dd", "can_setup": true'* ]]
+    printf '\n[qemu-smoke]\nlive_persistence = verified\n' >> /var/lib/couchliteos/config.ini
+    install -D -m 0600 /dev/null /var/lib/bluetooth/qemu-state
+    install -D -m 0600 /dev/null /etc/NetworkManager/system-connections/qemu-state
+    runuser -u couchliteos -- touch /run/couchliteos/persist-setup-request
+    for _ in $(seq 1 "$(scaled 600)"); do
+      grep -qs '"phase": "\(done\|failed\)"' /run/couchliteos/persist-setup.json && break
+      sleep 1
+    done
+    cat /run/couchliteos/persist-setup.json
+    grep -q '"phase": "done"' /run/couchliteos/persist-setup.json
+    echo COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_DONE
+    exit 0
+    ;;
+  live-persist-setup-check)
+    # The next boot keeps its state on the new third partition, and setup now says so.
+    findmnt -n -o SOURCE /run/live/persistence/vda3
+    [[ $(/usr/libexec/couchliteos-persist-setup status) == *'"persistent": true'* ]]
+    grep -Fxq 'live_persistence = verified' /var/lib/couchliteos/config.ini
+    test -f /var/lib/bluetooth/qemu-state
+    test -f /etc/NetworkManager/system-connections/qemu-state
+    [[ $(stat -c '%U:%G:%a' /etc/NetworkManager/system-connections) == root:root:700 ]]
+    echo COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_KEPT
+    exit 0
+    ;;
   live-persistence-absent)
     if grep -Fxq 'live_persistence = verified' /var/lib/couchliteos/config.ini; then
       echo 'No Persistence boot still sees the persistent configuration.' >&2

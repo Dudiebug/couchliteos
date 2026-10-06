@@ -130,4 +130,12 @@ boot_and_wait live-persistence-absent COUCHLITEOS_SMOKE_LIVE_PERSISTENCE_IGNORED
   -append 'boot=live components nopersistence ipv6.disable=1 console=tty1 console=ttyS0,115200n8' \
   -drive "file=$ISO,media=cdrom,readonly=on"
 
-echo 'QEMU persistence smoke test passed: state survived a persistent live reboot and nopersistence ignored the attached backend.'
+# SET UP STORAGE ON THIS STICK on a stick written like Etcher or dd: the ISO at the start of a
+# bigger disk. Setup adds the persistence partition after it; the next boot keeps the state.
+cp -- "$ISO" "$work/stick.img"
+truncate -s 4G "$work/stick.img"
+common=("${common[@]//persistence.img/stick.img}")
+boot_and_wait live-persist-setup COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_DONE
+boot_and_wait live-persist-setup-check COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_KEPT
+
+echo 'QEMU persistence smoke test passed: state survived a persistent live reboot, nopersistence ignored the attached backend, and SET UP STORAGE kept state on a dd-written stick.'

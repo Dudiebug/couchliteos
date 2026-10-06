@@ -437,6 +437,14 @@ def populate(env: Env, mountpoint: pathlib.Path) -> None:
     run(env, ["sync"])
 
 
+def kernel_start(env: Env, disk: str, node: str) -> int | None:
+    """Where the kernel has partition `node` of `disk` start (sectors); None when it has no such one."""
+    try:
+        return int(env.path(f"/sys/class/block/{pathlib.Path(disk).name}/{pathlib.Path(node).name}/start").read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def apply_dd(env: Env, plan: Plan, status: Status) -> None:
     total = len(plan.steps)
     for index, (text, argv) in enumerate(plan.steps):
@@ -445,6 +453,16 @@ def apply_dd(env: Env, plan: Plan, status: Status) -> None:
             continue
         if argv[0] == "sfdisk" and "--append" in argv:
             run(env, argv, input_text=plan.sfdisk_script)
+        elif argv[0] == "partx":
+            # udev may have re-read the table already (a disk nothing holds open); the start
+            # check before mkfs is what counts.
+            run(env, argv, check=False)
+        elif argv[0] == "mkfs.ext4":
+            planned = next(part for part in plan.partitions if partition_node(plan.disk, part.number) == argv[-1])
+            if kernel_start(env, plan.disk, argv[-1]) != planned.start:
+                env.log(f"{argv[-1]}: the kernel does not have it at sector {planned.start}")
+                raise SetupError("THE NEW PARTITION DID NOT APPEAR: NOTHING WAS FORMATTED")
+            run(env, argv)
         elif argv[0] == "mount":
             mountpoint = pathlib.Path(argv[-1])
             mountpoint.mkdir(parents=True, exist_ok=True)

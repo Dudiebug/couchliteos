@@ -100,6 +100,9 @@ class Base(unittest.TestCase):
         (self.root / "etc/machine-id").write_text("0123456789abcdef0123456789abcdef\n")
         (self.root / "var/lib/couchliteos").mkdir(parents=True)
         (self.root / "var/lib/couchliteos/config.ini").write_text("[launcher]\n")
+        # The kernel's view of the partition setup adds (DOS_ISO: it starts at 4194304).
+        (self.root / "sys/class/block/sdb/sdb3").mkdir(parents=True)
+        (self.root / "sys/class/block/sdb/sdb3/start").write_text("4194304\n")
 
     def env(self, runner, **kwargs):
         return persist.Env(runner=runner, root=self.root, free_bytes=kwargs.pop("free", lambda path: 10 * GIB),
@@ -267,6 +270,28 @@ class DetectAndSetupTest(Base):
         self.assertIn(["cp", "-a", "--", str(self.root / "var/lib/couchliteos"), str(data / "couchliteos-state")], copied)
         self.assertIn(["cp", "-a", "--", str(self.root / "etc/machine-id"), str(data / "couchliteos-identity/machine-id")], copied)
         self.assertEqual(json.loads((self.tmp / "status.json").read_text())["phase"], "done")
+
+    def test_partition_the_kernel_already_read_is_fine(self):
+        # udev re-reads a disk nothing has open once sfdisk closes it, so partx --add finds it there.
+        runner = FakeRunner()
+        runner.fail.add("partx")
+        self.assertEqual(persist.main(["setup"], self.env(runner)), 0)
+        self.assertEqual(runner.ran("mkfs.ext4", "-F", "-q", "-m", "1", "-L", "persistence", "/dev/sdb3"),
+                         [["mkfs.ext4", "-F", "-q", "-m", "1", "-L", "persistence", "/dev/sdb3"]])
+
+    def test_never_formats_a_partition_that_is_not_the_planned_one(self):
+        for start in ("64\n", None):
+            with self.subTest(start=start):
+                sysfs = self.root / "sys/class/block/sdb/sdb3/start"
+                if start is None:
+                    sysfs.unlink()
+                else:
+                    sysfs.write_text(start)
+                runner = FakeRunner()
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(persist.main(["setup"], self.env(runner)), 1)
+                self.assertEqual(runner.ran("mkfs.ext4"), [])
+                self.assertEqual(json.loads((self.tmp / "status.json").read_text())["phase"], "failed")
 
     def test_failure_reports_in_status(self):
         runner = FakeRunner()

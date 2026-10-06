@@ -14,6 +14,7 @@ RDP = ("launcher/couchliteos_rdp.py", ["test_rdp.py", "test_app_runner.py"], ROO
 RUNNER = ("launcher/couchliteos_app_runner.py", ["test_app_runner.py"], ROOT / "launcher")
 LAUNCHER = ("launcher/couchliteos-launcher.py", ["test_launcher.py"], ROOT / "launcher")
 EXPORT = ("scripts/couchliteos-support-export", ["tests/test_support.py"], ROOT)
+PERSIST = ("scripts/couchliteos-persist-setup", ["tests/test_persist_setup.py"], ROOT)
 MUTANTS = (
     (
         ISO_BOOT,
@@ -81,6 +82,30 @@ MUTANTS = (
         "stop redacting FreeRDP passwords",
         '    text = FREERDP_SECRET_ARGUMENT.sub(r"\\1[REDACTED]", text)\n',
         "",
+    ),
+    (
+        PERSIST,
+        "format the new partition without checking where the kernel has it",
+        "            if kernel_start(env, plan.disk, argv[-1]) != planned.start:",
+        "            if False:",
+    ),
+    (
+        PERSIST,
+        "start the data partition inside the ISO",
+        "    start = -(-max(end, align) // align) * align",
+        "    start = -(-max(end - align, align) // align) * align",
+    ),
+    (
+        PERSIST,
+        "leave the backup GPT inside the new partition",
+        '        relocate = int(table.get("lastlba") or 0) < usable_end - 1',
+        "        relocate = False",
+    ),
+    (
+        PERSIST,
+        "persist the whole root",
+        '    return "\\n".join(lines) + "\\n"\n\n\ndef ssh_host_keys',
+        '    return "\\n".join(lines + ["/ union"]) + "\\n"\n\n\ndef ssh_host_keys',
     ),
 )
 
