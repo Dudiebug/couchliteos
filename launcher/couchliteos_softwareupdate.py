@@ -17,6 +17,11 @@ found one on the disks (/run/couchliteos/installs.json): /run/couchliteos/disk-u
 couchliteos-disk-update.service (`couchliteos-updater apply-disk --found`), and the same progress
 screen follows it.
 
+Between releases (installed boxes): the last results of couchliteos-security-update and
+couchliteos-app-update (/var/lib/couchliteos/{security,app}-update.json), INSTALL ... NOW (their
+request files in /run/couchliteos), the [update] auto_security / auto_apps switches, and ROLL BACK
+for an app running a downloaded version (/run/couchliteos/app-rollback holds its name).
+
 Everything the screen needs from outside is injected, so the tests use fakes.
 """
 
@@ -32,10 +37,19 @@ from typing import Any, Callable
 
 import couchliteos_confirm as confirmation
 import couchliteos_listview as listview
+import couchliteos_settings as settings
 import couchliteos_snapshot as snapshot
 import couchliteos_update as update
 
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+STATE_DIR = pathlib.Path("/var/lib/couchliteos")
+SECURITY_STATE, APP_STATE = "security-update.json", "app-update.json"
+SECURITY_REQUEST, APP_REQUEST, ROLLBACK_REQUEST = "security-update-install", "app-update-install", "app-rollback"
+UPDATE_NOW = "INSTALL SECURITY FIXES AND APP UPDATES NOW"
+UPDATE_STARTED = "STARTED: THEY WAIT WHILE A GAME STREAMS. THE RESULTS SHOW HERE."
+AUTO = {"auto_security": "AUTOMATIC SECURITY FIXES", "auto_apps": "AUTOMATIC APP UPDATES"}
+ROLL_BACK = "ROLL BACK"
+NOT_CHECKED = "NOT CHECKED YET"
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
 DELETE_REQUEST, RESTORE_REQUEST = "snapshot-delete", "restore-request"
 DISK_REQUEST, INSTALLS = "disk-update", "installs.json"
@@ -143,6 +157,7 @@ class SoftwareUpdate:
         set_save_first: Callable[[bool], None] = snapshot.set_enabled,
         hand_off: Callable[[str], None] | None = None,
         installs: Callable[[], list[dict[str, str]]] | None = None,
+        state_dir: pathlib.Path = STATE_DIR, config: pathlib.Path = settings.CONFIG,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -164,6 +179,8 @@ class SoftwareUpdate:
         self.hand_off = hand_off
         self.handed_off = False
         self.installs = installs or (lambda: update.read_installs(self.run_dir / INSTALLS))
+        self.state_dir = pathlib.Path(state_dir)
+        self.config = pathlib.Path(config)
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
@@ -177,7 +194,59 @@ class SoftwareUpdate:
             return ([UPDATE_DISK] if self.found() else []) + [BACK]
         rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
         saved = self._saved()
+        rows += [UPDATE_NOW] + self.auto_rows() + self.rollback_rows()
         return rows + (self.restore_rows(saved) if saved else []) + [BACK]
+
+    # -- between releases ------------------------------------------------------------------------
+
+    def auto_rows(self) -> list[str]:
+        values = settings.read_section("update", self.config)
+        return [f"{label}: {'ON' if settings.get_bool(values, key, True) else 'OFF'}" for key, label in AUTO.items()]
+
+    def downloaded_apps(self) -> list[dict]:
+        """Apps the last app-update run found on a downloaded version: those can roll back."""
+        apps = read_status(self.state_dir / APP_STATE).get("apps")
+        return [row for row in apps if isinstance(row, dict) and row.get("current")
+                and row.get("active") == row.get("current") and isinstance(row.get("name"), str)
+                ] if isinstance(apps, list) else []
+
+    def rollback_rows(self) -> list[str]:
+        return [f"{ROLL_BACK} {row['name'].upper()} {row['current']}" for row in self.downloaded_apps()]
+
+    def between_lines(self) -> list[str]:
+        lines = []
+        for label, name in (("SECURITY FIXES", SECURITY_STATE), ("APPS", APP_STATE)):
+            message = read_status(self.state_dir / name).get("message")
+            lines.append(f"{label}: {message if isinstance(message, str) and message else NOT_CHECKED}")
+        return lines
+
+    def update_now(self) -> None:
+        try:
+            for name in (SECURITY_REQUEST, APP_REQUEST):
+                (self.run_dir / name).touch()
+        except OSError:
+            self.result = NOT_STARTED
+            return
+        self.result = UPDATE_STARTED
+
+    def toggle_auto(self, choice: str) -> None:
+        key = next(key for key, label in AUTO.items() if choice.startswith(label))
+        try:
+            settings.update_section("update", {key: "off" if choice.endswith("ON") else "on"}, self.config)
+        except OSError:
+            self.result = "COULD NOT SAVE THE SETTING"
+
+    def roll_back(self, choice: str) -> None:
+        row = next(row for row in self.downloaded_apps() if choice.startswith(f"{ROLL_BACK} {row['name'].upper()} "))
+        name = row["name"].upper()
+        if not self.confirm(self.screen, f"GO BACK FROM {name} {row['current']} TO THE VERSION BEFORE IT?"):
+            return
+        try:
+            (self.run_dir / ROLLBACK_REQUEST).write_text(row["name"] + "\n", encoding="ascii")
+        except OSError:
+            self.result = NOT_STARTED
+            return
+        self.result = f"ROLLING BACK {name}"
 
     @staticmethod
     def restore_rows(saved: snapshot.Snapshot) -> list[str]:
@@ -231,7 +300,9 @@ class SoftwareUpdate:
     def draw_main(self) -> None:
         height, width, row = self.frame()
         wrap = max(8, width - 8)
-        lines = [(self.box_line(), 0)] + ([] if self.live else [(self.saved_line(), 0)]) + [("", 0)]
+        lines = [(self.box_line(), 0)] + ([] if self.live else [(self.saved_line(), 0)])
+        lines += [] if self.live else [(text, 0) for text in self.between_lines()]
+        lines += [("", 0)]
         found = self.found() if self.live else None
         if found:
             lines += [(self.found_line(found), 0)]
@@ -277,6 +348,12 @@ class SoftwareUpdate:
                     self.restore_saved()
                 elif choice == UPDATE_DISK:
                     self.update_disk()
+                elif choice == UPDATE_NOW:
+                    self.update_now()
+                elif choice.startswith(tuple(AUTO.values())):
+                    self.toggle_auto(choice)
+                elif choice.startswith(ROLL_BACK):
+                    self.roll_back(choice)
                 else:
                     self.install()
                     if self.handed_off:

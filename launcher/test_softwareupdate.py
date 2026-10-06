@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import couchliteos_settings as settings
 import couchliteos_snapshot as snapshot
 import couchliteos_softwareupdate as su
 import couchliteos_update as update
@@ -125,6 +126,7 @@ class UiTest(unittest.TestCase):
             keep_awake=self.keep_awake, current="0.2.1", profile={"PROFILE_NAME": "general", "ISO_SUFFIX": ""},
             live=False, fetch=self.fetch, run_dir=self.tmp, clock=lambda: self.now,
             saved=lambda: self.saved, save_first=lambda: self.save_on, set_save_first=self.set_save_first,
+            state_dir=self.tmp, config=self.tmp / "config.ini",
         )
         values.update(overrides)
         return su.SoftwareUpdate(self.screen, **values)
@@ -234,7 +236,7 @@ class SavedVersionTest(UiTest):
 
     def test_delete_asks_first_then_asks_the_service(self):
         self.saved = SAVED
-        self.script = [DOWN, DOWN, ENTER, ESC]
+        self.script = [UP, UP, UP, ENTER, ESC]
         self.make().run()
         self.assertEqual(len(self.questions), 1)
         self.assertIn("DELETE THE SAVED VERSION (0.2.0)? THE BOX CAN THEN NOT GO BACK TO IT.", self.questions[0])
@@ -244,7 +246,7 @@ class SavedVersionTest(UiTest):
     def test_no_to_delete_changes_nothing(self):
         self.saved = SAVED
         self.answer = False
-        self.script = [DOWN, DOWN, ENTER, ESC]
+        self.script = [UP, UP, UP, ENTER, ESC]
         self.make().run()
         self.assertFalse((self.tmp / "snapshot-delete").exists())
 
@@ -280,7 +282,7 @@ class RestoreTest(UiTest):
 
     def test_restore_warns_that_later_changes_are_lost_then_asks_the_service(self):
         self.saved = SAVED
-        self.script = [DOWN, DOWN, DOWN, ENTER, self.restarting(), None]
+        self.script = [UP, UP, ENTER, self.restarting(), None]
         with self.assertRaises(AssertionError):  # the box restarts: the screen never comes back
             self.make().run()
         self.assertEqual(len(self.questions), 1)
@@ -293,14 +295,14 @@ class RestoreTest(UiTest):
     def test_no_changes_nothing(self):
         self.saved = SAVED
         self.answer = False
-        self.script = [DOWN, DOWN, DOWN, ENTER, ESC]
+        self.script = [UP, UP, ENTER, ESC]
         self.make().run()
         self.assertFalse((self.tmp / "restore-request").exists())
 
     def test_running_apps_must_be_closed_first(self):
         self.saved = SAVED
         self.apps = True
-        self.script = [DOWN, DOWN, DOWN, ENTER, ESC]
+        self.script = [UP, UP, ENTER, ESC]
         self.make().run()
         self.assertEqual(self.questions, [])
         self.assertFalse((self.tmp / "restore-request").exists())
@@ -308,7 +310,7 @@ class RestoreTest(UiTest):
 
     def test_a_refused_request_is_shown_and_the_update_title_comes_back(self):
         self.saved = SAVED
-        self.script = [DOWN, DOWN, DOWN, ENTER,
+        self.script = [UP, UP, ENTER,
                        self.service("failed", None, "THERE IS NO SAVED VERSION TO RESTORE, OR IT IS DAMAGED", "0.2.0"),
                        ENTER, ESC]
         screen = self.make()
@@ -591,6 +593,77 @@ class BarTest(unittest.TestCase):
         frames = [su.bar(None, 20, frame) for frame in range(40)]
         self.assertTrue(all(len(frame) == 20 and "=" in frame for frame in frames))
         self.assertGreater(len(set(frames)), 5)
+
+
+class BetweenReleasesTest(UiTest):
+    """Security fixes and app updates (couchliteos-security-update, couchliteos-app-update)."""
+
+    def press(self, label, *after):
+        """Keys that move from the first row to the row starting with `label`, then ENTER."""
+        index = next(i for i, row in enumerate(self.make().rows()) if row.startswith(label))
+        return [DOWN] * index + [ENTER, *after]
+
+    def write_state(self, name, data):
+        (self.tmp / name).write_text(json.dumps(data))
+
+    def test_the_last_results_are_shown(self):
+        self.write_state("security-update.json", {"result": "ok", "message": "RESTART TO FINISH THE SECURITY FIXES",
+                                                  "restart_needed": True})
+        self.write_state("app-update.json", {"result": "ok", "message": "APPS UPDATED", "apps": []})
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("SECURITY FIXES: RESTART TO FINISH THE SECURITY FIXES", self.screen.frames[0])
+        self.assertIn("APPS: APPS UPDATED", self.screen.frames[0])
+
+    def test_never_checked_says_so(self):
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("SECURITY FIXES: NOT CHECKED YET", self.screen.frames[0])
+        self.assertIn("APPS: NOT CHECKED YET", self.screen.frames[0])
+
+    def test_update_now_asks_both_services(self):
+        self.script = self.press("INSTALL SECURITY FIXES AND APP UPDATES NOW", ESC)
+        self.make().run()
+        self.assertTrue((self.tmp / "security-update-install").exists())
+        self.assertTrue((self.tmp / "app-update-install").exists())
+        self.assertIn("STARTED", self.screen.frames[-1])
+
+    def test_the_automatic_switches_write_the_update_section(self):
+        self.script = self.press("AUTOMATIC SECURITY FIXES: ON", ESC)
+        self.make().run()
+        self.assertIn("AUTOMATIC SECURITY FIXES: OFF", self.screen.frames[-1])
+        self.script = self.press("AUTOMATIC APP UPDATES: ON", ESC)
+        self.make().run()
+        self.assertIn("AUTOMATIC APP UPDATES: OFF", self.screen.frames[-1])
+        values = settings.read_section("update", self.tmp / "config.ini")
+        self.assertEqual((values.get("auto_security"), values.get("auto_apps")), ("off", "off"))
+
+    def test_a_downloaded_app_can_be_rolled_back(self):
+        self.write_state("app-update.json", {"message": "UP TO DATE", "apps": [
+            {"name": "moonlight", "image": "6.1.0", "current": "6.2.0", "active": "6.2.0"},
+            {"name": "chiaki-ng", "image": "1.9.0", "current": "1.8.0", "active": "1.9.0"}]})  # the image is newer
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("ROLL BACK MOONLIGHT 6.2.0", self.screen.frames[0])
+        self.assertNotIn("ROLL BACK CHIAKI", self.screen.frames[0])
+        self.script = self.press("ROLL BACK MOONLIGHT", ESC)
+        self.make().run()
+        self.assertTrue(any("MOONLIGHT" in question for question in self.questions))
+        self.assertEqual((self.tmp / "app-rollback").read_text(), "moonlight\n")
+
+    def test_a_refused_rollback_asks_nothing(self):
+        self.write_state("app-update.json", {"apps": [
+            {"name": "moonlight", "image": "6.1.0", "current": "6.2.0", "active": "6.2.0"}]})
+        self.answer = False
+        self.script = self.press("ROLL BACK MOONLIGHT", ESC)
+        self.make().run()
+        self.assertFalse((self.tmp / "app-rollback").exists())
+
+    def test_not_on_the_live_stick(self):
+        self.script = [ESC]
+        self.make(live=True).run()
+        self.assertNotIn("SECURITY FIXES", self.screen.frames[0])
+        self.assertNotIn("AUTOMATIC", self.screen.frames[0])
 
 
 class StatusReadTest(unittest.TestCase):

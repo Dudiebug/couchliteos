@@ -617,6 +617,9 @@ if __name__ == "__main__":
 class RootPathsTest(unittest.TestCase):
     """Root never writes through a name the couchliteos user could swap (couchliteos_safefile)."""
 
+    def test_the_failure_message_names_the_log_root_writes(self):
+        self.assertIn("/" + appupdate.LOG_REL, appupdate.MSG_FAILED)
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
