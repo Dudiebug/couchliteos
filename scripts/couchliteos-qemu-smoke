@@ -570,7 +570,12 @@ rdp.write_handoff('rdp-hold', '$RDP_SMOKE_PASSWORD', rdp.HANDOFF)
 rdp.write_session_request('rdp-hold')
 "
 wait_for_file /run/couchliteos/rdp-hold-ready 'second Remote Desktop session'
-pgrep -u couchliteos -f '^/usr/bin/sdl-freerdp3 /v:127.0.0.1 /port:33891' >/dev/null
+client=$(pgrep -u couchliteos -f '^/usr/bin/sdl-freerdp3 /v:127.0.0.1 /port:33891')
+# No clipboard FUSE mount: stopping a client that has one can hang it for good.
+if grep -E ' - fuse[. ]' "/proc/$client/mountinfo"; then
+  echo 'The Remote Desktop client mounted a FUSE file system.' >&2
+  exit 1
+fi
 systemctl stop couchliteos-rdp.service
 systemctl show --property=Result,ExecMainStatus couchliteos-rdp.service
 if systemctl is-failed --quiet couchliteos-rdp.service; then

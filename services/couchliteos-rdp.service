@@ -37,5 +37,9 @@ RestartPreventExitStatus=65 66
 SuccessExitStatus=130 143
 KillMode=control-group
 TimeoutStopSec=10
+# FreeRDP mounts a FUSE file system for clipboard files (off here: files-to:off). Stopping the
+# client can race its own FUSE thread and leave it unkillable in D state (seen in QEMU). Without
+# /dev/fuse it skips the mount; text clipboard is unaffected.
+InaccessiblePaths=/dev/fuse
 StandardOutput=journal+console
 StandardError=journal+console

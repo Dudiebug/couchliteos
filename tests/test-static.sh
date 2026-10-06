@@ -340,6 +340,7 @@ refute rg -q '^Exec[A-Za-z]*=[-@:!]*\+' services/couchliteos-rdp.service
 refute rg -q '^ExecStartPre=' services/couchliteos-rdp.service
 rg -q '^SuccessExitStatus=130 143$' services/couchliteos-rdp.service
 rg -q '^RestartMode=direct$' services/couchliteos-rdp.service
+rg -q '^InaccessiblePaths=/dev/fuse$' services/couchliteos-rdp.service
 rg -q '^ExecStartPost=\+/usr/bin/systemctl reset-failed couchliteos-rdp.service couchliteos-rdp.path$' services/couchliteos-rdp-cleanup.service
 rg -q '^ExecStartPost=\+/usr/bin/systemctl restart couchliteos-rdp.path$' services/couchliteos-rdp-cleanup.service
 refute rg -q '^EnvironmentFile=' services/couchliteos-rdp-cleanup.service services/couchliteos-rdp-secret.service
