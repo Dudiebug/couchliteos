@@ -316,7 +316,8 @@ class ContentTest(unittest.TestCase):
     def test_releases_are_newest_first_and_the_current_version_has_notes(self):
         versions = [whatsnew.update.parse_version(release) for release, _features in whatsnew.RELEASES]
         self.assertEqual(versions, sorted(versions, reverse=True))
-        current = (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
+        # A pre-release (0.3.0-beta) shows the notes of the release it leads to.
+        current = (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip().split("-")[0]
         # While a release is prepared its notes come before VERSION is raised to it (release-check
         # then requires the two to match), so the newest entry is VERSION or the one just after it.
         newest = [release for release, _features in whatsnew.RELEASES[:2]]

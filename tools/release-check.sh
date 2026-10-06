@@ -36,12 +36,13 @@ TAG=v$VERSION
 NOTES=docs/releases/$TAG.md
 OUT=${COUCHLITEOS_RELEASE_DIR:-$ROOT/build/out}
 
-[[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "VERSION '$VERSION' is not MAJOR.MINOR.PATCH"
+[[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "VERSION '$VERSION' is not MAJOR.MINOR.PATCH[-PRERELEASE]"
 cmp -s VERSION overlay/etc/couchliteos-version || fail 'VERSION and overlay/etc/couchliteos-version differ'
 
 whatsnew=$(python3 -c 'import sys; sys.path.insert(0, "launcher"); import couchliteos_whatsnew as w; print(w.RELEASES[0][0])') \
   || fail 'could not read RELEASES from launcher/couchliteos_whatsnew.py'
-[[ ${whatsnew:-} == "$VERSION" ]] || fail "the newest What's New entry is '${whatsnew:-}', not $VERSION"
+# A pre-release (0.3.0-beta) shows the notes of the release it leads to.
+[[ ${whatsnew:-} == "${VERSION%%-*}" ]] || fail "the newest What's New entry is '${whatsnew:-}', not ${VERSION%%-*}"
 
 if [[ -f $NOTES ]]; then
   [[ $(head -n 1 "$NOTES") == "# CouchLiteOS $TAG" ]] || fail "$NOTES must start with '# CouchLiteOS $TAG'"
