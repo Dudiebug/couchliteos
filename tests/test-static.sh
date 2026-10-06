@@ -932,15 +932,17 @@ rg -q '^  --apt-indices false \\$' build/build.sh
 slim_cfg=config/live-build/includes.chroot_before_packages/etc/dpkg/dpkg.cfg.d/couchliteos-slim
 for rule in 'path-exclude /usr/share/doc/\*' 'path-include /usr/share/doc/\*/copyright' \
   'path-exclude /usr/share/man/\*' 'path-exclude /usr/share/info/\*' \
-  'path-exclude /usr/share/locale/\*' 'path-include /usr/share/locale/en\*'; do
+  'path-exclude /usr/share/locale/\*' 'path-include /usr/share/locale/en\*' \
+  'path-include /usr/share/doc/loadlin/\*' 'path-include /usr/share/doc/live-boot/parameters.txt'; do
   rg -q "^$rule\$" "$slim_cfg"
 done
 # dpkg applies the last matching rule: every include follows its exclude.
-(($(rg -n '^path-include /usr/share/doc/' "$slim_cfg" | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/doc/' "$slim_cfg" | cut -d: -f1)))
+(($(rg -n '^path-include /usr/share/doc/' "$slim_cfg" | head -1 | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/doc/' "$slim_cfg" | cut -d: -f1)))
 (($(rg -n '^path-include /usr/share/locale/en' "$slim_cfg" | cut -d: -f1) > $(rg -n '^path-exclude /usr/share/locale/' "$slim_cfg" | cut -d: -f1)))
 slim_test=$(mktemp -d)
 mkdir -p "$slim_test/bin" "$slim_test/root/lib/modules/6.12.94+deb13-amd64/kernel" \
   "$slim_test/root/usr/share/doc/libfoo1/examples" "$slim_test/root/usr/share/doc/couchliteos/examples" \
+  "$slim_test/root/usr/share/doc/loadlin" "$slim_test/root/usr/share/doc/live-boot" \
   "$slim_test/root/usr/share/man/man1" "$slim_test/root/usr/share/info" \
   "$slim_test/root/usr/share/locale/de/LC_MESSAGES" "$slim_test/root/usr/share/locale/en_GB/LC_MESSAGES" \
   "$slim_test/root/usr/share/locale/es/LC_MESSAGES" \
@@ -953,6 +955,8 @@ mkdir -p "$slim_test/bin" "$slim_test/root/lib/modules/6.12.94+deb13-amd64/kerne
   "$slim_test/root/usr/lib/firmware/qcom"
 for file in usr/share/doc/libfoo1/copyright usr/share/doc/libfoo1/changelog.Debian.gz \
   usr/share/doc/libfoo1/examples/a.c usr/share/doc/couchliteos/examples/steam.ini \
+  usr/share/doc/loadlin/manual.txt.gz usr/share/doc/live-boot/parameters.txt \
+  usr/share/doc/live-boot/changelog.gz \
   usr/share/man/man1/foo.1.gz usr/share/info/foo.info.gz usr/share/locale/locale.alias \
   usr/share/locale/de/LC_MESSAGES/foo.mo usr/share/locale/es/LC_MESSAGES/foo.mo \
   usr/share/locale/en_GB/LC_MESSAGES/foo.mo \
@@ -999,6 +1003,7 @@ printf '%s\n' usr/bin/x86_64-linux-gnu-gcc-14 usr/lib/firmware/ath10k/QCA6174/hw
   usr/lib/gcc/x86_64-linux-gnu/14/liblto_plugin.so usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 \
   usr/libexec/gcc/x86_64-linux-gnu/14/cc1 usr/share/doc/couchliteos/examples/steam.ini \
   usr/share/doc/libfoo1-dev usr/share/doc/libfoo1/copyright \
+  usr/share/doc/live-boot/parameters.txt usr/share/doc/loadlin/manual.txt.gz \
   usr/share/locale/en_GB/LC_MESSAGES/foo.mo usr/share/locale/locale.alias | LC_ALL=C sort > "$slim_test/expected"
 diff -u "$slim_test/expected" "$slim_test/after"
 # What stays passes the release profiles' image checks (build.sh lists the image as //path).
@@ -1006,6 +1011,7 @@ for pattern in $(profile_value general FORBIDDEN_IMAGE_PATHS); do
   refute rg -q -- "$pattern" <(sed 's|^|//|' "$slim_test/after")
 done
 for removed in usr/share/man/man1/foo.1.gz usr/share/info/foo.info.gz usr/share/doc/libfoo1/changelog.Debian.gz \
+  usr/share/doc/live-boot/changelog.gz \
   usr/share/locale/de/LC_MESSAGES/foo.mo usr/share/locale/es/LC_MESSAGES/foo.mo \
   usr/libexec/gcc/x86_64-linux-gnu/14/lto1 usr/lib/gcc/x86_64-linux-gnu/14/libasan.so \
   usr/lib/x86_64-linux-gnu/libubsan.so.1.0.0 usr/lib/firmware/ath10k/QCA4019/hw1.0/firmware-5.bin \

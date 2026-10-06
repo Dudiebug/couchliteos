@@ -17,7 +17,8 @@ removed() { printf 'slim: removed %s\n' "${1#"$ROOT"}"; }
 # Documentation, manual pages, translations.
 doc=$ROOT/usr/share/doc
 if [[ -d $doc ]]; then
-  find "$doc" -mindepth 2 ! -path "$doc/couchliteos/*" ! -type d ! -name copyright -delete
+  find "$doc" -mindepth 2 ! -path "$doc/couchliteos/*" ! -path "$doc/loadlin/*" \
+    ! -path "$doc/live-boot/parameters.txt" ! -type d ! -name copyright -delete
   find "$doc" -mindepth 1 -type d -empty -delete
 fi
 for directory in "$ROOT/usr/share/man" "$ROOT/usr/share/info"; do
