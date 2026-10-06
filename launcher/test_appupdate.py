@@ -257,9 +257,20 @@ class FetchTest(Case):
         self.assertEqual(self.opener.requests, [])
 
     def test_no_answer_is_a_network_error(self):
+        def offline(request, timeout=None):
+            raise urllib.error.URLError("Temporary failure in name resolution")
+
+        self.env.opener = offline
         with self.assertRaises(appupdate.AppUpdateError) as caught:
             appupdate.fetch_manifest(self.env)
         self.assertEqual(caught.exception.message, appupdate.MSG_NETWORK)
+
+    def test_a_latest_release_without_an_app_list_offers_no_updates(self):
+        # A pre-release is never releases/latest; the release before 0.3.0 has no apps.json.
+        self.assertEqual(appupdate.fetch_manifest(self.env), {})
+        self.assertEqual(len(self.opener.requests), len(self.env.manifest_urls))
+        self.assertEqual(appupdate.run(self.env, command="check"), 0)
+        self.assertEqual(appupdate.read_json(self.env.state)["message"], appupdate.MSG_OK)
 
     def test_an_oversized_manifest_is_refused(self):
         self.files[URL] = b" " * (appupdate.MANIFEST_MAX + 1)

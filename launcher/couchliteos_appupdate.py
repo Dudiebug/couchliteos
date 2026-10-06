@@ -313,6 +313,7 @@ def parse_manifest(text: str, note: Callable[[str], None] = lambda _text: None) 
 
 def fetch_manifest(env: Env) -> dict[str, Entry]:
     last: Exception | None = None
+    missing = 0
     for url in env.manifest_urls:
         check_url(url)
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -322,10 +323,13 @@ def fetch_manifest(env: Env) -> dict[str, Entry]:
         except (OSError, ValueError) as error:  # URLError and HTTPError are OSErrors
             env.note(f"manifest {url}: {error}")
             last = error
+            missing += isinstance(error, urllib.error.HTTPError) and error.code == 404
             continue
         if len(body) > MANIFEST_MAX:
             raise AppUpdateError("THE APP LIST IS TOO LARGE")
         return parse_manifest(body.decode("utf-8", errors="replace"), env.note)
+    if missing == len(env.manifest_urls):
+        return {}  # GitHub answered: the latest release publishes no app list, so nothing to install
     raise AppUpdateError(MSG_NETWORK) from last
 
 

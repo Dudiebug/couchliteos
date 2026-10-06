@@ -15,6 +15,7 @@ RUNNER = ("launcher/couchliteos_app_runner.py", ["test_app_runner.py"], ROOT / "
 LAUNCHER = ("launcher/couchliteos-launcher.py", ["test_launcher.py"], ROOT / "launcher")
 EXPORT = ("scripts/couchliteos-support-export", ["tests/test_support.py"], ROOT)
 PERSIST = ("scripts/couchliteos-persist-setup", ["tests/test_persist_setup.py"], ROOT)
+APPUPDATE = ("launcher/couchliteos_appupdate.py", ["test_appupdate.py"], ROOT / "launcher")
 MUTANTS = (
     (
         ISO_BOOT,
@@ -106,6 +107,18 @@ MUTANTS = (
         "persist the whole root",
         '    return "\\n".join(lines) + "\\n"\n\n\ndef ssh_host_keys',
         '    return "\\n".join(lines + ["/ union"]) + "\\n"\n\n\ndef ssh_host_keys',
+    ),
+    (
+        APPUPDATE,
+        "take an unreachable GitHub for a release without an app list",
+        "missing += isinstance(error, urllib.error.HTTPError) and error.code == 404",
+        "missing += 1",
+    ),
+    (
+        APPUPDATE,
+        "install a download whose checksum does not match",
+        "    if digest.hexdigest() != entry.sha256:",
+        "    if False:",
     ),
 )
 
