@@ -102,9 +102,6 @@ refute rg -q 'nomodeset' "$grub_cfg" "$live_cfg"
 find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
-# live-boot's kms hook adds nouveau back unless the slim hook runs after it.
-rg -q '^PREREQ="kms"$' overlay/etc/initramfs-tools/hooks/couchliteos-slim
-rg -Fq "sed -i '/^nouveau\$/d' \"\${__MODULES_TO_ADD}\"" overlay/etc/initramfs-tools/hooks/couchliteos-slim
 # The slim dpkg config drops /usr/share/doc, which lb binary_loadlin copies from.
 rg -q -- '--loadlin false' build/build.sh
 rg -q -- '--win32-loader false' build/build.sh
@@ -1107,8 +1104,11 @@ mkdir -p "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm
 touch "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau/nouveau.ko.xz" \
   "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz" \
   "$initramfs_test/lib/firmware/nvidia/gk104/fecs_inst.bin"
-[[ $("$initramfs_hook" prereqs) == '' ]]
-DESTDIR=$initramfs_test "$initramfs_hook"
+# live-boot's kms hook queues nouveau, and mkinitramfs copies the queue after all hooks.
+[[ $("$initramfs_hook" prereqs) == 'kms' ]]
+printf 'i915\nnouveau\nradeon\n' > "$initramfs_test/queue"
+DESTDIR=$initramfs_test __MODULES_TO_ADD=$initramfs_test/queue "$initramfs_hook"
+[[ $(< "$initramfs_test/queue") == $'i915\nradeon' ]]
 test ! -e "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau"
 test ! -e "$initramfs_test/lib/firmware/nvidia"
 test -e "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz"
