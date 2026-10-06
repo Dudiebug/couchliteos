@@ -1957,7 +1957,8 @@ class Settings:
 
     def run_appearance(self) -> None:
         """THEME and ACCENT; a change recolours the launcher and the keyboard at once. SOUNDS turns the
-        TV interface's navigation sounds on or off. ARTWORK: cover lookup for games."""
+        TV interface's navigation sounds on or off. ARTWORK: cover lookup for games. INTERFACE: TV or
+        CLASSIC (this launcher); a change restarts the launcher service into it."""
         selected = 0
         notice = ""
         while True:
@@ -1965,8 +1966,9 @@ class Settings:
             name, accent = themes.load_choice()
             chosen = available.get(name) or available.get(themes.DEFAULT) or themes.FALLBACK
             sounds = quick.sounds_enabled()
+            interface = themes.load_interface()
             rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}",
-                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "ARTWORK", "BACK"]
+                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "ARTWORK", f"INTERFACE  {interface.upper()}", "BACK"]
             status = self.status
             # A bad user theme is listed nowhere else: say so until something is chosen.
             self.status = notice or (f"SKIPPED {problems[0]}".upper()[:76] if problems else status)
@@ -1989,11 +1991,28 @@ class Settings:
                     notice = f"NOT SAVED: {error}".upper()
             elif selected == 3:
                 self.run_artwork()
+            elif selected == 4:
+                notice = self.switch_interface(interface)
             else:
                 choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS)]
                 value = self.choose("ACCENT", choices, accent)
                 if isinstance(value, str):
                     notice = self.change_theme(chosen.name, value)
+
+    def switch_interface(self, current: str) -> str:
+        """INTERFACE: save TV or CLASSIC and end this launcher (or this screen over the TV interface,
+        which then ends too) so the service starts the other one. A notice when it cannot."""
+        value = self.choose("INTERFACE", [("TV", "tv"), ("CLASSIC", "classic")], current)
+        if not isinstance(value, str) or value == current:
+            return ""
+        if self.launcher.any_app_running():
+            return "CLOSE THE RUNNING APPS FIRST, THEN SWITCH"
+        try:
+            themes.save_interface(value)
+            (RUN / "switch-interface").touch()
+        except OSError as error:
+            return f"NOT SAVED: {error}".upper()[:76]
+        sys.exit(0)
 
     def run_artwork(self) -> None:
         """Cover lookup for games: LOOKUP ON/OFF, the user's STEAMGRIDDB KEY, the UNMATCHED GAMES.

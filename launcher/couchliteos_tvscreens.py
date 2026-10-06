@@ -45,6 +45,7 @@ CHILD_TITLE = "CouchLiteOS Settings"
 # The child then exits and the TV interface shows the progress (UpdateProgress).
 UPDATE_WATCH = "update-watch"
 REOPEN_SETUP, REOPEN_DISPLAY = "reopen-setup", "reopen-display"  # the classic launcher's restart markers
+SWITCH_INTERFACE = "switch-interface"  # APPEARANCE > INTERFACE changed: the service starts again
 
 # The curses screens `couchliteos-launcher --screen` runs (couchliteos-launcher.py SCREENS).
 SCREENS = (
@@ -117,6 +118,15 @@ def setup_due(run: pathlib.Path = RUN, setup_marker: pathlib.Path | None = None,
 def take_reopen_display(run: pathlib.Path = RUN) -> bool:
     """True once after a child exited to apply SCREEN EDGES / TEXT SIZE: DISPLAY opens again."""
     marker = run / REOPEN_DISPLAY
+    if not marker.exists():
+        return False
+    marker.unlink(missing_ok=True)
+    return True
+
+
+def take_switch_interface(run: pathlib.Path = RUN) -> bool:
+    """True once after APPEARANCE > INTERFACE was changed in a screen on top."""
+    marker = run / SWITCH_INTERFACE
     if not marker.exists():
         return False
     marker.unlink(missing_ok=True)

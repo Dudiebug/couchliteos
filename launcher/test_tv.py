@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -300,6 +301,35 @@ class BatteryTest(unittest.TestCase):
     def test_unplugging_applies_the_battery_settings(self):
         _module, tv = self.tick(source_change=True)
         tv.idle.apply.assert_called_once()
+
+
+class SwitchInterfaceTest(unittest.TestCase):
+    """APPEARANCE > INTERFACE > CLASSIC, chosen in the screen on top: the TV interface ends, and
+    the restarted service starts the classic launcher (scripts/couchliteos-session)."""
+
+    def closed(self, marker):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        run = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, run, True)
+        if marker:
+            (run / module.tvscreens.SWITCH_INTERFACE).touch()
+        tv.child_name, tv.child_pid, tv.starting = "appearance", 1, False
+        tv.application = mock.Mock()
+        tv.child_left_an_app = mock.Mock(return_value=True)
+        tv.after_screen = mock.Mock()
+        with mock.patch.object(module.GLib, "spawn_close_pid", create=True), mock.patch.object(module.session, "RUN", run):
+            tv.on_child_exit(1, 0)
+        return tv, run
+
+    def test_the_tv_interface_ends_after_a_switch(self):
+        tv, run = self.closed(marker=True)
+        tv.application.quit.assert_called_once_with()
+        self.assertFalse(any(run.iterdir()))
+
+    def test_otherwise_it_stays(self):
+        tv, _run = self.closed(marker=False)
+        tv.application.quit.assert_not_called()
 
 
 class LaunchFailureTest(unittest.TestCase):

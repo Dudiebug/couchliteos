@@ -434,6 +434,9 @@ class Screens:
         if not self.child_left_an_app():
             session.focus_launcher()
             self.set_launcher_focus(True)
+        if tvscreens.take_switch_interface(self.run_dir):
+            self.application.quit()  # Restart=always: couchliteos-session starts the classic launcher
+            return
         self.after_screen()
         if (self.run_dir / tvscreens.REOPEN_SETUP).exists():
             self.open_screen("setup")  # it restarted for a new picture size: carry on at the next step
@@ -1902,6 +1905,7 @@ class Tv(Screens, Look, Script, session.Session):
             self.window.present()
             return
         self.prepare_session()
+        tvscreens.take_switch_interface(self.run_dir)  # left by a classic launcher that switched to this one
         self.controllers.start()
         self.battery.start()
         self.updates.start()

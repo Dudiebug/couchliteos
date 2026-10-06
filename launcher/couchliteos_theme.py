@@ -218,6 +218,21 @@ def _write_atomically(path: pathlib.Path, text: str, mode: int) -> None:
             pass
 
 
+def load_interface(path: pathlib.Path | None = None) -> str:
+    """`classic` (the curses launcher) or `tv`, as scripts/couchliteos-session reads it."""
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read_string((CONFIG if path is None else path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, configparser.Error):
+        return "tv"
+    return "classic" if parser.get(SECTION, "interface", fallback="").strip().lower() == "classic" else "tv"
+
+
+def save_interface(interface: str, path: pathlib.Path | None = None) -> None:
+    """Raises OSError. The session reads it when the launcher service starts again."""
+    save_values({"interface": "classic" if interface == "classic" else "tv"}, path)
+
+
 def save_choice(name: str, accent: str, path: pathlib.Path | None = None) -> None:
     """Rewrite theme and accent in the [appearance] section of config.ini, atomically. Raises OSError."""
     save_values({"theme": name, "accent": accent}, path)

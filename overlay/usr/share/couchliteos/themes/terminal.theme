@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: the look before 0.3.0. White text on black, the selection in reverse video.
+[theme]
+name = TERMINAL
+background = #000000
+surface = #1c1c1c
+text = #ffffff
+muted = #c0c0c0
+accent = #ffffff
+focus = #ffffff
+warning = #e3c401
+error = #f62b5a

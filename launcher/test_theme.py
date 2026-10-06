@@ -91,11 +91,12 @@ class BuiltinTest(unittest.TestCase):
     def setUp(self):
         self.themes, self.problems = theme.available(BUILTIN, pathlib.Path("/nonexistent"))
 
-    def test_the_four_built_ins_load(self):
+    def test_the_five_built_ins_load(self):
         self.assertEqual(self.problems, [])
-        self.assertEqual(set(self.themes), {"midnight", "slate", "daylight", "high-contrast"})
+        self.assertEqual(set(self.themes), {"midnight", "slate", "daylight", "high-contrast", "terminal"})
         self.assertEqual(
-            {item.label for item in self.themes.values()}, {"MIDNIGHT", "SLATE", "DAYLIGHT", "HIGH CONTRAST"})
+            {item.label for item in self.themes.values()},
+            {"MIDNIGHT", "SLATE", "DAYLIGHT", "HIGH CONTRAST", "TERMINAL"})
         self.assertIn(theme.DEFAULT, self.themes)
 
     def test_every_built_in_is_readable(self):
@@ -106,10 +107,17 @@ class BuiltinTest(unittest.TestCase):
                 self.assertGreaterEqual(theme.contrast(theme.on_focus(item), colours["focus"]), 4.5)
                 self.assertGreaterEqual(theme.contrast(colours["muted"], colours["background"]), 4.5)
 
-    def test_text_is_drawn_in_the_text_colour_on_focus_except_high_contrast(self):
+    def test_text_is_drawn_in_the_text_colour_on_focus_except_high_contrast_and_terminal(self):
         for name, item in self.themes.items():
-            expected = item.colours["background" if name == "high-contrast" else "text"]
+            expected = item.colours["background" if name in ("high-contrast", "terminal") else "text"]
             self.assertEqual(theme.on_focus(item), expected, name)
+
+    def test_terminal_is_the_look_before_0_3_0(self):
+        # 0.2.x: foot's black background and white text (overlay/etc/xdg/foot/foot.ini), and the
+        # selection in reverse video: black text on a white bar.
+        colours = self.themes["terminal"].colours
+        self.assertEqual((colours["background"], colours["text"], colours["focus"]), ("000000", "ffffff", "ffffff"))
+        self.assertEqual(theme.on_focus(self.themes["terminal"]), "000000")
 
     def test_fallback_matches_the_midnight_file(self):
         self.assertEqual(theme.FALLBACK.colours, self.themes["midnight"].colours)
@@ -179,6 +187,83 @@ class AvailableTest(TempDir):
     def test_user_dir_follows_xdg_config_home(self):
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/var/lib/couchliteos/home/.config"}):
             self.assertEqual(theme.user_dir(), pathlib.Path("/var/lib/couchliteos/home/.config/couchliteos/themes"))
+
+
+class InterfaceTest(TempDir):
+    def test_tv_unless_classic_is_saved(self):
+        self.assertEqual(theme.load_interface(self.config), "tv")
+        self.config.write_text("[appearance]\ninterface = something\n")
+        self.assertEqual(theme.load_interface(self.config), "tv")
+        self.config.write_text("[appearance]\ninterface = Classic\n")
+        self.assertEqual(theme.load_interface(self.config), "classic")
+
+    def test_saving_keeps_the_theme(self):
+        theme.save_choice("terminal", "", self.config)
+        theme.save_interface("classic", self.config)
+        self.assertEqual((theme.load_interface(self.config), theme.load_choice(self.config)),
+                         ("classic", ("terminal", "")))
+        theme.save_interface("tv", self.config)
+        self.assertEqual(theme.load_interface(self.config), "tv")
+
+    def test_the_session_script_reads_the_same_key(self):
+        script = (pathlib.Path(__file__).resolve().parents[1] / "scripts/couchliteos-session").read_text()
+        self.assertIn('section == "appearance"', script)
+        self.assertIn("interface = classic", script)
+
+
+class InterfaceScreenTest(unittest.TestCase):
+    """Settings > APPEARANCE > INTERFACE in the classic launcher (the TV interface opens the same screen)."""
+
+    def run_screen(self, keys, chosen, running=False):
+        import shutil
+        import tempfile
+        from test_controls import FakeScreen, load_launcher
+
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        launcher = load_launcher()
+        menu = launcher.Settings(FakeScreen(keys), mock.Mock(any_app_running=mock.Mock(return_value=running)))
+        frames = []
+        original_draw = menu.draw
+
+        def draw(title, rows, selected, *args, **kwargs):
+            frames.append((title, list(rows), menu.status))
+            return original_draw(title, rows, selected, *args, **kwargs)
+
+        exited = False
+        with mock.patch.object(launcher, "read_key", side_effect=lambda window, **_kw: window.getch()), \
+                mock.patch.object(launcher, "RUN", root), \
+                mock.patch.object(theme, "CONFIG", root / "config.ini"), \
+                mock.patch.object(menu, "draw", side_effect=draw), \
+                mock.patch.object(menu, "choose", return_value=chosen):
+            try:
+                menu.run_appearance()
+            except SystemExit as stop:
+                exited = stop.code in (0, None)
+        return root, frames, exited
+
+    DOWN_TO_INTERFACE = [curses.KEY_DOWN] * 4
+
+    def test_the_interface_row_is_above_back(self):
+        _root, frames, _exited = self.run_screen([27], None)
+        self.assertEqual(frames[0][1][-2:], ["INTERFACE  TV", "BACK"])
+
+    def test_choosing_classic_saves_it_and_restarts_into_it(self):
+        root, _frames, exited = self.run_screen([*self.DOWN_TO_INTERFACE, 10], "classic")
+        self.assertTrue(exited)
+        self.assertEqual(theme.load_interface(root / "config.ini"), "classic")
+        self.assertTrue((root / "switch-interface").exists())
+
+    def test_not_while_an_app_runs(self):
+        root, frames, exited = self.run_screen([*self.DOWN_TO_INTERFACE, 10, 27], "classic", running=True)
+        self.assertFalse(exited)
+        self.assertEqual(theme.load_interface(root / "config.ini"), "tv")
+        self.assertIn("CLOSE", frames[-1][2])
+
+    def test_the_same_choice_changes_nothing(self):
+        root, _frames, exited = self.run_screen([*self.DOWN_TO_INTERFACE, 10, 27], "tv")
+        self.assertFalse(exited)
+        self.assertFalse((root / "switch-interface").exists())
 
 
 class ChoiceTest(TempDir):
