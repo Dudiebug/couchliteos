@@ -1,0 +1,11 @@
+#!/bin/sh
+# Put e2fsck in the initramfs for scripts/live-premount/couchliteos-fsck: live-boot checks
+# the live medium only, never the persistence partition, and initramfs-tools adds fsck only
+# for filesystems in /etc/fstab (a live system has none).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+  prereqs) prereqs; exit 0 ;;
+esac
+. /usr/share/initramfs-tools/hook-functions
+copy_exec "$(command -v e2fsck)" /sbin

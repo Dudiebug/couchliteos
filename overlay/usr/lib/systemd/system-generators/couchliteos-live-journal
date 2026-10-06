@@ -1,0 +1,13 @@
+#!/bin/sh
+# Live sticks keep the journal in RAM (Storage=volatile). Without persistence /var/log is RAM
+# anyway; with it, a persistent journal would mean steady small writes that wear a USB stick
+# and slow the box, and journald's default cap would be 10% of the overlay. The volatile
+# journal is capped by RuntimeMaxUse instead. couchliteos-live-journal-save.service keeps
+# the last boot's log on the stick. Installed systems are left alone.
+# Generators run before journald starts, and journald reads /run/systemd/journald.conf.d.
+case " $(cat /proc/cmdline 2>/dev/null) " in
+  *" boot=live "*) ;;
+  *) exit 0 ;;
+esac
+mkdir -p /run/systemd/journald.conf.d
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=64M\n' > /run/systemd/journald.conf.d/50-couchliteos-live.conf

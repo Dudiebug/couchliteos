@@ -1,0 +1,20 @@
+[Unit]
+Description=CouchLiteOS: finish a live-USB update once the new system reached the launcher
+After=couchliteos-launcher.service
+Wants=couchliteos-launcher.service
+# Live sticks only, and only while a Ventoy update waits for its first good boot: then the
+# old ISO and its ventoy.json entry are removed. A boot that never reaches the launcher keeps
+# the old ISO in Ventoy's menu.
+ConditionPathExists=/run/live/medium
+ConditionPathExists=/run/couchliteos/launcher-ready
+ConditionPathExists=/var/lib/couchliteos/live-update.json
+
+[Service]
+Type=oneshot
+# The "-" makes a failure count as success: tidying up must never fail the boot.
+ExecStart=-/usr/libexec/couchliteos-persist-setup boot-ok
+Nice=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

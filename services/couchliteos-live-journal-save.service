@@ -1,0 +1,19 @@
+[Unit]
+Description=CouchLiteOS: keep the last live boot's log on the stick
+# On a live stick the journal stays in RAM (couchliteos-live-journal generator). At a clean
+# shutdown this copies the boot's log to /var/log/couchliteos, which persistence keeps.
+ConditionKernelCommandLine=boot=live
+ConditionPathIsMountPoint=/var/log/couchliteos
+After=local-fs.target systemd-journald.service
+RequiresMountsFor=/var/log/couchliteos
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+# Stopped before the filesystems at shutdown; bounded to 2 MB like the other logs.
+ExecStop=-/bin/sh -c 'journalctl -b -o short-iso --no-pager | tail -c 2097152 > /var/log/couchliteos/last-boot.log.new && mv -f /var/log/couchliteos/last-boot.log.new /var/log/couchliteos/last-boot.log'
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

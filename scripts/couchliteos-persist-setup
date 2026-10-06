@@ -1,0 +1,616 @@
+#!/usr/bin/python3 -I
+"""Set up storage on a CouchLiteOS live USB stick, so settings and programs are kept.
+
+    couchliteos-persist-setup status          JSON for the launcher: can this stick keep data?
+    couchliteos-persist-setup conf            print the persistence.conf this image uses
+    couchliteos-persist-setup setup --plan    say what setup would do, change nothing
+    couchliteos-persist-setup setup [--size-gib N] [--iso /path/on/ventoy.iso]
+    couchliteos-persist-setup boot-ok         after a good boot: finish a Ventoy update
+
+How the stick was written decides where the data goes:
+
+* Etcher, Rufus (DD mode), dd: the ISO fills only the start of the stick. Setup appends an
+  ext4 partition labelled `persistence` in the free space after the last partition (and a
+  `couchliteos-sys` partition first when couchliteos_liveslot.SLOT_DESIGN is "sys"). The
+  ISO's own partitions are never changed.
+* Ventoy: the ISO is a file on Ventoy's data partition. Setup creates
+  /couchliteos-persistence.dat there (ext4, label `persistence`) and adds a persistence
+  entry for the ISO to ventoy/ventoy.json, keeping every other key and entry.
+
+Either way the data area gets a persistence.conf of bind mounts for chosen paths only (no
+`/ union`): a persisted root would hide the next update's files. The running session's
+state is copied in, so what was set up before the reboot is kept.
+
+Progress goes to /run/couchliteos/persist-setup.json for the launcher.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import dataclasses
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+from typing import Callable, Iterable
+
+sys.path.insert(0, "/usr/libexec")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "launcher"))
+import couchliteos_liveslot as liveslot  # noqa: E402
+
+GIB = 1 << 30
+MIB = 1 << 20
+MIN_FREE = 1 * GIB
+VENTOY_CAP = 16 * GIB
+FAT32_MAX = 4 * GIB - 1
+ALIGN = MIB  # partitions start on 1 MiB boundaries
+STATUS_FILE = pathlib.Path("/run/couchliteos/persist-setup.json")
+WORK_DIR = pathlib.Path("/run/couchliteos/persist-setup")
+VENTOY_EFI_LABEL = "VTOYEFI"
+LINUX_GPT_TYPE = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+
+# Directories kept on the stick, as (path, source directory on the data area). Bind mounts
+# only. The first five are what 0.2.x sticks already keep (tests/qemu-persistence-smoke.sh).
+BINDS = (
+    ("/var/lib/couchliteos", "couchliteos-state"),
+    ("/var/log/couchliteos", "couchliteos-logs"),
+    ("/var/lib/tailscale", "tailscale-state"),
+    ("/var/lib/bluetooth", "bluetooth-state"),
+    ("/etc/NetworkManager/system-connections", "nm-connections"),
+    ("/home/couchliteos", "couchliteos-home"),
+    ("/var/lib/flatpak", "flatpak"),
+)
+# Single files cannot be bind-mounted by live-boot; its `link` option links each file of the
+# source directory into the target directory instead (persistence.conf(5)).
+IDENTITY = ("/etc", "couchliteos-identity", ("machine-id",))
+SSH_KEYS = ("/etc/ssh", "ssh-host-keys")
+
+MSG_NOT_LIVE = "THIS BOX RUNS FROM ITS DISK: NOTHING TO SET UP"
+MSG_ALREADY = "STORAGE IS ALREADY SET UP ON THIS STICK"
+MSG_UNKNOWN = "COULD NOT TELL HOW THIS STICK WAS MADE"
+MSG_OPTICAL = "THIS IS A DVD OR A READ-ONLY DEVICE: CHANGES CANNOT BE KEPT"
+MSG_SMALL = "LESS THAN 1 GB FREE ON THE STICK: CHANGES CANNOT BE KEPT"
+MSG_TABLE = "THE STICK'S PARTITION TABLE IS FULL"
+
+
+class SetupError(Exception):
+    """Setup stopped; `message` is the ALL CAPS text for the launcher screen."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _free_bytes(path: pathlib.Path) -> int:
+    stats = os.statvfs(path)
+    return stats.f_bavail * stats.f_frsize
+
+
+@dataclasses.dataclass
+class Env:
+    """Everything setup touches outside its arguments, replaceable in tests."""
+
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    root: pathlib.Path = pathlib.Path("/")  # where /run/live, /proc and /etc are read
+    free_bytes: Callable[[pathlib.Path], int] = _free_bytes
+    euid: Callable[[], int] = lambda: os.geteuid()
+    status_file: pathlib.Path = STATUS_FILE
+    work_dir: pathlib.Path = WORK_DIR
+    slot_design: str = liveslot.SLOT_DESIGN
+    log: Callable[[str], None] = lambda text: print(text, file=sys.stderr)
+
+    def path(self, absolute: str) -> pathlib.Path:
+        return self.root / absolute.lstrip("/")
+
+
+def run(env: Env, argv: Iterable[object], input_text: str | None = None,
+        check: bool = True) -> subprocess.CompletedProcess:
+    argv = [str(part) for part in argv]
+    result = env.runner(argv, input=input_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, check=False)
+    if check and result.returncode != 0:
+        env.log(f"$ {' '.join(argv)} -> exit {result.returncode}: {(result.stderr or '').strip()[-2000:]}")
+        raise SetupError(f"SETUP FAILED AT: {argv[0].upper()}")
+    return result
+
+
+def run_json(env: Env, argv: list[str]) -> dict:
+    try:
+        data = json.loads(run(env, argv).stdout or "{}")
+    except ValueError as error:
+        raise SetupError(MSG_UNKNOWN) from error
+    return data if isinstance(data, dict) else {}
+
+
+class Status:
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+
+    def set(self, phase: str, message: str, percent: int | None = None) -> None:
+        text = json.dumps({"phase": phase, "message": message, "percent": percent})
+        with contextlib.suppress(OSError):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(prefix=".persist.", dir=self.path.parent)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(text + "\n")
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, self.path)
+
+
+# ------------------------------------------------------------------ persistence.conf
+
+
+def persistence_conf(ssh_keys: bool = False) -> str:
+    lines = [
+        "# CouchLiteOS: keep chosen paths only. A whole-root union would hide the files",
+        "# of the next system update, so there is no '/ union' line.",
+    ]
+    lines += [f"{path} source={source}" for path, source in BINDS]
+    lines.append(f"{IDENTITY[0]} link,source={IDENTITY[1]}")
+    if ssh_keys:
+        lines.append(f"{SSH_KEYS[0]} link,source={SSH_KEYS[1]}")
+    return "\n".join(lines) + "\n"
+
+
+def ssh_host_keys(env: Env) -> list[pathlib.Path]:
+    directory = env.path("/etc/ssh")
+    try:
+        return sorted(path for path in directory.iterdir()
+                      if re.fullmatch(r"ssh_host_[a-z0-9]+_key(\.pub)?", path.name) and path.is_file())
+    except OSError:
+        return []
+
+
+# ------------------------------------------------------------------ detection
+
+
+def is_live(env: Env) -> bool:
+    if env.path("/run/live/medium").exists():
+        return True
+    try:
+        return "boot=live" in env.path("/proc/cmdline").read_text(encoding="ascii", errors="replace").split()
+    except OSError:
+        return False
+
+
+def has_persistence(env: Env) -> bool:
+    try:
+        text = env.path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(" /run/live/persistence/" in line for line in text.splitlines())
+
+
+def lsblk_tree(env: Env, device: str, inverse: bool = False) -> list[dict]:
+    argv = ["lsblk", "--json", "--bytes", "-o", "NAME,PATH,TYPE,FSTYPE,LABEL,SIZE,LOG-SEC,MOUNTPOINT,RO,RM"]
+    if inverse:
+        argv.append("--inverse")
+    return run_json(env, argv + [device]).get("blockdevices", [])
+
+
+def _walk(nodes: list[dict]) -> Iterable[dict]:
+    for node in nodes:
+        yield node
+        yield from _walk(node.get("children") or [])
+
+
+def medium_source(env: Env) -> str:
+    result = run(env, ["findmnt", "-n", "-o", "SOURCE", "/run/live/medium"], check=False)
+    return (result.stdout or "").strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ""
+
+
+def medium_disk(env: Env, source: str) -> dict:
+    """The whole-disk lsblk node under the live medium (a partition, or Ventoy's dm map)."""
+    for node in _walk(lsblk_tree(env, source, inverse=True)):
+        if node.get("type") in ("disk", "rom"):
+            return node
+    raise SetupError(MSG_UNKNOWN)
+
+
+@dataclasses.dataclass
+class Medium:
+    kind: str                # "ventoy", "dd", "optical"
+    disk: str                # /dev/sdX
+    disk_bytes: int = 0
+    sector: int = 512
+    partitions: list[dict] = dataclasses.field(default_factory=list)  # lsblk children
+    source: str = ""         # what /run/live/medium is mounted from
+
+
+def detect(env: Env) -> Medium:
+    source = medium_source(env)
+    if not source:
+        raise SetupError(MSG_UNKNOWN)  # toram, netboot, or no medium mounted
+    disk = medium_disk(env, source)
+    path = disk.get("path") or f"/dev/{disk.get('name')}"
+    tree = lsblk_tree(env, path)
+    node = tree[0] if tree else disk
+    children = [child for child in node.get("children") or [] if child.get("type") == "part"]
+    medium = Medium(kind="dd", disk=path, disk_bytes=int(node.get("size") or 0),
+                    sector=int(node.get("log-sec") or 512), partitions=children, source=source)
+    if "rom" in (node.get("type"), disk.get("type")) or str(node.get("ro")) in ("1", "True", "true"):
+        medium.kind = "optical"
+    elif any(child.get("label") == VENTOY_EFI_LABEL for child in children):
+        medium.kind = "ventoy"
+    return medium
+
+
+# ------------------------------------------------------------------ dd / Etcher planning
+
+
+@dataclasses.dataclass
+class Partition:
+    number: int
+    start: int   # sectors
+    size: int    # sectors
+    label: str
+
+
+@dataclasses.dataclass
+class Plan:
+    kind: str
+    disk: str = ""
+    steps: list[tuple[str, list[str] | None]] = dataclasses.field(default_factory=list)
+    partitions: list[Partition] = dataclasses.field(default_factory=list)
+    table: str = ""
+    relocate_gpt: bool = False
+    sector: int = 512
+    sfdisk_script: str = ""
+    # Ventoy
+    ventoy_root: pathlib.Path | None = None
+    iso: pathlib.Path | None = None
+    image_file: pathlib.Path | None = None
+    image_bytes: int = 0
+    ventoy_json: dict | None = None
+
+    def describe(self) -> str:
+        out = [f"Stick: {self.kind} ({self.disk})"]
+        for text, argv in self.steps:
+            out.append(f"- {text}" + (f"\n    $ {' '.join(argv)}" if argv else ""))
+        if self.sfdisk_script:
+            out.append("sfdisk input:\n" + "".join(f"    {line}\n" for line in self.sfdisk_script.splitlines()))
+        return "\n".join(out)
+
+
+def _partition_number(node: str) -> int:
+    match = re.search(r"(\d+)$", node)
+    return int(match.group(1)) if match else 0
+
+
+def partition_node(disk: str, number: int) -> str:
+    return f"{disk}{'p' if disk[-1].isdigit() else ''}{number}"
+
+
+def plan_dd(table_json: dict, disk_bytes: int, sector: int, design: str, size_bytes: int = 0) -> Plan:
+    """Plan the data partition(s) in the free space after the last partition.
+
+    `table_json` is `sfdisk --json DISK` output. Debian's hybrid ISO is an MBR whose first
+    partition covers the whole image from sector 0; the new partition starts after the end
+    of every existing partition, rounded up to 1 MiB, so the ISO is never overlapped.
+    """
+    table = table_json.get("partitiontable") or {}
+    label = table.get("label", "")
+    if label not in ("dos", "gpt"):
+        raise SetupError(MSG_UNKNOWN)
+    sector = int(table.get("sectorsize") or sector)
+    total = disk_bytes // sector
+    parts = table.get("partitions") or []
+    end = max((int(part["start"]) + int(part["size"]) for part in parts), default=0)
+    align = ALIGN // sector
+    start = -(-max(end, align) // align) * align
+    if label == "gpt":
+        usable_end = total - 34  # sectors after this hold the backup GPT
+        relocate = int(table.get("lastlba") or 0) < usable_end - 1
+    else:
+        usable_end = total
+        relocate = False
+    free = max(0, usable_end - start) * sector
+    used = sorted(_partition_number(part.get("node", "")) for part in parts)
+    sys_bytes = liveslot.SYS_PARTITION_BYTES if design == "sys" else 0
+    if free < MIN_FREE + sys_bytes:
+        raise SetupError(MSG_SMALL)
+    wanted = ["couchliteos-sys"] if design == "sys" else []
+    wanted.append("persistence")
+    numbers = [number for number in range(1, 129) if number not in used][:len(wanted)]
+    if label == "dos" and (len(used) + len(wanted) > 4 or max(numbers, default=5) > 4):
+        raise SetupError(MSG_TABLE)
+    plan = Plan(kind="dd", table=label, relocate_gpt=relocate, sector=sector)
+    cursor = start
+    lines = []
+    for number, name in zip(numbers, wanted):
+        if name == "couchliteos-sys":
+            size = sys_bytes // sector
+        else:
+            room = (usable_end - cursor) // align * align
+            size = min(room, -(-size_bytes // sector) // align * align) if size_bytes else room
+        plan.partitions.append(Partition(number, cursor, size, name))
+        if label == "gpt":
+            lines.append(f"start={cursor}, size={size}, type={LINUX_GPT_TYPE}, name={name}")
+        else:
+            lines.append(f"start={cursor}, size={size}, type=83")
+        cursor += size
+    plan.sfdisk_script = "\n".join(lines) + "\n"
+    return plan
+
+
+def mount_point(env: Env, name: str) -> pathlib.Path:
+    return env.work_dir / name
+
+
+def finish_dd_plan(env: Env, plan: Plan, disk: str) -> Plan:
+    plan.disk = disk
+    if plan.relocate_gpt:
+        plan.steps.append(("Move the backup GPT to the end of the stick",
+                           ["sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk]))
+    plan.steps.append(("Add the data partition(s) after the ISO (sfdisk --append)",
+                       ["sfdisk", "--no-reread", "--no-tell-kernel", "--append", disk]))
+    for part in plan.partitions:
+        size_mb = part.size * plan.sector // MIB
+        plan.steps.append((f"Tell the kernel about partition {part.number} ({part.label}, about {size_mb} MB)",
+                           ["partx", "--add", "--nr", str(part.number), disk]))
+    plan.steps.append(("Wait for the new partition device(s)", ["udevadm", "settle"]))
+    for part in plan.partitions:
+        node = partition_node(disk, part.number)
+        plan.steps.append((f"Make an ext4 filesystem labelled {part.label}",
+                           ["mkfs.ext4", "-F", "-q", "-m", "1", "-L", part.label, node]))
+    persistence = partition_node(disk, plan.partitions[-1].number)
+    plan.steps.append(("Write persistence.conf and copy this session's settings",
+                       ["mount", "-o", "rw,noatime", persistence, str(mount_point(env, "data"))]))
+    return plan
+
+
+# ------------------------------------------------------------------ Ventoy planning
+
+
+def ventoy_image_bytes(free: int, iso_bytes: int, fstype: str, size_bytes: int = 0) -> int:
+    """Size of the persistence file: what is asked, else up to 16 GB, leaving room for one
+    more ISO (the next update downloads beside the current one)."""
+    room = free - iso_bytes - 256 * MIB
+    size = min(size_bytes or VENTOY_CAP, room)
+    if fstype == "vfat":
+        size = min(size, FAT32_MAX)
+    size = size // MIB * MIB
+    if size < MIN_FREE:
+        raise SetupError(MSG_SMALL)
+    return size
+
+
+def plan_ventoy(env: Env, medium: Medium, ventoy_root: pathlib.Path, iso: str = "", size_bytes: int = 0) -> Plan:
+    data_part = medium.partitions[0] if medium.partitions else {}
+    fstype = data_part.get("fstype") or ""
+    config = ventoy_root / liveslot.VENTOY_JSON
+    data = liveslot.load_ventoy_json(config)  # refuses unparseable JSON before anything is written
+    if iso:
+        iso_path = ventoy_root / iso.lstrip("/")
+        if not iso_path.is_file():
+            raise SetupError("THAT ISO IS NOT ON THE VENTOY STICK")
+    else:
+        size = int(run(env, ["blockdev", "--getsize64", medium.source]).stdout.strip() or 0)
+        found = liveslot.find_ventoy_iso(ventoy_root, size)
+        if not found:
+            raise SetupError("COULD NOT FIND THIS ISO ON THE VENTOY STICK")
+        if len(found) > 1 and found[1].name.lower().startswith("couchliteos"):
+            raise SetupError("SEVERAL MATCHING ISOS ON THE STICK: NAME ONE WITH --iso")
+        iso_path = found[0]
+    image = ventoy_root / liveslot.VENTOY_BACKEND.lstrip("/")
+    plan = Plan(kind="ventoy", disk=medium.disk, ventoy_root=ventoy_root, iso=iso_path, image_file=image)
+    image_rel = liveslot.image_path(ventoy_root, iso_path)
+    plan.ventoy_json = liveslot.with_persistence(data, image_rel, liveslot.VENTOY_BACKEND)
+    if image.exists():
+        plan.steps.append((f"Reuse the existing {image.name}", None))
+    else:
+        plan.image_bytes = ventoy_image_bytes(env.free_bytes(ventoy_root), iso_path.stat().st_size, fstype, size_bytes)
+        plan.steps.append((f"Create {image.name} ({plan.image_bytes // MIB} MB) on the Ventoy partition",
+                           ["fallocate", "-l", str(plan.image_bytes), str(image)]))
+        plan.steps.append(("Make an ext4 filesystem labelled persistence inside it",
+                           ["mkfs.ext4", "-F", "-q", "-m", "1", "-E", "nodiscard", "-L", "persistence", str(image)]))
+        plan.steps.append(("Write persistence.conf and copy this session's settings",
+                           ["mount", "-o", "loop,rw,noatime", str(image), str(mount_point(env, "data"))]))
+    plan.steps.append((f"Add {{\"image\": \"{image_rel}\", \"backend\": \"{liveslot.VENTOY_BACKEND}\"}} "
+                       f"to ventoy/ventoy.json (other entries kept)", None))
+    return plan
+
+
+# ------------------------------------------------------------------ doing it
+
+
+def populate(env: Env, mountpoint: pathlib.Path) -> None:
+    """Write persistence.conf and copy the running session's state into the data area."""
+    keys = ssh_host_keys(env)
+    (mountpoint / "persistence.conf").write_text(persistence_conf(bool(keys)), encoding="utf-8")
+    for path, source in BINDS:
+        live = env.path(path)
+        if live.is_dir():
+            run(env, ["cp", "-a", "--", f"{live}/.", str(mountpoint / source)]
+                if (mountpoint / source).exists() else ["cp", "-a", "--", str(live), str(mountpoint / source)])
+    identity = mountpoint / IDENTITY[1]
+    identity.mkdir(mode=0o755, exist_ok=True)
+    for name in IDENTITY[2]:
+        live = env.path(f"{IDENTITY[0]}/{name}")
+        if live.is_file() and live.stat().st_size:
+            run(env, ["cp", "-a", "--", str(live), str(identity / name)])
+    if keys:
+        target = mountpoint / SSH_KEYS[1]
+        target.mkdir(mode=0o755, exist_ok=True)
+        run(env, ["cp", "-a", "--", *map(str, keys), str(target)])
+    run(env, ["sync"])
+
+
+def apply_dd(env: Env, plan: Plan, status: Status) -> None:
+    total = len(plan.steps)
+    for index, (text, argv) in enumerate(plan.steps):
+        status.set("working", text.upper(), int(100 * index / total))
+        if argv is None:
+            continue
+        if argv[0] == "sfdisk" and "--append" in argv:
+            run(env, argv, input_text=plan.sfdisk_script)
+        elif argv[0] == "mount":
+            mountpoint = pathlib.Path(argv[-1])
+            mountpoint.mkdir(parents=True, exist_ok=True)
+            run(env, argv)
+            try:
+                populate(env, mountpoint)
+            finally:
+                run(env, ["umount", str(mountpoint)], check=False)
+        else:
+            run(env, argv)
+
+
+def apply_ventoy(env: Env, plan: Plan, status: Status) -> None:
+    total = len(plan.steps)
+    for index, (text, argv) in enumerate(plan.steps):
+        status.set("working", text.upper(), int(100 * index / total))
+        if argv is None:
+            continue
+        if argv[0] == "fallocate":
+            # exFAT has no sparse files; fallocate is fast where the kernel supports it,
+            # truncate (zero-filled by the filesystem) is the fallback.
+            if run(env, argv, check=False).returncode != 0:
+                run(env, ["truncate", "-s", argv[2], argv[3]])
+        elif argv[0] == "mount":
+            mountpoint = pathlib.Path(argv[-1])
+            mountpoint.mkdir(parents=True, exist_ok=True)
+            run(env, argv)
+            try:
+                populate(env, mountpoint)
+            finally:
+                run(env, ["umount", str(mountpoint)], check=False)
+        else:
+            run(env, argv)
+    assert plan.ventoy_root is not None and plan.ventoy_json is not None
+    liveslot.save_ventoy_json(plan.ventoy_root / liveslot.VENTOY_JSON, plan.ventoy_json)
+    run(env, ["sync"])
+
+
+@contextlib.contextmanager
+def ventoy_mounted(env: Env, medium: Medium, writable: bool):
+    """The Ventoy data partition (partition 1), mounted through a device-mapper map."""
+    if not medium.partitions:
+        raise SetupError(MSG_UNKNOWN)
+    part = medium.partitions[0]
+    if part.get("mountpoint"):
+        yield env.path(part["mountpoint"])
+        return
+    slot_env = liveslot.Env(runner=env.runner, log=env.log)
+    sectors = int(part.get("size") or 0) // 512
+    with liveslot.ventoy_partition(slot_env, part["path"], sectors, mount_point(env, "ventoy"), writable) as root:
+        yield root
+
+
+def build_plan(env: Env, medium: Medium, ventoy_root: pathlib.Path | None = None,
+               iso: str = "", size_bytes: int = 0) -> Plan:
+    if medium.kind == "optical":
+        raise SetupError(MSG_OPTICAL)
+    if medium.kind == "ventoy":
+        assert ventoy_root is not None
+        return plan_ventoy(env, medium, ventoy_root, iso, size_bytes)
+    table = run_json(env, ["sfdisk", "--json", medium.disk])
+    plan = plan_dd(table, medium.disk_bytes, medium.sector, env.slot_design, size_bytes)
+    return finish_dd_plan(env, plan, medium.disk)
+
+
+def status_report(env: Env) -> dict:
+    report = {"live": is_live(env), "persistent": False, "medium": "", "can_setup": False, "message": ""}
+    if not report["live"]:
+        report["message"] = MSG_NOT_LIVE
+        return report
+    report["persistent"] = has_persistence(env)
+    if report["persistent"]:
+        report["message"] = MSG_ALREADY
+        return report
+    try:
+        medium = detect(env)
+        report["medium"] = medium.kind
+        if medium.kind == "ventoy":
+            with ventoy_mounted(env, medium, writable=False) as root:
+                plan = build_plan(env, medium, root)
+        else:
+            plan = build_plan(env, medium)
+        report["can_setup"] = True
+        report["message"] = "SET UP STORAGE ON THIS STICK"
+        report["plan"] = [text for text, _argv in plan.steps]
+    except SetupError as error:
+        report["message"] = error.message
+    return report
+
+
+def setup(env: Env, dry_run: bool, iso: str = "", size_bytes: int = 0) -> int:
+    status = Status(env.status_file)
+    if not is_live(env):
+        raise SetupError(MSG_NOT_LIVE)
+    if has_persistence(env):
+        raise SetupError(MSG_ALREADY)
+    if not dry_run and env.euid() != 0:
+        raise SetupError("SETUP MUST RUN AS ROOT")
+    medium = detect(env)
+    if medium.kind == "ventoy":
+        with ventoy_mounted(env, medium, writable=not dry_run) as root:
+            plan = build_plan(env, medium, root, iso, size_bytes)
+            if dry_run:
+                print(plan.describe())
+                return 0
+            apply_ventoy(env, plan, status)
+    else:
+        plan = build_plan(env, medium, size_bytes=size_bytes)
+        if dry_run:
+            print(plan.describe())
+            return 0
+        apply_dd(env, plan, status)
+    status.set("done", "STORAGE IS READY: RESTART TO USE IT", 100)
+    return 0
+
+
+def boot_ok(env: Env) -> int:
+    """The launcher came up: if this boot is a Ventoy update's first, drop the old ISO."""
+    state = liveslot.read_state(env.path(str(liveslot.STATE_FILE)))
+    if state.get("mode") != "ventoy":
+        return 0
+    medium = detect(env)
+    if medium.kind != "ventoy":
+        return 0
+    with ventoy_mounted(env, medium, writable=True) as root:
+        size = int(run(env, ["blockdev", "--getsize64", medium.source]).stdout.strip() or 0)
+        running = [liveslot.image_path(root, path) for path in liveslot.find_ventoy_iso(root, size)]
+        new = state.get("new_iso", "")
+        image = new if new in running else (running[0] if running else "")
+        result = liveslot.ventoy_finish(root, image, env.path("/run/couchliteos/launcher-ready").exists(),
+                                        env.path(str(liveslot.STATE_FILE)))
+        env.log(f"live update: {result or 'nothing to do'}")
+    return 0
+
+
+def main(argv: list[str] | None = None, env: Env | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Set up storage on a CouchLiteOS live USB stick.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("status")
+    sub.add_parser("conf")
+    run_setup = sub.add_parser("setup")
+    run_setup.add_argument("--plan", action="store_true", help="print what would be done; change nothing")
+    run_setup.add_argument("--size-gib", type=int, default=0, help="size of the data area (default: all free space, 16 GB on Ventoy)")
+    run_setup.add_argument("--iso", default="", help="Ventoy: the booted ISO's path on the Ventoy partition")
+    sub.add_parser("boot-ok")
+    args = parser.parse_args(argv)
+    env = env or Env()
+    try:
+        if args.command == "status":
+            print(json.dumps(status_report(env)))
+            return 0
+        if args.command == "conf":
+            print(persistence_conf(bool(ssh_host_keys(env))), end="")
+            return 0
+        if args.command == "boot-ok":
+            return boot_ok(env)
+        return setup(env, args.plan, args.iso, args.size_gib * GIB)
+    except (SetupError, liveslot.SlotError) as error:
+        if args.command == "setup" and not args.plan:
+            Status(env.status_file).set("failed", error.message)
+        print(error.message, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

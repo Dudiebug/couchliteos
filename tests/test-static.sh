@@ -78,6 +78,11 @@ rg -q 'rescue/enable=true vga=788 theme=dark ipv6.disable=1' "$boot_test/binary/
 [[ $(sed 's/ theme=dark//' <<< "$(rg '^[[:space:]]+append ' "$boot_test/binary/isolinux/install.cfg")") == "$isolinux_installer_args" ]]
 refute rg -q '^menu background ' "$boot_test/binary/isolinux/stdmenu.cfg"
 rg -q '^menu color sel[[:space:]]+\* #ff000000 #ffffffff \*$' "$boot_test/binary/isolinux/stdmenu.cfg"
+[[ $(rg -c '^# couchliteos live-update$' "$boot_test/binary/boot/grub/grub.cfg") == 1 ]]
+rg -q 'search --no-floppy --label --set=couchliteos_slot couchliteos-sys' "$boot_test/binary/boot/grub/grub.cfg"
+rg -Fq 'live-media-path=/live-update/current' "$boot_test/binary/boot/grub/grub.cfg"
+rg -Fq 'live-media-path=/live-update/previous' "$boot_test/binary/boot/grub/grub.cfg"
+refute rg -q '^menuentry "Start CouchLiteOS \((Updated|Previous Update)\)"' "$boot_test/binary/boot/grub/grub.cfg"
 # NVIDIA ISO: one Basic Graphics entry (nouveau, KMS on) after No Persistence.
 (cd "$boot_test" && bash "$ROOT/config/profiles/nvidia/hooks/0300-basic-graphics.hook.binary")
 (cd "$boot_test" && bash "$ROOT/config/profiles/nvidia/hooks/0300-basic-graphics.hook.binary")
@@ -262,6 +267,25 @@ rg -Fq 'ConditionPathIsMountPoint=|/var/log/moonlightos' services/couchliteos-mi
 rg -Fq '("/var/lib/moonlightos", "/var/lib/couchliteos")' scripts/couchliteos-migrate # rename:keep
 rg -Fq '("/var/log/moonlightos", "/var/log/couchliteos")' scripts/couchliteos-migrate # rename:keep
 rg -Fq 'os.lchown' scripts/couchliteos-migrate
+python3 -m py_compile scripts/couchliteos-persist-setup launcher/couchliteos_liveslot.py
+[[ $(head -1 scripts/couchliteos-persist-setup) == '#!/usr/bin/python3 -I' ]]
+rg -Fq 'install -D -m 0755 "$ROOT/scripts/couchliteos-persist-setup" "$CHROOT/usr/libexec/couchliteos-persist-setup"' build/configure.sh
+rg -Fq 'install -D -m 0644 "$ROOT/launcher/couchliteos_liveslot.py" "$CHROOT/usr/libexec/couchliteos_liveslot.py"' build/configure.sh
+rg -q 'test_liveslot\.py test_apps_flatpak\.py' launcher/Makefile
+rg -q 'couchliteos_liveslot\.py' launcher/Makefile
+rg -Fq 'python3 -m unittest -v tests/test_persist_setup.py' Makefile
+rg -Fq 'python3 -m unittest -v tests/test_live_update_grub.py' Makefile
+rg -q '^systemctl enable couchliteos-live-boot-ok\.service couchliteos-live-journal-save\.service$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -Fq 'flatpak remote-add --system --if-not-exists flathub /usr/share/couchliteos/flathub.flatpakrepo' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^Url=https://dl\.flathub\.org/repo/$' overlay/usr/share/couchliteos/flathub.flatpakrepo
+for package in fdisk dmsetup; do
+  rg -q "^$package\$" config/live-build/package-lists/couchliteos.list.chroot
+done
+rg -q 'Storage=volatile.nRuntimeMaxUse=64M' overlay/usr/lib/systemd/system-generators/couchliteos-live-journal
+for script in scripts/couchliteos-persist-setup overlay/usr/lib/systemd/system-generators/couchliteos-live-journal overlay/etc/initramfs-tools/scripts/live-premount/couchliteos-fsck overlay/etc/initramfs-tools/hooks/couchliteos-fsck; do
+  [[ $(git ls-files -s "$script" | cut -d' ' -f1) == 100755 ]]
+done
+refute rg -q 'shell=True' scripts/couchliteos-persist-setup launcher/couchliteos_liveslot.py
 refute rg -q 'os\.chown|shutil\.chown|followlinks=True|shell=True' scripts/couchliteos-migrate
 rg -Fq 'unittest -v tests/test_migrate.py' Makefile
 rg -Fq 'TV_HEADLESS_ARGS ?= --if-available' Makefile

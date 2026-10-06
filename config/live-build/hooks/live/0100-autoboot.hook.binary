@@ -29,6 +29,56 @@ while IFS= read -r -d '' cfg; do
   mv "$output" "$cfg"
 done < <(find . -type f -path '*/boot/grub/grub.cfg' -print0)
 
+# A system update installed on the stick boots first. On sticks written with Etcher or dd
+# the ISO partition is read-only, so updates go to live-update/{current,previous} on the
+# stick's data area (launcher/couchliteos_liveslot.py), labelled couchliteos-sys or
+# persistence. An entry appears only when its slot's `ok` marker exists (written last,
+# after every file was checked); without one, the stick boots its own system as before.
+# live-media= and live-media-path= are live-boot's options for where filesystem.squashfs
+# lives. Indented entries keep the ISO's own entries first in every `^menuentry` listing.
+while IFS= read -r -d '' cfg; do
+  grep -Fq '# couchliteos live-update' "$cfg" && continue
+  args=$(awk '/^menuentry "Start CouchLiteOS"/ { c=1 }
+    c && /^[[:space:]]*linux[[:space:]]/ { sub(/^[[:space:]]*linux[[:space:]]+[^[:space:]]+[[:space:]]*/, ""); print; exit }' "$cfg")
+  [[ -n $args ]] || { echo "0100-autoboot: no Start CouchLiteOS entry in $cfg" >&2; exit 1; }
+  block=$(cat <<EOF
+# couchliteos live-update
+set couchliteos_slot=
+set couchliteos_slot_label=
+if search --no-floppy --label --set=couchliteos_slot couchliteos-sys; then
+  set couchliteos_slot_label=couchliteos-sys
+elif search --no-floppy --label --set=couchliteos_slot persistence; then
+  set couchliteos_slot_label=persistence
+fi
+if [ -n "\${couchliteos_slot}" ]; then
+  export couchliteos_slot
+  export couchliteos_slot_label
+  if [ -f "(\${couchliteos_slot})/live-update/current/ok" ]; then
+    menuentry "Start CouchLiteOS (Updated)" {
+      linux (\${couchliteos_slot})/live-update/current/vmlinuz $args live-media=/dev/disk/by-label/\${couchliteos_slot_label} live-media-path=/live-update/current
+      initrd (\${couchliteos_slot})/live-update/current/initrd.img
+    }
+  fi
+  if [ -f "(\${couchliteos_slot})/live-update/previous/ok" ]; then
+    menuentry "Start CouchLiteOS (Previous Update)" {
+      linux (\${couchliteos_slot})/live-update/previous/vmlinuz $args live-media=/dev/disk/by-label/\${couchliteos_slot_label} live-media-path=/live-update/previous
+      initrd (\${couchliteos_slot})/live-update/previous/initrd.img
+    }
+  fi
+fi
+# end couchliteos live-update
+EOF
+)
+  output=$(mktemp "${cfg}.XXXXXX")
+  BLOCK=$block awk '
+    /^menuentry "Start CouchLiteOS"/ && !done { print ENVIRON["BLOCK"]; done=1 }
+    { print }
+    END { if (!done) exit 1 }
+  ' "$cfg" > "$output"
+  chmod --reference="$cfg" "$output"
+  mv "$output" "$cfg"
+done < <(find . -type f -path '*/boot/grub/grub.cfg' -print0)
+
 while IFS= read -r -d '' cfg; do
   sed -i "s/menuentry 'Start installer'/menuentry 'Install CouchLiteOS'/" "$cfg"
   sed -i 's/vga=788 ipv6.disable=1/vga=788 theme=dark ipv6.disable=1/g' "$cfg"

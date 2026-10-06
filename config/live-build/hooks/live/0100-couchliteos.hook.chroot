@@ -105,6 +105,12 @@ systemctl enable couchliteos-qemu-smoke.service
 systemctl enable couchliteos-boot-success.service
 # Writes the time to the launcher to /var/log/couchliteos/boot-time.log and the serial console.
 systemctl enable couchliteos-boot-time.service
+# Live sticks: drop the old ISO after a Ventoy update's first good boot, and keep the
+# last boot's log (the journal stays in RAM there). Both are inert on installed systems.
+systemctl enable couchliteos-live-boot-ok.service couchliteos-live-journal-save.service
+# Flathub, system-wide, from the remote file shipped in the image: no network needed at
+# build time, and the APPLICATIONS screen can install from it on first use.
+flatpak remote-add --system --if-not-exists flathub /usr/share/couchliteos/flathub.flatpakrepo
 systemctl enable couchliteos-hwdetect-early.service couchliteos-hwdetect.service
 systemctl enable tailscaled.service couchliteos-tailscale-enroll.path couchliteos-tailscale-ssh.path
 # HDMI-CEC: the daemon is started by udev (75-couchliteos-cec.rules) only when a CEC adapter exists.

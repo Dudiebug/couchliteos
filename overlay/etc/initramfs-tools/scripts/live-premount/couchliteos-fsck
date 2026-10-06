@@ -1,0 +1,23 @@
+#!/bin/sh
+# Check the stick's data area (labelled persistence, and couchliteos-sys when present) before
+# live-boot mounts it, so a stick pulled out while writing is repaired at the next boot.
+# Preen mode (-p) fixes only what is safe without questions; a filesystem it cannot fix is
+# left to live-boot, which then runs without persistence rather than with damaged data.
+# Never fails the boot. The log lands in /run/couchliteos/fsck.log on the running system.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+  prereqs) prereqs; exit 0 ;;
+esac
+command -v e2fsck >/dev/null 2>&1 || exit 0
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm settle --timeout=10 >/dev/null 2>&1
+fi
+mkdir -p /run/couchliteos
+for label in couchliteos-sys persistence; do
+  device=/dev/disk/by-label/$label
+  [ -b "$device" ] || continue
+  e2fsck -p "$device" >> /run/couchliteos/fsck.log 2>&1
+  echo "e2fsck -p $label: exit $?" >> /run/couchliteos/fsck.log
+done
+exit 0

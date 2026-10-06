@@ -26,7 +26,13 @@ MAX_NAME = 64
 MAX_COMMAND = 512
 MAX_ARGUMENTS = 2048
 MAX_ENV_VALUE = 1024
-KINDS = {"request", "command", "rdp"}
+KINDS = {"request", "command", "rdp", "flatpak"}
+# A `kind = flatpak` manifest names a Flathub application (`flatpak = org.example.App`); it
+# loads as a command application that runs `flatpak run <id>`, so the launcher and the app
+# runner start it like any other command.
+FLATPAK = "/usr/bin/flatpak"
+FLATPAK_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*){2,}$")
+FLATHUB_REPO = pathlib.Path("/usr/share/couchliteos/flathub.flatpakrepo")
 # Controller buttons that gamepad-nav forwards to the launcher as F5-F8.
 SHORTCUTS = {"lb": "LB / L1", "rb": "RB / R1", "view": "VIEW / SELECT", "menu": "MENU / START"}
 
@@ -54,6 +60,7 @@ class Application:
     order: int = 60
     return_to_launcher: bool = True
     environment: dict[str, str] = dataclasses.field(default_factory=dict)
+    flatpak: str = ""
     system: bool = False
     path: pathlib.Path | None = None
 
@@ -112,9 +119,18 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
         raise ManifestError("name is required")
     kind = _scalar(section.get("kind", "").strip(), "kind", 16)
     if kind not in KINDS:
-        raise ManifestError("kind must be request, command, or rdp")
+        raise ManifestError("kind must be request, command, rdp, or flatpak")
     command = _scalar(section.get("command", "").strip(), "command", MAX_COMMAND)
     arguments = _scalar(section.get("arguments", "").strip(), "arguments", MAX_ARGUMENTS)
+    flatpak = _scalar(section.get("flatpak", "").strip(), "flatpak", 255)
+    if kind == "flatpak":
+        if command or arguments or section.get("request", "").strip():
+            raise ManifestError("flatpak application cannot define command, arguments, or request")
+        if not FLATPAK_ID_RE.fullmatch(flatpak):
+            raise ManifestError("invalid flatpak application id")
+        kind, command, arguments = "command", FLATPAK, f"run {flatpak}"
+    elif flatpak:
+        raise ManifestError("only flatpak applications can define flatpak")
     request = _scalar(section.get("request", "").strip(), "request", 64)
     binary = _scalar(section.get("binary", "").strip(), "binary", MAX_COMMAND)
     if binary and not pathlib.PurePath(binary).is_absolute():
@@ -179,6 +195,7 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
         order=order,
         return_to_launcher=True,
         environment=environment,
+        flatpak=flatpak,
         system=system,
         path=path,
     )
@@ -294,12 +311,13 @@ def atomic_write(path: pathlib.Path, content: str, mode: int = 0o640) -> None:
 
 def serialize(app: Application) -> str:
     parser = _parser()
+    flatpak = bool(app.flatpak)
     parser["app"] = {
         "id": app.id,
         "name": app.name,
-        "kind": app.kind,
-        "command": app.command,
-        "arguments": app.arguments,
+        "kind": "flatpak" if flatpak else app.kind,
+        "command": "" if flatpak else app.command,
+        "arguments": "" if flatpak else app.arguments,
         "request": app.request,
         "status_id": app.status_id,
         "terminal": str(app.terminal).lower(),
@@ -312,6 +330,8 @@ def serialize(app: Application) -> str:
         parser["app"]["binary"] = app.binary
     if app.connection:
         parser["app"]["connection"] = app.connection
+    if flatpak:
+        parser["app"]["flatpak"] = app.flatpak
     if app.shortcut:
         parser["app"]["shortcut"] = app.shortcut
     if app.environment:
@@ -432,3 +452,26 @@ def sanitized_summary(result: LoadResult) -> str:
 
 if __name__ == "__main__":
     print(sanitized_summary(load_applications()), end="")
+
+
+def flatpak_application(flatpak_id: str, name: str, existing: set[str]) -> Application:
+    """A user application that starts an installed Flatpak (for INSTALL FROM FLATHUB)."""
+    if not FLATPAK_ID_RE.fullmatch(flatpak_id) or len(flatpak_id) > 255:
+        raise ManifestError("invalid flatpak application id")
+    name = _scalar(name.strip(), "name", MAX_NAME)
+    if not name:
+        raise ManifestError("name is required")
+    app_id = application_id(name, existing)
+    return Application(
+        id=app_id, name=name, kind="command", command=FLATPAK, arguments=f"run {flatpak_id}",
+        status_id=app_id, flatpak=flatpak_id,
+    )
+
+
+def flathub_remote_command(system: bool = True) -> list[str]:
+    """Add Flathub when the image's build-time remote is missing (an older stick's state).
+
+    The shipped .flatpakrepo carries Flathub's signing key, so this needs no network.
+    """
+    scope = "--system" if system else "--user"
+    return [FLATPAK, "remote-add", scope, "--if-not-exists", "flathub", str(FLATHUB_REPO)]

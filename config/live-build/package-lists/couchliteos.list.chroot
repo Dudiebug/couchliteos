@@ -49,6 +49,15 @@ libopengl0
 qrencode
 # Remote Desktop: FreeRDP 3 SDL3 client (native Wayland, no Xwayland)
 freerdp3-sdl
+# grim takes the headless UI test screenshots
+grim
+# Battery level for laptops and handhelds
+upower
+# Programs installed from Flathub live beside the system, so they survive updates and live-USB persistence
+flatpak
+# Live-USB storage setup (couchliteos-persist-setup): sfdisk, and dmsetup for Ventoy sticks
+fdisk
+dmsetup
 
 # Audio and input
 pipewire
