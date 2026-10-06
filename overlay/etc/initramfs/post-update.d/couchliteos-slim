@@ -1,0 +1,57 @@
+#!/bin/bash
+# CouchLiteOS: take nouveau and its firmware (about 60 MiB) out of a finished initrd.
+# update-initramfs runs this after every build (live-build's chroot and installed boxes):
+# $1 is the kernel version, $2 the initrd. The initramfs hook of the same name cannot do it
+# alone: mkinitramfs may copy the modules it queued after the hooks have run. Nothing before
+# the root filesystem needs a GPU driver; nouveau loads later from the root filesystem.
+set -euo pipefail
+version=$1
+initrd=$2
+[[ -f $initrd ]] || exit 0
+
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+
+# Leading uncompressed archives (CPU microcode) stay byte for byte; the zstd one is rewritten.
+status=0
+python3 - "$initrd" "$work/early" "$work/main.zst" <<'EOF' || status=$?
+import sys
+
+data = open(sys.argv[1], "rb").read()
+pos = 0
+while data[pos:pos + 6] in (b"070701", b"070702"):
+    while True:  # one archive: entries up to TRAILER!!!
+        size, namesize = int(data[pos + 54:pos + 62], 16), int(data[pos + 94:pos + 102], 16)
+        name = data[pos + 110:pos + 109 + namesize]
+        pos = (pos + 110 + namesize + 3) & ~3
+        pos = (pos + size + 3) & ~3
+        if name == b"TRAILER!!!":
+            break
+    while data[pos:pos + 1] == b"\0":
+        pos += 1
+if data[pos:pos + 4] != b"\x28\xb5\x2f\xfd":
+    print(f"couchliteos-slim: {sys.argv[1]} is not a zstd initrd; left as it is", file=sys.stderr)
+    sys.exit(3)
+open(sys.argv[2], "wb").write(data[:pos])
+open(sys.argv[3], "wb").write(data[pos:])
+EOF
+((status != 3)) || exit 0
+((status == 0)) || exit "$status"
+
+mkdir "$work/root"
+zstd -dcq "$work/main.zst" | (cd "$work/root" && cpio -idm --quiet --no-absolute-filenames)
+slim=()
+for path in lib/modules/"$version"/kernel/drivers/gpu/drm/nouveau usr/lib/modules/"$version"/kernel/drivers/gpu/drm/nouveau \
+  lib/firmware/nvidia usr/lib/firmware/nvidia; do
+  [[ -e $work/root/$path && ! -L $work/root/$path ]] && slim+=("$work/root/$path")
+done
+((${#slim[@]})) || exit 0
+rm -rf -- "${slim[@]}"
+depmod -a -b "$work/root" "$version"
+
+(cat "$work/early"
+ cd "$work/root" && find . -mindepth 1 -print0 | LC_ALL=C sort -z |
+   cpio -o -H newc -R 0:0 --null --quiet | zstd -q -19 -T0) > "$initrd.slim"
+chmod --reference="$initrd" "$initrd.slim"
+mv -f -- "$initrd.slim" "$initrd"
+echo "couchliteos-slim: nouveau left out of $initrd" >&2

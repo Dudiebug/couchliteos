@@ -1055,6 +1055,11 @@ rg -Fq 'test -f "$CHROOT/opt/couchliteos/apps/$name/usr/resources/qtwebengine_re
 rg -q '^zstd$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^COMPRESS=zstd$' overlay/etc/initramfs-tools/conf.d/couchliteos.conf
 rg -q '^COMPRESSLEVEL=19$' overlay/etc/initramfs-tools/conf.d/couchliteos.conf
+# ...and again from the finished initrd: mkinitramfs may copy queued modules after the hooks.
+initrd_slim=overlay/etc/initramfs/post-update.d/couchliteos-slim
+test -x "$initrd_slim"
+bash -n "$initrd_slim"
+rg -q '^cpio$' config/live-build/package-lists/couchliteos.list.chroot
 initramfs_hook=overlay/etc/initramfs-tools/hooks/couchliteos-slim
 test -x "$initramfs_hook"
 sh -n "$initramfs_hook"
