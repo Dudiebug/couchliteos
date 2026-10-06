@@ -134,6 +134,8 @@ lb config noauto \
   --apt-recommends false \
   --apt-indices false \
   --memtest none \
+  --loadlin false \
+  --win32-loader false \
   "${cache_options[@]}" \
   "${squashfs_options[@]}" \
   "${profile_options[@]}"

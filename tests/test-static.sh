@@ -102,6 +102,9 @@ refute rg -q 'nomodeset' "$grub_cfg" "$live_cfg"
 find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
+# The slim dpkg config drops /usr/share/doc, which lb binary_loadlin copies from.
+rg -q -- '--loadlin false' build/build.sh
+rg -q -- '--win32-loader false' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
 [[ "$(< VERSION)" == 0.3.0-beta ]]
 refute rg -q 'NONE PAIRED' launcher --glob '*.py'
