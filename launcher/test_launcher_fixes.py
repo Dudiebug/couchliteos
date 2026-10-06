@@ -25,7 +25,13 @@ class LauncherFixesTest(unittest.TestCase):
 
     def launcher(self):
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
-            return self.module.Launcher(Screen())
+            launcher = self.module.Launcher(Screen())
+        # run() starts these polling threads; left running they reach every later test's
+        # mocks (the mic monitor's subprocess.run calls counted in test_gamepad_nav).
+        for monitor in (launcher.controllers, launcher.battery, launcher.mic, launcher.pcstatus,
+                        launcher.updates):
+            monitor.start = mock.Mock()
+        return launcher
 
 
 class LiveModeWarningTest(LauncherFixesTest):

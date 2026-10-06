@@ -64,9 +64,15 @@ class LauncherTest(unittest.TestCase):
         self.wake_sources = patcher.start()
         self.addCleanup(patcher.stop)
 
-    def launcher(self):
+    def launcher(self, screen=None):
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
-            return self.module.Launcher(Screen())
+            launcher = self.module.Launcher(screen or Screen())
+        # run() starts these polling threads; left running they reach every later test's
+        # mocks (the mic monitor's subprocess.run calls counted in test_gamepad_nav).
+        for monitor in (launcher.controllers, launcher.battery, launcher.mic, launcher.pcstatus,
+                        launcher.updates):
+            monitor.start = mock.Mock()
+        return launcher
 
     def test_ipv4_helpers(self):
         sample = "lo UNKNOWN 127.0.0.1/8\nenp2s0 UP 192.168.50.27/24\n"
@@ -195,7 +201,7 @@ class LauncherTest(unittest.TestCase):
         with mock.patch.object(self.module, "application_result", return_value=result), mock.patch.object(
             self.module, "network_summary", return_value="OFFLINE"
         ):
-            launcher = self.module.Launcher(Screen([self.module.curses.KEY_F5]))
+            launcher = self.launcher(Screen([self.module.curses.KEY_F5]))
         self.assertEqual(launcher.menu[0], ("OFFICE  [LB / L1]", "rdp-work-pc"))
         launcher.launch_app = mock.Mock(return_value=True)
         launcher.prepare_session = mock.Mock()
