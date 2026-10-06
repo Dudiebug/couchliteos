@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP=${1:-}
-# The COUCHLITEOS_DEFAULTS, _RUN_DIR, _APPS_DIR and _LIBEXEC_DIR overrides exist so the
+# The COUCHLITEOS_DEFAULTS, _RUN_DIR, _APPS_DIR, _UPDATES_DIR and _LIBEXEC_DIR overrides exist so the
 # tests can run this script against fake directories; the image never sets them.
 # shellcheck source=config/default/couchliteos
 source "${COUCHLITEOS_DEFAULTS:-/etc/default/couchliteos}"
@@ -11,6 +11,7 @@ APPS_DIR=${COUCHLITEOS_APPS_DIR:-/opt/couchliteos/apps}
 LIBEXEC_DIR=${COUCHLITEOS_LIBEXEC_DIR:-/usr/libexec}
 LOG_DIR=${COUCHLITEOS_LOG_DIR:-/var/log/couchliteos}
 DATA_DIR=${COUCHLITEOS_DATA_DIR:-/var/lib/couchliteos}
+UPDATES_DIR=${COUCHLITEOS_UPDATES_DIR:-/var/lib/couchliteos-apps}
 mkdir -p "$LOG_DIR" "$DATA_DIR/home/.config" "$DATA_DIR/home/.cache"
 
 appdir=
@@ -35,7 +36,7 @@ case "$APP" in
     ;;
 esac
 
-# couchliteos-app-update unpacks newer versions to $DATA_DIR/apps/<app>/<version> and points
+# couchliteos-app-update unpacks newer versions to $UPDATES_DIR/<app>/<version> and points
 # `current` at the one to use. It wins only when it is newer than the image's copy, whose
 # version build/applications.lock records; after a full update the image may be the newer.
 IMAGE_LOCK=${COUCHLITEOS_IMAGE_LOCK:-/usr/share/couchliteos/applications.lock}
@@ -47,12 +48,12 @@ version_newer() {
 updated_version=
 if [[ -n "$appdir" ]]; then
   image_version=$(awk -F'|' -v app="$APP" '$1 == app { print $2; exit }' "$IMAGE_LOCK" 2>/dev/null || true)
-  if candidate=$(readlink -- "$DATA_DIR/apps/$APP/current" 2>/dev/null); then
+  if candidate=$(readlink -- "$UPDATES_DIR/$APP/current" 2>/dev/null); then
     candidate=${candidate##*/}
-    if [[ $candidate =~ ^[0-9][0-9A-Za-z.+~-]*$ && -x $DATA_DIR/apps/$APP/$candidate/${binary#"$appdir"/} ]] \
+    if [[ $candidate =~ ^[0-9][0-9A-Za-z.+~-]*$ && -x $UPDATES_DIR/$APP/$candidate/${binary#"$appdir"/} ]] \
         && version_newer "$candidate" "$image_version"; then
-      binary=$DATA_DIR/apps/$APP/$candidate/${binary#"$appdir"/}
-      appdir=$DATA_DIR/apps/$APP/$candidate
+      binary=$UPDATES_DIR/$APP/$candidate/${binary#"$appdir"/}
+      appdir=$UPDATES_DIR/$APP/$candidate
       updated_version=$candidate
     fi
   fi

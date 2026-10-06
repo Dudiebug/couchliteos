@@ -144,7 +144,7 @@ class Case(unittest.TestCase):
         self.log = []
         self.env = appupdate.Env(
             runner=self.runner, opener=self.opener, root=self.root, apps_dir=self.tmp / "apps",
-            health_dir=self.tmp / "health", cache_dir=self.tmp / "cache", run_dir=self.run_dir,
+            health_dir=self.tmp / "health", cache_dir=self.tmp / "cache", run_dir=self.run_dir, work_dir=self.tmp / "work",
             state=self.tmp / "app-update.json", config=self.tmp / "config.ini", manifest_urls=(URL,),
             clock=lambda: 1000.0, owner_uid=None, busy=lambda _run: self.busy,
             test_run=self._test_run, flatpak=self._flatpak, log=self.log.append,
@@ -611,3 +611,51 @@ class MainTest(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(SYMLINKS and hasattr(os, "O_NOFOLLOW"), "needs symlinks and O_NOFOLLOW")
+class RootPathsTest(unittest.TestCase):
+    """Root never writes through a name the couchliteos user could swap (couchliteos_safefile)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = pathlib.Path(self._tmp.name)
+        self.victim = self.base / "victim"
+        self.victim.write_text("keep\n")
+
+    def test_the_versions_live_outside_the_launchers_folders(self):
+        self.assertEqual(appupdate.APPS_DIR, pathlib.Path("/var/lib/couchliteos-apps"))
+        self.assertTrue(str(appupdate.LOG_REL).startswith("var/log/couchliteos-update/"))
+
+    def test_the_log_never_appends_through_a_symlink(self):
+        log = self.base / "log" / "app-update.log"
+        log.parent.mkdir(mode=0o755)
+        log.symlink_to(self.victim)
+        appupdate.Log(log)("hello")
+        self.assertEqual(self.victim.read_text(), "keep\n")
+
+    def test_the_status_is_never_written_through_a_symlink(self):
+        state = self.base / "app-update.json"
+        state.symlink_to(self.victim)
+        appupdate.write_json(state, {"ok": True})
+        self.assertEqual(self.victim.read_text(), "keep\n")
+        self.assertFalse(state.is_symlink())
+        self.assertEqual(state.stat().st_mode & 0o777, 0o644)
+
+    def test_the_lock_is_never_opened_through_a_symlink(self):
+        lock = self.base / "lock" / appupdate.LOCK_NAME
+        lock.parent.mkdir(mode=0o700)
+        lock.symlink_to(self.base / "made-by-root")
+        with self.assertRaises(appupdate.AppUpdateError), appupdate.acquire_lock(lock):
+            pass
+        self.assertFalse((self.base / "made-by-root").exists())
+
+    def test_a_swapped_health_folder_loses_nothing(self):
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "moonlight").write_text("keep\n")
+        health = self.base / "app-health"
+        health.symlink_to(elsewhere)
+        appupdate.drop_health(health, "moonlight")
+        self.assertEqual((elsewhere / "moonlight").read_text(), "keep\n")

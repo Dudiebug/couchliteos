@@ -63,6 +63,7 @@ BINDS = (
     ("/etc/NetworkManager/system-connections", "nm-connections"),
     ("/home/couchliteos", "couchliteos-home"),
     ("/var/lib/flatpak", "flatpak"),
+    ("/var/lib/couchliteos-apps", "couchliteos-apps"),  # app updates between releases
 )
 # Single files cannot be bind-mounted by live-boot; its `link` option links each file of the
 # source directory into the target directory instead (persistence.conf(5)).

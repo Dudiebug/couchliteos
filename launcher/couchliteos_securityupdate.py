@@ -30,18 +30,18 @@ import pathlib
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 from collections.abc import Callable
 
 import couchliteos_busy as busy
+import couchliteos_safefile as safefile
 import couchliteos_settings as settings
 import couchliteos_update as update
 
 RUN_DIR = pathlib.Path("/run/couchliteos")
 STATE = pathlib.Path("/var/lib/couchliteos/security-update.json")
-LOG_REL = "var/log/couchliteos/security-update.log"
+LOG_REL = "var/log/couchliteos-update/security-update.log"
 REQUEST_NAME = "security-update-install"
 RESULTS = ("ok", "failed", "busy", "disabled", "live")
 UPGRADED_RE = re.compile(r"Packages that will be upgraded: (.*)$", re.MULTILINE)
@@ -55,7 +55,7 @@ MSG_BUSY = "WAITING: THE BOX IS IN USE"
 MSG_DISABLED = "AUTOMATIC SECURITY UPDATES ARE OFF"
 MSG_LIVE = "SECURITY FIXES COME WITH THE NEXT LIVE USB UPDATE"
 MSG_NETWORK = "COULD NOT REACH THE UPDATE SERVERS: CHECK SETTINGS > NETWORK"
-MSG_FAILED = "SECURITY UPDATE FAILED: SEE /var/log/couchliteos/security-update.log"
+MSG_FAILED = "SECURITY UPDATE FAILED: SEE /var/log/couchliteos-update/security-update.log"
 
 
 class Log:
@@ -65,10 +65,8 @@ class Log:
         self.path = path
 
     def __call__(self, text: str) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8", errors="replace") as stream:
-                stream.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+        try:  # root's own folder, never through a symlink (couchliteos_safefile)
+            safefile.append_line(self.path, f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}")
         except OSError:
             pass
 
@@ -94,20 +92,7 @@ class Env:
 
 def write_json(path: pathlib.Path, data: dict) -> None:
     """Readers (the launcher) see the old or the new file, never half of one."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(data, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+    safefile.write_atomic(path, json.dumps(data, sort_keys=True) + "\n", 0o644)  # the launcher's folder
 
 
 def read_json(path: pathlib.Path) -> dict:

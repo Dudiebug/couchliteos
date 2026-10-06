@@ -58,7 +58,7 @@ chmod 0640 /var/lib/couchliteos/config.ini
 # Saved Remote Desktop passwords: root-only, created after the recursive chown.
 install -d -o root -g root -m 0700 /var/lib/couchliteos/rdp-secrets
 # Downloaded app versions (couchliteos-app-update): root's, readable by the apps' user.
-install -d -o root -g root -m 0755 /var/lib/couchliteos/apps
+install -d -o root -g root -m 0755 /var/lib/couchliteos-apps
 
 install -d -o root -g root -m 0700 /var/lib/tailscale
 # Saved Wi-Fi keyfiles: root-only, so the copy live-boot persists (it keeps the

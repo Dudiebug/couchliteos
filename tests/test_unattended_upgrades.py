@@ -85,9 +85,9 @@ class PackagingTest(unittest.TestCase):
         hook = (ROOT / "config/live-build/hooks/live/0100-couchliteos.hook.chroot").read_text()
         self.assertIn("systemctl enable couchliteos-security-update.timer couchliteos-security-update.path", hook)
         self.assertIn("systemctl enable couchliteos-app-update.timer couchliteos-app-update.path", hook)
-        self.assertIn("install -d -o root -g root -m 0755 /var/lib/couchliteos/apps", hook)
+        self.assertIn("install -d -o root -g root -m 0755 /var/lib/couchliteos-apps", hook)
         self.assertLess(hook.index("chown -R couchliteos:couchliteos /var/lib/couchliteos"),
-                        hook.index("install -d -o root -g root -m 0755 /var/lib/couchliteos/apps"))
+                        hook.index("install -d -o root -g root -m 0755 /var/lib/couchliteos-apps"))
 
     def test_both_services_run_under_an_inhibitor_and_never_restart_the_box(self):
         for name, why in (("security", "Installing security fixes"), ("app", "Updating apps")):
@@ -130,7 +130,7 @@ class PackagingTest(unittest.TestCase):
 
     def test_the_app_folders_exist_on_boxes_installed_before_app_updates(self):
         tmpfiles = (ROOT / "overlay/etc/tmpfiles.d/couchliteos.conf").read_text()
-        self.assertIn("d /var/lib/couchliteos/apps 0755 root root -", tmpfiles)
+        self.assertIn("d /var/lib/couchliteos-apps 0755 root root -", tmpfiles)
         self.assertIn("d /var/cache/couchliteos 0755 root root -", tmpfiles)
 
 

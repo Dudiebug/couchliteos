@@ -128,7 +128,7 @@ VAR_EXCLUDES = (
     "/lib/systemd/random-seed", "/lib/systemd/timers", "/lib/systemd/backlight", "/lib/systemd/rfkill",
     "/lib/systemd/timesync", "/lib/systemd/coredump", "/lib/systemd/pstore", "/lib/systemd/linger",
     "/log/", "/cache/", "/tmp/", "/spool/", "/mail/", "/backups/", "/lib/dhcp/", "/lib/alsa/",
-    "/lib/upower/", "/lib/private/", "/lib/dbus/machine-id", "/lib/couchliteos-update/",
+    "/lib/upower/", "/lib/private/", "/lib/dbus/machine-id", "/lib/couchliteos-update/", "/lib/couchliteos-apps/",
     "/lib/dpkg/",  # has its own run with delete and the protect filter
 )
 RSYNC_BASE = ("rsync", "-aHAX", "--numeric-ids", "--delay-updates")

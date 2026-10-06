@@ -23,7 +23,8 @@ class RunAppUpdatesTest(unittest.TestCase):
         self.run_dir.mkdir()
         self.data = self.base / "data"
         (self.base / "lock").write_text(LOCK)
-        (self.base / "defaults").write_text(f"COUCHLITEOS_LOG_DIR={self.base}/log\nCOUCHLITEOS_DATA_DIR={self.data}\n")
+        (self.base / "defaults").write_text(f"COUCHLITEOS_LOG_DIR={self.base}/log\nCOUCHLITEOS_DATA_DIR={self.data}\n"
+                                           f"COUCHLITEOS_UPDATES_DIR={self.data}/apps\n")
         self.program("chiaki-ng", self.base / "apps" / "chiaki-ng", "image")
         self.program("moonlight", self.base / "apps" / "moonlight", "image")
 

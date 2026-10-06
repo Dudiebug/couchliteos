@@ -213,3 +213,30 @@ class BusyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(hasattr(security.os, "O_NOFOLLOW"), "needs O_NOFOLLOW")
+class RootPathsTest(unittest.TestCase):
+    """Root never writes through a name the couchliteos user could swap (couchliteos_safefile)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = pathlib.Path(self._tmp.name)
+        self.victim = self.base / "victim"
+        self.victim.write_text("keep\n")
+
+    def test_the_log_is_in_roots_own_folder_and_never_followed(self):
+        self.assertTrue(str(security.LOG_REL).startswith("var/log/couchliteos-update/"))
+        log = self.base / "log" / "security-update.log"
+        log.parent.mkdir(mode=0o755)
+        log.symlink_to(self.victim)
+        security.Log(log)("hello")
+        self.assertEqual(self.victim.read_text(), "keep\n")
+
+    def test_the_status_is_never_written_through_a_symlink(self):
+        state = self.base / "security-update.json"
+        state.symlink_to(self.victim)
+        security.write_json(state, {"ok": True})
+        self.assertEqual(self.victim.read_text(), "keep\n")
+        self.assertFalse(state.is_symlink())

@@ -19,7 +19,7 @@ it is newer than both the image's copy (/usr/share/couchliteos/applications.lock
 current download, when this CouchLiteOS is at least `min_os`, and when the owner has not rolled
 back from it.
 
-Layout, one folder per app below /var/lib/couchliteos/apps/<name>/:
+Layout, one folder per app below /var/lib/couchliteos-apps/<name>/ (root's, in a folder of root's):
     <version>/       the AppImage's files (unpacked, like the image's /opt/couchliteos/apps/<name>)
     current          symlink to the version couchliteos-run-app starts when it is newer than the image's
     previous         symlink to the version before it; exactly one is kept
@@ -48,7 +48,6 @@ import stat
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 import urllib.error
@@ -56,6 +55,7 @@ import urllib.request
 from collections.abc import Callable, Iterable, Iterator
 
 import couchliteos_busy as busy
+import couchliteos_safefile as safefile
 import couchliteos_settings as settings
 import couchliteos_update as update
 
@@ -68,14 +68,15 @@ MANIFEST_URLS = (
 )
 # The CouchLiteOS updater's check_url rule: only GitHub, only HTTPS.
 TRUSTED_PREFIXES = ("https://github.com/", "https://api.github.com/")
-APPS_DIR = pathlib.Path("/var/lib/couchliteos/apps")
+APPS_DIR = pathlib.Path("/var/lib/couchliteos-apps")
 HEALTH_DIR = pathlib.Path("/var/lib/couchliteos/app-health")
 STATE = pathlib.Path("/var/lib/couchliteos/app-update.json")
 CACHE_DIR = pathlib.Path("/var/cache/couchliteos/apps")
 RUN_DIR = pathlib.Path("/run/couchliteos")
+WORK_DIR = pathlib.Path("/run/couchliteos-update")  # root's own: the lock
 IMAGE_LOCK_REL = "usr/share/couchliteos/applications.lock"
 VERSION_REL = "etc/couchliteos-version"
-LOG_REL = "var/log/couchliteos/app-update.log"
+LOG_REL = "var/log/couchliteos-update/app-update.log"
 LOCK_NAME = "app-update.lock"
 INSTALL_REQUEST = "app-update-install"   # the owner asked: install even with auto_apps off
 ROLLBACK_REQUEST = "app-rollback"        # the owner asked: roll back the app named inside
@@ -125,10 +126,8 @@ class Log:
         self.path = path
 
     def __call__(self, text: str) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8", errors="replace") as stream:
-                stream.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+        try:  # root's own folder, never through a symlink (couchliteos_safefile)
+            safefile.append_line(self.path, f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}")
         except OSError:
             pass
 
@@ -180,6 +179,7 @@ class Env:
     health_dir: pathlib.Path = HEALTH_DIR
     cache_dir: pathlib.Path = CACHE_DIR
     run_dir: pathlib.Path = RUN_DIR
+    work_dir: pathlib.Path = WORK_DIR
     state: pathlib.Path = STATE
     config: pathlib.Path = settings.CONFIG
     manifest_urls: tuple[str, ...] = MANIFEST_URLS
@@ -217,18 +217,7 @@ def newer(candidate: str, than: str) -> bool:
 
 def write_json(path: pathlib.Path, data: dict) -> None:
     """Readers (the launcher) see the old or the new file, never half of one."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(data, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
+    safefile.write_atomic(path, json.dumps(data, sort_keys=True) + "\n", 0o644)  # the launcher's folder
 
 
 def read_json(path: pathlib.Path) -> dict:
@@ -241,13 +230,16 @@ def read_json(path: pathlib.Path) -> dict:
 
 @contextlib.contextmanager
 def acquire_lock(path: pathlib.Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         import fcntl  # noqa: PLC0415 - Linux only
     except ImportError:
         yield
         return
-    with open(path, "a+") as stream:
+    try:
+        stream = safefile.open_lock(path)
+    except OSError as error:
+        raise AppUpdateError(MSG_UNSAFE) from error
+    with stream:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
@@ -461,6 +453,20 @@ def prune(apps_dir: pathlib.Path, images: dict[str, str]) -> list[str]:
     return dropped
 
 
+def drop_health(health_dir: pathlib.Path, name: str) -> None:
+    """Forget an app's failed starts. The folder is the launcher user's: never through a symlink."""
+    try:
+        directory = os.open(health_dir, safefile.OPEN_DIR)
+    except OSError:
+        return
+    try:
+        os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(directory)
+
+
 def read_health(health_dir: pathlib.Path, name: str) -> tuple[str, int]:
     try:
         fields = (health_dir / name).read_text(encoding="ascii", errors="replace").split()
@@ -609,7 +615,7 @@ def install(entry: Entry, env: Env) -> None:
         raise AppUpdateError("THE NEW APP VERSION DID NOT START")
     activate(app_dir, entry.version)
     with contextlib.suppress(OSError):
-        (env.health_dir / entry.name).unlink()  # a new version starts with a clean count
+        drop_health(env.health_dir, entry.name)  # a new version starts with a clean count
     with contextlib.suppress(OSError):
         appimage.unlink()
 
@@ -672,7 +678,7 @@ def auto_rollbacks(env: Env, status: dict, now: int) -> None:
             env.note(f"{name} {bad} failed to start {failures} times; rolled back to {good or 'the image copy'}")
             _record_rollback(status, name, bad, good, True, now)
             with contextlib.suppress(OSError):
-                (env.health_dir / name).unlink()
+                drop_health(env.health_dir, name)
 
 
 def flatpak_update(env: Env) -> dict:
@@ -812,7 +818,8 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     if env.log is None:
         env.log = Log(env.root / LOG_REL)
     try:
-        with acquire_lock(env.run_dir / LOCK_NAME):
+        safefile.root_dir(env.work_dir, env.euid())
+        with acquire_lock(env.work_dir / LOCK_NAME):
             return run(env, command=args.command, target=getattr(args, "name", ""))
     except AppUpdateError as error:  # another run holds the lock: leave its status alone
         print(error.message, file=sys.stderr)
