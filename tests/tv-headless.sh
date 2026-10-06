@@ -16,7 +16,7 @@ set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SHOTS=${COUCHLITEOS_SCREENSHOTS:-$ROOT/build/out/screenshots}
-THEMES=(midnight slate daylight high-contrast)
+THEMES=(midnight slate daylight high-contrast terminal)
 
 missing() {
   if [[ ${1-} == --if-available ]]; then
