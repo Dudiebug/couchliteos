@@ -180,7 +180,7 @@ class Case(unittest.TestCase):
                 appupdate.link_version(self.app_dir(name) / "previous"))
 
     def versions(self, name="moonlight"):
-        return sorted(p.name for p in self.app_dir(name).iterdir() if p.is_dir())
+        return sorted(p.name for p in self.app_dir(name).iterdir() if p.is_dir() and not p.is_symlink())
 
     def state(self):
         return json.loads(self.env.state.read_text())

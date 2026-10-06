@@ -92,6 +92,7 @@ class GuideFixture(unittest.TestCase):
             (module.audio, "get_volume", mock.Mock(side_effect=lambda *_args: self.volume)),
             (module.audio, "change_volume", mock.Mock()),
             (module.audio, "toggle_mute", mock.Mock()),
+            (module.audio.MicMonitor, "start", mock.Mock()),  # its thread would run pw-dump through fake_run
             (module.brightness, "get_percent", mock.Mock(side_effect=lambda *_args: self.brightness)),
             (module.brightness, "change", mock.Mock()),
         ):
