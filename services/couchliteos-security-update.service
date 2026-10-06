@@ -1,0 +1,19 @@
+[Unit]
+Description=Install CouchLiteOS security fixes (Debian security, Google Chrome, Tailscale)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# The script skips while an app or a stream is open, while a CouchLiteOS update runs, on a live
+# system whose /usr is not kept, and (timer runs only) when [update] auto_security is off. It
+# removes the launcher's request file itself: a request means the owner asked.
+# Sleep and idle are blocked while packages are being replaced.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Installing security fixes" /usr/bin/python3 /usr/libexec/couchliteos_securityupdate.py run
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

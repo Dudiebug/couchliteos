@@ -35,6 +35,48 @@ case "$APP" in
     ;;
 esac
 
+# couchliteos-app-update unpacks newer versions to $DATA_DIR/apps/<app>/<version> and points
+# `current` at the one to use. It wins only when it is newer than the image's copy, whose
+# version build/applications.lock records; after a full update the image may be the newer.
+IMAGE_LOCK=${COUCHLITEOS_IMAGE_LOCK:-/usr/share/couchliteos/applications.lock}
+HEALTH_DIR=$DATA_DIR/app-health
+version_newer() {
+  [[ -z $2 ]] && return 0
+  [[ $1 != "$2" && $(printf '%s\n%s\n' "$2" "$1" | sort -V | tail -n 1) == "$1" ]]
+}
+updated_version=
+if [[ -n "$appdir" ]]; then
+  image_version=$(awk -F'|' -v app="$APP" '$1 == app { print $2; exit }' "$IMAGE_LOCK" 2>/dev/null || true)
+  if candidate=$(readlink -- "$DATA_DIR/apps/$APP/current" 2>/dev/null); then
+    candidate=${candidate##*/}
+    if [[ $candidate =~ ^[0-9][0-9A-Za-z.+~-]*$ && -x $DATA_DIR/apps/$APP/$candidate/${binary#"$appdir"/} ]] \
+        && version_newer "$candidate" "$image_version"; then
+      binary=$DATA_DIR/apps/$APP/$candidate/${binary#"$appdir"/}
+      appdir=$DATA_DIR/apps/$APP/$candidate
+      updated_version=$candidate
+    fi
+  fi
+fi
+
+# Starts of a downloaded version that fail before the app is ready, in a row; the second
+# asks couchliteos-app-update to roll it back (it reads the count from this file).
+record_start() {
+  [[ -n $updated_version ]] || return 0
+  local failures=0 file=$HEALTH_DIR/$APP seen count
+  if [[ $1 == failed ]]; then
+    read -r seen count 2>/dev/null < "$file" || true
+    [[ ${seen:-} == "$updated_version" && ${count:-} =~ ^[0-9]+$ ]] && failures=$count
+    failures=$((failures + 1))
+  fi
+  mkdir -p -- "$HEALTH_DIR"
+  printf '%s %d\n' "$updated_version" "$failures" > "$file.new" && mv -f -- "$file.new" "$file"
+  if ((failures >= 2)); then
+    : > "$RUN_DIR/app-rollback-check"
+    printf '%s %s %s failed to start %d times; asking for a rollback\n' \
+      "$(date --iso-8601=seconds)" "$APP" "$updated_version" "$failures" >&2
+  fi
+}
+
 ready=$RUN_DIR/$APP-ready
 status_file=$RUN_DIR/$APP-status
 active_file=$RUN_DIR/app-active
@@ -118,7 +160,8 @@ run_client() {
   wait "$pid"
 }
 
-printf '%s starting %s\n' "$(date --iso-8601=seconds)" "$APP"
+printf '%s starting %s%s\n' "$(date --iso-8601=seconds)" "$APP" "${updated_version:+ $updated_version (updated copy)}"
+STREAM_MODE=0
 set +e
 if [[ "$APP" == firefox ]]; then
   /usr/libexec/couchliteos-firefox-drm-check || true
@@ -179,6 +222,7 @@ PY
     echo "Auto-stream requested: $host ($profile_app)"
   fi
   if [[ -n "$host" && -n "$profile_app" ]]; then
+    STREAM_MODE=1
     run_client env QT_QPA_PLATFORM=xcb "$binary" stream "$host" "$profile_app" "${video_options[@]}"
   else
     run_client env QT_QPA_PLATFORM=xcb "$binary"
@@ -207,6 +251,14 @@ if ((READY_REACHED == 0 && rc != 0)); then
   write_status "failed: exited before the application became ready (status $rc)"
 else
   write_status "exited: status $rc"
+fi
+
+# A stream that cannot reach its PC exits early too; that is the network, not the app,
+# unless it crashed (a signal, or a program that could not run: status 126 and up).
+if ((READY_REACHED == 1)); then
+  record_start started || true
+elif ((rc != 0 && (STREAM_MODE == 0 || rc >= 126))); then
+  record_start failed || true
 fi
 
 if ((rc != 0 && STREAM_REQUESTED == 1)); then

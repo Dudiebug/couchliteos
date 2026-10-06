@@ -1,0 +1,8 @@
+[Path]
+PathExists=/run/couchliteos/app-update-install
+PathExists=/run/couchliteos/app-rollback
+PathExists=/run/couchliteos/app-rollback-check
+Unit=couchliteos-app-update.service
+
+[Install]
+WantedBy=graphical.target

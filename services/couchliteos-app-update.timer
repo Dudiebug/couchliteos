@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for app updates every day
+
+[Timer]
+OnBootSec=30min
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

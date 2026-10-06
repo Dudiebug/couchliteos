@@ -62,6 +62,10 @@ pins=$("$ROOT/build/apt-pins.sh" "$WORK"/config/package-lists/*.list.chroot)
 if [[ -n $pins ]]; then
   printf '%s\n' "$pins" > "$WORK/config/archives/couchliteos-pins.pref.chroot"
 fi
+# Security fixes between releases: the origin allowlist, with every pin above held for good.
+install -d -m 0755 "$CHROOT/etc/apt/apt.conf.d"
+"$ROOT/build/unattended-upgrades.sh" "$WORK"/config/package-lists/*.list.chroot \
+  > "$CHROOT/etc/apt/apt.conf.d/52couchliteos-unattended"
 install -D -m 0644 "$PROFILE_DIR/profile.conf" "$CHROOT/usr/share/couchliteos/profile.conf"
 printf '%s\n' "$PROFILE" > "$WORK/profile"
 install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \
@@ -95,6 +99,9 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_softwareupdate.py" "$CHROOT/usr/l
 install -D -m 0755 "$ROOT/launcher/couchliteos_browser.py" "$CHROOT/usr/libexec/couchliteos-browser"
 install -D -m 0644 "$ROOT/launcher/couchliteos_browser.py" "$CHROOT/usr/libexec/couchliteos_browser.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_browsersetup.py" "$CHROOT/usr/libexec/couchliteos_browsersetup.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_busy.py" "$CHROOT/usr/libexec/couchliteos_busy.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_appupdate.py" "$CHROOT/usr/libexec/couchliteos_appupdate.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_securityupdate.py" "$CHROOT/usr/libexec/couchliteos_securityupdate.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_errors.py" "$CHROOT/usr/libexec/couchliteos_errors.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_whatsnew.py" "$CHROOT/usr/libexec/couchliteos_whatsnew.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_padcheck.py" "$CHROOT/usr/libexec/couchliteos_padcheck.py"

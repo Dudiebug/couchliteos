@@ -80,6 +80,9 @@ test:
 	python3 -m unittest -v tests/test_cage_build.py
 	python3 -m unittest -v tests/test_tv_fallback.py
 	if [ -z '$(TV_HEADLESS_ARGS)' ] || command -v cage >/dev/null; then ./tests/tv-headless.sh $(TV_HEADLESS_ARGS); else echo 'tv-headless: skipped: cage is not installed'; fi
+	python3 -m unittest -v tests/test_unattended_upgrades.py
+	python3 -m unittest -v tests/test_apps_manifest.py
+	python3 -m unittest -v tests/test_run_app_updates.py
 	$(MAKE) -C launcher test
 	./build/test-gate.sh mark
 

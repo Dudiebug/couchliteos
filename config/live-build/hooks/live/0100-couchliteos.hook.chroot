@@ -57,6 +57,8 @@ chown -R couchliteos:couchliteos /var/lib/couchliteos /var/log/couchliteos
 chmod 0640 /var/lib/couchliteos/config.ini
 # Saved Remote Desktop passwords: root-only, created after the recursive chown.
 install -d -o root -g root -m 0700 /var/lib/couchliteos/rdp-secrets
+# Downloaded app versions (couchliteos-app-update): root's, readable by the apps' user.
+install -d -o root -g root -m 0755 /var/lib/couchliteos/apps
 
 install -d -o root -g root -m 0700 /var/lib/tailscale
 # Saved Wi-Fi keyfiles: root-only, so the copy live-boot persists (it keeps the
@@ -88,6 +90,11 @@ systemctl enable couchliteos-restore-request.path couchliteos-restore.service
 # Live USB: find an installed system on the disks and update it on request (apply-disk).
 systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path
 systemctl enable couchliteos-browser.path couchliteos-browser-refresh.service
+# Security fixes and app updates between releases: daily, or when the launcher asks.
+systemctl enable couchliteos-security-update.timer couchliteos-security-update.path
+systemctl enable couchliteos-app-update.timer couchliteos-app-update.path
+# couchliteos-security-update.service runs unattended-upgrade itself, so it can wait for the box.
+systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 systemctl enable couchliteos-configured-app.path couchliteos-osk.path
 systemctl enable couchliteos-rdp.path couchliteos-rdp-secret.path
 systemctl enable couchliteos-audio.service couchliteos-launcher.service \

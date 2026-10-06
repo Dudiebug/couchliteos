@@ -1,0 +1,24 @@
+[Unit]
+Description=Update Moonlight, chiaki-ng and Flatpak apps between CouchLiteOS releases
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# The script reads the request files below /run/couchliteos (install, roll back, and
+# couchliteos-run-app's failed-start check) and removes them itself. It skips while an app or
+# a stream is open and (timer runs only) when [update] auto_apps is off.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Updating apps" /usr/bin/python3 /usr/libexec/couchliteos_appupdate.py run
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=idle
+# Root only writes below these: a symlink planted in the couchliteos user's own folders cannot
+# point it at the system. New app versions are test-run as the couchliteos user (setpriv).
+ProtectSystem=strict
+ReadWritePaths=/var/lib/couchliteos /var/cache/couchliteos /var/log/couchliteos /run/couchliteos -/var/lib/flatpak
+ProtectHome=yes
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal

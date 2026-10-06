@@ -894,6 +894,21 @@ rg -Fq './tests/qemu-legacy-smoke.sh "$(OLD_ISO)" "$(ISO)"' Makefile
 rg -Fq 'make qemu-legacy-smoke ISO="$ISO" OLD_ISO="$OLD_ISO"' tools/release-gauntlet.sh
 rg -Fq 'qemu-legacy-smoke: skipped: OLD_ISO not set' tools/release-gauntlet.sh
 
+# Security fixes and app updates between releases (tests/test_unattended_upgrades.py has the rest).
+python3 -m py_compile launcher/couchliteos_busy.py launcher/couchliteos_appupdate.py launcher/couchliteos_securityupdate.py
+refute rg -n 'shell=True|os\.system|^import requests|Authorization|Cookie' \
+  launcher/couchliteos_busy.py launcher/couchliteos_appupdate.py launcher/couchliteos_securityupdate.py
+rg -q '^unattended-upgrades$' config/live-build/package-lists/couchliteos.list.chroot
+rg -Fq '> "$CHROOT/etc/apt/apt.conf.d/52couchliteos-unattended"' build/configure.sh
+rg -q '^systemctl enable couchliteos-security-update.timer couchliteos-security-update.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^systemctl enable couchliteos-app-update.timer couchliteos-app-update.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^WantedBy=timers.target$' services/couchliteos-security-update.timer services/couchliteos-app-update.timer
+rg -q '^Unit=couchliteos-security-update.service$' services/couchliteos-security-update.path
+rg -q '^Unit=couchliteos-app-update.service$' services/couchliteos-app-update.path
+rg -q '^ProtectSystem=strict$' services/couchliteos-app-update.service
+rg -q 'test_appupdate.py test_securityupdate.py' launcher/Makefile
+refute rg -q 'Automatic-Reboot "true"' build/unattended-upgrades.sh
+
 # Easier everyday use: actionable errors
 rg -q 'couchliteos_errors.py' build/configure.sh
 rg -q '^import couchliteos_errors as errors' launcher/couchliteos-launcher.py
