@@ -102,6 +102,9 @@ refute rg -q 'nomodeset' "$grub_cfg" "$live_cfg"
 find "$boot_test" -depth -delete
 
 rg -q -- '--uefi-secure-boot enable' build/build.sh
+# live-boot's kms hook adds nouveau back unless the slim hook runs after it.
+rg -q '^PREREQ="kms"$' overlay/etc/initramfs-tools/hooks/couchliteos-slim
+rg -Fq "sed -i '/^nouveau\$/d' \"\${__MODULES_TO_ADD}\"" overlay/etc/initramfs-tools/hooks/couchliteos-slim
 # The slim dpkg config drops /usr/share/doc, which lb binary_loadlin copies from.
 rg -q -- '--loadlin false' build/build.sh
 rg -q -- '--win32-loader false' build/build.sh

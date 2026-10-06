@@ -2,7 +2,10 @@
 # CouchLiteOS: leave nouveau and its firmware (about 60 MiB) out of the initrd. Nothing
 # before the root filesystem needs a GPU driver; nouveau then loads from the root
 # filesystem, where its firmware is. mkinitramfs runs depmod after the hooks.
-PREREQ=""
+# After kms (live-boot), which asks for i915, radeon and nouveau; it is skipped where absent.
+# Modules asked for by hooks are copied after all hooks ran (initramfs-tools 0.148
+# apply_add_modules), so nouveau also leaves that queue here.
+PREREQ="kms"
 prereqs()
 {
 	echo "$PREREQ"
@@ -14,6 +17,9 @@ prereqs)
 	;;
 esac
 
+if [ -n "${__MODULES_TO_ADD:-}" ] && [ -f "${__MODULES_TO_ADD}" ]; then
+	sed -i '/^nouveau$/d' "${__MODULES_TO_ADD}"
+fi
 rm -rf "${DESTDIR}"/lib/modules/*/kernel/drivers/gpu/drm/nouveau \
 	"${DESTDIR}"/usr/lib/modules/*/kernel/drivers/gpu/drm/nouveau \
 	"${DESTDIR}/lib/firmware/nvidia" "${DESTDIR}/usr/lib/firmware/nvidia"
