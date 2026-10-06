@@ -1,5 +1,6 @@
 """couchliteos_apps: environment parsing, id generation, state overrides and summaries."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import pathlib
 import tempfile
 import unittest

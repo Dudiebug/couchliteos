@@ -13,30 +13,55 @@ It is built on Debian 13 and is not a general-purpose desktop.
 
 ## What it does
 
+![The home screen: games with their covers, then apps, then Settings, hosts and power](docs/images/home.png)
+
 - **Stream PC games** with Moonlight from a Sunshine host, and PlayStation games
   with chiaki-ng.
-- **Couch-first controls:** every screen works with an Xbox, PlayStation or
-  generic controller, a keyboard, or the TV remote over HDMI-CEC. Home (Guide,
-  PS, or a keyboard shortcut you choose, Ctrl+Alt+H by default) opens a menu over
-  any app: switch apps, close one, change volume and brightness, type with the
-  on-screen keyboard, or use the controller as a mouse. During a stream Guide
-  and the PlayStation touchpad go to the gaming PC; hold Select+Start (View+Menu)
-  to come back to Home.
+- **A TV interface:** your games first, most recently played at the front, with
+  their covers; then your apps. A bar along the bottom always shows what each
+  button and key does, and small notices tell you when a controller connects,
+  the gaming PC comes online or an update is ready. Game covers come from
+  Moonlight or are looked up by name; hold Y / Square on a game to pick another.
+- **A quick menu over any app:** tap Guide / PS (or Home on a keyboard) for
+  volume, brightness, controller batteries, network, sleep, restart and turn
+  off. During a stream Guide and the PlayStation touchpad go to the gaming PC;
+  hold Select+Start (View+Menu) to come back.
+- **Per-game stream settings:** hold X / Triangle on a game to pick
+  PERFORMANCE, BALANCED, QUALITY or your own resolution, frame rate and bitrate
+  for that game alone.
+- **Themes:** four built in (including a light one and a high-contrast one),
+  eight accent colours, and [your own](docs/THEMES.md).
+- **Couch-first controls:** every screen works with an Xbox, PlayStation,
+  Nintendo-style or generic controller, a keyboard, or the TV remote over
+  HDMI-CEC. Settings > CONTROLLERS shows each pad with its battery, sets the
+  player order, makes a pad rumble so you know which is which, tests its
+  buttons, and swaps A/B and X/Y for Nintendo layouts.
+- **Type on your phone:** in a text field, press Select (View) or F2 and scan
+  the QR code to type a password or address on your phone instead of the
+  on-screen keyboard.
 - **Setup wizard** on first start: TV picture and text size, sound, network,
-  controllers and Bluetooth.
-- **Web apps and browsers** (Firefox and Google Chrome) for streaming services and
-  sites, with the controller as a mouse.
+  controllers and Bluetooth, the gaming PC, and a web browser.
+- **Web apps and browsers:** pick Firefox or Google Chrome during setup (or later
+  in Settings > APPLICATIONS > ADD A WEB BROWSER) and it installs from the
+  internet, so the download stays small. Web apps open full screen with the
+  controller as a mouse.
 - **Remote Desktop** to Windows PCs, with saved connections you can pin to the
-  main menu.
+  home screen.
 - **Sleep and wake:** hold Guide or PS to sleep, wake the gaming PC over the
   network, and turn the TV on and off with the box.
-- **Updates from the couch:** CouchLiteOS checks for a new release at every
-  start and asks if you want it; Settings > SOFTWARE UPDATE downloads it
-  and keeps your settings and pairings. Older boxes whose Settings has
-  no SOFTWARE UPDATE, including MoonlightOS, reinstall once from the latest ISO;
-  see [Updating](https://github.com/Dudiebug/couchliteos/wiki/Updating).
+- **Updates from the couch, and a way back:** CouchLiteOS checks for a new
+  release at every start and asks if you want it; Settings > SOFTWARE UPDATE
+  installs it and keeps your settings and pairings. It saves the current system
+  first, so if the new version misbehaves, RESTORE PREVIOUS VERSION (or the boot
+  menu) puts it back. Older boxes, including MoonlightOS, update from the USB
+  stick with UPDATE THE INSTALLED SYSTEM; see
+  [Updating](https://github.com/Dudiebug/couchliteos/wiki/Updating).
 - Optional Tailscale and USB/IP for playing away from home or sharing USB devices
   with the gaming PC.
+
+| Settings | Quick menu |
+|---|---|
+| ![Settings: categories on the left, what each one holds on the right](docs/images/settings.png) | ![The quick menu, open over the home screen](docs/images/quick.png) |
 
 ## Which ISO?
 
@@ -73,8 +98,8 @@ through each step.
 
 ## Hardware
 
-Any x86-64 PC or Intel Mac from about 2012 on, with 4 GB of RAM, UEFI or legacy
-BIOS, and wired Ethernet or supported Wi-Fi. It aims for 1080p60 streaming, with
+Any x86-64 PC or Intel Mac from about 2012 on, with 4 GB of RAM, a 32 GB disk
+to install to, UEFI or legacy BIOS, and wired Ethernet or supported Wi-Fi. It aims for 1080p60 streaming, with
 1080p120, 1440p60 and 4K60 where the hardware can decode them. The iMac Late 2013
 has its [own page](https://github.com/Dudiebug/couchliteos/wiki/iMac-Late-2013).
 

@@ -4,6 +4,7 @@ Shares the fakes in test_setup.py. Only `base.<name>` is used so that the test
 classes in that module are not collected a second time from here.
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import itertools
 import pathlib
@@ -157,7 +158,7 @@ class SoundRestoreTest(base.WizardTestCase):
 class RedoTest(base.WizardTestCase):
     """REDO SKIPPED OR FAILED STEPS reopens only what is not done, and never undoes a done step."""
 
-    ORDER = ["network", "controller", "display", "streaming", "tailscale", "chiaki-ng", "applications"]
+    ORDER = ["network", "controller", "display", "streaming", "tailscale", "chiaki-ng", "browser", "applications"]
 
     def stubbed(self, ui, state, outcomes=None, *, only=None):
         """A wizard that starts from `state`; the steps in `only` (default all) are recorded, not run."""
@@ -205,7 +206,7 @@ class RedoTest(base.WizardTestCase):
         ui = base.FakeUI("CONTINUE SETUP", "FINISH")
         wizard = self.stubbed(ui, {"tailscale": "done"})
         wizard.run()
-        self.assertEqual(self.ran, ["network", "controller", "display", "streaming", "chiaki-ng", "applications"])
+        self.assertEqual(self.ran, ["network", "controller", "display", "streaming", "chiaki-ng", "browser", "applications"])
         self.assertEqual(self.state()["tailscale"], "done")
 
     def test_escape_on_the_done_screen_does_not_run_anything_again(self):

@@ -35,8 +35,9 @@ import couchliteos_display as display
 import couchliteos_stream as streaming
 
 
-MARKER = pathlib.Path("/var/lib/couchliteos/setup-complete")
-STATE = pathlib.Path("/var/lib/couchliteos/setup-state.json")
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
+MARKER = DATA / "setup-complete"
+STATE = DATA / "setup-state.json"
 # The picture half of DISPLAY AND SOUND, saved before the sound half: a new picture size
 # restarts the launcher (foot sizes its text once, at start), and setup resumes at sound.
 PICTURE = "display-picture"
@@ -50,6 +51,7 @@ TITLES = {
     "tv": "TV CONTROL",
     "tailscale": "TAILSCALE",
     "chiaki-ng": "CHIAKI-NG",
+    "browser": "WEB BROWSER",
     "applications": "MORE APPS",
 }
 
@@ -58,7 +60,7 @@ def plan_steps(*, cec_present: bool, tv_available: bool) -> list[str]:
     steps = ["network", "controller", "display", "streaming"]
     if cec_present and tv_available:
         steps.append("tv")
-    return steps + ["tailscale", "chiaki-ng", "applications"]
+    return steps + ["tailscale", "chiaki-ng", "browser", "applications"]
 
 
 def _atomic_write(path: pathlib.Path, text: str) -> None:
@@ -591,7 +593,7 @@ class System:
         self,
         *,
         input_devices_path: pathlib.Path = pathlib.Path("/proc/bus/input/devices"),
-        config_root: pathlib.Path = pathlib.Path("/var/lib/couchliteos/home/.config"),
+        config_root: pathlib.Path = DATA / "home" / ".config",
     ) -> None:
         self.input_devices_path = input_devices_path
         self.config_root = config_root
@@ -1495,8 +1497,14 @@ class SetupWizard:
         intro, label, app = OPTIONAL["chiaki-ng"]
         return self.open_step("chiaki-ng", intro, label, lambda: self.actions["launch"](app))
 
+    def step_browser(self) -> str:
+        """Neither browser ships with the system: ADD A WEB BROWSER installs one (its NOT NOW skips)."""
+        action = self.actions.get("browser")
+        result = action() if callable(action) else None
+        return DONE if result else (SKIPPED if result is None else FAILED)
+
     def step_applications(self) -> str:
-        return self.open_step("applications", "ADD MORE APPS, LIKE A WEB BROWSER OR A REMOTE DESKTOP.", "OPEN APPLICATIONS", self.actions["applications"])
+        return self.open_step("applications", "ADD MORE APPS, LIKE A WEB APP OR A REMOTE DESKTOP.", "OPEN APPLICATIONS", self.actions["applications"])
 
 
 # --- curses drawing (thin: no decisions are made here) ----------------------

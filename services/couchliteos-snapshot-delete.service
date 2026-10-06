@@ -1,0 +1,13 @@
+[Unit]
+Description=Delete the saved previous CouchLiteOS version requested by the launcher
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Drop the request first, or this path unit would start the service again the moment it ends.
+ExecStartPre=/usr/bin/rm -f /run/couchliteos/snapshot-delete
+# While an update holds the updater's lock this exits 1 and deletes nothing.
+ExecStart=/usr/libexec/couchliteos-updater delete-snapshot
+StandardOutput=journal
+StandardError=journal

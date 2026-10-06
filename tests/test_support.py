@@ -519,6 +519,25 @@ class RunDirectoryTrustTest(unittest.TestCase):
             if path.is_file()
         )
 
+    def test_roots_update_and_browser_logs_are_collected_next_to_the_launchers(self):
+        logs = self.run_dir / "logs"
+        logs.mkdir()
+        (logs / "launcher.log").write_text("launcher line\n")
+        update_logs = self.run_dir / "logs-update"  # /var/log/couchliteos-update beside /var/log/couchliteos
+        update_logs.mkdir()
+        (update_logs / "update.log").write_text("update to 0.3.0 done\n")
+        (update_logs / "browser.log").write_text("apt-get install firefox-esr\n")
+        bundle = pathlib.Path(self.tmp.name) / "bundle"
+        with mock.patch.object(exporter, "command_output", return_value=""), mock.patch.dict(
+            exporter.os.environ,
+            {"COUCHLITEOS_SUPPORT_LOG_DIR": str(logs), "COUCHLITEOS_SUPPORT_CONFIG": str(self.run_dir / "no-config")},
+        ):
+            exporter.collect(bundle)
+        index = (bundle / "logs/couchliteos-update/INDEX.txt").read_text()
+        self.assertEqual(index, "log-001.txt = browser.log\nlog-002.txt = update.log\n")
+        self.assertIn("update to 0.3.0 done", (bundle / "logs/couchliteos-update/log-002.txt").read_text())
+        self.assertIn("launcher line", (bundle / "logs/couchliteos/log-001.txt").read_text())
+
     def test_symlinked_status_file_is_not_collected(self):
         secret = "SHADOWLINE-ROOT-HASH-31337"
         target = pathlib.Path(self.tmp.name) / "shadow"
@@ -532,6 +551,13 @@ class RunDirectoryTrustTest(unittest.TestCase):
         text = self.bundle_text(bundle)
         self.assertNotIn(secret, text)
         self.assertIn("y: Streaming Y", text)
+
+    def test_the_interface_file_is_in_the_bundle(self):
+        (self.run_dir / "interface").write_text("classic\nfallback after exit 3, then exit 3 with cairo\n")
+        bundle = pathlib.Path(self.tmp.name) / "bundle"
+        self.collect_into(bundle)
+        self.assertEqual((bundle / "session/interface.txt").read_text(),
+                         "classic\nfallback after exit 3, then exit 3 with cairo\n")
 
     def test_status_fifo_does_not_block_the_exporter(self):
         (self.run_dir / "x-ready").write_text("")

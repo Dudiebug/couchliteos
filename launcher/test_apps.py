@@ -1,5 +1,9 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import dataclasses
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -48,6 +52,28 @@ class ApplicationsTest(unittest.TestCase):
         editor = next(app for app in result.applications if app.id == "editor")
         self.assertFalse(editor.enabled)
         self.assertEqual(editor.order, 5)
+
+    def test_browser_manifests_name_their_binary_and_are_hidden_without_it(self):
+        result = self.load()
+        binaries = {app.id: app.binary for app in result.applications if app.binary}
+        self.assertEqual(binaries, {"firefox": "/usr/bin/firefox-esr", "google-chrome": "/usr/bin/google-chrome-stable"})
+        root = pathlib.Path(self.temporary.name) / "root"
+        firefox = next(app for app in result.applications if app.id == "firefox")
+        terminal = next(app for app in result.applications if app.id == "terminal")
+        self.assertFalse(apps.installed(firefox, root))
+        self.assertTrue(apps.installed(terminal, root), "no binary: always shown")
+        (root / "usr/bin").mkdir(parents=True)
+        (root / "usr/bin/firefox-esr").touch()
+        self.assertTrue(apps.installed(firefox, root))
+
+    def test_binary_must_be_absolute_and_survives_a_round_trip(self):
+        app = apps.Application(id="web", name="WEB", kind="command", command="/bin/true", binary="/usr/bin/x",
+                               status_id="web")
+        apps.write_user_application(app, system_dir=SYSTEM, user_dir=self.user)
+        self.assertEqual(next(item for item in self.load().applications if item.id == "web").binary, "/usr/bin/x")
+        (self.user / "bad.ini").write_text(apps.serialize(dataclasses.replace(app, id="bad", status_id="bad"))
+                                           .replace("/usr/bin/x", "usr/bin/x"))
+        self.assertIn("bad.ini: binary must be an absolute path", self.load().errors)
 
     def test_duplicate_user_id_is_skipped(self):
         self.user.mkdir()
@@ -148,6 +174,44 @@ class ApplicationsTest(unittest.TestCase):
         self.assertFalse((self.user / "custom.ini").exists())
         with self.assertRaisesRegex(apps.ManifestError, "system"):
             apps.delete_user_application("terminal", system_dir=SYSTEM, user_dir=self.user)
+
+
+class ScratchDirectoriesTest(unittest.TestCase):
+    """testenv.py keeps the tests off the box's own /run/couchliteos and /var/lib/couchliteos."""
+
+    # What the box uses: the variables are never set outside the tests.
+    DEFAULTS = {
+        "couchliteos_apps.STATE_FILE": "/var/lib/couchliteos/apps-state.ini",
+        "couchliteos_rdp.RUN": "/run/couchliteos",
+        "couchliteos_setup.MARKER": "/var/lib/couchliteos/setup-complete",
+        "couchliteos_stream.MOONLIGHT_CONF":
+            "/var/lib/couchliteos/home/.config/Moonlight Game Streaming Project/Moonlight.conf",
+        "couchliteos_cec.ACTIVE_SOURCE_MARKER": "/run/couchliteos/cec-active-source",
+        "couchliteos_input.MOUSE_SPEED_FILE": "/var/lib/couchliteos/mouse-speed",
+        "couchliteos_osk.REFOCUSED": "/run/couchliteos/osk-refocused",
+        "couchliteos_pointer.FLAG": "/run/couchliteos/pointer-mode",
+        "couchliteos_screenfit.PATH": "/var/lib/couchliteos/screen.json",
+        "couchliteos_whatsnew.SESSION_SEEN": "/run/couchliteos/whatsnew-seen",
+    }
+
+    def test_the_tests_use_scratch_directories(self):
+        import couchliteos_rdp as rdp
+        self.assertEqual(str(apps.DATA), os.environ["COUCHLITEOS_STATE_DIR"])
+        self.assertEqual(str(rdp.RUN), os.environ["COUCHLITEOS_RUN_DIR"])
+        self.assertFalse(str(apps.STATE_FILE).startswith("/var/lib/couchliteos"))
+        self.assertFalse(str(rdp.RUN).startswith("/run/couchliteos"))
+
+    def test_without_the_variables_the_real_directories_are_used(self):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("COUCHLITEOS_RUN_DIR", "COUCHLITEOS_STATE_DIR")}
+        modules = sorted({name.split(".")[0] for name in self.DEFAULTS})
+        code = "".join(f"import {module}\n" for module in modules) + "".join(
+            f"print({name})\n" for name in self.DEFAULTS)
+        output = subprocess.run(
+            [sys.executable, "-c", code], cwd=pathlib.Path(__file__).parent, env=environment,
+            check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        self.assertEqual(output, list(self.DEFAULTS.values()))
 
 
 if __name__ == "__main__":

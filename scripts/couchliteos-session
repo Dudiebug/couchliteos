@@ -1,0 +1,130 @@
+#!/bin/bash
+# Cage's client in couchliteos-launcher.service: the TV interface (GTK 4), or the classic
+# launcher (curses in foot) when the TV interface cannot start. A broken renderer must
+# never leave a black screen:
+#
+#   [appearance] interface = classic   the classic launcher, nothing else is tried
+#   otherwise                          couchliteos-tv; if it could not start, once more with
+#                                      GSK_RENDERER=cairo (no GL); then the classic launcher
+#
+# Setup does not decide: couchliteos-tv runs the setup wizard itself, as the classic curses screen
+# on top of it (couchliteos-launcher --screen setup), before its home screen.
+#
+# $RUN_DIR/interface records which one is on screen, for the QEMU smoke tests and the support
+# export: `tv` or `classic` on the first line, why on the second (forced by the setting, or the
+# fallback after which exit status; the cairo retry for `tv`).
+#
+# "Could not start" is exit status 3 (couchliteos-tv: no GTK, no display, no renderer), any
+# other failure before it wrote launcher-ready (a crash in the GL driver, a Python error), no
+# launcher-ready within READY_SECONDS (a hang before the first frame: it is killed), or death by a
+# signal within EARLY_SECONDS of launcher-ready (a renderer that drew one frame, then crashed).
+# couchliteos-tv writes launcher-ready after its first frame is painted. Once it is up, its exit
+# status is passed on and systemd restarts the service as before. Two TV attempts and the classic
+# launcher fit in the unit's 45 s ExecStartPost wait (2 x 12 s, then foot).
+# The COUCHLITEOS_* variables below exist for tests/test_tv_fallback.py.
+set -u
+
+STATE_DIR=${COUCHLITEOS_STATE_DIR:-/var/lib/couchliteos}
+RUN_DIR=${COUCHLITEOS_RUN_DIR:-/run/couchliteos}
+TV=${COUCHLITEOS_TV:-/usr/libexec/couchliteos-tv}
+FOOT=${COUCHLITEOS_FOOT:-/usr/libexec/couchliteos-foot}
+LAUNCHER=${COUCHLITEOS_LAUNCHER:-/usr/libexec/couchliteos-launcher}
+CONFIG=$STATE_DIR/config.ini
+INIT_FAILED=3
+READY_SECONDS=${COUCHLITEOS_READY_SECONDS:-12}
+EARLY_SECONDS=${COUCHLITEOS_EARLY_SECONDS:-5}
+READY=$RUN_DIR/launcher-ready
+
+say() {
+  printf 'couchliteos-session: %s\n' "$*" >&2
+}
+
+# record <tv|classic> <why>: write $RUN_DIR/interface (best effort) and log it.
+record() {
+  say "interface: $1 ($2)"
+  printf '%s\n%s\n' "$1" "$2" > "$RUN_DIR/interface.tmp" 2>/dev/null \
+    && mv -f "$RUN_DIR/interface.tmp" "$RUN_DIR/interface" 2>/dev/null
+  return 0
+}
+
+classic() {
+  say "starting the classic launcher: $1"
+  record classic "$2"
+  exec "$FOOT" --fullscreen --title "CouchLiteOS Launcher" "$LAUNCHER"
+}
+
+# [appearance] interface, lower case; empty when unset or unreadable.
+interface() {
+  awk '
+    /^[[:space:]]*\[/ { section = tolower($0); gsub(/[][[:space:]]/, "", section); next }
+    section == "appearance" && index($0, "=") {
+      key = tolower(substr($0, 1, index($0, "=") - 1)); gsub(/[[:space:]]/, "", key)
+      if (key == "interface") {
+        value = tolower(substr($0, index($0, "=") + 1)); gsub(/[[:space:]]/, "", value)
+        print value; exit
+      }
+    }' "$CONFIG" 2>/dev/null
+}
+
+# Microseconds since the epoch (bash 5).
+now_us() {
+  printf '%s' "${EPOCHREALTIME/./}"
+}
+
+# Run the TV interface; 0 when it came up (its exit status is in $status), 1 when it could not start.
+try_tv() {
+  rm -f -- "$READY"  # an earlier attempt's mark must not count for this one
+  "$@" &
+  local pid=$! ready_at="" deadline
+  trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP  # systemd stopping the unit stops the TV too
+  deadline=$(( $(now_us) + READY_SECONDS * 1000000 ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ -e $READY ]]; then
+      ready_at=$(now_us)
+      break
+    fi
+    if (( $(now_us) >= deadline )); then
+      say "no first frame within $READY_SECONDS s: stopping the TV interface"
+      kill -TERM "$pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      status=$?
+      trap - TERM INT HUP
+      return 1
+    fi
+    sleep 0.1
+  done
+  wait "$pid"
+  status=$?
+  trap - TERM INT HUP
+  [[ -z $ready_at && -e $READY ]] && ready_at=$(now_us)  # written just before it exited
+  if [[ $status == "$INIT_FAILED" ]] || { [[ $status != 0 ]] && [[ -z $ready_at ]]; }; then
+    return 1
+  fi
+  if (( status > 128 )) && (( $(now_us) - ready_at < EARLY_SECONDS * 1000000 )); then
+    say "the TV interface died (signal $(( status - 128 ))) right after its first frame"
+    rm -f -- "$READY"
+    return 1
+  fi
+  return 0
+}
+
+choice=$(interface)
+if [[ $choice == classic ]]; then
+  classic "[appearance] interface = classic" "forced: [appearance] interface = classic"
+fi
+
+status=0
+record tv "first try"
+if try_tv "$TV"; then
+  exit "$status"
+fi
+first=$status
+say "the TV interface could not start (exit $status); trying again without GL"
+record tv "GSK_RENDERER=cairo after exit $first"
+if try_tv env GSK_RENDERER=cairo "$TV"; then
+  exit "$status"
+fi
+classic "the TV interface could not start with cairo either (exit $status)" \
+  "fallback after exit $first, then exit $status with cairo"

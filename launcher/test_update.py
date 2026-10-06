@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import contextlib
 import importlib.util
 import io
@@ -61,7 +62,8 @@ class StateTest(unittest.TestCase):
         self.assertEqual((state.enabled, state.latest, state.checked_at), (True, "", 0.0))
 
     def test_round_trip_and_permissions(self):
-        original = update.State(enabled=False, latest="0.1.14", checked_at=NOW, attempted_at=NOW, prompted="0.1.14")
+        original = update.State(
+            enabled=False, latest="0.1.14", checked_at=NOW, attempted_at=NOW, prompted="0.1.14", no_file="0.1.14")
         update.save_state(original, self.path)
         self.assertEqual(update.load_state(self.path), original)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
@@ -106,6 +108,44 @@ class DueTest(unittest.TestCase):
     def test_a_clock_that_went_backwards_does_not_block_checks_forever(self):
         state = update.State(checked_at=NOW + 10 * DAY, attempted_at=NOW + 10 * DAY)
         self.assertTrue(update.due(state, NOW))
+
+
+class PauseTest(unittest.TestCase):
+    """After a restore the automatic check waits a week (config.ini [update] paused_until)."""
+
+    def test_a_pause_stops_even_the_start_up_check_until_it_ends(self):
+        until = NOW + update.PAUSE_SECONDS
+        self.assertFalse(update.due(update.State(), NOW, start=True, paused=until))
+        self.assertFalse(update.due(update.State(), until - 1, start=True, paused=until))
+        self.assertTrue(update.due(update.State(), until, start=True, paused=until))
+
+    def test_a_pause_further_away_than_a_week_came_from_a_wrong_clock_and_is_ignored(self):
+        self.assertTrue(update.due(update.State(), NOW, paused=NOW + update.PAUSE_SECONDS + 1))
+
+    def test_paused_until_is_read_from_config_ini(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / "config.ini"
+            self.assertEqual(update.paused_until(config), 0)
+            config.write_text("[power]\nblank_minutes = 10\n[update]\nsnapshot = on\npaused_until = 1790604800\n")
+            self.assertEqual(update.paused_until(config), 1790604800)
+            config.write_text("[update]\npaused_until = soon\n")
+            self.assertEqual(update.paused_until(config), 0)
+            config.write_text("not an ini [")
+            self.assertEqual(update.paused_until(config), 0)
+
+    def test_the_checker_honours_the_pause_it_read_at_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / "config.ini"
+            config.write_text(f"[update]\npaused_until = {NOW + 3600:.0f}\n")
+            fetch = mock.Mock(return_value="0.1.14")
+            clock = [NOW]
+            checker = update.Checker(current="0.1.13", state_path=pathlib.Path(tmp) / "update-check.ini",
+                                     fetch=fetch, clock=lambda: clock[0], online=lambda: True, config_path=config)
+            checker.check_if_due()
+            fetch.assert_not_called()
+            clock[0] = NOW + 3600
+            checker.check_if_due()
+            fetch.assert_called_once_with("0.1.13")
 
 
 class Response:
@@ -267,6 +307,22 @@ class RouteTest(unittest.TestCase):
         self.assertFalse(self.has_route("garbage\nmore garbage\n", "x y z\n"))
 
 
+class NotReadyTest(unittest.TestCase):
+    def release(self, *suffixes):
+        names = [update.iso_name("0.3.0", suffix) for suffix in suffixes] + ["SHA256SUMS"]
+        return update.Release("0.3.0", tuple(update.Asset(name, "https://x/" + name, 1) for name in names))
+
+    def test_only_a_release_profile_missing_its_iso_next_to_the_general_one_is_not_ready(self):
+        nvidia = {"ISO_SUFFIX": "nvidia", "RELEASE": "1"}
+        self.assertEqual(update.not_ready(self.release(""), nvidia),
+                         "THE NVIDIA VERSION OF 0.3.0 IS NOT READY YET. TRY AGAIN LATER.")
+        self.assertEqual(update.not_ready(self.release("", "nvidia"), nvidia), "", "it is there")
+        self.assertEqual(update.not_ready(self.release(), nvidia), "", "no general ISO either: a broken release")
+        self.assertEqual(update.not_ready(self.release(), {"ISO_SUFFIX": "", "RELEASE": "1"}), "", "general")
+        self.assertEqual(update.not_ready(self.release(""), {"ISO_SUFFIX": "intel", "RELEASE": "0"}), "",
+                         "a legacy profile never gets its own ISO again")
+
+
 class CheckerTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -352,6 +408,24 @@ class CheckerTest(unittest.TestCase):
         checker.fetch = mock.Mock(return_value="0.1.15")
         checker.check_if_due()
         self.assertEqual(checker.to_offer(), "0.1.15")
+
+    def test_a_release_without_an_iso_for_this_box_is_not_offered_until_it_has_one(self):
+        def release(*suffixes):
+            names = [update.iso_name("0.1.14", suffix) for suffix in suffixes]
+            return update.Release("0.1.14", tuple(update.Asset(name, "https://x/" + name, 1) for name in names))
+        nvidia = {"PROFILE_NAME": "nvidia", "ISO_SUFFIX": "nvidia", "RELEASE": "1"}
+        checker = update.Checker(
+            current="0.1.13", state_path=self.path, fetch=mock.Mock(return_value=release("")),
+            clock=lambda: self.now, online=lambda: True, live=lambda: False, profile=nvidia,
+        )
+        checker.check_if_due()
+        self.assertEqual((checker.available(), checker.to_offer()), ("0.1.14", ""))
+        self.assertEqual(update.load_state(self.path).no_file, "0.1.14", "a restart does not offer it either")
+        self.now += update.CHECK_SECONDS
+        checker.fetch = mock.Mock(return_value=release("", "nvidia"))
+        checker.check_if_due()
+        self.assertEqual(checker.to_offer(), "0.1.14")
+        self.assertEqual(update.load_state(self.path).no_file, "")
 
     def test_nothing_is_offered_when_up_to_date_disabled_or_live(self):
         up_to_date = self.checker(mock.Mock(return_value="0.1.13"))

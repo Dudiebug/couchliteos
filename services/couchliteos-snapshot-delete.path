@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/snapshot-delete
+Unit=couchliteos-snapshot-delete.service
+
+[Install]
+WantedBy=graphical.target

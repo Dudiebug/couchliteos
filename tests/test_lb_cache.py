@@ -197,7 +197,7 @@ class SharedBuildCacheTest(unittest.TestCase):
         self.assertRegex(build, r'(?m)^source "\$ROOT/build/lb-cache\.sh"$')
         self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n  lb_cache_prepare "\$COUCHLITEOS_LB_CACHE"\nfi$')
         self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n'
-                                r'  timed chroot lb_cache_chroot_stage "\$COUCHLITEOS_LB_CACHE" \$\(\(release \? 0 : 1\)\)\n'
+                                r'  timed chroot lb_cache_chroot_stage "\$COUCHLITEOS_LB_CACHE" \$\(\(fresh \? 0 : 1\)\)\n'
                                 r'else\n  timed chroot lb chroot\nfi$')
         self.assertRegex(build, r'(?m)^if \[\[ -n \$\{COUCHLITEOS_LB_CACHE:-\} \]\]; then\n  lb_cache_save_bootstrap "\$COUCHLITEOS_LB_CACHE"\nfi$')
         self.assertEqual(len(re.findall(r'(?m)^[^#\n]*COUCHLITEOS_LB_CACHE', build)), 6)

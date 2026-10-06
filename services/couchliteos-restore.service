@@ -1,0 +1,28 @@
+[Unit]
+Description=Restore the saved previous CouchLiteOS version
+# Either way in: Settings > SOFTWARE UPDATE left a request (couchliteos-restore-request.service),
+# or the boot menu entry "CouchLiteOS: restore previous version" (42_couchliteos_restore) was chosen.
+ConditionKernelCommandLine=|couchliteos.restore=1
+# The request is in root's own directory: the couchliteos user cannot create it.
+ConditionPathExists=|/var/lib/couchliteos-update/snapshot/restore-request
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=couchliteos-launcher.service couchliteos-update.path couchliteos-snapshot-delete.path
+# Nothing running as the couchliteos user may start while the restore rewrites its directories:
+# these two start before the launcher; every other User=couchliteos unit starts after it.
+Before=couchliteos-bluetooth.service couchliteos-audio.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Mounts the saved image, puts its files back with the updater's own steps and restarts. On a
+# failure it says why on the screen for 30 s and the box starts as it is (one that stopped part
+# way is tried again at the next start, twice at most).
+ExecStart=/usr/libexec/couchliteos-updater restore
+TimeoutStartSec=infinity
+# Plain progress text on the console: the TV (tty1) or, in the QEMU tests, the serial port.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

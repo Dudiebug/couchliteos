@@ -8,7 +8,6 @@ import dataclasses
 import ipaddress
 import os
 import pathlib
-import shlex
 import ssl
 import subprocess
 import sys
@@ -24,6 +23,9 @@ import couchliteos_support as support
 import couchliteos_bluetooth as bluetooth
 import couchliteos_listview as listview
 import couchliteos_apps as apps
+import couchliteos_artwork as artwork
+import couchliteos_browser as browser
+import couchliteos_browsersetup as browsersetup
 import couchliteos_power as power
 import couchliteos_rdp as rdp
 import couchliteos_setup as setup
@@ -42,11 +44,19 @@ import couchliteos_whatsnew as whatsnew
 import couchliteos_controls as controls
 import couchliteos_input as inputprefs
 import couchliteos_padcheck as padcheck
+import couchliteos_pads as pads
 import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
+import couchliteos_phone as phone
+import couchliteos_theme as themes
+import couchliteos_quick as quick
+import couchliteos_recent as recent
+import couchliteos_session as session
 
 
-RUN = pathlib.Path("/run/couchliteos")
+# The tests point both at a scratch directory (testenv.py).
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
 HOME_REQUEST = RUN / "home.request"
 # Tells gamepad-nav the launcher (not a running app) has focus, so it forwards keys.
 LAUNCHER_FOCUS = RUN / "launcher-focus"
@@ -66,8 +76,10 @@ SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"
 IDLE_SLEEP_NO_WAKE = "IDLE SLEEP OFF: NO CONTROLLER CAN WAKE THIS PC"
 SETTINGS_MENU = (
     "DISPLAY",
+    "APPEARANCE",
     "AUDIO",
     "BLUETOOTH",
+    "CONTROLLERS",
     "NETWORK",
     "SLEEP & SCREEN",
     "APPLICATIONS",
@@ -85,8 +97,8 @@ SETTINGS_MENU = (
     "BACK",
 )
 UPDATE_SUFFIX = "  -  UPDATE AVAILABLE"  # on the SETTINGS row while a newer release is known
-STREAM_WINDOW_WORDS = {"moonlight": "moonlight", "chiaki-ng": "chiaki"}  # found in the listed window of a stream
-SPINNER = "|/-\\"
+STREAM_WINDOW_WORDS = session.STREAM_WINDOW_WORDS  # found in the listed window of a stream
+SPINNER = session.SPINNER
 SAVE_FAILED = "COULD NOT SAVE: DISK FULL OR READ-ONLY"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 # gamepad-nav forwards LB, RB, View/Select, and Menu/Start as F5-F8.
@@ -101,6 +113,13 @@ REMOTE_TEST_KEYS = {
 # gamepad-nav sends Delete for BTN_WEST; X/Triangle (BTN_NORTH) open the keyboard instead.
 CLOSE_BUTTON = "Y (XBOX) / SQUARE (PS)"
 TEXT_HINT = "X / TRIANGLE KEYBOARD · Y / SQUARE DELETE · A / CROSS OK · B / CIRCLE CANCEL"
+# TYPE ON PHONE: SELECT/VIEW (gamepad-nav sends F7 for a tap) or F2 on a keyboard. Y already deletes.
+PHONE_KEYS = (curses.KEY_F2, curses.KEY_F7)
+PHONE_ROW = "SELECT (VIEW) OR F2: TYPE ON PHONE"
+PHONE_HINT = "B / CIRCLE OR ESC CANCELS"
+# Over a starting app: the Home key does what the SELECT+START hold does (gamepad-nav watches both).
+STARTING_HINT = "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE"
+PHONE_POLL_MS = 500
 # Hints name controller buttons first; where it fits they add the keyboard key (Enter, Esc).
 # F5-F12 are never named: the controller's X, LB, RB, SELECT and START send them.
 LIST_HINT = "A / CROSS OR ENTER SELECTS  ·  B / CIRCLE OR ESC GOES BACK"
@@ -123,46 +142,35 @@ SCREEN_RESTARTS_PER_MINUTE = 3
 SUPPORT_EXPORT_TIMEOUT = 180.0
 SUPPORT_EXPORT_START_TIMEOUT = 12.0
 SUPPORT_EXPORT_POLL_MS = 100
+# The TV interface (couchliteos-tv) shows the progress of an update started by `--screen
+# software-update`: the screen leaves the version here and exits (couchliteos_tvscreens.UPDATE_WATCH).
+UPDATE_WATCH = "update-watch"
 # A result or error stays on the main screen this long unless a button is pressed first.
 STATUS_HOLD_SECONDS = 15.0
 
 
 def application_result() -> apps.LoadResult:
-    system_dir = apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
-    return apps.load_applications(system_dir=system_dir)
+    return session.application_result()
 
 
 def set_launcher_focus(held: bool) -> None:
-    try:
-        if held:
-            LAUNCHER_FOCUS.touch()
-        else:
-            LAUNCHER_FOCUS.unlink(missing_ok=True)
-    except OSError:
-        pass
+    session.set_launcher_focus(held, LAUNCHER_FOCUS)
+
+
+def mark_front_app(app: apps.Application) -> None:
+    """Name `app` in app-active, as its start did, so Guide follows the app brought to the front."""
+    session.mark_front_app(app, RUN)
 
 
 def request_osk(masked: bool = False) -> None:
-    if (RUN / "osk-active").exists():  # one keyboard at a time; a second request would queue another
-        return
-    if masked:
-        (RUN / "osk-masked").touch()
-    (RUN / "start-osk").touch()
+    session.request_osk(RUN, masked)  # one keyboard at a time
 
 
-def rdp_application(connection: rdp.Connection) -> apps.Application:
-    """Launchable entry for a saved connection that is not pinned to the launcher."""
-    return apps.Application(
-        id=connection.id, name=connection.name.upper(), kind="rdp",
-        connection=connection.id, status_id=connection.id,
-    )
+rdp_application = session.rdp_application  # launchable entry for a saved connection that is not pinned
 
 
 def active_rdp_session() -> str | None:
-    try:
-        return rdp.read_connection_id(RUN / rdp.SESSION.name)
-    except (OSError, UnicodeError, ValueError):
-        return None
+    return session.active_rdp_session(RUN)
 
 
 def rdp_log(message: str) -> None:
@@ -172,17 +180,11 @@ def rdp_log(message: str) -> None:
 # Set by Launcher: blanks the screen when idle and swallows the key that wakes it.
 IDLE_GUARD: power.IdleGuard | None = None
 # Which running apps the controller drives as a mouse (browsers, web apps).
-POINTER_MODES = pointer.Modes()
+POINTER_MODES = session.POINTER_MODES
 
 
 def focus_launcher() -> None:
-    try:
-        subprocess.run(
-            ["wlrctl", "toplevel", "focus", "title:CouchLiteOS Launcher"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
+    session.focus_launcher()
 
 
 # The keyboard Home key (Ctrl+Alt+H until it is changed) reaches the launcher as bytes foot
@@ -534,7 +536,7 @@ def audio_summary() -> str:
 
 
 def controller_summary() -> str:
-    identity = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
+    identity = DATA / "launcher-controller.id"
     try:
         value = identity.read_text(encoding="ascii").strip()
     except OSError:
@@ -543,7 +545,7 @@ def controller_summary() -> str:
 
 
 def configuration_summary(name: str) -> str:
-    root = pathlib.Path("/var/lib/couchliteos/home/.config")
+    root = DATA / "home" / ".config"
     try:
         configured = any(name in path.name.casefold() for path in root.iterdir())
     except OSError:
@@ -587,7 +589,10 @@ def draw_border(screen: curses.window) -> None:
         pass
 
 
-class Launcher:
+class Launcher(session.Session):
+    """The classic home screen. Starting, resuming and closing apps is couchliteos_session's
+    (shared with the TV interface); this class supplies the curses screens for it."""
+
     def __init__(self, screen: curses.window) -> None:
         self.screen = screen
         self.selected = 0
@@ -658,6 +663,40 @@ class Launcher:
             self.summary = self._status = network_summary()
             self.last_status_update = now
 
+    # couchliteos_session reads this module's RUN, LAUNCHER_FOCUS and POINTER_MODES at call time.
+    @property
+    def run_dir(self) -> pathlib.Path:
+        return RUN
+
+    @property
+    def home_request(self) -> pathlib.Path:
+        return HOME_REQUEST
+
+    @property
+    def pointer_modes(self) -> pointer.Modes:
+        return POINTER_MODES
+
+    def set_launcher_focus(self, held: bool) -> None:
+        set_launcher_focus(held)
+
+    def application_result(self) -> apps.LoadResult:
+        return application_result()
+
+    def active_rdp_session(self) -> str | None:
+        return active_rdp_session()
+
+    def launch_wait_begin(self) -> None:
+        self.screen.timeout(100)
+
+    def launch_wait(self) -> None:
+        read_key(self.screen)  # permits curses to process resize/input state
+
+    def launch_wait_end(self) -> None:
+        self.screen.timeout(1000)
+
+    def prepare_remote_desktop(self, app: apps.Application) -> bool:
+        return RemoteDesktopSettings(self.screen, self).prepare_launch(app)
+
     def reload_applications(self) -> None:
         result = application_result()
         self.applications = tuple(
@@ -713,21 +752,6 @@ class Launcher:
         del self.menu[len(self.stream_row) + len(self.applications):]
         self.menu += self.fixed_controls()
         self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
-
-    def prepare_session(self) -> None:
-        RUN.mkdir(mode=0o750, parents=True, exist_ok=True)
-        display_name = os.environ.get("DISPLAY", ":0")
-        wayland = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
-        if not display_name.startswith(":") or "/" in display_name or "/" in wayland:
-            raise RuntimeError("Cage supplied an invalid display environment")
-        (RUN / "session.env").write_text(
-            f"DISPLAY={display_name}\nWAYLAND_DISPLAY={wayland}\n", encoding="utf-8"
-        )
-        os.chmod(RUN / "session.env", 0o640)
-        set_launcher_focus(False)
-
-    def request(self, name: str) -> None:
-        (RUN / name).touch()
 
     def apps_running(self) -> bool:
         try:
@@ -807,14 +831,10 @@ class Launcher:
 
         Only while nothing runs and the launcher is in front: never over an app or a stream."""
         version = self.updates.to_offer()
-        if not version or HOME_REQUEST.exists() or (RUN / "app-active").exists() or self.any_app_running():
-            return
-        if (RUN / "osk-active").exists() or (RUN / "start-osk").exists():
-            return  # the on-screen keyboard is up or on its way
         guard = IDLE_GUARD
+        if not version or not self.may_offer_update(blanked=guard is not None and guard.timer.blanked):
+            return  # never over an app, a stream or the keyboard; on a blank screen, ask when someone is looking
         if guard is not None:
-            if guard.timer.blanked:
-                return  # the screen is blank: ask when someone is looking
             guard.keep_awake()  # the question is activity: no blanking or sleep while it waits
         self.updates.mark_offered(version)  # before the question: a crash cannot make it come back
         if confirmation.confirm(self.screen, f"COUCHLITEOS {version} IS AVAILABLE. OPEN SOFTWARE UPDATE NOW?"):
@@ -843,7 +863,7 @@ class Launcher:
         center = max(6, height // 2 - 1)
         add_centered(self.screen, center, f"STARTING {label}  {frame}")
         add_centered(self.screen, center + 2, "PLEASE WAIT")
-        add_centered(self.screen, height - 3, "HOLD SELECT+START (VIEW+MENU) TO COME BACK TO THE LAUNCHER")
+        add_centered(self.screen, height - 3, STARTING_HINT)
         self.screen.refresh()
 
     def wake_from_failure(self, _app: apps.Application | None = None) -> bool:
@@ -1048,33 +1068,6 @@ class Launcher:
             return False
         return self.start_stream(host, config.app)
 
-    @property
-    def stream_word(self) -> str:
-        return "STREAM" if self.stream_by_hand else "AUTO-STREAM"
-
-    def start_stream(self, host: stream.Host, app_name: str, *, by_hand: bool = False) -> bool:
-        """Start Moonlight streaming `app_name` from `host`, for the auto-stream and the STREAM row.
-
-        `by_hand` (the row) only changes the wording of the wake wait and its failures."""
-        app = self.app_by_id("moonlight")
-        if app is None:
-            self.status = "MOONLIGHT IS UNAVAILABLE"
-            return False
-        request = RUN / stream.STREAM_REQUEST.name
-        self.pending_stream = (host.target, app_name)
-        self.stream_by_hand = by_hand
-        try:
-            try:
-                stream.write_stream_request(host.target, app_name, request)
-            except (OSError, ValueError) as error:
-                self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
-                return False
-            return self.launch_app(app, auto=True)
-        finally:
-            self.pending_stream = None
-            self.stream_by_hand = False
-            request.unlink(missing_ok=True)
-
     def stream_selected_pc(self) -> bool:
         """The STREAM <PC> row: stream the PC and application chosen in Settings > STREAMING, no countdown."""
         try:
@@ -1091,226 +1084,20 @@ class Launcher:
 
     @staticmethod
     def read_app_status(app_id: str) -> str:
-        path = RUN / f"{app_id}-status"
-        try:
-            if path.is_symlink() or path.stat().st_size > 512:
-                return ""
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return ""
-        return lines[0][:240] if lines else ""
-
-    def launch_app(self, app: apps.Application, *, quiet: bool = False, auto: bool = False, wake: bool = True) -> bool:
-        """Start an application. `quiet` skips the failure dialog for a hidden one-off
-        application whose caller explains a failed start in its own words. `auto` marks an
-        auto-stream; `wake=False` skips waking the default PC (pairing may be for another one)."""
-        label, app_id = app.name, app.status_id
-        ready = RUN / f"{app_id}-ready"
-        if ready.exists():
-            if self.focus_app(app):
-                self.status = f"RESUMED {label}"
-                return True
-            self.status = f"{label} IS RUNNING BUT HAS NO WINDOW: CLOSE IT UNDER SETTINGS > ACTIVE APPLICATIONS"
-            return False
-        if app.kind == "command":
-            # couchliteos-configured-app.service runs one app at a time; a request
-            # queued behind it would start unasked when the running app closes.
-            other = next((item for item in self.running_applications()
-                          if item.kind == "command" and item.id != app.id), None)
-            if other is not None:
-                self.show_launch_failure(
-                    label, f"{other.name} IS STILL RUNNING. CLOSE IT FIRST: PRESS HOME, THEN CLOSE IT "
-                           "IN ACTIVE APPLICATIONS."
-                )
-                self.status = f"{label} NOT STARTED: {other.name} IS RUNNING"
-                return False
-        state = RUN / f"{app_id}-status"
-        if app.kind == "rdp" and not RemoteDesktopSettings(self.screen, self).prepare_launch(app):
-            return False
-        if app.id == "moonlight" and wake and not self.wake_before_moonlight(app, auto):
-            return False
-        if auto and self.pending_stream is not None:
-            # Written again after the wake wait (it can outlast REQUEST_MAX_AGE) and before each
-            # TRY AGAIN: the Moonlight start consumes the request.
-            try:
-                stream.write_stream_request(*self.pending_stream, RUN / stream.STREAM_REQUEST.name)
-            except (OSError, ValueError) as error:
-                self.status = f"{self.stream_word} NOT STARTED: {error}".upper()
-                return False
-        ready.unlink(missing_ok=True)
-        state.unlink(missing_ok=True)
-        POINTER_MODES.apply(app)
-        set_launcher_focus(False)  # the starting app takes the controller
-        if app.kind == "request":
-            self.request(app.request)
-        elif app.kind == "rdp":
-            rdp.write_session_request(app.connection, RUN / rdp.REQUEST.name)
-        else:
-            apps.atomic_write(RUN / "launch-app.request", app.id + "\n")
-
-        deadline = time.monotonic() + 18
-        failure_since: float | None = None
-        frame = 0
-        self.screen.timeout(100)
-        try:
-            while time.monotonic() < deadline:
-                self.draw_launching(label, SPINNER[frame % len(SPINNER)])
-                frame += 1
-                if ready.exists():
-                    self.status = f"{label} STARTED"
-                    return True
-
-                app_state = self.read_app_status(app_id)
-                now = time.monotonic()
-                if app_state.startswith("exited:"):
-                    # It ran and quit on its own before the ready mark (e.g. nmtui).
-                    self.status = f"{label} EXITED"
-                    return True
-                if app_state.startswith("failed:"):
-                    if failure_since is None:
-                        failure_since = now
-                    # App units retry after two seconds. A persistent failure for
-                    # longer than that means retries have not recovered startup.
-                    if now - failure_since >= 2.75:
-                        if not quiet and self.show_launch_failure(label, app_state.removeprefix("failed:").strip(), app=app) == "retry":
-                            return self.launch_app(app, quiet=quiet, auto=auto, wake=wake)
-                        self.status = f"{label} FAILED TO START"
-                        return False
-                else:
-                    failure_since = None
-                read_key(self.screen)  # permits curses to process resize/input state
-        finally:
-            self.screen.timeout(1000)
-
-        last_state = self.read_app_status(app_id)
-        if app.kind == "rdp" and not (RUN / rdp.SESSION.name).exists():
-            # The session never picked up the request: do not leave it (or a
-            # typed password) waiting in /run for a later start.
-            (RUN / rdp.REQUEST.name).unlink(missing_ok=True)
-            (RUN / rdp.HANDOFF.name).unlink(missing_ok=True)
-        elif app.kind == "request":
-            (RUN / app.request).unlink(missing_ok=True)
-        elif app.kind == "command":
-            # Never leave a request behind to start the app unasked later.
-            (RUN / "launch-app.request").unlink(missing_ok=True)
-        message = (
-            last_state.removeprefix("failed:").strip()
-            if last_state.startswith("failed:")
-            else "THE APPLICATION DID NOT BECOME READY BEFORE THE STARTUP TIMEOUT"
-        )
-        if not quiet and self.show_launch_failure(label, message, app=app) == "retry":
-            return self.launch_app(app, quiet=quiet, auto=auto, wake=wake)
-        self.status = f"{label} START TIMED OUT"
-        return False
-
-    def app_by_id(self, app_id: str) -> apps.Application | None:
-        return next(
-            (app for app in application_result().applications if app.id == app_id and app.enabled),
-            None,
-        )
-
-    def launch_by_id(self, app_id: str) -> bool:
-        app = self.app_by_id(app_id)
-        if app is None:
-            self.status = f"{app_id.upper()} IS NOT AVAILABLE: CHECK SETTINGS > APPLICATIONS"
-            return False
-        return self.launch_app(app)
+        return session.read_app_status(app_id, RUN)
 
     @staticmethod
     def focus_app(app: apps.Application) -> bool:
-        matches = {
-            "firefox": ("app_id:firefox-esr", "app_id:firefox", "title:Mozilla Firefox"),
-            "google-chrome": ("app_id:google-chrome", "title:Google Chrome"),
-            "moonlight": ("app_id:moonlight", "title:Moonlight"),
-            "chiaki-ng": ("app_id:chiaki", "app_id:io.github.streetpea.Chiaki4deck", "title:Chiaki"),
-        }.get(app.id)
-        if matches is None:
-            matches = (f"title:{app.name}",)
-            if app.kind == "command" and not app.terminal:
-                # Windows of user-added apps (Chrome kiosk pages, Steam, ...) are not
-                # titled with the stored name, but their app_id follows the binary.
-                binary = pathlib.PurePath(app.command).name
-                ids = dict.fromkeys((binary.removesuffix("-stable"), binary))
-                matches = tuple(f"app_id:{item}" for item in ids) + matches
-        if app.kind == "rdp":
-            matches = (f"app_id:{rdp.WAYLAND_APP_ID}", f"title:{app.name}")
-        for match in matches:
-            try:
-                result = subprocess.run(
-                    ["wlrctl", "toplevel", "focus", match], check=False,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                )
-            except subprocess.TimeoutExpired:
-                continue  # one slow answer is not "no window": try the next match
-            except (OSError, subprocess.SubprocessError):
-                return False
-            if result.returncode == 0:
-                POINTER_MODES.apply(app)
-                set_launcher_focus(False)
-                return True
-        keyword = STREAM_WINDOW_WORDS.get(app.id)
-        if keyword is not None and Launcher.focus_listed_toplevel(keyword):
-            POINTER_MODES.apply(app)
-            set_launcher_focus(False)
-            return True
-        return False
+        return session.focus_app(app, run=RUN, launcher_focus=LAUNCHER_FOCUS, pointer_modes=POINTER_MODES)
 
     @staticmethod
     def focus_listed_toplevel(keyword: str) -> bool:
-        """A stream window the exact matches missed: take it from what the compositor lists, by whatever
-        app id or title it really has. A miss writes the list to the journal, so the names show up there."""
-        try:
-            listing = subprocess.run(
-                ["wlrctl", "toplevel", "list"], check=False, capture_output=True, text=True, timeout=2,
-            ).stdout or ""
-        except (OSError, subprocess.SubprocessError):
-            return False
-        lines = [line.strip() for line in listing.splitlines() if line.strip()]
-        windows = [line.partition(":")[::2] for line in lines  # wlrctl prints "app_id: title"
-                   if "couchliteos" not in line.lower()]
-        windows = [(app_id.strip(), title.strip()) for app_id, title in windows]
-        # A window whose app id names the client; failing that one with no app id whose title does
-        # (never another program's window that merely mentions it, such as a browser tab).
-        for by_app_id in (True, False):
-            for app_id, title in windows:
-                if keyword not in (app_id if by_app_id else (title if not app_id else "")).lower():
-                    continue
-                for match in (f"app_id:{app_id}" if app_id else "", f"title:{title}" if title else ""):
-                    if not match:
-                        continue
-                    try:
-                        result = subprocess.run(
-                            ["wlrctl", "toplevel", "focus", match], check=False,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
-                        )
-                    except (OSError, subprocess.SubprocessError):
-                        continue
-                    if result.returncode == 0:
-                        return True
-        # The launcher's own terminal is the screen: the journal is not reachable from here, a log file is.
-        display.log(f"no window for {keyword}; the compositor lists: {lines!r}",
-                    pathlib.Path("/var/log/couchliteos/launcher.log"))
-        return False
+        return session.focus_listed_toplevel(keyword)
 
     @staticmethod
     def any_app_running() -> bool:
         """True when any app or stream shows a sign of life in /run/couchliteos, or when that cannot be told."""
-        try:
-            return any(item.name != "launcher-ready" for item in RUN.glob("*-ready"))
-        except Exception:
-            return True  # not knowing means do not restart
-
-    def running_applications(self) -> list[apps.Application]:
-        running = [
-            app for app in application_result().applications
-            if app.enabled and (RUN / f"{app.status_id}-ready").exists()
-        ]
-        session = active_rdp_session()
-        if session and session not in {app.id for app in running} and (RUN / f"{session}-ready").exists():
-            connection = rdp.get_connection(session)
-            if connection is not None:
-                running.append(rdp_application(connection))
-        return running
+        return session.any_app_running(RUN)
 
     @staticmethod
     def volume_row() -> str:
@@ -1373,14 +1160,14 @@ class Launcher:
                 except curses.error:
                     pass
             if selected == volume_index:
-                hint = ("LEFT / RIGHT CHANGES THE VOLUME  ·  A / CROSS MUTES", "")
+                hint = ("LEFT / RIGHT CHANGES THE VOLUME  ·  A / CROSS OR ENTER MUTES", "")
             elif selected == brightness_index:
                 hint = ("LEFT / RIGHT CHANGES THE SCREEN BRIGHTNESS", "")
             elif selected == mouse_index:
-                hint = ("A / CROSS TURNS IT ON OR OFF: LEFT STICK POINTS, A CLICKS, RIGHT STICK SCROLLS", "")
+                hint = ("A / CROSS OR ENTER TURNS IT ON OR OFF", "WHEN ON: LEFT STICK POINTS, A CLICKS, RIGHT STICK SCROLLS")
             elif running:
-                hint = (f"A / CROSS RESUMES  ·  {CLOSE_BUTTON} CLOSES  ·  B / CIRCLE BACK",
-                        "X (XBOX) / TRIANGLE (PS) OPENS THE KEYBOARD AND TYPES INTO THE APP")
+                hint = ("A / CROSS OR ENTER RESUMES  ·  Y / SQUARE OR DELETE CLOSES",
+                        "X / TRIANGLE TYPES INTO IT (OR ENTER, THEN TYPE)  ·  B / CIRCLE OR ESC BACK")
             else:
                 hint = ("NO MANAGED APPLICATIONS ARE RUNNING", "")
             add_centered(self.screen, height - 4, "" if status else hint[1])
@@ -1445,7 +1232,7 @@ class Launcher:
                     return
                 status = f"COULD NOT FOCUS {app.name}: PRESS {CLOSE_BUTTON} TO CLOSE IT, THEN START IT AGAIN"
             elif key in (curses.KEY_DC, ord("x")):
-                (RUN / f"close-{app.status_id}").touch()
+                self.close_app(app)
                 status = f"CLOSING {app.name}"
 
     def activate(self) -> None:
@@ -1483,6 +1270,7 @@ class Launcher:
             "launch": self.launch_and_wait,
             "pair_moonlight": self.pair_moonlight,
             "wake_pc": self.wake_message,
+            "browser": self.browser_setup,
             "applications": Settings(self.screen, self).run_applications,
         }
         tv_control = getattr(self, "tv_control_screen", None)
@@ -1499,6 +1287,20 @@ class Launcher:
         ).run(force=force, resume=resume)
         HOME_REQUEST.unlink(missing_ok=True)  # setup takes no Home request, as with Guide: drop a leftover one
         self.reload_applications()
+
+    def browser_setup(self) -> bool | None:
+        """ADD A WEB BROWSER (setup and Settings > APPLICATIONS): True once one was installed there."""
+        def keep_awake() -> None:  # a long download must not blank or sleep the box
+            if IDLE_GUARD is not None:
+                IDLE_GUARD.keep_awake()
+
+        try:
+            return browsersetup.show(self.screen, read_key=read_key, keep_awake=keep_awake)
+        except Exception:  # noqa: BLE001 - a broken screen must not take the launcher down
+            self.status = "COULD NOT OPEN ADD A WEB BROWSER"
+            return False
+        finally:
+            self.reload_applications()
 
     def wizard_text(self, title: str, prompt: str, limit: int, *, masked: bool = False) -> str | None:
         request_osk(masked)
@@ -2018,23 +1820,29 @@ class Settings:
         if text:
             self.status = text
 
-    def run_software_update(self) -> None:
+    def run_software_update(self, hand_off: bool = False) -> None:
+        """`hand_off`: run for the TV interface, which shows the progress (UPDATE_WATCH)."""
         def keep_awake() -> None:  # a long download must not blank or sleep the box
             if IDLE_GUARD is not None:
                 IDLE_GUARD.keep_awake()
 
+        def watch(version: str) -> None:
+            (RUN / UPDATE_WATCH).write_text(f"{version}\n", encoding="ascii")
+
         try:
             softwareupdate.show(
                 self.screen, read_key=read_key, apps_running=self.launcher.apps_running, keep_awake=keep_awake,
-                record=self.launcher.updates.record)
+                record=self.launcher.updates.record, hand_off=watch if hand_off else None)
         except Exception:  # noqa: BLE001 - a broken screen must not take the launcher down
             self.status = "COULD NOT OPEN SOFTWARE UPDATE"
 
     def activate(self) -> bool:
         actions = {
             "DISPLAY": self.run_display,
+            "APPEARANCE": self.run_appearance,
             "AUDIO": self.run_audio,
             "BLUETOOTH": lambda: bluetooth.run_bluetooth(self.screen),
+            "CONTROLLERS": lambda: pads.run(self.screen, read_key),
             "NETWORK": self.run_network,
             "SLEEP & SCREEN": self.run_sleep_settings,
             "APPLICATIONS": self.run_applications,
@@ -2117,6 +1925,106 @@ class Settings:
                 self.status = status
                 if isinstance(chosen, str):
                     notice = self.change_screen_setting("text", chosen, rows, selected)
+
+    def run_appearance(self) -> None:
+        """THEME and ACCENT; a change recolours the launcher and the keyboard at once. SOUNDS turns the
+        TV interface's navigation sounds on or off. ARTWORK: cover lookup for games."""
+        selected = 0
+        notice = ""
+        while True:
+            available, problems = themes.available()
+            name, accent = themes.load_choice()
+            chosen = available.get(name) or available.get(themes.DEFAULT) or themes.FALLBACK
+            sounds = quick.sounds_enabled()
+            rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}",
+                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "ARTWORK", "BACK"]
+            status = self.status
+            # A bad user theme is listed nowhere else: say so until something is chosen.
+            self.status = notice or (f"SKIPPED {problems[0]}".upper()[:76] if problems else status)
+            self.draw("APPEARANCE", rows, selected)
+            self.status, notice = status, ""
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            if selected == 0:
+                value = self.choose("THEME", [(theme.label, theme.name) for theme in available.values()], chosen.name)
+                if isinstance(value, str):
+                    notice = self.change_theme(value, accent)
+            elif selected == 2:
+                try:
+                    quick.save_sounds(not sounds)
+                except OSError as error:
+                    notice = f"NOT SAVED: {error}".upper()
+            elif selected == 3:
+                self.run_artwork()
+            else:
+                choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS)]
+                value = self.choose("ACCENT", choices, accent)
+                if isinstance(value, str):
+                    notice = self.change_theme(chosen.name, value)
+
+    def run_artwork(self) -> None:
+        """Cover lookup for games: LOOKUP ON/OFF, the user's STEAMGRIDDB KEY, the UNMATCHED GAMES.
+
+        The key is typed masked (or on a phone) and never shown again, only SET or NOT SET."""
+        selected = 0
+        notice = ""
+        while True:
+            on = artwork.lookup_enabled()
+            unmatched = artwork.Cache().unmatched(artwork.key_changed_at())
+            rows = [
+                f"LOOKUP  {'ON' if on else 'OFF'}",
+                f"STEAMGRIDDB KEY  {'SET' if artwork.load_key() else 'NOT SET'}",
+                f"UNMATCHED GAMES  {len(unmatched)}",
+                "BACK",
+            ]
+            status = self.status
+            self.status = notice or artwork.PRIVACY
+            self.draw("ARTWORK", rows, selected)
+            self.status, notice = status, ""
+            key = read_key(self.screen)
+            selected = move_selection(selected, key, len(rows))
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
+                return
+            if key not in ENTER_KEYS:
+                continue
+            if selected == 0:
+                try:
+                    artwork.save_lookup(not on)
+                except OSError:
+                    notice = "NOT SAVED: THE SETTING COULD NOT BE WRITTEN"
+            elif selected == 1:
+                value = ApplicationsSettings(self.screen, self.launcher).text_input(
+                    "STEAMGRIDDB KEY", "API KEY FROM YOUR STEAMGRIDDB PROFILE (EMPTY REMOVES IT)", 128, masked=True,
+                )
+                if value is not None:
+                    try:
+                        artwork.save_key(value)
+                        notice = "KEY SAVED" if value.strip() else "KEY REMOVED"
+                    except ValueError as error:
+                        notice = str(error)
+                    except OSError:
+                        notice = "NOT SAVED: THE KEY COULD NOT BE WRITTEN"
+            else:
+                lines = [f"{name}  ({host})".upper() if host else name.upper() for host, name in unmatched]
+                self.message("UNMATCHED GAMES", "\n".join(
+                    lines + ["", "HOLD Y / SQUARE (OR PRESS F9) ON A GAME TO PICK ITS COVER."]
+                    if lines else ["EVERY GAME LOOKED UP SO FAR HAS A COVER."]))
+
+    def change_theme(self, name: str, accent: str) -> str:
+        """Save the theme choice and recolour the running foot windows; returns what to tell the user."""
+        try:
+            themes.save_choice(name, accent)
+        except OSError as error:
+            return f"NOT SAVED: {error}".upper()
+        try:
+            themes.apply(themes.current())
+        except OSError:
+            return "SAVED: THE NEW COLOURS SHOW AFTER A RESTART"
+        return ""
 
     def restart_for_picture_size(self) -> None:
         """foot sized its text for the old picture size: restart into DISPLAY so it fits the new one."""
@@ -2550,7 +2458,7 @@ class ApplicationsSettings:
         try:
             while True:
                 shown = ("*" * len(value) if masked else value)[-max(1, self.screen.getmaxyx()[1] - 12):] or "_"
-                self.draw(title, [prompt, shown], None)
+                self.draw(title, [prompt, shown, "", PHONE_ROW], None)
                 key = self.screen.get_wch()
                 if isinstance(key, str):
                     if key in {"\n", "\r"}:
@@ -2564,6 +2472,11 @@ class ApplicationsSettings:
                         value += key
                 elif key == curses.KEY_F12:
                     request_osk(masked)
+                elif key in PHONE_KEYS:
+                    typed = self.phone_input(title, prompt, limit, masked=masked)
+                    if typed is not None:  # it fills the field; the user still confirms with A / Enter
+                        value = typed[:limit]
+                    self.screen.timeout(-1)
                 elif key in (curses.KEY_BACKSPACE, curses.KEY_DC):  # Y/Square arrives as KEY_DC
                     value = value[:-1]
         finally:
@@ -2573,6 +2486,61 @@ class ApplicationsSettings:
                 curses.curs_set(0)
             except curses.error:
                 pass
+
+    def phone_input(self, title: str, prompt: str, limit: int, *, masked: bool = False) -> str | None:
+        """TYPE ON PHONE: show a QR code and URL until the phone sends the text, B cancels or it expires."""
+        interfaces = phone.lan_interfaces()
+        if not interfaces:
+            self.status = "TYPE ON PHONE NEEDS A HOME NETWORK CONNECTION"
+            return None
+        try:
+            session = phone.Session(
+                str(interfaces[0].ip), time.monotonic, networks=[interface.network for interface in interfaces],
+                title=title, prompt=prompt, limit=limit, masked=masked,
+            )
+        except OSError:
+            self.status = "COULD NOT START TYPE ON PHONE"
+            return None
+        try:
+            code = phone.qr_lines(session.url)
+            self.screen.timeout(PHONE_POLL_MS)
+            while True:
+                typed = session.poll()
+                if typed is not None:
+                    self.status = TEXT_HINT
+                    return typed
+                if session.expired():
+                    self.status = "TYPE ON PHONE TIMED OUT. PRESS SELECT (VIEW) OR F2 TO TRY AGAIN"
+                    return None
+                self.draw_phone(title, session.url, code)
+                try:
+                    key = self.screen.get_wch()
+                except curses.error:  # no key before the poll timeout
+                    continue
+                if key in ("\x1b", 27):
+                    self.status = TEXT_HINT
+                    return None
+        finally:
+            session.close()
+
+    def draw_phone(self, title: str, url: str, code: list[str]) -> None:
+        self.screen.erase()
+        height, width = self.screen.getmaxyx()
+        draw_border(self.screen)
+        add_centered(self.screen, 1, title)
+        add_centered(self.screen, 2, "SCAN WITH A PHONE ON THE SAME NETWORK, OR OPEN:")
+        add_centered(self.screen, 3, url)
+        top = 5
+        if len(code) <= height - top - 3 and code and max(len(line) for line in code) <= width - 4:
+            column = max(1, (width - max(len(line) for line in code)) // 2)
+            for offset, line in enumerate(code):
+                try:
+                    self.screen.addstr(top + offset, column, line)
+                except curses.error:
+                    pass
+        add_centered(self.screen, height - 3, "THE TEXT FILLS THE FIELD; YOU STILL CONFIRM IT HERE")
+        add_centered(self.screen, height - 2, PHONE_HINT)
+        self.screen.refresh()
 
     def yes_no(self, title: str, prompt: str, *, unsaved: bool = False) -> bool | None:
         selected = 0
@@ -2626,6 +2594,11 @@ class ApplicationsSettings:
             self.status = f"APPLICATION NOT ADDED: {error}"
 
     def add_web(self) -> None:
+        if not browser.installed_browsers():  # a web app opens in an installed browser
+            self.launcher.browser_setup()
+            if not browser.installed_browsers():
+                self.status = "ADD A WEB BROWSER FIRST"
+                return
         name = self.text_input("ADD WEB APPLICATION", "NAME", apps.MAX_NAME)
         if not name:
             return
@@ -2634,15 +2607,17 @@ class ApplicationsSettings:
             return
         try:
             url = apps.validate_web_url(url)
+            kiosk = browser.kiosk_command(url)
+            if kiosk is None:
+                self.status = "ADD A WEB BROWSER FIRST"
+                return
             result = self.result()
             app_id = apps.application_id(name, {item.id for item in result.applications})
             order = max([50, *(item.order for item in result.applications if item.visible)]) + 10
             self._write_user(
                 apps.Application(
                     id=app_id, name=name.strip().upper(), kind="command",
-                    command="/usr/bin/google-chrome-stable",
-                    arguments=shlex.join(["--ozone-platform=wayland", "--kiosk", "--no-first-run", url]),
-                    status_id=app_id, order=order,
+                    command=kiosk[0], arguments=kiosk[1], status_id=app_id, order=order,
                 )
             )
             self.status = f"ADDED {name.strip().upper()}"
@@ -2707,7 +2682,7 @@ class ApplicationsSettings:
             result = self.result()
             visible = [app for app in result.applications if app.visible]
             rows = [f"{app.name:<28} {'ENABLED' if app.enabled else 'DISABLED'}" for app in visible]
-            rows += ["ADD COMMAND APPLICATION", "ADD WEB APPLICATION", "BACK"]
+            rows += ["ADD COMMAND APPLICATION", "ADD WEB APPLICATION", "ADD A WEB BROWSER", "BACK"]
             self.selected = min(self.selected, len(rows) - 1)
             if result.errors:
                 self.status = f"{len(result.errors)} INVALID APPLICATION(S) SKIPPED"
@@ -2730,6 +2705,8 @@ class ApplicationsSettings:
                 self.add_command()
             elif self.selected == len(visible) + 1:
                 self.add_web()
+            elif self.selected == len(visible) + 2:
+                self.launcher.browser_setup()
             else:
                 return
 
@@ -3184,18 +3161,7 @@ class StreamingSettings(RemoteDesktopSettings):
     """Couch to game: start a stream at boot, wake the gaming PC, and tune the stream."""
 
     TITLE = "STREAMING"
-    WAKE_RESULTS = {
-        "up": "{} IS ALREADY AWAKE AND ANSWERING.",
-        "woke": "{} IS AWAKE.",
-        "awake": "{} IS ON BUT SUNSHINE IS NOT ANSWERING. START SUNSHINE ON THE PC, THEN TRY AGAIN.",
-        "timeout": f"{{}} DID NOT ANSWER WITHIN {int(stream.WAKE_TIMEOUT)} SECONDS. IT MAY STILL BE STARTING; TRY MOONLIGHT IN A MOMENT.",
-        "cancelled": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
-        "home": "STOPPED WAITING. THE WAKE REQUEST WAS SENT AND {} MAY STILL BE STARTING.",
-        "sent": "WAKE REQUEST SENT TO {}. IT CAN TAKE A MINUTE TO START.",
-        "noaddr": "WAKE REQUEST NOT SENT: NO ADDRESS IS KNOWN FOR {}.",
-        "nonetwork": "NO NETWORK. CONNECT ETHERNET OR WI-FI, THEN TRY AGAIN.",
-        "nomac": stream.NO_MAC,
-    }
+    WAKE_RESULTS = stream.WAKE_RESULTS  # the TV interface's WAKE PC says the same
 
     @staticmethod
     def ident(host: stream.Host) -> str:
@@ -3352,6 +3318,8 @@ class StreamingSettings(RemoteDesktopSettings):
         if stream.moonlight_running(RUN):
             self.message(title, "CLOSE MOONLIGHT FIRST. IT WOULD OVERWRITE THE NEW SETTINGS WHEN IT EXITS.")
             return
+        if not self.restore_global(title):
+            return
         try:
             output = display.active_output(display.query_outputs())
         except (OSError, RuntimeError, subprocess.SubprocessError):
@@ -3407,8 +3375,20 @@ class StreamingSettings(RemoteDesktopSettings):
             'CHOOSE THE ONE FOR AUTO-STREAM AND WAKE PC IN THE "PC" ROW.'
         )
 
+    def restore_global(self, title: str) -> bool:
+        """The last game's own stream settings out of Moonlight.conf first: OPTIMIZE and SMOOTHER
+        STREAM change the global settings, never a game's plan that the next start puts back."""
+        try:
+            stream.restore_global(run_dir=RUN)
+        except (OSError, stream.StreamError) as error:
+            self.message(title, f"NOT CHANGED: {error}".upper())
+            return False
+        return True
+
     def smoother(self) -> None:
         title = "SMOOTHER STREAM"
+        if not self.restore_global(title):
+            return
         try:
             old, new = stream.lower_bitrate(run_dir=RUN)
         except (OSError, stream.StreamError) as error:
@@ -3484,6 +3464,57 @@ def connect_tv_control(launcher: Launcher) -> None:
     launcher.tv_control_screen = lambda: Settings(launcher.screen, launcher).run_tv_control()
 
 
+def first_start(launcher: Launcher) -> None:
+    """`--screen setup`: what Launcher.run does before its menu (setup, resumed when it restarted
+    for a new picture size during it, then the CONTROLS screen once). What's New is the TV's own."""
+    if (RUN / "reopen-setup").exists():  # restarted for a new picture size during setup
+        (RUN / "reopen-setup").unlink(missing_ok=True)
+        launcher.setup_wizard(resume=True)
+    else:
+        launcher.setup_wizard()
+    controls.show_once(launcher.screen)
+
+
+# `couchliteos-launcher --screen NAME`: one screen in a foot window of its own, then exit. The TV
+# interface opens what it does not draw itself this way (couchliteos_tvscreens.SCREENS has the
+# same names). A screen that restarts the launcher (sys.exit after a new picture size) only ends
+# this window: its marker in RUN tells the TV interface to open it again.
+SCREENS: dict[str, Callable[[Settings, str], object]] = {
+    "display": lambda settings, _app: settings.run_display(),
+    "appearance": lambda settings, _app: settings.run_appearance(),
+    "audio": lambda settings, _app: settings.run_audio(),
+    "bluetooth": lambda settings, _app: bluetooth.run_bluetooth(settings.screen),
+    "controllers": lambda settings, _app: pads.run(settings.screen, read_key),
+    "network": lambda settings, _app: settings.run_network(),
+    "sleep": lambda settings, _app: settings.run_sleep_settings(),
+    "applications": lambda settings, _app: settings.run_applications(),
+    "remote-desktop": lambda settings, _app: settings.run_remote_desktop(),
+    "streaming": lambda settings, _app: settings.run_streaming(),
+    "tv-control": lambda settings, _app: settings.run_tv_control(),
+    "software-update": lambda settings, _app: settings.run_software_update(hand_off=True),
+    "controls": lambda settings, _app: settings.run_controls(),
+    "setup-wizard": lambda settings, _app: settings.launcher.setup_wizard(force=True),
+    "support-file": lambda settings, _app: settings.generate_support_file(),
+    "setup": lambda settings, _app: first_start(settings.launcher),
+    "connect": lambda settings, app: settings.launcher.launch_by_id(app),
+}
+
+
+def run_screen(screen: curses.window, name: str, app: str = "") -> None:
+    curses.set_escdelay(25)
+    launcher = Launcher(screen)
+    register_failure_actions(launcher)
+    connect_tv_control(launcher)
+    curses.curs_set(0)
+    screen.keypad(True)
+    screen.timeout(1000)
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        pass
+    SCREENS[name](Settings(screen, launcher), app)
+
+
 def main(screen: curses.window) -> None:
     curses.set_escdelay(25)  # the controller's B sends a bare Esc; don't wait 1 s for a sequence
     launcher = Launcher(screen)
@@ -3492,5 +3523,18 @@ def main(screen: curses.window) -> None:
     launcher.run()
 
 
+def parse_arguments(argv: list[str] | None = None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="CouchLiteOS classic launcher")
+    parser.add_argument("--screen", choices=sorted(SCREENS), help="run this one screen and exit (the TV interface)")
+    parser.add_argument("--app", default="", help="the application --screen connect starts")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    curses.wrapper(main)
+    arguments = parse_arguments()
+    if arguments.screen:
+        curses.wrapper(run_screen, arguments.screen, arguments.app)
+    else:
+        curses.wrapper(main)

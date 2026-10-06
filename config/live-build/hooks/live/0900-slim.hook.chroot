@@ -1,0 +1,108 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# Remove what no CouchLiteOS machine can use, after every other chroot hook (DKMS
+# modules are built and the firmware checks have passed by now):
+#   - documentation, manual pages and non-English translations that debootstrap
+#     unpacked before /etc/dpkg/dpkg.cfg.d/couchliteos-slim existed (copyright stays);
+#   - GCC's LTO compiler and the sanitizer runtimes (DKMS builds kernel modules
+#     without either; cc1, the headers and dkms stay);
+#   - firmware no supported PC can load: iwlwifi versions older than the one the
+#     image kernel loads, and firmware for ARM SoCs and router boards.
+# Every removed firmware path is printed to the build log.
+# COUCHLITEOS_SLIM_ROOT runs it on a test tree (tests/test-static.sh); empty in the chroot.
+ROOT=${COUCHLITEOS_SLIM_ROOT:-}
+removed() { printf 'slim: removed %s\n' "${1#"$ROOT"}"; }
+
+# Documentation, manual pages, translations.
+doc=$ROOT/usr/share/doc
+if [[ -d $doc ]]; then
+  find "$doc" -mindepth 2 ! -path "$doc/couchliteos/*" ! -path "$doc/loadlin/*" \
+    ! -path "$doc/live-boot/parameters.txt" ! -type d ! -name copyright -delete
+  find "$doc" -mindepth 1 -type d -empty -delete
+fi
+for directory in "$ROOT/usr/share/man" "$ROOT/usr/share/info"; do
+  [[ ! -d $directory ]] || find "$directory" -mindepth 1 -delete
+done
+locale=$ROOT/usr/share/locale
+if [[ -d $locale ]]; then
+  find "$locale" -mindepth 1 -maxdepth 1 ! -name 'en*' ! -name locale.alias -exec rm -rf -- {} +
+fi
+if [[ -d $doc ]]; then
+  printf 'slim: %s copyright files kept\n' "$(find "$doc" -name copyright | wc -l)"
+fi
+
+# Toolchain: the LTO compiler and the sanitizer runtimes.
+toolchain=()
+for directory in "$ROOT/usr/lib/gcc" "$ROOT/usr/libexec/gcc" "$ROOT/usr/lib/x86_64-linux-gnu" "$ROOT/usr/bin"; do
+  [[ -d $directory ]] && toolchain+=("$directory")
+done
+if ((${#toolchain[@]})); then
+  find "${toolchain[@]}" ! -type d \( -name lto1 -o -name 'lto-dump*' -o -name '*-lto-dump*' \
+    -o -name 'libasan*' -o -name 'libtsan*' -o -name 'liblsan*' -o -name 'libubsan*' -o -name 'libhwasan*' \) \
+    -print -delete | while IFS= read -r path; do removed "$path"; done
+fi
+
+firmware=$ROOT/usr/lib/firmware
+[[ -d $firmware ]] || exit 0
+
+# Firmware for ARM SoCs and router boards: Qualcomm IPQ router SoCs and Snapdragon
+# Wi-Fi (ath10k/ath11k/ath12k), i.MX, Amlogic, Rockchip and Qualcomm SoC peripherals.
+for path in ath10k/QCA4019 ath10k/WCN3990 ath11k/IPQ5018 ath11k/IPQ6018 ath11k/IPQ8074 \
+  ath11k/WCN6750 ath12k/IPQ5332 imx meson rockchip qcom; do
+  [[ -e $firmware/$path ]] || continue
+  find "$firmware/$path" -depth -print -delete | while IFS= read -r file; do removed "$file"; done
+done
+# MediaTek SoC-only: MT7622/MT7629/MT798x router SoCs, MT8xxx Chromebook and tablet SoCs.
+# MT76xx/MT79xx PCIe and USB Wi-Fi and Bluetooth (MT7921, MT7922, MT7925, ...) stay.
+if [[ -d $firmware/mediatek ]]; then
+  find "$firmware/mediatek" -mindepth 1 \( -name 'mt7622*' -o -name 'mt7629*' -o -name 'mt798[0-9]*' \
+    -o -name '*mt8[0-9][0-9][0-9]*' \) -prune -print0 |
+    while IFS= read -r -d '' path; do
+      find "$path" -depth -print -delete | while IFS= read -r file; do removed "$file"; done
+    done
+fi
+
+# iwlwifi tries iwlwifi-<device>-<api>.ucode from the newest API the kernel supports
+# down to the oldest and loads the first file it finds, so any older file of the same
+# device is never loaded. Files newer than the kernel's API stay. Only with one image
+# kernel (two kernels can support different APIs), and only for devices the kernel
+# lists once; a device whose kept file is a link keeps every file.
+kernels=()
+for directory in "$ROOT"/lib/modules/*; do
+  [[ -d "$directory/kernel" ]] && kernels+=("${directory##*/}")
+done
+if ((${#kernels[@]} != 1)); then
+  echo "slim: ${#kernels[@]} image kernels; iwlwifi firmware kept"
+  exit 0
+fi
+requested=$(for module in iwlwifi iwlmvm iwlmld; do
+  modinfo -k "${kernels[0]}" -F firmware "$module" 2>/dev/null || true
+done | sed -n -E 's/^(iwlwifi-[A-Za-z0-9_-]+)-([0-9]+)\.ucode$/\1 \2/p' | sort -u)
+[[ -n $requested ]] || { echo 'slim: the kernel lists no iwlwifi firmware; kept'; exit 0; }
+while read -r device api_max; do
+  (($(grep -c "^$device " <<< "$requested") == 1)) || continue
+  keep=-1
+  versions=()
+  for file in "$firmware/$device"-*.ucode*; do
+    [[ -e $file || -L $file ]] || continue
+    name=${file##*/}
+    [[ $name =~ ^${device}-([0-9]+)\.ucode(\.xz|\.zst)?$ ]] || continue
+    version=${BASH_REMATCH[1]}
+    versions+=("$version:$file")
+    if ((version <= api_max && version > keep)); then
+      keep=$version
+      kept=$file
+    fi
+  done
+  ((keep >= 0)) || continue
+  [[ ! -L $kept ]] || continue
+  for entry in "${versions[@]}"; do
+    version=${entry%%:*}
+    file=${entry#*:}
+    if ((version < keep)); then
+      rm -f -- "$file"
+      removed "$file"
+    fi
+  done
+done <<< "$requested"

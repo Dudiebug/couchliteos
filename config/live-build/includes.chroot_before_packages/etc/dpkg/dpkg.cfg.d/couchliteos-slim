@@ -1,0 +1,14 @@
+# CouchLiteOS: no documentation, manual pages or translations other than English.
+# The copyright files stay (THIRD_PARTY_NOTICES.md points to them). Files
+# debootstrap unpacked before this existed are removed by 0900-slim.hook.chroot.
+path-exclude /usr/share/doc/*
+path-include /usr/share/doc/*/copyright
+# live-build copies these onto the ISO: lb binary_loadlin fails without the manual,
+# lb binary_linux-image puts the boot parameters next to the kernel.
+path-include /usr/share/doc/loadlin/*
+path-include /usr/share/doc/live-boot/parameters.txt
+path-exclude /usr/share/man/*
+path-exclude /usr/share/info/*
+path-exclude /usr/share/locale/*
+path-include /usr/share/locale/en*
+path-include /usr/share/locale/locale.alias

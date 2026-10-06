@@ -1,5 +1,7 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import curses
 import importlib.util
+import os
 import pathlib
 import tempfile
 import unittest
@@ -233,7 +235,7 @@ class ShowOnceTest(unittest.TestCase):
 
 
 class ScreenTest(unittest.TestCase):
-    def draw(self, size=(24, 80), version="0.2.7", seen=""):
+    def draw(self, size=(24, 80), version="0.3.0", seen=""):
         screen = Screen(size=size)
         whatsnew.draw(screen, version, seen)
         return screen
@@ -244,7 +246,7 @@ class ScreenTest(unittest.TestCase):
             self.assertTrue(0 < row < 23, (row, text))
             self.assertTrue(col >= 1 and col + len(text) <= 79, (col, text))
         text = "\n".join(screen.text())
-        self.assertIn("WHAT'S NEW IN 0.2.7", text)
+        self.assertIn("WHAT'S NEW IN 0.3.0", text)
         self.assertIn(whatsnew.RENAME_NOTICE, text)
         for feature in whatsnew.FEATURES:
             self.assertIn(feature, text)
@@ -276,15 +278,15 @@ class ScreenTest(unittest.TestCase):
 
     def test_the_title_is_bold(self):
         attrs = {text: attr for _row, _col, text, attr in self.draw().frame}
-        self.assertTrue(attrs["WHAT'S NEW IN 0.2.7"] & curses.A_BOLD)
+        self.assertTrue(attrs["WHAT'S NEW IN 0.3.0"] & curses.A_BOLD)
 
-    def test_an_upgrade_from_0_2_6_shows_only_0_2_7_without_the_rename(self):
-        text = "\n".join(self.draw(seen="0.2.6").text())
+    def test_an_upgrade_from_0_2_7_shows_only_0_3_0_without_the_rename(self):
+        text = "\n".join(self.draw(seen="0.2.7").text())
         self.assertNotIn(whatsnew.RENAME_NOTICE, text)
         for feature in whatsnew.FEATURES:
             self.assertIn(feature, text)
-        self.assertNotIn("KEYBOARD HOME KEY", text)  # 0.2.5 notes were seen already
-        self.assertNotIn("NEW IN 0.2.7:", text)  # one release needs no heading
+        self.assertNotIn("TOUCHPAD", text)  # 0.2.7 notes were seen already
+        self.assertNotIn("NEW IN 0.3.0:", text)  # one release needs no heading
         self.assertNotIn(whatsnew.EARLIER, text)
 
     def test_a_long_upgrade_shows_only_this_release_and_points_to_the_rest(self):
@@ -315,10 +317,27 @@ class ContentTest(unittest.TestCase):
         versions = [whatsnew.update.parse_version(release) for release, _features in whatsnew.RELEASES]
         self.assertEqual(versions, sorted(versions, reverse=True))
         current = (pathlib.Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
-        self.assertEqual(whatsnew.RELEASES[0][0], current)
+        # While a release is prepared its notes come before VERSION is raised to it (release-check
+        # then requires the two to match), so the newest entry is VERSION or the one just after it.
+        newest = [release for release, _features in whatsnew.RELEASES[:2]]
+        self.assertTrue(newest[0] == current or newest[1] == current, (newest, current))
+
+    def test_0_3_0_names_each_feature_and_where_to_find_it(self):
+        release, features = whatsnew.RELEASES[0]
+        self.assertEqual(release, "0.3.0")
+        text = " ".join(features)
+        for needle in ("TV HOME SCREEN", "QUICK MENU", "SETTINGS > APPEARANCE", "RESTORE PREVIOUS VERSION",
+                       "TYPE ON YOUR PHONE", "SETTINGS > CONTROLLERS", "STREAM SETTINGS", "CHANGE A COVER",
+                       "ADD A WEB BROWSER"):
+            self.assertIn(needle, text)
+        # Every controller button named comes with its keyboard key.
+        self.assertIn("SELECT (VIEW) OR F2", text)
+        self.assertIn("X / TRIANGLE (OR F10)", text)
+        self.assertIn("Y / SQUARE (OR F9)", text)
+        self.assertIn("HOME ON A KEYBOARD", text)
 
     def test_0_2_7_says_guide_stays_with_the_stream_and_how_to_get_home(self):
-        release, features = whatsnew.RELEASES[0]
+        release, features = whatsnew.RELEASES[1]
         self.assertEqual(release, "0.2.7")
         text = " ".join(features)
         self.assertIn("GUIDE GOES TO THE STREAM", text)
@@ -328,14 +347,14 @@ class ContentTest(unittest.TestCase):
         self.assertIn("EVERY START", text)
 
     def test_0_2_6_says_a_paired_pc_is_recognised_and_the_notice_is_gone(self):
-        release, features = whatsnew.RELEASES[1]
+        release, features = whatsnew.RELEASES[2]
         self.assertEqual(release, "0.2.6")
         text = " ".join(features)
         self.assertIn("PAIRED GAMING PC", text)
         self.assertIn("NO MORE NOTICE", text)
 
     def test_0_2_5_says_the_super_key_no_longer_opens_home_and_where_to_set_the_key(self):
-        release, features = whatsnew.RELEASES[2]
+        release, features = whatsnew.RELEASES[3]
         self.assertEqual(release, "0.2.5")
         text = " ".join(features)
         self.assertIn("SUPER", text)
@@ -343,7 +362,7 @@ class ContentTest(unittest.TestCase):
         self.assertIn("SETTINGS > CONTROLS", text)
 
     def test_notes_are_only_the_installed_release(self):
-        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[4]]))
+        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[5]]))
         renamed, releases = whatsnew.notes("0.2.3", "0.2.0")
         self.assertFalse(renamed)
         self.assertEqual([r for r, _f in releases], ["0.2.3"])
@@ -357,7 +376,12 @@ class ContentTest(unittest.TestCase):
         self.assertEqual(whatsnew.notes("0.2.8", "0.2.7"), (False, []))
         self.assertEqual(whatsnew.notes("0.2.7.1", "0.2.7"), (False, []))
         # A pre-release of 0.2.7 already shows the 0.2.7 notes.
-        self.assertEqual(whatsnew.notes("0.2.7-rc.1", "0.2.6")[1], [whatsnew.RELEASES[0]])
+        self.assertEqual(whatsnew.notes("0.2.7-rc.1", "0.2.6")[1], [whatsnew.RELEASES[1]])
+        self.assertEqual(whatsnew.notes("0.3.0-rc.1", "0.2.7")[1], [whatsnew.RELEASES[0]])
+        # An upgrade from 0.2.x shows the 0.3.0 notes alone, and says earlier ones were skipped.
+        self.assertEqual(whatsnew.notes("0.3.0", "0.2.5"), (False, [whatsnew.RELEASES[0]]))
+        self.assertTrue(whatsnew.skipped_releases("0.3.0", "0.2.5"))
+        self.assertFalse(whatsnew.skipped_releases("0.3.0", "0.2.7"))
         # A future version's notes are not shown on an older system.
         self.assertEqual(whatsnew.notes("0.2.2", "0.2.1")[1][0][0], "0.2.2")
 
@@ -376,8 +400,11 @@ class ContentTest(unittest.TestCase):
 
     def test_markers_live_with_the_other_state(self):
         self.assertEqual(whatsnew.SEEN.name, "whatsnew-seen")
-        self.assertEqual(whatsnew.SEEN.parent, whatsnew.setup.MARKER.parent)
-        self.assertEqual(whatsnew.SESSION_SEEN.parent, pathlib.Path("/run/couchliteos"))
+        import couchliteos_setup as setup
+
+        self.assertEqual(whatsnew.SETUP_MARKER, setup.MARKER)
+        self.assertEqual(whatsnew.SEEN.parent, setup.MARKER.parent)
+        self.assertEqual(whatsnew.SESSION_SEEN.parent, pathlib.Path(os.environ["COUCHLITEOS_RUN_DIR"]))
 
     def test_the_version_comes_from_the_same_files_as_the_update_check(self):
         self.assertEqual(whatsnew.VERSION_FILES, whatsnew.update.VERSION_FILES)

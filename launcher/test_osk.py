@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import io
 import os
 import pathlib
@@ -427,7 +428,7 @@ class InjectTest(unittest.TestCase):
         self.assertFalse(self.refocused)
 
     def test_the_launcher_watches_the_same_file(self):
-        self.assertEqual(osk.REFOCUSED, pathlib.Path("/run/couchliteos/osk-refocused"))
+        self.assertEqual(osk.REFOCUSED, pathlib.Path(os.environ["COUCHLITEOS_RUN_DIR"], "osk-refocused"))
 
 
 class TargetTest(unittest.TestCase):

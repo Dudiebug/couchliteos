@@ -1,5 +1,6 @@
 """Settings > SOFTWARE UPDATE: every screen, with a fake screen, keys, clock and update service."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import curses
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import couchliteos_snapshot as snapshot
 import couchliteos_softwareupdate as su
 import couchliteos_update as update
 
@@ -56,7 +58,9 @@ class TextScreen:
         self.put(row, column, text)
 
     def addnstr(self, row, column, text, count, *_attr):
-        self.put(row, column, text[:count])
+        # Curses would cut the text at count: a line the screen meant to show must already fit.
+        assert len(text) <= count, f"{text!r} ({len(text)}) is cut to {count} columns"
+        self.put(row, column, text)
 
     def put(self, row, column, text):
         height, width = self.size
@@ -89,6 +93,9 @@ class UiTest(unittest.TestCase):
         self.apps = False
         self.fetches = []
         self.fetch_result = release()
+        self.saved = None
+        self.save_on = True
+        self.settings = []
 
     # -- fakes ---------------------------------------------------------------------------------
 
@@ -117,12 +124,17 @@ class UiTest(unittest.TestCase):
             read_key=self.read_key, confirm=self.confirm, apps_running=lambda: self.apps,
             keep_awake=self.keep_awake, current="0.2.1", profile={"PROFILE_NAME": "general", "ISO_SUFFIX": ""},
             live=False, fetch=self.fetch, run_dir=self.tmp, clock=lambda: self.now,
+            saved=lambda: self.saved, save_first=lambda: self.save_on, set_save_first=self.set_save_first,
         )
         values.update(overrides)
         return su.SoftwareUpdate(self.screen, **values)
 
     def keep_awake(self):
         self.awake += 1
+
+    def set_save_first(self, on):
+        self.settings.append(on)
+        self.save_on = on
 
     def service(self, phase, percent=None, message="", version="0.2.2"):
         """What couchliteos-update.service writes, as a script item."""
@@ -180,6 +192,131 @@ class MainScreenTest(UiTest):
         self.assertTrue(self.screen.frames)
 
 
+SAVED = snapshot.Snapshot("0.2.0", "2026-10-02T09:00:00Z", 1_812_000_000, "a" * 64, "6.12.48+deb13-amd64")
+
+
+class SavedVersionTest(UiTest):
+    def test_the_saved_version_is_shown_with_its_date_and_size(self):
+        self.saved = SAVED
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("SAVED VERSION: 0.2.0, SAVED 2 OCT 2026, 1.8 GB", self.screen.frames[0])
+        self.assertIn("DELETE SAVED VERSION", self.screen.frames[0])
+
+    def test_without_a_saved_version_there_is_nothing_to_delete(self):
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("SAVED VERSION: NONE", self.screen.frames[0])
+        self.assertNotIn("DELETE SAVED VERSION", self.screen.frames[0])
+
+    def test_a_live_boot_shows_no_saved_version_rows(self):
+        self.saved = SAVED
+        self.script = [ESC]
+        self.make(live=True).run()
+        for text in ("SAVED VERSION", "SAVE BEFORE UPDATE"):
+            self.assertNotIn(text, self.screen.frames[0])
+
+    def test_save_before_update_turns_off_and_on(self):
+        self.script = [DOWN, ENTER, ENTER, ESC]
+        self.make().run()
+        self.assertEqual(self.settings, [False, True])
+        self.assertIn("SAVE BEFORE UPDATE: OFF", self.screen.frames[2])
+        self.assertIn("UPDATES NOW INSTALL WITHOUT SAVING THE CURRENT VERSION FIRST", flat(self.screen.frames[2]))
+        self.assertIn("SAVE BEFORE UPDATE: ON", self.screen.frames[3])
+
+    def test_a_setting_that_cannot_be_written_says_so(self):
+        def failing(_on):
+            raise PermissionError(13, "Permission denied")
+
+        self.script = [DOWN, ENTER, ESC]
+        self.make(set_save_first=failing).run()
+        self.assertIn("COULD NOT SAVE THE SETTING", self.screen.frames[-1])
+
+    def test_delete_asks_first_then_asks_the_service(self):
+        self.saved = SAVED
+        self.script = [DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertIn("DELETE THE SAVED VERSION (0.2.0)? THE BOX CAN THEN NOT GO BACK TO IT.", self.questions[0])
+        self.assertTrue((self.tmp / "snapshot-delete").exists())
+        self.assertIn("DELETING THE SAVED VERSION...", self.screen.frames[-1])
+
+    def test_no_to_delete_changes_nothing(self):
+        self.saved = SAVED
+        self.answer = False
+        self.script = [DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertFalse((self.tmp / "snapshot-delete").exists())
+
+    def test_the_richest_screen_fits_80x24(self):
+        self.saved = SAVED
+        self.script = [ENTER, DOWN, DOWN, DOWN, DOWN, ESC]
+        self.make().run()
+        self.assertIn("INSTALL UPDATE", self.screen.frames[-1])
+
+    def test_saving_is_shown_with_its_percentage_while_the_service_works(self):
+        self.script = [ENTER, ENTER, self.service("saving", 40, "SAVING THE CURRENT VERSION... 40%"),
+                       self.service("failed", None, "NOT ENOUGH FREE SPACE"), ENTER, ESC]
+        self.make().run()
+        self.assertTrue(self.frames_with("SAVING THE CURRENT VERSION... 40%"))
+        self.assertTrue(self.frames_with("KEEP THE BOX PLUGGED IN"))
+
+
+class RestoreTest(UiTest):
+    ROW = "RESTORE PREVIOUS VERSION (0.2.0, SAVED 2 OCT 2026)"
+
+    def restarting(self):
+        return self.service("restarting", 100, "RESTARTING TO RESTORE THE SAVED VERSION...", "0.2.0")
+
+    def test_the_row_names_the_saved_version_and_its_date_next_to_delete(self):
+        self.saved = SAVED
+        self.script = [ESC]
+        screen = self.make()
+        screen.run()
+        self.assertEqual(screen.rows()[-3:], ["DELETE SAVED VERSION", self.ROW, "BACK"])
+        self.assertIn(self.ROW, self.screen.frames[0])
+        self.saved = None
+        self.assertNotIn(self.ROW, screen.rows())
+
+    def test_restore_warns_that_later_changes_are_lost_then_asks_the_service(self):
+        self.saved = SAVED
+        self.script = [DOWN, DOWN, DOWN, ENTER, self.restarting(), None]
+        with self.assertRaises(AssertionError):  # the box restarts: the screen never comes back
+            self.make().run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertIn("RESTORE COUCHLITEOS 0.2.0, SAVED 2 OCT 2026? EVERYTHING CHANGED SINCE THEN IS LOST",
+                      flat(self.questions[0]))
+        self.assertTrue((self.tmp / "restore-request").exists())
+        self.assertTrue(self.frames_with("RESTORING COUCHLITEOS 0.2.0"))
+        self.assertTrue(self.frames_with("RESTARTING..."))
+
+    def test_no_changes_nothing(self):
+        self.saved = SAVED
+        self.answer = False
+        self.script = [DOWN, DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertFalse((self.tmp / "restore-request").exists())
+
+    def test_running_apps_must_be_closed_first(self):
+        self.saved = SAVED
+        self.apps = True
+        self.script = [DOWN, DOWN, DOWN, ENTER, ESC]
+        self.make().run()
+        self.assertEqual(self.questions, [])
+        self.assertFalse((self.tmp / "restore-request").exists())
+        self.assertIn("CLOSE RUNNING APPS FIRST", self.screen.frames[-1])
+
+    def test_a_refused_request_is_shown_and_the_update_title_comes_back(self):
+        self.saved = SAVED
+        self.script = [DOWN, DOWN, DOWN, ENTER,
+                       self.service("failed", None, "THERE IS NO SAVED VERSION TO RESTORE, OR IT IS DAMAGED", "0.2.0"),
+                       ENTER, ESC]
+        screen = self.make()
+        screen.run()
+        self.assertIn("THERE IS NO SAVED VERSION TO RESTORE", flat(self.screen.frames[-1]))
+        self.assertEqual(screen.heading, "UPDATING TO COUCHLITEOS")
+
+
 class CheckTest(UiTest):
     def test_check_draws_checking_first_and_looks_up_this_version(self):
         self.script = [ENTER, ESC]
@@ -220,6 +357,14 @@ class CheckTest(UiTest):
         self.script = [ENTER, ESC]
         self.make().run()
         self.assertIn("THIS RELEASE HAS NO FILE FOR THIS BOX", self.screen.frames[-1])
+        self.assertNotIn("INSTALL UPDATE", self.screen.frames[-1])
+
+    def test_a_release_whose_nvidia_iso_is_not_out_yet_says_so(self):
+        self.fetch_result = release()  # only the general ISO: the NVIDIA one is published later
+        self.script = [ENTER, ESC]
+        self.make(profile={"PROFILE_NAME": "nvidia", "ISO_SUFFIX": "nvidia", "RELEASE": "1"}).run()
+        self.assertIn("THE NVIDIA VERSION OF 0.2.2 IS NOT READY YET. TRY AGAIN LATER.", flat(self.screen.frames[-1]))
+        self.assertNotIn("THIS RELEASE HAS NO FILE FOR THIS BOX", self.screen.frames[-1])
         self.assertNotIn("INSTALL UPDATE", self.screen.frames[-1])
 
     def test_the_profile_picks_which_file_is_needed(self):
@@ -468,6 +613,9 @@ class FitTest(UiTest):
             self.service("downloading", 99, "DOWNLOADING: 1881 OF 1900 MB"), ESC, self.service("failed", None, "X" * 90),
             ENTER, ESC)
         self.make().run()
+        # Nothing was cut (addnstr above refuses it): the 90-character failure is all there, wrapped.
+        self.assertTrue(any(frame.count("X") == 90 for frame in self.screen.frames), self.screen.frames[-1])
+        self.assertTrue(any("1881 OF 1900 MB" in frame for frame in self.screen.frames))
 
 
 class WiringTest(unittest.TestCase):

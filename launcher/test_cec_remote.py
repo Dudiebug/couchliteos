@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import pathlib
 import sys
@@ -50,6 +51,9 @@ class Codes:
     KEY_F6 = 64
     KEY_F7 = 65
     KEY_F8 = 66
+    KEY_F9 = 67
+    KEY_F10 = 68
+    KEY_S = 31
     KEY_F12 = 88
     KEY_BACK = 158
     KEY_SPACE = 57
@@ -70,6 +74,7 @@ class Codes:
     KEY_RIGHTCTRL = 97
     KEY_LEFTALT = 56
     KEY_RIGHTALT = 100
+    KEY_LEFTSHIFT = 42
     KEY_H = 35
     # Keys the kernel's rc-cec keymap reports for a TV remote.
     KEY_OK = 352
@@ -111,7 +116,7 @@ class CecRemoteNavTest(unittest.TestCase):
         module = self.module
         self.saved = (module.emit, module.request_home, module.app_active, module.OSK_ACTIVE, module.LAUNCHER_FOCUS)
         module.emit = lambda ui, key: self.emitted.append(key)
-        module.request_home = lambda: self.homes.append(True)
+        module.request_home = lambda guide=False: self.homes.append(guide)  # a remote's Home is a Guide tap
         module.app_active = lambda: self.app_running
         module.OSK_ACTIVE = SimpleNamespace(exists=lambda: self.osk_open)
         module.LAUNCHER_FOCUS = SimpleNamespace(exists=lambda: self.launcher_has_focus)
@@ -139,7 +144,7 @@ class CecRemoteNavTest(unittest.TestCase):
     def test_home_like_remote_keys_ask_for_the_launcher(self):
         for code in (Codes.KEY_HOME, Codes.KEY_ROOT_MENU, Codes.KEY_MENU):
             self.module.handle_cec_event(None, press(code))
-        self.assertEqual(len(self.homes), 3)
+        self.assertEqual(self.homes, [True, True, True])  # a tap: the TV interface opens its quick menu
         self.assertEqual(self.emitted, [])
 
     def test_home_works_while_an_app_is_running(self):

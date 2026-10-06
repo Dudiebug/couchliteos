@@ -1,0 +1,489 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
+import contextlib
+import importlib.util
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+import couchliteos_apps as apps
+import couchliteos_home as home
+import couchliteos_stream as stream
+
+PATH = pathlib.Path(__file__).with_name("couchliteos-tv.py")
+
+
+def load_tv():
+    spec = importlib.util.spec_from_file_location("couchliteos_tv_for_tests", PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    import gi  # noqa: F401
+
+    gi.require_version("Gtk", "4.0")
+    HAVE_GTK = True
+except (ImportError, ValueError):
+    HAVE_GTK = False
+
+
+class StartTest(unittest.TestCase):
+    """make test runs without PyGObject: the file still loads and says it could not start."""
+
+    def test_it_loads_without_gtk_and_exits_3(self):
+        module = load_tv()
+        with mock.patch.object(module, "Gtk", None), mock.patch.object(module, "GI_ERROR", "no gi"), \
+                mock.patch.object(module.sys, "stderr"):
+            self.assertEqual(module.main([]), module.INIT_FAILED)
+        self.assertEqual(module.INIT_FAILED, 3)
+
+    @unittest.skipUnless(HAVE_GTK, "needs PyGObject with GTK 4")
+    def test_without_a_display_it_exits_3_and_writes_no_ready_mark(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {key: value for key, value in os.environ.items() if key not in ("WAYLAND_DISPLAY", "DISPLAY")}
+            env["COUCHLITEOS_RUN_DIR"] = directory
+            result = subprocess.run([sys.executable, str(PATH)], env=env, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertFalse((pathlib.Path(directory) / "launcher-ready").exists())
+
+
+class HomeKeysTest(unittest.TestCase):
+    """The key handling of the home screen, with the drawing left out (no GTK needed)."""
+
+    HOST = stream.Host(name="Gaming-PC", uuid="U1", local="192.168.1.50", apps=("Desktop", "Steam"))
+
+    def tv(self, applications=()):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.model = home.HomeModel(
+            hosts=lambda: [self.HOST], applications=lambda: apps.LoadResult(tuple(applications), ()),
+            installed=lambda _app: True, history=dict,
+        )
+        tv.status = ""
+        tv.render_home = mock.Mock()
+        tv.render_bar = mock.Mock()
+        tv.open_active = mock.Mock()
+        tv.run_action = mock.Mock()
+        tv.launch_app = mock.Mock()
+        tv.after_launch = mock.Mock()
+        return module, tv
+
+    def test_arrows_move_the_focus_and_redraw(self):
+        _module, tv = self.tv()
+        tv.home_key("right")
+        self.assertEqual(tv.model.focused().label, "STEAM")
+        tv.home_key("down")
+        self.assertEqual(tv.model.focused().label, "SETTINGS")  # APPS is empty: skipped
+        self.assertEqual(tv.render_home.call_count, 2)
+        tv.home_key("back")
+        self.assertEqual(tv.model.focus, (0, 0))
+
+    def test_enter_runs_the_focused_tiles_action(self):
+        _module, tv = self.tv()
+        tv.home_key("activate")
+        tv.run_action.assert_called_once_with(("stream", self.HOST, "Desktop"))
+
+    def test_home_opens_the_running_apps(self):
+        _module, tv = self.tv()
+        tv.home_key("home")
+        tv.open_active.assert_called_once_with()
+
+    def test_a_shortcut_button_starts_its_app(self):
+        tool = apps.Application(id="tool", name="TOOL", kind="command", command="/bin/true", status_id="tool", shortcut="view")
+        module, tv = self.tv([tool])
+        with mock.patch.object(module, "visible_applications", return_value=apps.LoadResult((tool,), ())):
+            tv.home_key("shortcut:view")
+            tv.launch_app.assert_called_once_with(tool)
+            tv.home_key("shortcut:lb")
+        self.assertEqual(tv.status, f"NO BUTTON USES THE {apps.SHORTCUTS['lb']} SHORTCUT")
+
+    def test_system_tiles_open_their_screens(self):
+        _module, tv = self.tv()
+        tv.open_settings, tv.open_power, tv.open_screen = mock.Mock(), mock.Mock(), mock.Mock()
+        tv.open_view("settings")
+        tv.open_settings.assert_called_once_with()
+        tv.open_view("power")
+        tv.open_power.assert_called_once_with()
+        tv.open_view("hosts")
+        tv.open_view("software-update")
+        self.assertEqual([call.args for call in tv.open_screen.call_args_list], [("streaming",), ("software-update",)])
+
+    def test_a_remote_desktop_tile_starts_in_the_classic_screen(self):
+        _module, tv = self.tv()
+        tv.open_screen = mock.Mock()
+        app = apps.Application(id="office", name="OFFICE", kind="rdp", connection="office", status_id="office")
+        self.assertFalse(tv.prepare_remote_desktop(app))
+        tv.open_screen.assert_called_once_with("connect", "office")
+
+
+class ScreensTest(unittest.TestCase):
+    """Settings, the classic screens on top and the start, with the drawing left out."""
+
+    def tv(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.status = ""
+        tv.mode = "settings"
+        tv.child_pid = None
+        tv.child_name = ""
+        tv.starting = False
+        tv.start_steps = []
+        tv.settings = module.tvscreens.SettingsModel()
+        tv.updates = mock.Mock(enabled=True, online=lambda: True)
+        for name in ("render_settings", "open_screen", "open_active", "close_screen", "launch_by_id", "show",
+                     "render_current", "after_screen", "watch_update", "open_whatsnew", "autostream"):
+            setattr(tv, name, mock.Mock())
+        return module, tv
+
+    def focus(self, tv, label):
+        tv.settings.focus = tv.settings.rows().index(label)
+
+    def test_settings_entries_open_their_screen_app_or_view(self):
+        module, tv = self.tv()
+        self.focus(tv, "NETWORK")
+        tv.settings_key("activate")
+        tv.open_screen.assert_called_once_with("network")
+        self.focus(tv, "TAILSCALE")
+        tv.settings_key("activate")
+        tv.launch_by_id.assert_called_once_with("tailscale")
+        self.focus(tv, "ACTIVE APPLICATIONS")
+        tv.settings_key("activate")
+        tv.open_active.assert_called_once_with()
+        self.focus(tv, "CHECK FOR UPDATES")
+        tv.settings_key("activate")
+        tv.updates.set_enabled.assert_called_once_with(False)
+        self.assertEqual(tv.status, "UPDATE CHECK OFF: NOTHING IS SENT")
+        tv.settings_key("back")
+        tv.close_screen.assert_called_once_with()
+
+    def test_a_key_while_a_classic_screen_is_open_puts_it_back_in_front(self):
+        module, tv = self.tv()
+        tv.child_pid = 42
+        tv.idle = mock.Mock(**{"key.return_value": False})
+        tv.settings_key = mock.Mock()
+        with mock.patch.object(module, "Gdk", create=True) as gdk, \
+                mock.patch.object(module.session, "focus_launcher") as focus, \
+                mock.patch.object(module.display, "confirm_restore"):
+            gdk.keyval_name.return_value = "Return"
+            self.assertTrue(tv.on_key(None, 0, 0, None))
+        focus.assert_called_once_with(module.tvscreens.CHILD_TITLE)
+        tv.settings_key.assert_not_called()
+
+    def test_guide_while_a_classic_screen_is_open_only_puts_it_back_in_front(self):
+        module, tv = self.tv()
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        tv.child_pid, tv.child_name, tv.idle, tv.progress = 42, "remote-desktop", mock.Mock(), None
+        with mock.patch.object(module, "GLib", create=True), \
+                mock.patch.object(module.session.Session, "run_dir", run), \
+                mock.patch.object(module.session, "focus_launcher") as focus:
+            (run / "home.request").write_text(module.quick.GUIDE)
+            tv.screens_tick()
+            # Left for the screen's own loops (an app it started waits for Home in launch_and_wait).
+            self.assertTrue((run / "home.request").exists())
+            focus.assert_called_once_with(module.tvscreens.CHILD_TITLE)
+            tv.screens_tick()
+            focus.assert_called_once()  # once per press, not every second over an app the screen started
+            os.utime(run / "home.request", ns=(1, 1))  # the next press
+            tv.screens_tick()
+            self.assertEqual(focus.call_count, 2)
+            tv.on_child_exit(42, 0)
+            self.assertFalse((run / "home.request").exists(), "a press the screen never took opens nothing later")
+
+    def test_an_update_drops_guide_presses(self):
+        module, tv = self.tv()
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        tv.mode, tv.idle, tv.progress = "update", mock.Mock(), None
+        with mock.patch.object(module.session.Session, "run_dir", run), \
+                mock.patch.object(module.session, "focus_launcher") as focus:
+            (run / "home.request").write_text(module.quick.GUIDE)
+            tv.screens_tick()
+        self.assertFalse((run / "home.request").exists())
+        focus.assert_not_called()
+
+    def test_a_screen_that_started_an_app_leaves_it_in_front(self):
+        # Remote Desktop's CONNECT: the session took the screen and the controller as the screen closed.
+        module, tv = self.tv()
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        with mock.patch.object(module, "GLib", create=True), \
+                mock.patch.object(module.session.Session, "run_dir", run), \
+                mock.patch.object(module.session, "focus_launcher") as focus:
+            (run / "app-active").write_text("office\n")
+            (run / "office-ready").touch()
+            tv.child_pid, tv.child_name = 9, "connect"
+            tv.on_child_exit(9, 0)
+            focus.assert_not_called()
+            self.assertFalse((run / "launcher-focus").exists(), "gamepad-nav keeps sending the pad to the session")
+            tv.after_screen.assert_called_once()
+            # Nothing started (BACK, or the session ended at once): this screen comes back with the pad.
+            for leftover in ("app-active", "office-ready"):
+                (run / leftover).unlink()
+            tv.child_pid, tv.child_name = 10, "connect"
+            tv.on_child_exit(10, 0)
+            focus.assert_called_once_with()
+            self.assertTrue((run / "launcher-focus").exists())
+            # The screen kept the controller (open_screen's launcher-focus): it is closed, this comes back.
+            focus.reset_mock()
+            (run / "app-active").write_text("firefox\n")
+            tv.child_pid, tv.child_name = 11, "network"
+            tv.on_child_exit(11, 0)
+            focus.assert_called_once_with()
+
+    def test_the_start_runs_whats_new_then_setup_then_the_auto_stream(self):
+        module, tv = self.tv()
+        tv.starting, tv.start_steps = True, ["whatsnew", "setup", "update", "autostream"]
+        tv.open_screen.return_value = True
+        with mock.patch.object(module.whatsnew, "due", return_value=("0.3.0", "0.2.7")), \
+                mock.patch.object(module.tvscreens, "setup_due", return_value=True), \
+                mock.patch.object(module.tvscreens, "update_running", return_value=False):
+            tv.continue_start()
+            tv.open_whatsnew.assert_called_once_with("0.3.0", "0.2.7")
+            tv.continue_start()
+            tv.open_screen.assert_called_once_with("setup")
+            tv.autostream.assert_not_called()
+            tv.continue_start()
+        tv.autostream.assert_called_once_with()
+        self.assertFalse(tv.starting)
+
+    def test_when_a_classic_screen_closes_its_markers_decide_what_comes_next(self):
+        module, tv = self.tv()
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        with mock.patch.object(module, "GLib", create=True), \
+                mock.patch.object(module.session.Session, "run_dir", run), \
+                mock.patch.object(module.session, "focus_launcher"), \
+                mock.patch.object(module.display, "log"):  # never the real /var/log
+            for marker, content, expected in (("reopen-display", "", ("display",)), ("reopen-setup", "", ("setup",))):
+                (run / marker).write_text(content)
+                tv.child_pid, tv.child_name = 7, "display"
+                tv.open_screen.reset_mock()
+                tv.on_child_exit(7, 0)
+                self.assertIsNone(tv.child_pid)
+                tv.open_screen.assert_called_once_with(*expected)
+                (run / marker).unlink(missing_ok=True)
+            (run / "update-watch").write_text("0.3.0\n")
+            tv.child_pid, tv.child_name = 8, "software-update"
+            tv.on_child_exit(8, 256)
+            tv.watch_update.assert_called_once_with("0.3.0")
+            self.assertEqual(tv.status, "SOFTWARE UPDATE CLOSED WITH AN ERROR (1)")
+            tv.after_screen.assert_called()
+
+
+class LaunchFailureTest(unittest.TestCase):
+    """A start that failed: the classic launcher's failure screen and its buttons, without GTK."""
+
+    MOONLIGHT = apps.Application(id="moonlight", name="MOONLIGHT", kind="request", request="start-moonlight",
+                                 status_id="moonlight")
+
+    def tv(self, *choices):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.choose = mock.Mock(side_effect=list(choices))
+        tv.wake_from_failure = mock.Mock()
+        tv.wait_for_screen = mock.Mock()
+        patches = contextlib.ExitStack()
+        patches.enter_context(mock.patch.object(module.stream, "link_up", return_value=True))
+        patches.enter_context(mock.patch.object(module.controllers, "bluetooth_present", return_value=True))
+        self.addCleanup(patches.close)
+        return module, tv
+
+    def labels(self, tv):
+        return tv.choose.call_args.args[2]
+
+    def test_moonlight_offers_wake_pc_and_comes_back_after_it(self):
+        module, tv = self.tv(0, 1)
+        self.assertEqual(tv.show_launch_failure("MOONLIGHT", "boom", self.MOONLIGHT), "retry")
+        self.assertEqual(self.labels(tv), ["WAKE PC", "TRY AGAIN", "SAVE SUPPORT FILE", "BACK"])
+        tv.wake_from_failure.assert_called_once_with()
+        title, body, _labels = tv.choose.call_args.args
+        self.assertEqual(title, "MOONLIGHT FAILED TO START")
+        self.assertIn("BOOM", body)
+        self.assertIn("SUPPORT FILE", body)  # what to do next, as on the classic screen
+
+    def test_network_and_support_buttons_open_the_classic_screens(self):
+        module, tv = self.tv(1, 0, None)
+        self.assertEqual(tv.show_launch_failure("MOONLIGHT", "could not reach the host", self.MOONLIGHT), "dismiss")
+        self.assertEqual(self.labels(tv), ["WAKE PC", "NETWORK SETTINGS", "TRY AGAIN", "BACK"])
+        tv.wait_for_screen.assert_called_once_with("network")
+        tv = self.tv(1, None)[1]
+        tool = apps.Application(id="tool", name="TOOL", kind="command", command="/bin/true", status_id="tool")
+        self.assertEqual(tv.show_launch_failure("TOOL", "crashed", tool), "dismiss")
+        self.assertEqual(self.labels(tv), ["TRY AGAIN", "SAVE SUPPORT FILE", "BACK"])
+        tv.wait_for_screen.assert_called_once_with("support-file")
+
+    def test_without_retry_there_is_no_try_again(self):
+        _module, tv = self.tv(None)
+        self.assertEqual(tv.show_launch_failure("TOOL", "still running", retry=False), "dismiss")
+        self.assertNotIn("TRY AGAIN", self.labels(tv))
+
+    def test_left_and_right_pick_a_button_and_a_picks_it(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.choices, tv.choice, tv.answer, tv.busy_depth = ["WAKE PC", "TRY AGAIN", "BACK"], 0, None, 1
+        hint = mock.Mock()
+        tv.pages = {"message": (None, None, None, hint)}
+        tv.message_key("right")
+        tv.message_key("right")
+        tv.message_key("right")
+        self.assertEqual(tv.choice, 2)
+        self.assertIn("[ BACK ]", hint.set_label.call_args.args[0])
+        tv.message_key("left")
+        tv.message_key("activate")
+        self.assertEqual((tv.choice, tv.answer), (1, "yes"))
+
+
+class ReadyMarkTest(unittest.TestCase):
+    def test_launcher_ready_waits_for_the_first_painted_frame(self):
+        # A tick callback runs before the paint: a GL crash in the first paint must leave no mark.
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.ready_written = False
+        tv.after_first_frame = mock.Mock()
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        window, clock, glib = mock.Mock(), mock.Mock(), mock.Mock()
+        window.get_frame_clock.return_value = clock
+        with mock.patch.object(module, "GLib", glib, create=True), \
+                mock.patch.object(module.session.Session, "run_dir", run):
+            tv.on_map(window)
+            tick = window.add_tick_callback.call_args.args[0]
+            self.assertFalse(tick(window, clock))
+            self.assertFalse((run / "launcher-ready").exists(), "not in the UPDATE phase")
+            signal, painted = clock.connect.call_args.args
+            self.assertEqual(signal, "after-paint")
+            painted(clock)
+            clock.disconnect.assert_called_once()
+            glib.idle_add.assert_called_once_with(tv.first_frame_painted)
+            self.assertFalse((run / "launcher-ready").exists())
+            tv.first_frame_painted()
+            self.assertTrue((run / "launcher-ready").exists())
+            tv.after_first_frame.assert_called_once_with()
+            tv.first_frame_painted()
+            tv.after_first_frame.assert_called_once_with()
+
+
+class ActiveApplicationsTest(unittest.TestCase):
+    """ACTIVE APPLICATIONS: resume, close, type into an app and its CONTROLLER MOUSE, without GTK."""
+
+    CHROME = apps.Application(id="google-chrome", name="GOOGLE CHROME", kind="request", request="start-chrome",
+                              status_id="chrome")
+    STEAM = apps.Application(id="steam", name="STEAM", kind="command", command="/usr/games/steam", status_id="steam")
+
+    def tv(self, running):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.status, tv.active_index = "", 0
+        tv.running_applications = mock.Mock(return_value=list(running))
+        modes = module.session.pointer.Modes(pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"])) / "pointer")
+        type(tv).pointer_modes = property(lambda _self: modes)
+        self.addCleanup(delattr, type(tv), "pointer_modes")
+        for name in ("render_active", "render_home", "show", "open_quick", "focus_app", "close_app"):
+            setattr(tv, name, mock.Mock())
+        return module, tv, modes
+
+    def test_the_rows_add_the_controller_mouse_of_the_app_in_front(self):
+        _module, tv, modes = self.tv([self.STEAM, self.CHROME])
+        modes.front = "google-chrome"
+        _running, front, rows = tv.active_rows()
+        self.assertEqual(front, self.CHROME)
+        self.assertEqual(rows, ["STEAM  RUNNING", "GOOGLE CHROME  RUNNING", "CONTROLLER MOUSE (GOOGLE CHROME)  ON",
+                                "QUICK MENU", "BACK TO HOME"])
+        self.assertEqual(self.tv([])[1].active_rows()[2], ["QUICK MENU", "BACK TO HOME"])
+
+    def test_a_switches_the_controller_mouse(self):
+        _module, tv, modes = self.tv([self.STEAM])
+        tv.active_index = 1
+        tv.active_key("activate")
+        self.assertTrue(modes.enabled(self.STEAM))
+        self.assertEqual(tv.status, "CONTROLLER MOUSE ON FOR STEAM")
+        tv.active_key("activate")
+        self.assertFalse(modes.enabled(self.STEAM))
+        tv.open_quick.assert_not_called()
+        tv.active_index = 2
+        tv.active_key("activate")
+        tv.open_quick.assert_called_once_with()
+
+    def test_x_types_into_the_focused_app_or_the_one_in_front(self):
+        module, tv, modes = self.tv([self.STEAM, self.CHROME])
+        run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        with mock.patch.object(module.session.Session, "run_dir", run):
+            tv.focus_app.return_value = False
+            tv.active_index = 1
+            tv.active_key("keyboard")
+            tv.focus_app.assert_called_once_with(self.CHROME)
+            self.assertIn("COULD NOT FOCUS GOOGLE CHROME", tv.status)
+            self.assertFalse((run / "start-osk").exists())
+            tv.focus_app.return_value = True
+            tv.active_index = 3  # QUICK MENU: the app in front (STEAM, the first) gets the text
+            tv.active_key("keyboard")
+            tv.focus_app.assert_called_with(self.STEAM)
+            self.assertTrue((run / "start-osk").exists())
+            self.assertEqual(tv.status, "TYPING INTO STEAM")
+            tv.show.assert_called_with("home")
+        _module, tv, _modes = self.tv([])
+        tv.active_key("keyboard")
+        self.assertEqual(tv.status, "NO APP IS RUNNING TO TYPE INTO")
+
+
+class DiskNoticeTest(unittest.TestCase):
+    def test_a_live_stick_names_the_installed_system_it_can_update_on_the_home_screen(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.status = ""
+        tv.updates = mock.Mock(installed=False, current="0.3.0")
+        notice = "INSTALLED SYSTEM 0.2.7 FOUND: UPDATE IT IN SETTINGS > SOFTWARE UPDATE"
+        with mock.patch.object(module.update, "disk_notice", return_value=notice) as disk:
+            self.assertEqual(tv.home_line(), notice)
+            disk.assert_called_once_with("0.3.0")
+            tv.status = "MOONLIGHT STARTED"
+            self.assertEqual(tv.home_line(), "MOONLIGHT STARTED", "the last result first, the notice after it")
+            tv.status, tv.updates.installed = "", True
+            self.assertEqual(tv.home_line(), "")
+            disk.assert_called_once()
+
+
+class LookTest(unittest.TestCase):
+    """The theme on screen and the test script, with GTK left out."""
+
+    def test_a_saved_theme_reloads_the_stylesheets_once(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.layout = module.tvlayout.Layout(1920, 1080)
+        tv.load_css = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            with mock.patch.object(module.theme, "CONFIG", config):
+                tv.theme_stamp = tv.theme_stamp_now()
+                tv.theme_tick()
+                tv.load_css.assert_not_called()
+                module.theme.save_choice("slate", "", config)
+                tv.theme_tick()
+                tv.load_css.assert_called_once()
+
+    def test_the_script_times_the_next_step_first_and_reports_a_bad_one(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.script = ["NoSuchKey", "wait:1500", "quit"]
+        tv.on_key = mock.Mock()
+        tv.application = mock.Mock()
+        glib = mock.Mock()
+        gdk = mock.Mock(KEY_VoidSymbol=0xFFFFFF)
+        gdk.keyval_from_name.return_value = 0xFFFFFF
+        with mock.patch.object(module, "GLib", glib, create=True), \
+                mock.patch.object(module, "Gdk", gdk, create=True), mock.patch.object(module.sys, "stderr"):
+            self.assertFalse(tv.script_step())
+            self.assertTrue(tv.script_failed)
+            tv.on_key.assert_not_called()
+            glib.timeout_add.assert_called_with(module.SCRIPT_STEP_MS, tv.script_step)
+            tv.script_step()  # wait:1500 times the step after it
+            glib.timeout_add.assert_called_with(1500, tv.script_step)
+            glib.timeout_add.reset_mock()
+            tv.script_step()
+            glib.timeout_add.assert_not_called()  # the last step
+            tv.application.quit.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

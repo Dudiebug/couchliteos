@@ -7,6 +7,13 @@ SCREENSHOT=${COUCHLITEOS_QEMU_SCREENSHOT:-/tmp/couchliteos-qemu-smoke.ppm}
 # Slow hosts (for example nested software emulation) may stretch every timeout.
 SCALE=${COUCHLITEOS_QEMU_TIMEOUT_SCALE:-1}
 [[ $SCALE =~ ^[1-9][0-9]?$ ]] || { echo 'COUCHLITEOS_QEMU_TIMEOUT_SCALE must be 1-99' >&2; exit 64; }
+# Seconds from kernel start to the launcher in an earlier run; above it by more than 25%
+# fails the test.
+BASELINE=${COUCHLITEOS_BOOT_BASELINE:-}
+[[ -z $BASELINE || $BASELINE =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo 'COUCHLITEOS_BOOT_BASELINE must be a number of seconds' >&2; exit 64; }
+# The front end that must come up: tv (default), or classic for a run that forces it.
+INTERFACE=${COUCHLITEOS_QEMU_INTERFACE:-tv}
+[[ $INTERFACE == tv || $INTERFACE == classic ]] || { echo 'COUCHLITEOS_QEMU_INTERFACE must be tv or classic' >&2; exit 64; }
 command -v qemu-system-x86_64 >/dev/null || { echo 'qemu-system-x86_64 is required' >&2; exit 127; }
 [[ -f "$ISO" ]] || { echo "ISO not found: $ISO" >&2; exit 66; }
 
@@ -90,6 +97,7 @@ args=(
   -netdev "user,id=net0" -device "e1000,netdev=net0"
   -fw_cfg "name=opt/couchliteos.smoke,string=apps"
   -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE"
+  -fw_cfg "name=opt/couchliteos.interface,string=$INTERFACE"
 )
 # Without KVM, COUCHLITEOS_QEMU_ACCEL_ARGS can name another accelerator, for
 # example "-accel whpx,kernel-irqchip=off -cpu max" with QEMU on Windows.
@@ -163,13 +171,24 @@ fail() {
 
 wait_for_marker 'COUCHLITEOS_LAUNCHER_READY' 180 || fail 'Launcher did not become ready.'
 capture_screen
+# Both front ends write launcher-ready; the smoke driver reports which one came up.
+wait_for_marker 'COUCHLITEOS_SMOKE_INTERFACE=' 60 || fail 'The smoke driver did not report the interface.'
+interface_line=$(grep -ao 'COUCHLITEOS_SMOKE_INTERFACE=.*' "$log" | head -n 1 | tr -d '\r')
+echo "Interface: ${interface_line#*=}"
+[[ ${interface_line#*=} == "$INTERFACE "* ]] || fail "The launcher is not the $INTERFACE interface: ${interface_line#*=}"
+wait_for_marker 'COUCHLITEOS_BOOT_SECONDS=[0-9]' 30 || fail 'The boot time was not reported.'
+boot_seconds=$(grep -ao 'COUCHLITEOS_BOOT_SECONDS=[0-9.]*' "$log" | head -n 1 | cut -d= -f2)
+echo "Boot to launcher: $boot_seconds s${BASELINE:+ (baseline $BASELINE s)}"
+if [[ -n $BASELINE ]] && awk -v n="$boot_seconds" -v b="$BASELINE" 'BEGIN { exit !(n > b * 1.25) }'; then
+  fail "Boot to launcher took $boot_seconds s, more than 25% over the $BASELINE s baseline."
+fi
 wait_for_marker 'COUCHLITEOS_SMOKE_HWDETECT_READY' 30 || fail 'Hardware detection did not run, or a module failed to load.'
 wait_for_marker 'COUCHLITEOS_SMOKE_CONFIGURED_PLATFORM_READY' 30 || fail 'Configured applications, OSK, or setup-ready ordering failed.'
 wait_for_marker 'COUCHLITEOS_SMOKE_USBIP_READY' 30 || fail 'USB/IP daemon did not remain active.'
 wait_for_marker 'COUCHLITEOS_SMOKE_BLUETOOTH_READY' 30 || fail 'Bluetooth control service or launcher-survival check failed.'
 
 # A QEMU fw_cfg flag activates the otherwise inert smoke driver inside the
-# guest. It reports success only after all three real application processes
+# guest. It reports success only after both real application processes (Moonlight, chiaki-ng)
 # have remained alive for five seconds.
 wait_for_marker 'COUCHLITEOS_SMOKE_APPS_READY' 180 || fail 'Applications did not remain running.'
 capture_screen
@@ -178,4 +197,4 @@ wait_for_marker 'COUCHLITEOS_SMOKE_RDP_READY' 180 || fail 'Remote Desktop restar
 
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
-echo 'QEMU smoke test passed: no-backend live boot, launcher/setup readiness, configured apps, OSK, Bluetooth, USB/IP, Moonlight, Chiaki-ng, Firefox, Google Chrome, and Remote Desktop started.'
+echo 'QEMU smoke test passed: no-backend live boot, launcher/setup readiness, configured apps, OSK, Bluetooth, USB/IP, Moonlight, Chiaki-ng, and Remote Desktop started.'

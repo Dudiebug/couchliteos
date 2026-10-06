@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import importlib.util
 import os
 import pathlib
@@ -73,7 +74,8 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(self.module.get_ipv4(""), "NO IPV4")
 
     def test_default_application_order_includes_terminal(self):
-        launcher = self.launcher()
+        with mock.patch.object(self.module.apps, "installed", return_value=True):  # both browsers installed
+            launcher = self.launcher()
         self.assertEqual(
             [label for label, _action in launcher.menu],
             ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "SETTINGS", "SLEEP", "REBOOT", "SHUTDOWN"],
@@ -551,6 +553,25 @@ class LauncherTest(unittest.TestCase):
             self.assertTrue(self.module.Launcher.focus_app(self.stream_app("chiaki-ng")))
         self.assertNotIn(["focus", "app_id:couchliteos-launcher"], calls)
 
+    def test_app_active_follows_the_app_brought_to_the_front(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = pathlib.Path(directory)
+            active = run / "app-active"
+            active.write_text("firefox\n", encoding="ascii")
+            with mock.patch.object(self.module, "RUN", run), mock.patch.object(
+                self.module, "LAUNCHER_FOCUS", run / "launcher-focus", create=True
+            ):
+                with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")):
+                    self.assertFalse(self.module.Launcher.focus_app(self.stream_app()))
+                self.assertEqual(active.read_text(encoding="ascii"), "firefox\n")  # nothing came to the front
+                with mock.patch.object(self.module.subprocess, "run", return_value=mock.Mock(returncode=0)):
+                    self.assertTrue(self.module.Launcher.focus_app(self.stream_app()))
+                    self.assertEqual(active.read_text(encoding="ascii"), "moonlight\n")
+                    self.assertEqual(active.stat().st_mode & 0o777, 0o640)
+                    # A terminal app leaves it alone, as its start does: gamepad-nav types into it.
+                    self.assertTrue(self.module.Launcher.focus_app(self.terminal_app()))
+                    self.assertEqual(active.read_text(encoding="ascii"), "moonlight\n")
+
     def test_no_stream_window_leaves_the_marker_and_logs_what_the_compositor_lists(self):
         listing = "couchliteos-launcher: CouchLiteOS Launcher\nfoot: TERMINAL\n"
         run, _calls = self.fake_wlrctl(listing, set())
@@ -627,7 +648,7 @@ class LauncherTest(unittest.TestCase):
         text, closed = self.active_applications_screen([self.module.curses.KEY_F12, 27])
         self.assertEqual(closed, [])
         hint = next(row for row in text if "CLOSES" in row)
-        self.assertIn("Y (XBOX) / SQUARE (PS) CLOSES", hint)
+        self.assertIn("Y / SQUARE OR DELETE CLOSES", hint)
         self.assertNotIn("X CLOSES", hint)
         # The keyboard keys keep working.
         for key in (ord("x"), self.module.curses.KEY_DC):
@@ -847,6 +868,10 @@ class LauncherTest(unittest.TestCase):
 
     def test_b_in_the_add_flows_asks_once_something_was_typed(self):
         down, enter = self.module.curses.KEY_DOWN, 10
+        chrome = self.module.browser.BROWSERS["chrome"]
+        patcher = mock.patch.object(self.module.browser, "installed_browsers", return_value=[chrome])
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for flow in ("add_web", "add_command"):
             # The first field has nothing to lose.
             screen = self.form_screen(["\x1b"])
@@ -862,6 +887,58 @@ class LauncherTest(unittest.TestCase):
             asked = [frame for frame in screen.frames if "DISCARD CHANGES?" in frame]
             self.assertTrue(asked, flow)
             self.assertFalse(screen.keys, flow)
+
+    def add_web_app(self, installed):
+        """ADD WEB APPLICATION with these browsers installed; returns (written app or None, settings)."""
+        found = [self.module.browser.BROWSERS[name] for name in installed]
+        screen = self.form_screen(["TV", "\n", "https://tv.example/", "\n"])
+        settings = self.module.ApplicationsSettings(screen, self.launcher())
+        settings._write_user = mock.Mock()
+        settings.launcher.browser_setup = mock.Mock(return_value=None)
+        with mock.patch.object(self.module.browser, "installed_browsers", return_value=found), \
+                mock.patch.object(self.module.curses, "curs_set"):
+            settings.add_web()
+        written = settings._write_user.call_args.args[0] if settings._write_user.called else None
+        return written, settings
+
+    def test_a_web_app_opens_in_chrome_when_it_is_installed(self):
+        app, _settings = self.add_web_app(["chrome", "firefox"])
+        self.assertEqual(app.command, "/usr/bin/google-chrome-stable")
+        self.assertEqual(app.arguments, "--ozone-platform=wayland --kiosk --no-first-run https://tv.example/")
+
+    def test_a_web_app_opens_in_firefox_when_only_firefox_is_installed(self):
+        app, _settings = self.add_web_app(["firefox"])
+        self.assertEqual((app.command, app.arguments), ("/usr/bin/firefox-esr", "--kiosk https://tv.example/"))
+
+    def test_a_web_app_without_a_browser_opens_add_a_web_browser_first(self):
+        app, settings = self.add_web_app([])
+        self.assertIsNone(app)
+        settings.launcher.browser_setup.assert_called_once_with()
+        self.assertEqual(settings.status, "ADD A WEB BROWSER FIRST")
+        self.assertEqual(len(settings.screen.keys), 4, "no name or address was asked for")
+
+    def test_browser_tiles_are_hidden_until_the_browser_is_installed(self):
+        have = set()
+        with mock.patch.object(self.module.apps, "installed", side_effect=lambda app: app.binary in ("", *have)):
+            labels = [label for label, _action in self.launcher().menu]
+            self.assertNotIn("FIREFOX", labels)
+            self.assertNotIn("GOOGLE CHROME", labels)
+            self.assertIn("TERMINAL", labels)
+            have.add("/usr/bin/firefox-esr")
+            labels = [label for label, _action in self.launcher().menu]
+        self.assertIn("FIREFOX", labels)
+        self.assertNotIn("GOOGLE CHROME", labels)
+
+    def test_applications_settings_offers_add_a_web_browser(self):
+        down, enter = self.module.curses.KEY_DOWN, 10
+        with mock.patch.object(self.module, "application_result",
+                               return_value=self.module.apps.LoadResult((), ())):
+            launcher = self.launcher()
+            launcher.browser_setup = mock.Mock(return_value=None)
+            screen = self.form_screen([down, down, enter, 27])
+            self.module.ApplicationsSettings(screen, launcher).run()
+        self.assertIn("ADD A WEB BROWSER", screen.frames[0])
+        launcher.browser_setup.assert_called_once_with()
 
     def power_request(self, action, keys, running=()):
         """Press A on REBOOT/SHUTDOWN, then `keys` on the question; return (files created, text drawn)."""
@@ -1456,7 +1533,7 @@ class LauncherTest(unittest.TestCase):
         captured = self.run_wizard_glue(launcher, force=True)
         self.assertEqual(
             set(captured["actions"]),
-            {"text", "display", "picture_saved", "tone", "launch", "pair_moonlight", "wake_pc", "applications"},
+            {"text", "display", "picture_saved", "tone", "launch", "pair_moonlight", "wake_pc", "browser", "applications"},
         )
         self.assertTrue(captured["force"])
         self.assertFalse(captured["resume"])

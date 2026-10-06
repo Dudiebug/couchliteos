@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import glob
+import os
 import pathlib
 import queue
 import select
@@ -20,22 +21,26 @@ import couchliteos_cec as cec
 import couchliteos_audio as audio
 import couchliteos_brightness as brightness
 import couchliteos_input as inputprefs
+import couchliteos_pads as padprefs
 
 KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
         ecodes.KEY_ENTER, ecodes.KEY_ESC, ecodes.KEY_DELETE, ecodes.KEY_F12,
-        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8,
+        ecodes.KEY_F5, ecodes.KEY_F6, ecodes.KEY_F7, ecodes.KEY_F8, ecodes.KEY_F9, ecodes.KEY_F10,
+        # SHOW STATS in the quick menu: Moonlight's Ctrl+Alt+Shift+S
+        ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_S,
         # controller mouse (pointer mode): browser back, play/pause, page up/down
         ecodes.KEY_BACK, ecodes.KEY_SPACE, ecodes.KEY_PAGEUP, ecodes.KEY_PAGEDOWN]
-OSK_ACTIVE = pathlib.Path("/run/couchliteos/osk-active")
-START_OSK = pathlib.Path("/run/couchliteos/start-osk")
-HOME_REQUEST = pathlib.Path("/run/couchliteos/home.request")
-APP_ACTIVE = pathlib.Path("/run/couchliteos/app-active")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+OSK_ACTIVE = RUN / "osk-active"
+START_OSK = RUN / "start-osk"
+HOME_REQUEST = RUN / "home.request"
+APP_ACTIVE = RUN / "app-active"
 # Written by the launcher for apps without controller support (browsers, web apps): the pad drives a mouse.
-POINTER_MODE = pathlib.Path("/run/couchliteos/pointer-mode")
+POINTER_MODE = RUN / "pointer-mode"
 # Touched by the launcher while it holds focus (Home pressed) even though an app runs.
-LAUNCHER_FOCUS = pathlib.Path("/run/couchliteos/launcher-focus")
-CONTROLLER_ID = pathlib.Path("/var/lib/couchliteos/launcher-controller.id")
-SLEEP_REQUEST = pathlib.Path("/run/couchliteos/suspend")
+LAUNCHER_FOCUS = RUN / "launcher-focus"
+CONTROLLER_ID = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "launcher-controller.id"
+SLEEP_REQUEST = RUN / "suspend"
 # Holding Guide is also how pads are switched off (8BitDo ~3 s, Xbox ~6 s, PlayStation ~10 s), so the
 # hold is long, and a hold that began in a game never sleeps the box (see app_owns_pad).
 SLEEP_HOLD_SECONDS = 5.0
@@ -52,6 +57,15 @@ _last_state = False
 # A held direction repeats like a keyboard: a pause, then steady steps.
 REPEAT_DELAY = 0.4
 REPEAT_INTERVAL = 0.12
+# Y / Square sends Delete when pressed and, held this long in the launcher, F9 once too
+# (the TV interface's CHANGE ARTWORK on a game). X / Triangle likewise sends F12, then F10
+# (STREAM SETTINGS on a game).
+Y_HOLD_SECONDS = 0.6
+# The quick menu's SHOW STATS leaves this request; Moonlight gets Ctrl+Alt+Shift+S once it has the
+# screen again. A request the stream never took (it ended) goes stale.
+STATS_REQUEST = RUN / "moonlight-stats.request"
+STATS_REQUEST_MAX_AGE = 10.0
+STATS_CHORD = (ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTALT, ecodes.KEY_LEFTSHIFT, ecodes.KEY_S)
 # The left stick counts as a D-pad press past STICK_ENGAGE of full deflection and as let
 # go again below STICK_RELEASE, so drift and jitter near the edge do not flutter.
 STICK_ENGAGE = 0.6
@@ -97,6 +111,8 @@ MEDIA_KEYS = frozenset({*BRIGHTNESS_KEYS, *VOLUME_KEYS, ecodes.KEY_MUTE})
 ACPI_VIDEO_KEYS = "Video Bus"
 # Settings > CONTROLS (the launcher saves them in config.ini): re-read when the file changes.
 INPUT_SETTINGS = inputprefs.Watcher()
+# Settings > CONTROLLERS: the player order and each pad's SWAP A/B and SWAP X/Y, same file.
+PAD_SETTINGS = padprefs.Watcher()
 # The Home shortcut's held pair, and the buttons that cancel it: Moonlight quits a stream on
 # Select+Start+L1+R1, so SELECT+START with a shoulder button held is left to Moonlight.
 HOME_COMBOS = {
@@ -135,6 +151,17 @@ def stream_owns_pad() -> bool:
     except OSError:
         return False
     return app in STREAM_APPS and not LAUNCHER_FOCUS.exists()
+
+
+def launcher_in_front() -> bool:
+    """The launcher's window has the screen: it took the controller back, or nothing runs. A terminal
+    app (it writes no app-active: it reads these keys) must never get the launcher's F9 / F10."""
+    if LAUNCHER_FOCUS.exists():
+        return True
+    try:
+        return not any(item.name != "launcher-ready" for item in RUN.glob("*-ready"))
+    except OSError:
+        return False
 
 
 def effective_home_choice(choice: str) -> str:
@@ -312,6 +339,7 @@ class Pads:
         self.devices: dict[str, InputDevice] = {}
         self.grabbed: set[str] = set()
         self.ignored: set[str] = set()  # nodes already seen to be something else
+        self.idents: dict[str, str] = {}  # path -> the pad's id in Settings > CONTROLLERS
         self.touchpads: dict[str, InputDevice] = {}  # PlayStation pad touchpads, held back from the pointer during a stream
         self.touch_grabbed: set[str] = set()
         self.clock = time.monotonic
@@ -324,6 +352,8 @@ class Pads:
         self.carry = [0.0, 0.0, 0.0, 0.0]  # x, y, wheel, horizontal wheel not yet sent
         self.combo = HomeCombo()  # the mouse grabs the pads, hiding the Home shortcut from watch_home()
         self.taps = PairTaps()  # SELECT and START act when let go while they are the Home hold
+        self.y_holds: dict[str, float] = {}  # path -> when Y went down, until let go or F9 sent
+        self.x_holds: dict[str, float] = {}  # the same for X and F10
 
     def rescan(self) -> None:
         """Follow hot-plug: add pads that appeared, forget those that went away."""
@@ -333,6 +363,7 @@ class Pads:
         for path in set(self.touchpads) - paths:
             self.drop_touchpad(path)
         self.ignored &= paths
+        added = False
         for path in sorted(paths - set(self.devices) - set(self.touchpads) - self.ignored):
             dev = None
             try:
@@ -347,15 +378,30 @@ class Pads:
                 if not self.devices:
                     save_identity(dev)
                 self.devices[path] = dev
+                self.idents[path] = padprefs.pad_id(dev)
+                added = True
             except OSError:
                 if dev is not None:
                     try:
                         dev.close()
                     except OSError:
                         pass
+        if added:
+            self.light_players()
+
+    def light_players(self) -> None:
+        """Set the player lights in the Settings > CONTROLLERS order when a pad arrives."""
+        try:
+            found = [padprefs.from_device(path, dev) for path, dev in self.devices.items()]
+            padprefs.set_player_leds(padprefs.ordered(found, PAD_SETTINGS.current().order))
+        except Exception:  # lights are a nicety: never stop the pad working over them
+            pass
 
     def drop(self, path: str) -> None:
         self.holds.pop(path, None)
+        self.y_holds.pop(path, None)
+        self.x_holds.pop(path, None)
+        self.idents.pop(path, None)
         self.combo.forget(path)
         self.taps.forget(path)
         self.sticks.pop(path, None)
@@ -462,7 +508,16 @@ class Pads:
             if tapped is not None:
                 emit(ui, NAV_TAP_KEYS[tapped])
             return False
-        key = key_for_event(event)
+        # Only here, in the launcher: a stream or an app reads the pad itself, unswapped.
+        swaps = PAD_SETTINGS.current().swaps(self.idents.get(path, ""))
+        button = swaps.get(event.code, event.code)
+        if event.type == ecodes.EV_KEY and event.value in (0, 1) and button in (ecodes.BTN_WEST, ecodes.BTN_NORTH):
+            holds = self.y_holds if button == ecodes.BTN_WEST else self.x_holds
+            if event.value:
+                holds[path] = now
+            else:
+                holds.pop(path, None)
+        key = key_for_event(event, swaps)
         if key:
             emit(ui, key)
         return False
@@ -486,7 +541,7 @@ class Pads:
         self.combo.feed(path, event, now)
         if is_home_event(event):
             # The grab hides the pad from watch_home(): Guide must still bring up the menu.
-            request_home()
+            request_home(guide=True)
         elif event.code in POINTER_BUTTONS and event.value in (0, 1):
             self.pointer.button(POINTER_BUTTONS[event.code], bool(event.value))
         elif event.value == 1 and event.code == ecodes.BTN_NORTH:
@@ -540,6 +595,8 @@ class Pads:
         self.sticks.clear()  # a stick held across the switch must not keep moving or scrolling
         self.pointer_tick = now
         self.holds.clear()
+        self.y_holds.clear()
+        self.x_holds.clear()
         self.combo.reset()
         self.taps.reset()
         self.pointer.open() if on else self.pointer.close()
@@ -569,7 +626,9 @@ class Pads:
         moving = [POINTER_TICK] if self.pointer_on and self.pointer_moving() else []
         moving += [self.combo.timeout(now)] if self.pointer_on and self.combo.started else []
         return min([1.0, *moving,
-                    *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None)])
+                    *(max(0.0, hold.due - now) for hold in self.holds.values() if hold.key is not None),
+                    *(max(0.0, since + Y_HOLD_SECONDS - now) for since in (*self.y_holds.values(),
+                                                                           *self.x_holds.values()))])
 
     def pump(self, ui: UInput) -> None:
         """Wait up to a second for input from any pad and translate it."""
@@ -593,6 +652,8 @@ class Pads:
         blocked = navigation_blocked(active_osk) and not pointer
         if blocked:
             self.holds.clear()  # an app owns the controller now; do not keep stepping its menus
+            self.y_holds.clear()
+            self.x_holds.clear()
             self.taps.reset()  # nor send a SELECT/START pressed before it on release
         for path, dev in list(self.devices.items()):
             if dev not in readable:
@@ -620,12 +681,54 @@ class Pads:
                 key = hold.repeat(now)
                 if key:
                     emit(ui, key)
+            self.send_y_holds(ui, now)
+
+    def send_y_holds(self, ui: UInput, now: float) -> None:
+        """F9 once for each pad holding Y / Square long enough, F10 for X / Triangle."""
+        for holds, key in ((self.y_holds, ecodes.KEY_F9), (self.x_holds, ecodes.KEY_F10)):
+            for path, since in list(holds.items()):
+                if now - since >= Y_HOLD_SECONDS:
+                    del holds[path]
+                    if launcher_in_front():
+                        emit(ui, key)
 
 
 def emit(ui: UInput, key: int) -> None:
     ui.write(ecodes.EV_KEY, key, 1)
     ui.write(ecodes.EV_KEY, key, 0)
     ui.syn()
+
+
+def emit_chord(ui: UInput, keys: Iterable[int]) -> None:
+    """Press `keys` in order, then let them go in reverse (a shortcut such as Ctrl+Alt+Shift+S)."""
+    keys = list(keys)
+    for key in keys:
+        ui.write(ecodes.EV_KEY, key, 1)
+        ui.syn()
+    for key in reversed(keys):
+        ui.write(ecodes.EV_KEY, key, 0)
+        ui.syn()
+
+
+def send_stats_request(ui: UInput, now: float | None = None) -> bool:
+    """Moonlight's statistics shortcut for the quick menu's SHOW STATS, once Moonlight has the
+    screen (the launcher let it go); True when it was sent."""
+    try:
+        age = (time.time() if now is None else now) - STATS_REQUEST.stat().st_mtime
+    except OSError:
+        return False
+    if not 0 <= age <= STATS_REQUEST_MAX_AGE:
+        STATS_REQUEST.unlink(missing_ok=True)
+        return False
+    try:
+        front = APP_ACTIVE.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        front = ""
+    if front != "moonlight" or LAUNCHER_FOCUS.exists():
+        return False
+    STATS_REQUEST.unlink(missing_ok=True)
+    emit_chord(ui, STATS_CHORD)
+    return True
 
 
 def arrow_for_event(event) -> tuple[int, int | None] | None:
@@ -638,8 +741,11 @@ def arrow_for_event(event) -> tuple[int, int | None] | None:
     return None
 
 
-def key_for_event(event) -> int | None:
+def key_for_event(event, swaps: dict[int, int] | None = None) -> int | None:
+    """The launcher key for a press; `swaps` (Settings > CONTROLLERS SWAP A/B, SWAP X/Y) reads one
+    button as another first."""
     if event.type == ecodes.EV_KEY and event.value == 1:
+        code = (swaps or {}).get(event.code, event.code)
         return {
             ecodes.BTN_SOUTH: ecodes.KEY_ENTER,
             ecodes.BTN_EAST: ecodes.KEY_ESC,
@@ -656,7 +762,7 @@ def key_for_event(event) -> int | None:
             ecodes.BTN_DPAD_DOWN: ecodes.KEY_DOWN,
             ecodes.BTN_DPAD_LEFT: ecodes.KEY_LEFT,
             ecodes.BTN_DPAD_RIGHT: ecodes.KEY_RIGHT,
-        }.get(event.code)
+        }.get(code)
     if event.type == ecodes.EV_ABS:
         if event.code == ecodes.ABS_HAT0X and event.value:
             return ecodes.KEY_RIGHT if event.value > 0 else ecodes.KEY_LEFT
@@ -1030,9 +1136,11 @@ def request_sleep() -> None:
         SLEEP_REQUEST.touch()
 
 
-def request_home() -> None:
+def request_home(guide: bool = False) -> None:
+    """Ask the launcher for Home. A tap of Guide / PS, the Home key or a remote's Home key (`guide`)
+    opens the TV interface's quick menu; the held shortcuts and the keyboard chord go straight Home."""
     try:
-        HOME_REQUEST.touch()
+        HOME_REQUEST.write_text("guide\n" if guide else "shortcut\n", encoding="ascii")
         subprocess.run(
             ["wlrctl", "toplevel", "focus", "title:CouchLiteOS Launcher"],
             check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
@@ -1091,8 +1199,10 @@ def watch_home() -> None:
                     # Home is then the Select+Start hold or the keyboard shortcut.
                     chorded = chord.feed(path, event)
                     guide_goes_home = is_home_event(event) and not (is_guide_press(event) and stream_owns_pad())
-                    if chorded or guide_goes_home:
+                    if chorded:
                         request_home()
+                    elif guide_goes_home:
+                        request_home(guide=True)
                     # Deliberately also during a stream or remote desktop: the volume and
                     # brightness keys control this box (the TV's sound), not the remote PC.
                     paced = media.allow(path, event, time.monotonic())
@@ -1121,7 +1231,7 @@ def handle_cec_event(ui: UInput, event) -> None:
     if event.type != ecodes.EV_KEY or event.value != 1:
         return
     if event.code in CEC_HOME:
-        request_home()
+        request_home(guide=True)
     elif event.code in CEC_NAV:
         key = CEC_NAV[event.code]
         # The launcher's shortcut keys (colour keys, Clear) go to it whenever it has the focus, even with an
@@ -1170,6 +1280,7 @@ def run() -> None:
     pads = Pads()
     threading.Thread(target=watch_cec, args=(ui,), daemon=True).start()
     while True:
+        send_stats_request(ui)
         pads.rescan()
         if not pads.devices:
             pads.sync_touchpads(False)  # no pad left to stream with: a leftover touchpad is a plain one

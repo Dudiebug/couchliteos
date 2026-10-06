@@ -18,8 +18,6 @@ import re
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable, Iterable
 
 # The project is moving from Dudiebug/moonlightos to Dudiebug/couchliteos on GitHub. Until the
@@ -34,7 +32,13 @@ PROFILE_FILE = pathlib.Path("/usr/share/couchliteos/profile.conf")
 LIVE_MEDIUM = pathlib.Path("/run/live/medium")
 CMDLINE = pathlib.Path("/proc/cmdline")
 SUMS_NAME = "SHA256SUMS"
-STATE = pathlib.Path("/var/lib/couchliteos/update-check.ini")
+STATE = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "update-check.ini"
+# config.ini [update] paused_until: written by a restore (couchliteos_updater) so the check does not
+# offer the update that was just undone. Settings > SOFTWARE UPDATE still checks when asked.
+CONFIG = STATE.parent / "config.ini"
+PAUSE_SECONDS = 7 * 86400.0
+# Live USB only: the installed systems couchliteos-find-installs.service found on the disks (root writes it).
+INSTALLS = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "installs.json"
 ROUTE4 = pathlib.Path("/proc/net/route")
 ROUTE6 = pathlib.Path("/proc/net/ipv6_route")
 RTF_UP = 0x1
@@ -105,6 +109,7 @@ class State:
     checked_at: float = 0.0  # last successful check
     attempted_at: float = 0.0  # last attempt, successful or not
     prompted: str = ""  # the release the owner was last offered on the Home screen
+    no_file: str = ""  # the latest release, when it has no ISO for this box (yet): Home does not offer it
 
 
 def _number(value: str) -> float:
@@ -125,12 +130,14 @@ def load_state(path: pathlib.Path = STATE) -> State:
     enabled = section.get("enabled", "true").strip().lower()
     latest = section.get("latest", "").strip()
     prompted = section.get("prompted", "").strip()
+    no_file = section.get("no_file", "").strip()
     return State(
         enabled=configparser.ConfigParser.BOOLEAN_STATES.get(enabled, True),
         latest=latest if parse_version(latest) is not None else "",
         checked_at=_number(section.get("checked_at", "0")),
         attempted_at=_number(section.get("attempted_at", "0")),
         prompted=prompted if parse_version(prompted) is not None else "",
+        no_file=no_file if parse_version(no_file) is not None else "",
     )
 
 
@@ -142,6 +149,7 @@ def save_state(state: State, path: pathlib.Path = STATE) -> None:
         f"checked_at = {state.checked_at:.0f}\n"
         f"attempted_at = {state.attempted_at:.0f}\n"
         f"prompted = {state.prompted}\n"
+        f"no_file = {state.no_file}\n"
     )
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -191,12 +199,25 @@ def has_default_route(route4: pathlib.Path = ROUTE4, route6: pathlib.Path = ROUT
     return False
 
 
-def due(state: State, now: float, *, start: bool = False, retry: bool = False) -> bool:
+def paused_until(path: pathlib.Path = CONFIG) -> float:
+    """config.ini [update] paused_until (seconds since the epoch), 0 when there is none."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(path.read_text(encoding="utf-8", errors="replace"))
+        return _number(parser.get("update", "paused_until", fallback="0").strip())
+    except (OSError, configparser.Error):
+        return 0.0
+
+
+def due(state: State, now: float, *, start: bool = False, retry: bool = False, paused: float = 0.0) -> bool:
     """True when a release should be asked for now.
+
+    `paused`: no check before this time (after a restore). One further away than PAUSE_SECONDS
+    was written by a wrong clock and is ignored.
 
     `start`: no check has succeeded since the launcher started, so the last check (maybe from before
     the reboot) does not count. `retry`: an attempt already failed in this run."""
-    if not state.enabled:
+    if not state.enabled or 0 < paused - now <= PAUSE_SECONDS:
         return False
     # A timestamp in the future (the clock was wrong when it was saved) is stale.
     if not start and state.checked_at and 0 <= now - state.checked_at < CHECK_SECONDS:
@@ -218,8 +239,14 @@ class Release:
     assets: tuple[Asset, ...] = ()
 
 
-def _release_json(current: str, opener: Callable[..., object], timeout: float) -> dict:
+def _release_json(current: str, opener: Callable[..., object] | None, timeout: float) -> dict:
     """The newest release's JSON. Sends no identifiers beyond the version in the User-Agent."""
+    # Imported here, on the check's own thread, not when the launcher starts: urllib.request
+    # brings http.client and email with it (about 10 ms of the TV interface's start).
+    import urllib.error
+    import urllib.request
+
+    opener = opener or urllib.request.urlopen
     headers = {"User-Agent": f"CouchLiteOS/{current or 'unknown'}", "Accept": "application/vnd.github+json"}
     try:
         for url in API_URLS:
@@ -245,14 +272,14 @@ def _release_json(current: str, opener: Callable[..., object], timeout: float) -
 
 
 def fetch_latest(
-    current: str, opener: Callable[..., object] = urllib.request.urlopen, timeout: float = TIMEOUT
+    current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT
 ) -> str:
     """Return the latest release tag without its `v`."""
     return _release_json(current, opener, timeout)["tag_name"].strip().removeprefix("v")
 
 
 def fetch_release(
-    current: str, opener: Callable[..., object] = urllib.request.urlopen, timeout: float = TIMEOUT
+    current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT
 ) -> Release:
     """The latest release with its downloadable files (malformed entries are ignored)."""
     data = _release_json(current, opener, timeout)
@@ -277,6 +304,20 @@ def pick_iso(release: Release, suffix: str) -> Asset:
         if asset.name == wanted:
             return asset
     raise UpdateError(f"release {release.version} has no {wanted}")
+
+
+def not_ready(release: Release, profile: dict[str, str]) -> str:
+    """The message when this release profile's ISO is missing but the general one is there.
+
+    The NVIDIA ISO is published some time after the general one; legacy profiles
+    (RELEASE=0) never get one, so they keep the plain "no file" message."""
+    suffix = profile.get("ISO_SUFFIX", "")
+    if not suffix or profile.get("RELEASE") != "1":
+        return ""
+    names = {asset.name for asset in release.assets}
+    if iso_name(release.version, suffix) in names or iso_name(release.version, "") not in names:
+        return ""
+    return f"THE {suffix.upper()} VERSION OF {release.version} IS NOT READY YET. TRY AGAIN LATER."
 
 
 def sums_asset(release: Release) -> Asset:
@@ -310,6 +351,30 @@ def is_live(medium: pathlib.Path = LIVE_MEDIUM, cmdline: pathlib.Path = CMDLINE)
         return False
 
 
+def read_installs(path: pathlib.Path = INSTALLS) -> list[dict[str, str]]:
+    """[{"device", "version", "profile", "disk"}] (couchliteos_updater.write_installs); [] when unknown."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    keys = ("device", "version", "profile", "disk")
+    if not isinstance(data, list):
+        return []
+    return [
+        {key: item[key] for key in keys} for item in data
+        if isinstance(item, dict) and all(isinstance(item.get(key), str) for key in keys)
+    ]
+
+
+def disk_notice(current: str, path: pathlib.Path = INSTALLS) -> str:
+    """Home on the live USB: the one installed system found is older than this stick."""
+    installs = read_installs(path)
+    if len(installs) != 1 or not (parse_version(installs[0]["version"]) is None
+                                  or is_newer(current, installs[0]["version"])):
+        return ""
+    return f"INSTALLED SYSTEM {installs[0]['version']} FOUND: UPDATE IT IN SETTINGS > SOFTWARE UPDATE"
+
+
 def notice(state: State, current: str, installed: bool = False) -> str:
     if state.enabled and is_newer(state.latest, current):
         if installed:  # a box on its disk updates itself
@@ -325,12 +390,16 @@ class Checker:
         self,
         current: str | None = None,
         state_path: pathlib.Path = STATE,
-        fetch: Callable[[str], str] = fetch_latest,
+        fetch: Callable[[str], Release | str] = fetch_release,
         clock: Callable[[], float] = time.time,
         online: Callable[[], bool] = has_default_route,
         live: Callable[[], bool] = is_live,
+        profile: dict[str, str] | None = None,
+        config_path: pathlib.Path = CONFIG,
     ) -> None:
         self.current = installed_version() if current is None else current
+        self.paused_until = paused_until(config_path)  # a restore happens before the launcher starts
+        self.suffix = (read_profile() if profile is None else profile).get("ISO_SUFFIX", "")
         self.state_path = state_path
         self.fetch = fetch
         self.clock = clock
@@ -348,6 +417,10 @@ class Checker:
         return self._state.enabled
 
     def notice(self) -> str:
+        if not self.installed:  # the live USB offers to update the system on the disk first
+            found = disk_notice(self.current)
+            if found:
+                return found
         with self._lock:
             return notice(self._state, self.current, self.installed)
 
@@ -361,8 +434,9 @@ class Checker:
         """The newer release to offer the owner now: once per release, and never on a live stick."""
         latest = self.available()
         with self._lock:
-            prompted = self._state.prompted
-        return latest if latest and self.installed and latest != prompted else ""
+            prompted, no_file = self._state.prompted, self._state.no_file
+        # A release without an ISO for this box (the NVIDIA one comes later) cannot be installed yet.
+        return latest if latest and self.installed and latest not in (prompted, no_file) else ""
 
     def mark_offered(self, version: str) -> None:
         self._update(prompted=version)
@@ -388,6 +462,12 @@ class Checker:
             except OSError:
                 pass  # read-only or full disk: keep the in-memory state for this session
 
+    def reload(self) -> None:
+        """Read the saved state again: a classic screen the TV interface opened may have changed it."""
+        state = load_state(self.state_path)
+        with self._lock:
+            self._state = state
+
     def set_enabled(self, enabled: bool) -> None:
         self._update(enabled=enabled)
         self._wake.set()
@@ -395,20 +475,27 @@ class Checker:
     def check_if_due(self) -> None:
         now = self.clock()
         with self._lock:
-            if not due(self._state, now, start=not self._checked, retry=self._failed):
+            if not due(self._state, now, start=not self._checked, retry=self._failed, paused=self.paused_until):
                 return
         # Runs before anything is recorded: a boot without a network must not use
         # up the start-up check, so the next poll after the network comes up retries.
         if not self.online():
             return
         try:
-            latest = self.fetch(self.current)
+            found = self.fetch(self.current)
         except Exception:  # never let a network or parsing problem reach the launcher
             self._failed = True
             self._update(attempted_at=now)
             return
+        latest, no_file = found, ""  # a bare version (tests) counts as having a file
+        if isinstance(found, Release):
+            latest = found.version
+            try:
+                pick_iso(found, self.suffix)
+            except UpdateError:
+                no_file = latest
         self._checked, self._failed = True, False
-        self._update(latest=latest, checked_at=now, attempted_at=now)
+        self._update(latest=latest, checked_at=now, attempted_at=now, no_file=no_file)
 
     def start(self) -> None:
         def loop() -> None:

@@ -23,7 +23,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes curl ca-certificates cpio debootstrap \
             debian-archive-keyring e2fsprogs xorriso squashfs-tools grub-pc-bin \
-            grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf ripgrep
+            grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf ripgrep zstd
+          # tests/tv-headless.sh: the TV interface in a headless Cage (test-only, not in the ISO).
+          sudo apt-get install --yes cage grim python3-gi gir1.2-gtk-4.0
           curl --fail --location --output /tmp/live-build.deb \
             https://deb.debian.org/debian/pool/main/l/live-build/live-build_20250505+deb13u1_all.deb
           sudo apt-get install --yes /tmp/live-build.deb
@@ -34,7 +36,8 @@ jobs:
             sudo chmod 0666 /dev/kvm
           fi
       - name: Source tests
-        run: make test
+        # Empty TV_HEADLESS_ARGS: the headless TV run must run here, not skip.
+        run: make test TV_HEADLESS_ARGS=
       - name: Build ISO
         run: |
           sudo make build RELEASE=1

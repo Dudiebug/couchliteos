@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import errno
 import json
 import pathlib
@@ -12,7 +13,7 @@ class StepPlanTest(unittest.TestCase):
     def test_required_steps_come_first_in_the_documented_order(self):
         order = setup.plan_steps(cec_present=False, tv_available=False)
         self.assertEqual(
-            order, ["network", "controller", "display", "streaming", "tailscale", "chiaki-ng", "applications"]
+            order, ["network", "controller", "display", "streaming", "tailscale", "chiaki-ng", "browser", "applications"]
         )
 
     def test_tv_step_needs_both_a_cec_device_and_a_tv_screen(self):
@@ -674,14 +675,14 @@ class WizardLifecycleTest(WizardTestCase):
         self.wizard(ui).run()
         done = [screen for screen in ui.screens if screen["title"] == "SETUP COMPLETE"][0]
         text = "\n".join(done["lines"])
-        for title in ("NETWORK", "CONTROLLER", "DISPLAY AND SOUND", "STREAMING PC", "TAILSCALE", "CHIAKI-NG", "MORE APPS"):
+        for title in ("NETWORK", "CONTROLLER", "DISPLAY AND SOUND", "STREAMING PC", "TAILSCALE", "CHIAKI-NG", "WEB BROWSER", "MORE APPS"):
             self.assertIn(title, text)
         self.assertIn("SKIPPED", text)
 
     def test_skipping_a_step_is_remembered(self):
         self.wizard(FakeUI(*self.SKIP_ALL, "FINISH")).run()
         self.assertEqual(set(self.state().values()), {"skipped"})
-        self.assertEqual(len(self.state()), 7)
+        self.assertEqual(len(self.state()), 8)
 
     def test_leaving_midway_resumes_at_the_first_unfinished_step(self):
         setup.save_state({"network": "done", "controller": "skipped"}, self.state_path)
@@ -1128,6 +1129,14 @@ class OptionalStepsTest(WizardTestCase):
     def test_more_apps_opens_the_applications_screen(self):
         self.assertEqual(self.wizard(FakeUI("OPEN")).step_applications(), "done")
         self.assertIn(("applications",), self.calls)
+
+    def test_web_browser_opens_add_a_web_browser_directly(self):
+        for answer, outcome in ((True, "done"), (None, "skipped"), (False, "failed")):
+            calls = []
+            wizard = self.wizard(FakeUI(), browser=lambda answer=answer: calls.append("browser") or answer)
+            self.assertEqual(wizard.step_browser(), outcome)
+            self.assertEqual(calls, ["browser"])
+        self.assertEqual(self.wizard(FakeUI()).step_browser(), "skipped", "no screen: nothing to do")
 
     def test_an_app_that_fails_to_start_is_a_failed_step(self):
         wizard = self.wizard(FakeUI("OPEN"), launch=lambda app_id: False)

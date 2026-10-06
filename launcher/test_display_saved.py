@@ -4,6 +4,7 @@ test_display.py mocks load_saved_display everywhere; these tests exercise the pa
 itself, the save -> load round trip, and the wlr-randr wrappers.
 """
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import os
 import pathlib
 import subprocess

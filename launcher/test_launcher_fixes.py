@@ -1,5 +1,6 @@
 """Launcher behaviours fixed after field testing (live mode, network, saving)."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import errno
 import importlib.util
 import pathlib

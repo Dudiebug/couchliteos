@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import errno
 import importlib.util
 import pathlib
@@ -55,7 +56,10 @@ class Codes:
     KEY_F6 = 64
     KEY_F7 = 65
     KEY_F8 = 66
+    KEY_F9 = 67
+    KEY_F10 = 68
     KEY_F12 = 88
+    KEY_S = 31
     KEY_BACK = 158
     KEY_SPACE = 57
     KEY_PAGEUP = 104
@@ -471,12 +475,12 @@ class GamepadMappingTest(unittest.TestCase):
 
     def test_holding_guide_goes_home_then_asks_for_sleep_once(self):
         home, sleep = self.drive_watch_home([(100.0, (1,)), (101.5, ()), (103.2, ()), (110.0, ())])
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         sleep.assert_called_once_with()
 
     def test_a_short_guide_press_goes_home_and_never_asks_for_sleep(self):
         home, sleep = self.drive_watch_home([(100.0, (1,)), (100.4, (0,)), (110.0, ())])
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         sleep.assert_not_called()
 
     def test_the_pad_loop_does_not_run_a_second_hold(self):
@@ -710,7 +714,7 @@ class GamepadMappingTest(unittest.TestCase):
             state["round"] += 1
             return ([device] if events else []), [], []
 
-        def take_focus():
+        def take_focus(**_kind):
             if focus_after_home:
                 (run / "launcher-focus").touch()
 
@@ -730,7 +734,7 @@ class GamepadMappingTest(unittest.TestCase):
 
     def test_holding_guide_in_the_launcher_asks_for_sleep_after_five_seconds(self):
         home, slept = self.watch_home_rounds(self.HOLD)
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         self.assertTrue(slept)
 
     def test_holding_guide_for_four_and_a_half_seconds_does_not_sleep(self):
@@ -741,7 +745,7 @@ class GamepadMappingTest(unittest.TestCase):
         # The Guide press also brings the launcher forward, so by the time the hold is up the
         # launcher has focus: what counts is who had the controller when the press began.
         home, slept = self.watch_home_rounds(self.HOLD, app=True, focus_after_home=True)
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
         self.assertFalse(slept)
 
     def test_holding_guide_while_the_launcher_already_has_focus_sleeps_even_with_an_app_running(self):
@@ -810,6 +814,9 @@ class PointerModeTest(unittest.TestCase):
             patcher = mock.patch.object(self.module, attribute, run / name)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(self.module, "RUN", run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for attribute, value in (("_last_state_check", -1e9), ("_last_state", False)):
             patcher = mock.patch.object(self.module, attribute, value)
             patcher.start()
@@ -1334,6 +1341,18 @@ class HomeShortcutTest(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
+    def test_home_request_says_whether_it_was_a_guide_tap(self):
+        # The TV interface opens its quick menu on a tap; a held shortcut goes straight Home.
+        with tempfile.TemporaryDirectory() as directory:
+            request = pathlib.Path(directory) / "home.request"
+            with mock.patch.object(self.module, "HOME_REQUEST", request), \
+                    mock.patch.object(self.module.subprocess, "run") as run:
+                self.module.request_home(guide=True)
+                self.assertEqual(request.read_text(), "guide\n")
+                self.module.request_home()
+                self.assertEqual(request.read_text(), "shortcut\n")
+            self.assertEqual(run.call_args.args[0][-1], "title:CouchLiteOS Launcher")
+
     # The pointer-mode helpers are shared, not inherited (that would run those tests twice).
     run_dir = PointerModeTest.run_dir
     pads = PointerModeTest.pads
@@ -1784,7 +1803,7 @@ class HomeShortcutTest(unittest.TestCase):
             with self.subTest(case=label):
                 home, _timeouts, _watched = self.watch(
                     self.GUIDE_PRESS, self.GUIDE_PAD, **({"app": True} | kwargs))
-                home.assert_called_once_with()
+                home.assert_called_once_with(guide=True)
 
     def test_the_bluetooth_guide_key_is_the_streams_too(self):
         self.use(home="guide")
@@ -1793,13 +1812,13 @@ class HomeShortcutTest(unittest.TestCase):
         home, _timeouts, _watched = self.watch(presses, capabilities, front="moonlight")
         home.assert_not_called()
         home, _timeouts, _watched = self.watch(presses, capabilities, front="firefox")
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
 
     def test_the_keyboard_home_key_still_goes_home_over_a_stream(self):
         self.use(home="guide")
         press = [(0.0, [(Codes.KEY_HOME, 1)]), (0.1, [(Codes.KEY_HOME, 0)])]
         home, _timeouts, _watched = self.watch(press, (Codes.KEY_HOME, Codes.KEY_ENTER), front="moonlight")
-        home.assert_called_once_with()
+        home.assert_called_once_with(guide=True)
 
     def test_the_pad_shortcuts_are_the_way_home_from_a_stream(self):
         hold = [(0.0, [(Codes.BTN_SELECT, 1), (Codes.BTN_START, 1)]), (1.0, []), (1.6, [])]
@@ -2146,6 +2165,131 @@ class HomeShortcutTest(unittest.TestCase):
                   (0.5, [(Codes.EV_KEY, Codes.BTN_START, 0)])]
         pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
         self.assertEqual(pressed, [(0.5, Codes.KEY_F8)])
+
+    def test_holding_y_in_the_launcher_sends_f9_once(self):
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.3, []), (0.7, []), (1.5, []),
+                  (2.0, [(Codes.EV_KEY, Codes.BTN_WEST, 0)])]
+        pressed, timeouts, pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DELETE), (0.7, Codes.KEY_F9)])
+        self.assertAlmostEqual(timeouts[1], 0.3)  # select() wakes when the hold is due
+        self.assertEqual(pads.y_holds, {})
+
+    def test_a_short_y_press_sends_only_delete(self):
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.3, [(Codes.EV_KEY, Codes.BTN_WEST, 0)]), (1.0, [])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DELETE)])
+
+    def test_a_y_hold_is_forgotten_when_an_app_takes_the_pad(self):
+        run = self.run_dir(app=False, pointer=False)
+
+        def app_has_it(run, _pads):
+            (run / "app-active").write_text("firefox\n")
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.3, [], app_has_it), (1.0, [])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_DELETE)])
+
+    def test_holding_x_in_the_launcher_sends_f10_once(self):
+        # STREAM SETTINGS on a game tile; the press itself still opens the keyboard (F12).
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_NORTH, 1)]), (0.3, []), (0.7, []), (1.5, []),
+                  (2.0, [(Codes.EV_KEY, Codes.BTN_NORTH, 0)])]
+        pressed, timeouts, pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_F12), (0.7, Codes.KEY_F10)])
+        self.assertAlmostEqual(timeouts[1], 0.3)  # select() wakes when the hold is due
+        self.assertEqual(pads.x_holds, {})
+
+    def test_a_short_x_press_sends_only_f12(self):
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_NORTH, 1)]), (0.3, [(Codes.EV_KEY, Codes.BTN_NORTH, 0)]), (1.0, [])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_F12)])
+
+    def test_x_and_y_held_together_send_both_once(self):
+        run = self.run_dir(app=False, pointer=False)
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_NORTH, 1), (Codes.EV_KEY, Codes.BTN_WEST, 1)]), (0.7, []), (1.5, [])]
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(sorted(pressed), sorted([(0.0, Codes.KEY_DELETE), (0.0, Codes.KEY_F12),
+                                                  (0.7, Codes.KEY_F9), (0.7, Codes.KEY_F10)]))
+
+    def test_an_x_hold_is_forgotten_when_an_app_takes_the_pad(self):
+        run = self.run_dir(app=False, pointer=False)
+
+        def app_has_it(run, _pads):
+            (run / "app-active").write_text("moonlight\n")
+
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_NORTH, 1)]), (0.3, [], app_has_it), (1.0, [])]
+        pressed, _timeouts, pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(pressed, [(0.0, Codes.KEY_F12)])
+        self.assertEqual(pads.x_holds, {})
+
+    def test_y_and_x_holds_never_reach_a_terminal_app(self):
+        # nmtui and other terminal apps write no app-active: the pad still types into them, but the
+        # launcher's F9 / F10 shortcuts are not theirs.
+        run = self.run_dir(app=False, pointer=False)
+        (run / "launcher-ready").touch()
+        (run / "terminal-ready").touch()
+        script = [(0.0, [(Codes.EV_KEY, Codes.BTN_WEST, 1), (Codes.EV_KEY, Codes.BTN_NORTH, 1)]), (0.7, []), (1.5, [])]
+        pressed, _timeouts, pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertEqual(sorted(pressed), sorted([(0.0, Codes.KEY_DELETE), (0.0, Codes.KEY_F12)]))
+        self.assertEqual((pads.y_holds, pads.x_holds), ({}, {}))
+        (run / "launcher-focus").touch()  # Home: the launcher has the screen over the app
+        pressed, _timeouts, _pads, _mouse, _pad = self.drive(script, run=run)
+        self.assertIn((0.7, Codes.KEY_F9), pressed)
+        self.assertIn((0.7, Codes.KEY_F10), pressed)
+
+    # SHOW STATS (the quick menu during a stream)
+
+    def stats(self, *, front="moonlight", focus=False, age=1.0, present=True):
+        run = self.run_dir(app=False, pointer=False, focus=focus)
+        if front:
+            (run / "app-active").write_text(front + "\n")
+        request = run / "moonlight-stats.request"
+        if present:
+            request.touch()
+        patcher = mock.patch.object(self.module, "STATS_REQUEST", request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ui = mock.Mock()
+        now = (request.stat().st_mtime if present else 0.0) + age
+        return self.module.send_stats_request(ui, now), ui, request
+
+    def test_show_stats_types_ctrl_alt_shift_s_into_moonlight_once(self):
+        sent, ui, request = self.stats()
+        self.assertTrue(sent)
+        self.assertFalse(request.exists())
+        writes = [call.args for call in ui.write.call_args_list]
+        chord = [Codes.KEY_LEFTCTRL, Codes.KEY_LEFTALT, Codes.KEY_LEFTSHIFT, Codes.KEY_S]
+        self.assertEqual(writes, [(Codes.EV_KEY, key, 1) for key in chord]
+                         + [(Codes.EV_KEY, key, 0) for key in reversed(chord)])
+        for key in chord:
+            self.assertIn(key, self.module.KEYS, "the navigation keyboard must be able to send it")
+
+    def test_show_stats_waits_while_the_launcher_has_the_screen(self):
+        sent, ui, request = self.stats(focus=True)
+        self.assertFalse(sent)
+        ui.write.assert_not_called()
+        self.assertTrue(request.exists(), "kept until Moonlight is in front again")
+
+    def test_show_stats_never_types_into_another_app(self):
+        for front in ("chiaki-ng", "firefox", ""):
+            with self.subTest(front=front):
+                sent, ui, _request = self.stats(front=front)
+                self.assertFalse(sent)
+                ui.write.assert_not_called()
+
+    def test_a_stale_stats_request_is_dropped(self):
+        sent, ui, request = self.stats(age=self.module.STATS_REQUEST_MAX_AGE + 1)
+        self.assertFalse(sent)
+        ui.write.assert_not_called()
+        self.assertFalse(request.exists())
+
+    def test_no_stats_request_sends_nothing(self):
+        sent, ui, _request = self.stats(present=False)
+        self.assertFalse(sent)
+        ui.write.assert_not_called()
 
     def test_leaving_mouse_mode_forgets_a_hold(self):
         pads, _mouse = self.pads()

@@ -1,0 +1,18 @@
+[Unit]
+Description=Install the web browsers again after a CouchLiteOS update
+# Written by the updater; the tool removes it once the browsers are installed again, so a
+# box that was offline after the update tries again at the next start.
+ConditionPathExists=/var/lib/couchliteos-update/browser-refresh
+Wants=couchliteos-network-ready.service
+After=couchliteos-network-ready.service
+
+[Service]
+# Not oneshot: a download must not hold up the start of the launcher.
+Type=exec
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Updating the web browsers" /usr/libexec/couchliteos-browser refresh
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

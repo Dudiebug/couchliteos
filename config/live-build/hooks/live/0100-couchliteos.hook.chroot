@@ -83,6 +83,11 @@ systemctl enable couchliteos-reboot.path couchliteos-poweroff.path
 systemctl enable couchliteos-suspend.path couchliteos-resume.service
 systemctl enable couchliteos-support-export.path couchliteos-nvidia-firmware.path
 systemctl enable couchliteos-update.path
+systemctl enable couchliteos-snapshot-delete.path
+systemctl enable couchliteos-restore-request.path couchliteos-restore.service
+# Live USB: find an installed system on the disks and update it on request (apply-disk).
+systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path
+systemctl enable couchliteos-browser.path couchliteos-browser-refresh.service
 systemctl enable couchliteos-configured-app.path couchliteos-osk.path
 systemctl enable couchliteos-rdp.path couchliteos-rdp-secret.path
 systemctl enable couchliteos-audio.service couchliteos-launcher.service \
@@ -91,6 +96,8 @@ systemctl enable bluetooth.service couchliteos-bluetooth.service
 systemctl enable couchliteos-qemu-smoke.service
 # Sets GRUB's boot_success flag once the launcher is up; inert on the live ISO (no grubenv).
 systemctl enable couchliteos-boot-success.service
+# Writes the time to the launcher to /var/log/couchliteos/boot-time.log and the serial console.
+systemctl enable couchliteos-boot-time.service
 systemctl enable couchliteos-hwdetect-early.service couchliteos-hwdetect.service
 systemctl enable tailscaled.service couchliteos-tailscale-enroll.path couchliteos-tailscale-ssh.path
 # HDMI-CEC: the daemon is started by udev (75-couchliteos-cec.rules) only when a CEC adapter exists.
@@ -111,6 +118,10 @@ fi
 for tool in pw-dump pw-cli wpctl; do
   command -v "$tool" >/dev/null || { echo "$tool is missing" >&2; exit 1; }
 done
+
+# The launcher runs as couchliteos, which cannot write __pycache__ under /usr/libexec:
+# without these the modules are compiled from source at every start (about 0.1 s).
+python3 -m compileall -q /usr/libexec/couchliteos_*.py
 
 # The standard kernel supplies these modules; load them on the applicable side.
 printf '%s\n' usbip_host uinput tun > /etc/modules-load.d/couchliteos-usbip.conf

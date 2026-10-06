@@ -151,12 +151,12 @@ boot_and_wait() {
     find "$work/installed-monitor.sock" -delete 2>/dev/null || true
     monitor=(-monitor "$installed_monitor_option")
   fi
-  if [[ $mode == update-* ]]; then
+  if [[ $mode == update-* || $mode == restore-* ]]; then
     # The update boots have the release ISO as a CD-ROM (/dev/sr0) but still start from the disk.
     extra=(-boot order=c -drive "file=$ISO,media=cdrom,readonly=on")
   fi
-  # Copying a whole system and rebuilding the initramfs takes far longer than a boot.
-  [[ $mode != update-apply ]] || limit=1800
+  # Saving the old system, copying the new one and rebuilding the initramfs take far longer than a boot.
+  [[ $mode != update-apply && $mode != restore-run ]] || limit=2700
   printf '\n=== installed boot: %s ===\n' "$mode" >> "$BOOT_LOG"
   qemu-system-x86_64 \
     "${common[@]}" "${monitor[@]}" "${extra[@]}" \
@@ -188,7 +188,15 @@ PY
       pid=
       return 0
     fi
-    kill -0 "$pid" 2>/dev/null || break
+    if ! kill -0 "$pid" 2>/dev/null; then
+      # The guest restarted (-no-reboot ends QEMU there): what restore-apply and restore-run end with.
+      wait "$pid" 2>/dev/null || true
+      pid=
+      if [[ $mode == restore-* ]] && grep -q "$marker" "$BOOT_LOG"; then
+        return 0
+      fi
+      break
+    fi
     sleep 1
   done
   cat "$BOOT_LOG"
@@ -207,7 +215,12 @@ boot_and_wait persistence-read COUCHLITEOS_SMOKE_PERSISTENCE_READY
 # installer's GRUB and shim, the maintenance user and the owner's saved state must all survive.
 boot_and_wait update-apply COUCHLITEOS_SMOKE_UPDATE_APPLIED
 boot_and_wait update-check COUCHLITEOS_SMOKE_UPDATE_READY
+# Restore the version the update saved: Settings' request, then the boot service restores and
+# restarts on its own, then the restored system must be the saved one with its settings.
+boot_and_wait restore-apply COUCHLITEOS_SMOKE_RESTORE_REQUESTED
+boot_and_wait restore-run 'RESTORED COUCHLITEOS'
+boot_and_wait restore-check COUCHLITEOS_SMOKE_RESTORE_READY
 for screenshot in "$MENU_SCREENSHOT" "$EDITOR_SCREENSHOT" "$INSTALLER_SCREENSHOT" "$INSTALLED_SCREENSHOT"; do
   [[ -s $screenshot ]] || { echo "Screenshot evidence missing: $screenshot" >&2; exit 1; }
 done
-echo 'QEMU install smoke test passed: firmware and ISO menu install, independent disk boot, launcher readiness, configuration persistence across a cold reboot, and an in-place update that boots with everything kept.'
+echo 'QEMU install smoke test passed: firmware and ISO menu install, independent disk boot, launcher readiness, configuration persistence across a cold reboot, an in-place update that boots with everything kept, and a restore of the saved version.'

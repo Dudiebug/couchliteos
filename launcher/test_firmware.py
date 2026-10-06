@@ -1,5 +1,6 @@
 """couchliteos_firmware: the launcher side of VIDEO DECODER FIRMWARE."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import json
 import pathlib
 import tempfile

@@ -10,6 +10,7 @@ running. Any error leaves the line empty, so the screen looks as it always did.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import threading
 import unicodedata
@@ -17,7 +18,7 @@ from collections.abc import Callable
 
 import couchliteos_stream as stream
 
-RUN = pathlib.Path("/run/couchliteos")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 INTERVAL = 20.0  # seconds between probes
 RETRY = 2.0  # while an app runs, look again this soon so the line is fresh when it ends
 LABEL_CELLS = 24  # columns of the PC name; the longest line is then 72 of 76

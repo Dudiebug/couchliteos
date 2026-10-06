@@ -1,5 +1,7 @@
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import contextlib
 import dataclasses
+import functools
 import importlib.util
 import itertools
 import os
@@ -1625,7 +1627,9 @@ class StreamRowTest(LauncherTestCase):
         return [label for label, _action in launcher.menu]
 
     def test_first_row_for_a_paired_pc_with_moonlight_enabled(self):
-        with tempfile.TemporaryDirectory() as directory:
+        # FIXED_CONTROLS has the plain SLEEP row, whether or not this machine can suspend.
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(self.module.power, "can_suspend", return_value=True):
             run = pathlib.Path(directory)
             plain = self.home(run, hosts=())
             launcher = self.home(run)
@@ -2199,6 +2203,54 @@ class StreamingSettingsTest(LauncherTestCase):
             with self.subTest(error=error), mock.patch.object(self.module.stream, "lower_bitrate", side_effect=error):
                 settings.smoother()
             self.assertIn("NOT CHANGED: ", settings.message.call_args.args[1])
+
+    def global_and_game(self, directory):
+        """Moonlight.conf at 720p60 10 Mbps, then a QUALITY game's 4K 120 Mbps plan written over it."""
+        folder = pathlib.Path(directory)
+        conf, saved, run = folder / "Moonlight.conf", folder / "saved.json", folder / "run"
+        run.mkdir()
+        conf.write_text("[General]\nwidth=1280\nheight=720\nfps=60\nbitrate=10000\n")
+        stream.apply_game_plan(stream.Plan(3840, 2160, 120, 120000, 120000, False), stream.QUALITY, conf, saved, run)
+        patches = contextlib.ExitStack()
+        patches.enter_context(mock.patch.object(
+            self.module.stream, "restore_global", functools.partial(stream.restore_global, conf, saved)))
+        patches.enter_context(mock.patch.object(
+            self.module.stream, "lower_bitrate", functools.partial(stream.lower_bitrate, conf)))
+        patches.enter_context(mock.patch.object(self.module, "RUN", run))
+        return conf, saved, run, patches
+
+    def test_smoother_lowers_the_global_bitrate_not_the_last_games(self):
+        _launcher, settings = self.streaming()
+        with tempfile.TemporaryDirectory() as directory:
+            conf, saved, run, patches = self.global_and_game(directory)
+            with patches:
+                settings.smoother()
+            self.assertIn("10 MBPS -> 7.5 MBPS", settings.message.call_args.args[1])
+            stream.prepare_stream(None, mode=lambda: None, conf=conf, saved=saved, run_dir=run)  # the next DEFAULT start
+            self.assertEqual(
+                {key: stream.general_values(conf.read_text())[key] for key in ("width", "height", "fps", "bitrate")},
+                {"width": "1280", "height": "720", "fps": "60", "bitrate": "7500"})
+
+    def test_optimize_writes_over_the_global_settings_not_the_last_games(self):
+        _launcher, settings = self.streaming()
+        display = self.module.display
+        output = display.Output("DP-1", "TV", True, (display.Mode(1920, 1080, 60000, True, True),))
+        with tempfile.TemporaryDirectory() as directory:
+            conf, saved, run, patches = self.global_and_game(directory)
+            with patches:
+                _measure, apply = self.optimize(settings, run, [output], stream.Network(1000.0, "wired", "e", 0.5, 0.0))
+            apply.assert_called_once()
+            self.assertFalse(saved.exists(), "the game's plan was taken off before OPTIMIZE wrote")
+            self.assertEqual(stream.general_values(conf.read_text())["bitrate"], "10000")
+
+    def test_restoring_the_global_settings_while_moonlight_runs_is_a_plain_refusal(self):
+        _launcher, settings = self.streaming()
+        with tempfile.TemporaryDirectory() as directory:
+            _conf, _saved, run, patches = self.global_and_game(directory)
+            (run / "moonlight-ready").touch()
+            with patches:
+                settings.smoother()
+            self.assertIn("NOT CHANGED: CLOSE MOONLIGHT FIRST", settings.message.call_args.args[1])
 
 
 if __name__ == "__main__":

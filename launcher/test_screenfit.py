@@ -1,8 +1,10 @@
 """Screen edges (TV overscan) and text size: settings file, pure math, the foot wrapper hooks, and the menu rows."""
 
+import testenv  # noqa: F401  (first: scratch run and state directories)
 import curses
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -70,7 +72,7 @@ class SettingsFileTest(unittest.TestCase):
         self.assertEqual([item.name for item in self.path.parent.iterdir()], ["screen.json"])
 
     def test_the_default_path_sits_next_to_the_other_settings(self):
-        self.assertEqual(screenfit.PATH, pathlib.Path("/var/lib/couchliteos/screen.json"))
+        self.assertEqual(screenfit.PATH, pathlib.Path(os.environ["COUCHLITEOS_STATE_DIR"], "screen.json"))
         with mock.patch.object(screenfit, "PATH", self.path):
             screenfit.save(screenfit.Settings(edges=2))
             self.assertEqual(screenfit.load().edges, 2)

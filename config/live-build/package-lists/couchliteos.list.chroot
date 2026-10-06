@@ -18,6 +18,9 @@ nftables
 kmod
 udev
 rfkill
+# A zstd initrd (overlay/etc/initramfs-tools/conf.d/couchliteos.conf)
+zstd
+cpio
 
 # Mesa graphics, Vulkan, VA-API, and diagnostics. GPU-specific firmware and
 # drivers come from the build profile (config/profiles/<profile>/package-lists).
@@ -34,8 +37,6 @@ seatd
 xwayland
 foot
 wlr-randr
-firefox-esr
-google-chrome-stable
 wlrctl
 libavcodec61
 gamescope/trixie-backports
@@ -43,6 +44,7 @@ python3
 python3-evdev
 python3-dbus
 python3-gi
+gir1.2-gtk-4.0
 libhidapi-hidraw0
 libopengl0
 qrencode
@@ -77,6 +79,7 @@ tailscale=1.102.3
 
 # Software update: couchliteos-updater copies the new system over the installed one
 rsync
+squashfs-tools
 
 # Debian Installer integration
 debian-installer-launcher

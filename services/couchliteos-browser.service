@@ -1,0 +1,16 @@
+[Unit]
+Description=Install Firefox or Google Chrome from the internet for the launcher
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# The request holds the browser's name, so the tool reads and removes it first itself (not an
+# ExecStartPre rm); this is only the net if it failed before that, or the path unit would loop.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --why="Installing a web browser" /usr/libexec/couchliteos-browser request
+ExecStopPost=/usr/bin/rm -f /run/couchliteos/browser-install
+# A download on a slow line takes as long as it takes.
+TimeoutStartSec=infinity
+Nice=10
+StandardOutput=journal
+StandardError=journal

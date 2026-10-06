@@ -4,26 +4,40 @@
 from __future__ import annotations
 
 import curses
+import os
 import pathlib
 import textwrap
 from collections.abc import Callable, Iterable
 
-import couchliteos_setup as setup
 import couchliteos_stream as stream
 import couchliteos_update as update
 
 VERSION_FILES = update.VERSION_FILES
 # Holds the version whose notice was last handled, next to the other launcher state.
-SEEN = setup.MARKER.parent / "whatsnew-seen"
+# couchliteos_setup.MARKER, named here so loading this (the TV interface does) leaves the wizard,
+# and urllib through it, unloaded.
+SETUP_MARKER = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "setup-complete"
+SEEN = SETUP_MARKER.parent / "whatsnew-seen"
 # /run is always writable, so if SEEN cannot be saved (disk full, read-only) the screen
 # still does not come back when the launcher restarts during the same boot.
-SESSION_SEEN = pathlib.Path("/run/couchliteos/whatsnew-seen")
+SESSION_SEEN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "whatsnew-seen"
 
 RENAME_NOTICE = "MOONLIGHTOS IS NOW CALLED COUCHLITEOS. SAME SYSTEM, NEW NAME."  # rename:keep
 RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE
 # What each release added, newest first: one line per feature, at most 66 columns (the screen wraps longer ones at 80x24).
 # An upgrade shows every release newer than the one last seen, newest first.
 RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("0.3.0", (
+        "A NEW TV HOME SCREEN: YOUR GAMES FIRST, WITH COVER ART",
+        "QUICK MENU: TAP GUIDE / PS, OR PRESS HOME ON A KEYBOARD",
+        "THEMES AND ACCENT COLOURS: SETTINGS > APPEARANCE",
+        "UNDO AN UPDATE: SOFTWARE UPDATE > RESTORE PREVIOUS VERSION",
+        "TYPE ON YOUR PHONE: SELECT (VIEW) OR F2 IN A TEXT FIELD",
+        "PLAYER ORDER, BATTERY, TEST, A/B SWAP: SETTINGS > CONTROLLERS",
+        "STREAM SETTINGS PER GAME: HOLD X / TRIANGLE (OR F10) ON A GAME",
+        "CHANGE A COVER: HOLD Y / SQUARE (OR F9) ON A GAME",
+        "WEB BROWSER: SETTINGS > APPLICATIONS > ADD A WEB BROWSER",
+    )),
     ("0.2.7", (
         "IN A STREAM, GUIDE GOES TO THE STREAM. HOME: HOLD SELECT+START",
         "PS4 / PS5 TOUCHPAD GOES TO THE STREAM, NOT THE MOUSE POINTER",
@@ -195,21 +209,20 @@ def draw(screen: curses.window, version: str, seen: str = "") -> None:
     screen.refresh()
 
 
-def show_once(
-    screen: curses.window,
-    read_key: Callable[[], int] | None = None,
+def due(
     *,
     markers: Iterable[pathlib.Path] = (SEEN, SESSION_SEEN),
-    setup_marker: pathlib.Path = setup.MARKER,
+    setup_marker: pathlib.Path = SETUP_MARKER,
     version_files: Iterable[pathlib.Path] = VERSION_FILES,
-) -> bool:
-    """Show the screen on the first start of a new version after an upgrade; True if it was shown.
+) -> tuple[str, str] | None:
+    """(version, version last seen) when the screen is due now, else None; either way this
+    version is recorded as seen (before anything is drawn, so a crash cannot loop it).
 
     Call it BEFORE the setup wizard: a new user has no setup marker yet, so they are only
     recorded as having seen this version (afterwards they would look like an upgrader)."""
     version = update.installed_version(version_files)
     if not version:
-        return False
+        return None
     markers = tuple(markers)
     seen_texts = [read_seen(path) for path in markers]
     stale = [path for path, text in zip(markers, seen_texts) if should_show(text, version, True)]
@@ -221,9 +234,26 @@ def show_once(
     for path in stale:
         mark_seen(path, version)
     if len(stale) < len(markers) or not setup_was_completed(setup_marker):
-        return False
+        return None
     if notes(version, seen) == (False, []):  # nothing new to say for this version
+        return None
+    return version, seen
+
+
+def show_once(
+    screen: curses.window,
+    read_key: Callable[[], int] | None = None,
+    *,
+    markers: Iterable[pathlib.Path] = (SEEN, SESSION_SEEN),
+    setup_marker: pathlib.Path = SETUP_MARKER,
+    version_files: Iterable[pathlib.Path] = VERSION_FILES,
+) -> bool:
+    """Show the screen on the first start of a new version after an upgrade; True if it was shown.
+    The TV interface asks `due` and draws it itself."""
+    pending = due(markers=markers, setup_marker=setup_marker, version_files=version_files)
+    if pending is None:
         return False
+    version, seen = pending
     read_key = read_key or screen.getch
     while True:
         draw(screen, version, seen)

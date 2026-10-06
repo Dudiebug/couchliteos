@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import curses
 import json
+import os
 import pathlib
 import re
 import socket
@@ -17,8 +18,9 @@ import couchliteos_listview as listview
 
 
 SOCKET_PATH = pathlib.Path("/run/couchliteos-bluetooth/control.sock")
-START_OSK = pathlib.Path("/run/couchliteos/start-osk")
-OSK_ACTIVE = pathlib.Path("/run/couchliteos/osk-active")
+RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
+START_OSK = RUN / "start-osk"
+OSK_ACTIVE = RUN / "osk-active"
 ENTER_KEYS = (curses.KEY_ENTER, 10, 13)
 SPINNER = "|/-\\"
 MAX_RESPONSE = 65536
