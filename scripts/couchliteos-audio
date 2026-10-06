@@ -2,10 +2,12 @@
 set -Eeuo pipefail
 
 pids=()
+helpers=()
 cleanup() {
-  if ((${#pids[@]})); then
-    kill "${pids[@]}" 2>/dev/null || true
-    wait "${pids[@]}" 2>/dev/null || true
+  local all=("${pids[@]}" "${helpers[@]}")
+  if ((${#all[@]})); then
+    kill "${all[@]}" 2>/dev/null || true
+    wait "${all[@]}" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT INT TERM
@@ -13,4 +15,8 @@ trap cleanup EXIT INT TERM
 PIPEWIRE_DAEMON=true PIPEWIRE_CORE=pipewire-0 /usr/bin/pipewire & pids+=("$!")
 /usr/bin/pipewire-pulse & pids+=("$!")
 /usr/bin/wireplumber --profile main-systemwide & pids+=("$!")
+# Sound moves to a Bluetooth audio device when it connects and back when it goes; a
+# headset's mic mode is used only while something records (couchliteos_audio.Watcher).
+# A helper: if it stops, the sound keeps working, so it is not waited on below.
+/usr/bin/python3 /usr/libexec/couchliteos_audio.py watch & helpers+=("$!")
 wait -n "${pids[@]}"

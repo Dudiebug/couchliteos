@@ -473,6 +473,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_app_runner.py launcher/couchliteos_setup.py launcher/couchliteos_osk.py \
   launcher/couchliteos_display.py launcher/couchliteos_support.py \
   launcher/couchliteos_bluetooth.py launcher/couchliteos_audio.py launcher/gamepad-nav.py \
+  launcher/couchliteos_audiomenu.py launcher/couchliteos_battery.py \
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
   launcher/couchliteos_pcstatus.py launcher/couchliteos_recent.py launcher/couchliteos_home.py \
   launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py \
@@ -663,10 +664,10 @@ rg -q 'nvidia-suspend.service nvidia-resume.service' config/profiles/nvidia/hook
 refute rg -qi 'nvidia-suspend|PreserveVideoMemory' config/profiles/general config/live-build overlay
 # Hardware gating: SLEEP is offered only where the PC can suspend, and it is re-checked at each step.
 rg -q '^SLEEP_UNSUPPORTED = "SLEEP: NOT SUPPORTED ON THIS PC"$' launcher/couchliteos-launcher.py
-rg -q 'power.effective_settings\(power.load_settings\(\), self.can_sleep, self.can_wake\)' launcher/couchliteos-launcher.py
+rg -q 'power.effective_settings\(power.load_settings\(\), self.can_sleep, self.can_wake, self.battery.on_battery\(\)' launcher/couchliteos-launcher.py
 # Idle sleep also needs something that can wake the box again; the saved timeout is ignored, not erased, and the reason is shown.
 rg -q '^IDLE_SLEEP_NO_WAKE = \"IDLE SLEEP OFF: NO CONTROLLER CAN WAKE THIS PC\"$' launcher/couchliteos-launcher.py
-rg -q 'def effective_settings\(settings: Settings, suspend_ok: bool, wake_ok: bool = True\)' launcher/couchliteos_power.py
+rg -q 'settings: Settings, suspend_ok: bool, wake_ok: bool = True, on_battery: bool = False' launcher/couchliteos_power.py
 rg -q '^    if not app_owns_pad\(\) and power.can_suspend\(\):$' launcher/gamepad-nav.py
 rg -q '^import couchliteos_power as power$' launcher/gamepad-nav.py
 # The root side refuses too: systemctl suspend fails when logind says the PC cannot, after the request is gone.
@@ -1581,5 +1582,27 @@ rg -q '^SupplementaryGroups=.*\bvideo\b' services/couchliteos-launcher.service
 rg -q '^Environment=XDG_RUNTIME_DIR=/run/couchliteos$' services/couchliteos-gamepad-nav.service
 rg -q '^Environment=XDG_RUNTIME_DIR=/run/couchliteos$' services/couchliteos-audio.service
 refute rg -q 'subprocess|shell=True|\bsudo\b|^import (dbus|evdev)' launcher/couchliteos_brightness.py
+
+# Bluetooth audio: a watcher in the audio service moves sound to a connecting device and back,
+# and owns the headset (mic) profile, so WirePlumber's own headset autoswitch is off.
+rg -q '^/usr/bin/python3 /usr/libexec/couchliteos_audio.py watch & helpers\+=\("\$!"\)$' scripts/couchliteos-audio
+rg -Fq 'bluetooth.autoswitch-to-headset-profile = false' overlay/etc/wireplumber/wireplumber.conf.d/52-couchliteos-bluetooth.conf
+rg -q 'class Watcher' launcher/couchliteos_audio.py
+rg -Fq 'latencyOffsetNsec' launcher/couchliteos_audio.py
+rg -Fq '"pw-record"' launcher/couchliteos_audio.py
+rg -Fq 'BLUETOOTH DELAY' launcher/couchliteos-launcher.py
+rg -Fq 'MICROPHONE' launcher/couchliteos-launcher.py
+rg -q 'bluetooth-audio-last' scripts/couchliteos-bluetoothd launcher/couchliteos_audio.py
+rg -Fq 'org.bluez.Battery1' scripts/couchliteos-bluetoothd
+# Battery: UPower first, then /sys/class/power_supply; shown only when there is one.
+rg -Fq 'org.freedesktop.UPower' launcher/couchliteos_battery.py
+rg -Fq '/sys/class/power_supply' launcher/couchliteos_battery.py
+rg -q 'battery_blank_minutes' launcher/couchliteos_power.py
+for module in couchliteos_audiomenu couchliteos_battery; do
+  rg -Fxq "install -D -m 0644 \"\$ROOT/launcher/$module.py\" \"\$CHROOT/usr/libexec/$module.py\"" build/configure.sh
+  rg -q "$module.py" launcher/Makefile
+done
+for test in test_audio_bluetooth test_mic test_battery; do rg -q "$test.py" launcher/Makefile; done
+refute rg -q 'shell=True|\bsudo\b' launcher/couchliteos_audio.py launcher/couchliteos_audiomenu.py launcher/couchliteos_battery.py
 
 printf 'Static tests passed.\n'

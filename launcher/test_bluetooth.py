@@ -340,5 +340,83 @@ class BluetoothMenuTest(unittest.TestCase):
         self.assertIn("REBOOT", message.call_args.args[1])
 
 
+class DeviceKindTest(unittest.TestCase):
+    def test_kind_from_the_bluez_icon(self):
+        for icon, kind, label in (
+            ("audio-headphones", "headphones", "HEADPHONES"),
+            ("audio-headset", "headset", "HEADSET"),
+            ("audio-card", "speaker", "SPEAKER"),
+            ("input-gaming", "controller", "CONTROLLER"),
+            ("input-keyboard", "keyboard", "KEYBOARD"),
+        ):
+            with self.subTest(icon=icon):
+                device = dict(DEVICE, icon=icon)
+                self.assertEqual(bluetooth.device_kind(device), kind)
+                self.assertEqual(bluetooth.kind_label(device), label)
+        self.assertEqual(bluetooth.kind_icon(dict(DEVICE, icon="audio-headset")), "audio-headset")
+
+    def test_kind_from_the_class_of_device_without_an_icon(self):
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE, device_class=0x240404)), "headset")
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE, device_class=0x240418)), "headphones")
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE, device_class=0x240414)), "speaker")
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE, device_class=0x002508)), "controller")
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE, device_class=0x002540)), "keyboard")
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE)), "other")
+        self.assertEqual(bluetooth.device_kind(dict(DEVICE, audio=True)), "speaker", "audio profiles, no class")
+        self.assertEqual(bluetooth.kind_label(dict(DEVICE)), "")
+
+    def test_audio_devices_and_battery_text(self):
+        self.assertTrue(bluetooth.is_audio(dict(DEVICE, icon="audio-headphones")))
+        self.assertFalse(bluetooth.is_audio(dict(DEVICE, icon="input-gaming")))
+        self.assertEqual(bluetooth.battery_text(dict(DEVICE, battery=80)), "80%")
+        self.assertEqual(bluetooth.battery_text(dict(DEVICE, battery=None)), "")
+        self.assertEqual(bluetooth.battery_text(DEVICE), "")
+
+    def test_list_rows_show_what_each_device_is(self):
+        headphones = dict(DEVICE, alias="WH-1000XM5", icon="audio-headphones", connected=True)
+        screen = FakeScreen([27])
+        bluetooth.BluetoothMenu(screen, FakeClient([dict(ADAPTER_ON, devices=[headphones])])).run()
+        self.assertTrue(any("WH-1000XM5" in row and "HEADPHONES" in row and "CONNECTED" in row for row in screen.drawn))
+
+    def test_audio_device_screen_shows_type_battery_codec_and_use_for_audio(self):
+        headphones = dict(DEVICE, alias="WH-1000XM5", icon="audio-headphones", connected=True, battery=70)
+        screen = FakeScreen([27])
+        with mock.patch.object(bluetooth, "audio_codec", return_value="LDAC") as codec:
+            bluetooth.BluetoothMenu(screen, FakeClient([dict(ADAPTER_ON, devices=[headphones])]))._device_screen(DEVICE["path"])
+        codec.assert_called_with("AA:BB:CC:DD:EE:FF")
+        drawn = " ".join(screen.drawn)
+        for text in ("HEADPHONES", "70%", "LDAC", "USE FOR AUDIO"):
+            self.assertIn(text, drawn)
+
+    def test_a_controller_has_no_codec_or_audio_action(self):
+        pad = dict(DEVICE, icon="input-gaming", connected=True)
+        screen = FakeScreen([27])
+        with mock.patch.object(bluetooth, "audio_codec") as codec:
+            bluetooth.BluetoothMenu(screen, FakeClient([dict(ADAPTER_ON, devices=[pad])]))._device_screen(DEVICE["path"])
+        codec.assert_not_called()
+        self.assertNotIn("USE FOR AUDIO", screen.drawn)
+
+    def test_a_pairing_step_the_device_started_is_shown_and_answered(self):
+        prompt = {"id": "prompt-1", "kind": "confirmation", "passkey": "123456", "operation_id": "",
+                  "device_alias": "Speaker"}
+        client = FakeClient([dict(ADAPTER_ON, prompt=prompt), dict(ADAPTER_ON, prompt=prompt)])
+        screen = FakeScreen([10, -1, 27])  # CONFIRM, then the same prompt is not asked twice
+        bluetooth.BluetoothMenu(screen, client).run()
+        self.assertIn("123456", screen.drawn)
+        self.assertIn(("agent_reply", {"prompt_id": "prompt-1", "accepted": True}), client.requests)
+        self.assertEqual(sum(1 for command, _fields in client.requests if command == "agent_reply"), 1)
+
+    def test_a_code_to_type_on_the_device_is_shown(self):
+        prompt = {"id": "prompt-2", "kind": "display_passkey", "passkey": "0042", "operation_id": "",
+                  "device_alias": "Keyboard"}
+        screen = FakeScreen([10, 27])
+        bluetooth.BluetoothMenu(screen, FakeClient([dict(ADAPTER_ON, prompt=prompt)])).run()
+        self.assertTrue(any("0042" in row and "KEYBOARD" in row.upper() for row in screen.drawn))
+
+    def test_codec_is_empty_when_pipewire_cannot_say(self):
+        with mock.patch("couchliteos_audio.query_graph", return_value=None):
+            self.assertEqual(bluetooth.audio_codec("AA:BB:CC:DD:EE:FF"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

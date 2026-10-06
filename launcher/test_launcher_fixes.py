@@ -435,6 +435,7 @@ class AudioVolumeTest(LauncherFixesTest):
             "set_default": mock.Mock(),
             "ensure_audible": mock.Mock(return_value=""),
             "query_profile_outputs": mock.Mock(return_value=[]),
+            "query_graph": mock.Mock(return_value=None),  # hermetic: no pw-dump
             "switch_to": mock.Mock(),
         }
         mocks.update(audio_patches)
@@ -449,8 +450,18 @@ class AudioVolumeTest(LauncherFixesTest):
         frames, _mocks = self.run_audio([self.ESC])
         self.assertEqual(
             frames[0][0],
-            ["*  HDMI OUTPUT", "VOLUME  [##########..........]  50%", "MUTE  OFF", "BACK"],
+            ["*  HDMI OUTPUT", "VOLUME  [##########..........]  50%", "MUTE  OFF",
+             "MICROPHONE", "BLUETOOTH DELAY", "BACK"],
         )
+
+    def test_microphone_and_bluetooth_delay_open_their_screens(self):
+        audiomenu = self.module.audiomenu
+        with mock.patch.object(audiomenu, "run_microphone") as microphone, mock.patch.object(
+            audiomenu, "run_bluetooth_delay"
+        ) as delay:
+            self.run_audio([self.KEY_DOWN] * 3 + [self.ENTER, self.KEY_DOWN, self.ENTER, self.ESC])
+        self.assertEqual(microphone.call_count, 1)
+        self.assertEqual(delay.call_count, 1)
 
     def test_right_raises_and_left_lowers_the_volume_of_the_default_output(self):
         frames, mocks = self.run_audio([self.KEY_DOWN, self.KEY_RIGHT, self.KEY_LEFT, self.ESC])
@@ -463,7 +474,7 @@ class AudioVolumeTest(LauncherFixesTest):
         self.assertEqual(frames[-1][1], "MUTED")
 
     def test_back_is_the_last_row_and_leaves(self):
-        self.run_audio([self.KEY_DOWN, self.KEY_DOWN, self.KEY_DOWN, self.ENTER])
+        self.run_audio([self.KEY_DOWN] * 5 + [self.ENTER])
 
     def test_left_right_on_an_output_row_does_not_change_anything(self):
         _frames, mocks = self.run_audio([self.KEY_RIGHT, self.KEY_LEFT, self.ESC])
@@ -497,7 +508,8 @@ class AudioVolumeTest(LauncherFixesTest):
             raise RuntimeError("wpctl died")
 
         frames, _mocks = self.run_audio([self.ESC], get_volume=unreadable)
-        self.assertEqual(frames[0][0], ["*  HDMI OUTPUT", "VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE", "BACK"])
+        self.assertEqual(frames[0][0], ["*  HDMI OUTPUT", "VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE",
+                                          "MICROPHONE", "BLUETOOTH DELAY", "BACK"])
 
     def test_an_output_behind_another_card_profile_is_listed_after_the_sinks(self):
         audio = self.module.audio
@@ -506,7 +518,7 @@ class AudioVolumeTest(LauncherFixesTest):
         self.assertEqual(
             frames[0][0],
             ["*  HDMI OUTPUT", "   Built-in Audio Analog Stereo",
-             "VOLUME  [##########..........]  50%", "MUTE  OFF", "BACK"],
+             "VOLUME  [##########..........]  50%", "MUTE  OFF", "MICROPHONE", "BLUETOOTH DELAY", "BACK"],
         )
 
     def test_choosing_it_switches_the_card_then_makes_the_new_sink_the_default(self):
@@ -548,7 +560,7 @@ class AudioVolumeTest(LauncherFixesTest):
     def test_no_outputs_means_no_volume_rows(self):
         # The first ESC closes the "no sound output found" explanation (feat/easy), the second leaves AUDIO.
         frames, _mocks = self.run_audio([self.ESC, self.ESC], sinks=False)
-        self.assertEqual(frames[0][0], ["BACK"])
+        self.assertEqual(frames[0][0], ["MICROPHONE", "BLUETOOTH DELAY", "BACK"])
 
 
 if __name__ == "__main__":

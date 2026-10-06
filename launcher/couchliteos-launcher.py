@@ -18,6 +18,8 @@ from collections.abc import Callable, Sequence
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_display as display
 import couchliteos_audio as audio
+import couchliteos_audiomenu as audiomenu
+import couchliteos_battery as battery
 import couchliteos_brightness as brightness
 import couchliteos_support as support
 import couchliteos_bluetooth as bluetooth
@@ -611,6 +613,8 @@ class Launcher(session.Session):
         # Checked on every start (the USB stick moves between PCs) and again after a resume.
         self.can_sleep = power.can_suspend()
         self.controllers = controllers.Monitor()
+        self.battery = battery.Monitor()  # the PC's own battery; nothing shown without one
+        self.mic = audio.MicMonitor()
         self.pcstatus = pcstatus.Monitor()
         self.padcheck = padcheck.Monitor()
         self.updates = update.Checker()
@@ -628,7 +632,7 @@ class Launcher(session.Session):
         self.reload_applications()
         global IDLE_GUARD
         IDLE_GUARD = self.idle = power.IdleGuard(
-            power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake),
+            power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()),
             apps_running=self.apps_running,
             request_sleep=self.request_sleep,
             resumed=self.check_resume,
@@ -751,7 +755,13 @@ class Launcher(session.Session):
         self.can_wake = bool(power.wake_sources())
         del self.menu[len(self.stream_row) + len(self.applications):]
         self.menu += self.fixed_controls()
-        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
+        self.apply_idle_settings()
+
+    def apply_idle_settings(self) -> None:
+        """Blank and sleep timeouts as saved, for this PC and its power source (battery or mains)."""
+        self.idle.apply(power.effective_settings(
+            power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()
+        ))
 
     def apps_running(self) -> bool:
         try:
@@ -853,6 +863,23 @@ class Launcher(session.Session):
         if battery:
             lines.append((battery, curses.A_REVERSE if self.controllers.low() else curses.A_NORMAL))
         lines += [] if battery else self.padcheck.footer(curses.A_BOLD)  # NO CONTROLLER FOUND
+        lines += self.power_footer()
+        return lines
+
+    def power_footer(self) -> list[tuple[str, int]]:
+        """The PC battery (only when it has one), a low-battery warning, MIC LIVE and audio changes."""
+        lines: list[tuple[str, int]] = []
+        if self.battery.take_source_change():
+            self.apply_idle_settings()  # the screen-off delay differs on battery
+        level = self.battery.take_warning()
+        if level is not None:
+            self.status = battery.warning_text(level)
+        line = self.battery.line()
+        if line:
+            lines.append((line, curses.A_REVERSE if self.battery.low() else curses.A_NORMAL))
+        for text in (self.mic.line(), audio.read_notice()):
+            if text:
+                lines.append((text, curses.A_BOLD))
         return lines
 
     def draw_launching(self, label: str, frame: str) -> None:
@@ -1407,6 +1434,8 @@ class Launcher(session.Session):
             pass
 
         self.controllers.start()
+        self.battery.start()
+        self.mic.start()
         self.pcstatus.start()
         self.updates.start()
         self.draw()
@@ -2069,7 +2098,8 @@ class Settings:
                 # Outputs the sound card has only under another profile (the
                 # speaker while a TV has HDMI, a second HDMI/DP port).
                 others = audio.query_profile_outputs()
-                rows = [f"{'*' if sink.default else ' '}  {sink.name}" for sink in sinks]
+                graph = audio.query_graph() if sinks else None  # marks Bluetooth outputs and codecs
+                rows = [audiomenu.output_label(sink, graph) for sink in sinks]
                 rows += [f"   {output.name}" for output in others]
                 if sinks:
                     try:
@@ -2079,7 +2109,7 @@ class Settings:
                         rows.append(f"MUTE  {'ON' if volume.muted else 'OFF'}")
                     except (OSError, RuntimeError, subprocess.SubprocessError):
                         rows += ["VOLUME  UNAVAILABLE", "MUTE  UNAVAILABLE"]
-                rows.append("BACK")
+                rows += ["MICROPHONE", "BLUETOOTH DELAY", "BACK"]
                 self.status = result or (
                     "* IS THE CURRENT DEFAULT OUTPUT" if sinks else
                     "CHOOSE AN OUTPUT" if others else "NO AUDIO OUTPUTS AVAILABLE"
@@ -2117,7 +2147,7 @@ class Settings:
                         self.status = "SWITCHING OUTPUT..."
                         self.draw("AUDIO OUTPUT", rows, selected)
                         sink = audio.switch_to(others[selected - len(sinks)], {s.id for s in sinks})
-                    audio.set_default(sink.id)
+                    audio.choose_output(sink.id)  # a running stream moves too
                     result = f"DEFAULT OUTPUT: {sink.name}"
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     result = f"OUTPUT NOT CHANGED: {error}. TRY ANOTHER OUTPUT"
@@ -2128,6 +2158,11 @@ class Settings:
                     note = "VOLUME NOT CHECKED"
                 if note:
                     result += f" ({note})"
+                continue
+            if rows[selected] in ("MICROPHONE", "BLUETOOTH DELAY"):
+                if key in ENTER_KEYS:
+                    screen = audiomenu.run_microphone if rows[selected] == "MICROPHONE" else audiomenu.run_bluetooth_delay
+                    screen(self, read_key, move_selection)
                 continue
             try:
                 if selected == len(sinks) + len(others):
@@ -2295,10 +2330,12 @@ class Settings:
                 f"WAKE FROM  {wake_from}",
                 "BACK",
             ]
+            if self.launcher.battery.status.present:  # laptops and handhelds only
+                rows.insert(4, f"BLANK SCREEN ON BATTERY  {power.minutes_label(settings.battery_blank)}")
             self.draw("SLEEP & SCREEN", rows, selected)
             key = read_key(self.screen)
             selected = move_selection(selected, key, len(rows))
-            if key == 27 or (key in ENTER_KEYS and selected == 4):
+            if key == 27 or (key in ENTER_KEYS and selected == len(rows) - 1):
                 return
             if key not in ENTER_KEYS:
                 continue
@@ -2308,7 +2345,10 @@ class Settings:
             if selected in (2, 3):
                 self.status = "INFORMATION ONLY"
                 continue
-            field, choices = ("blank", power.BLANK_CHOICES) if selected == 0 else ("sleep", power.SLEEP_CHOICES)
+            field, choices = {
+                0: ("blank", power.BLANK_CHOICES), 1: ("sleep", power.SLEEP_CHOICES),
+                4: ("battery_blank", power.BATTERY_BLANK_CHOICES),
+            }[selected]
             chosen = self.choose(
                 rows[selected].split("  ")[0],
                 [(power.minutes_label(value), value) for value in choices],
@@ -2322,7 +2362,9 @@ class Settings:
                 self.status = note()
             except OSError as error:
                 self.status = f"COULD NOT SAVE: {error}"
-            self.launcher.idle.apply(power.effective_settings(settings, can_sleep, can_wake))
+            self.launcher.idle.apply(
+                power.effective_settings(settings, can_sleep, can_wake, self.launcher.battery.on_battery())
+            )
 
     def run_applications(self) -> None:
         ApplicationsSettings(self.screen, self.launcher).run()

@@ -28,6 +28,75 @@ ADDRESS_RE = re.compile(r"^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$")
 FIXED_ACTIONS = ("rescan", "power_on", "power_off", "back")
 
 
+# What a device is, from BlueZ's Icon (or its Class of Device when it sends no icon).
+# The label is shown beside its name; the icon name is the freedesktop one.
+KINDS = {
+    "headphones": ("HEADPHONES", "audio-headphones"),
+    "headset": ("HEADSET", "audio-headset"),
+    "speaker": ("SPEAKER", "audio-speakers"),
+    "controller": ("CONTROLLER", "input-gaming"),
+    "keyboard": ("KEYBOARD", "input-keyboard"),
+    "mouse": ("MOUSE", "input-mouse"),
+    "other": ("", "bluetooth"),
+}
+AUDIO_KINDS = {"headphones", "headset", "speaker"}
+ICON_KINDS = {
+    "audio-headphones": "headphones",
+    "audio-headset": "headset",
+    "audio-card": "speaker",
+    "audio-speakers": "speaker",
+    "input-gaming": "controller",
+    "input-keyboard": "keyboard",
+    "input-mouse": "mouse",
+    "input-tablet": "mouse",
+}
+
+
+def device_kind(device: dict[str, Any]) -> str:
+    """headphones, headset, speaker, controller, keyboard, mouse or other."""
+    kind = ICON_KINDS.get(str(device.get("icon") or ""))
+    if kind:
+        return kind
+    try:
+        device_class = int(device.get("device_class") or 0)
+    except (TypeError, ValueError):
+        device_class = 0
+    major, minor = (device_class >> 8) & 0x1F, (device_class >> 2) & 0x3F
+    if major == 0x04:  # Audio/Video
+        if minor in (0x01, 0x02):
+            return "headset"
+        if minor == 0x06:
+            return "headphones"
+        return "speaker"
+    if major == 0x05:  # Peripheral
+        if minor & 0x0F in (0x01, 0x02):
+            return "controller"
+        if minor & 0x30 == 0x10:
+            return "keyboard"
+        if minor & 0x30 == 0x20:
+            return "mouse"
+    if device.get("audio"):
+        return "speaker"
+    return "other"
+
+
+def kind_label(device: dict[str, Any]) -> str:
+    return KINDS[device_kind(device)][0]
+
+
+def kind_icon(device: dict[str, Any]) -> str:
+    return KINDS[device_kind(device)][1]
+
+
+def is_audio(device: dict[str, Any]) -> bool:
+    return device_kind(device) in AUDIO_KINDS or bool(device.get("audio"))
+
+
+def battery_text(device: dict[str, Any]) -> str:
+    battery = device.get("battery")
+    return f"{battery}%" if isinstance(battery, int) and not isinstance(battery, bool) else ""
+
+
 SERVICE_HINT = "WAIT A FEW SECONDS AND OPEN BLUETOOTH AGAIN; IF IT STAYS DOWN, REBOOT."
 
 
@@ -449,7 +518,7 @@ class BluetoothMenu:
                 self.message("DEVICE NO LONGER AVAILABLE", "RETURNING TO BLUETOOTH SETTINGS")
                 return
             actions: list[tuple[str, str]] = []
-            if device.get("audio") and device.get("connected"):
+            if is_audio(device) and device.get("connected"):
                 actions.append(("USE FOR AUDIO", "use_audio"))
             actions.append(("DISCONNECT", "disconnect") if device.get("connected") else ("CONNECT", "connect"))
             actions.extend((("FORGET DEVICE", "forget"), ("BACK", "back")))
@@ -459,6 +528,12 @@ class BluetoothMenu:
                 f"PAIRED                         {'YES' if device.get('paired') else 'NO'}",
                 f"TRUSTED                        {'YES' if device.get('trusted') else 'NO'}",
             ]
+            if kind_label(device):
+                details.insert(0, f"TYPE                           {kind_label(device)}")
+            if battery_text(device):
+                details.append(f"BATTERY                        {battery_text(device)}")
+            if is_audio(device) and device.get("connected"):
+                details.append(f"CODEC                          {audio_codec(str(device.get('address') or '')) or 'UNKNOWN'}")
             self.draw(device_labels([device])[0], [item[0] for item in actions], selected, details=details)
             key = self._getch()
             selected = move_selection(selected, key, len(actions))
@@ -480,6 +555,31 @@ class BluetoothMenu:
             else:
                 self._run_device_action(action, path, action.replace("_", " ").upper())
 
+    def _device_prompt(self, snapshot: dict[str, Any], handled: str) -> str:
+        """A pairing step the device started (not one of our PAIR operations): show it here.
+
+        Headsets and speakers often ask for a code or a confirmation themselves.
+        """
+        prompt = snapshot.get("prompt")
+        if not isinstance(prompt, dict) or prompt.get("operation_id"):
+            return handled
+        prompt_id = str(prompt.get("id") or "")
+        if not prompt_id or prompt_id == handled:
+            return handled
+        self.screen.timeout(1000)
+        try:
+            if str(prompt.get("kind")) == "display_passkey":
+                self.message(
+                    "BLUETOOTH PASSKEY",
+                    f"ENTER {safe_text(prompt.get('passkey') or '', 16)} ON "
+                    f"{safe_text(prompt.get('device_alias') or 'THE DEVICE')}",
+                )
+            else:
+                self._answer_prompt(prompt)
+        finally:
+            self.screen.timeout(100)
+        return prompt_id
+
     @staticmethod
     def _follow(actions: list[tuple[str, str]], action: str, selected: int) -> int:
         """Row of `action` after the list was rebuilt; the list re-sorts while it scans.
@@ -498,6 +598,7 @@ class BluetoothMenu:
         cursor = "rescan"  # the action under the cursor: a device path or a fixed action
         discovery_requested = False
         last_scan_request = 0.0
+        handled_prompt = ""
         self.screen.timeout(100)
         try:
             while True:
@@ -511,6 +612,7 @@ class BluetoothMenu:
                         continue
                     return
                 self.status = safe_text(snapshot.get("error") or "", 240)
+                handled_prompt = self._device_prompt(snapshot, handled_prompt)
                 adapter = snapshot.get("adapter")
                 if not isinstance(adapter, dict):
                     discovery_requested = False
@@ -544,7 +646,7 @@ class BluetoothMenu:
                     actions = [("RESCAN", "rescan")]
                     actions.extend(
                         (
-                            f"{label:<32} "
+                            f"{label:<32} {kind_label(device):<10} "
                             f"{'CONNECTED' if device.get('connected') else ('PAIRED' if device.get('paired') else 'AVAILABLE')}",
                             str(device.get("path") or ""),
                         )
@@ -591,6 +693,17 @@ class BluetoothMenu:
         finally:
             self._stop_scan_quietly()
             self.screen.timeout(1000)
+
+
+def audio_codec(address: str) -> str:
+    """The codec a connected Bluetooth audio device plays with (SBC, AAC, LDAC...), else ""."""
+    try:
+        import couchliteos_audio
+
+        graph = couchliteos_audio.query_graph()
+        return graph.codec(address) if graph else ""
+    except Exception:  # the codec is information only
+        return ""
 
 
 def run_bluetooth(screen: curses.window, client: BluetoothClient | None = None) -> None:

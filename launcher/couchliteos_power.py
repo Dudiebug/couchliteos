@@ -32,6 +32,9 @@ BLANK_CHOICES = (0, 2, 5, 10, 15, 30)  # minutes; 0 is off
 SLEEP_CHOICES = (0, 15, 30, 60, 120)
 DEFAULT_BLANK = 5
 DEFAULT_SLEEP = 30
+# On a battery the screen goes dark sooner; used only while the PC runs on its battery.
+BATTERY_BLANK_CHOICES = (0, 1, 2, 5, 10, 15, 30)
+DEFAULT_BATTERY_BLANK = 2
 # The "is an application running?" question is only asked after this much idle
 # time, and at most this often (it reads every application manifest).
 APP_CHECK_AFTER = 30.0
@@ -47,6 +50,7 @@ SLEEP = "sleep"
 class Settings:
     blank: int = DEFAULT_BLANK
     sleep: int = DEFAULT_SLEEP
+    battery_blank: int = DEFAULT_BATTERY_BLANK
 
 
 def minutes_label(minutes: int) -> str:
@@ -88,6 +92,7 @@ def load_settings(path: pathlib.Path = CONFIG) -> Settings:
     return Settings(
         blank=pick("blank_minutes", BLANK_CHOICES, DEFAULT_BLANK),
         sleep=pick("sleep_minutes", SLEEP_CHOICES, DEFAULT_SLEEP),
+        battery_blank=pick("battery_blank_minutes", BATTERY_BLANK_CHOICES, DEFAULT_BATTERY_BLANK),
     )
 
 
@@ -109,7 +114,10 @@ def save_settings(settings: Settings, path: pathlib.Path = CONFIG) -> None:
         kept[-1] += "\n"
     if kept and kept[-1].strip():
         kept.append("\n")
-    kept += ["[power]\n", f"blank_minutes = {settings.blank}\n", f"sleep_minutes = {settings.sleep}\n"]
+    kept += [
+        "[power]\n", f"blank_minutes = {settings.blank}\n", f"sleep_minutes = {settings.sleep}\n",
+        f"battery_blank_minutes = {settings.battery_blank}\n",
+    ]
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".config.ini.", dir=path.parent)
     try:
@@ -165,10 +173,14 @@ def can_suspend(run=subprocess.run, state_path: pathlib.Path = STATE) -> bool:
     return suspend_supported(logind_can_suspend(run), state)
 
 
-def effective_settings(settings: Settings, suspend_ok: bool, wake_ok: bool = True) -> Settings:
+def effective_settings(
+    settings: Settings, suspend_ok: bool, wake_ok: bool = True, on_battery: bool = False
+) -> Settings:
     """What to act on. A sleep timeout saved on a PC that cannot suspend, or that has nothing
     able to wake it again (see wake_sources), is ignored here, not erased, so it applies again
-    when the stick goes back to a PC where it works."""
+    when the stick goes back to a PC where it works. On battery, the battery blank delay applies."""
+    if on_battery:
+        settings = replace(settings, blank=settings.battery_blank)
     return settings if suspend_ok and wake_ok else replace(settings, sleep=0)
 
 

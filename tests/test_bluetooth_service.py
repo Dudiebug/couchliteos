@@ -332,6 +332,68 @@ class ControllerTest(unittest.TestCase):
         self.assertIn("NO AUDIO OUTPUT", controller._select_audio_sink("Headphones", "AA:BB:CC:DD:EE:FF"))
 
 
+class AudioDeviceTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.last = pathlib.Path(self.directory.name) / "bluetooth-audio-last"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def controller(self, **objects):
+        controller = bluetoothd.BluetoothController(
+            mock.Mock(), FakeDBus, FakeGLib(),
+            preference_path=pathlib.Path(self.directory.name) / "enabled", last_audio_path=self.last,
+        )
+        controller.objects = managed_objects(**objects)
+        controller.bluez_available = True
+        controller._call = mock.Mock()
+        return controller
+
+    def test_snapshot_carries_icon_class_and_battery(self):
+        controller = self.controller()
+        controller.objects[DEVICE_PATH][bluetoothd.DEVICE].update({"Icon": "audio-headphones", "Class": 0x240418})
+        controller.objects[DEVICE_PATH][bluetoothd.BATTERY] = {"Percentage": 64}
+        device = controller.snapshot()["devices"][0]
+        self.assertEqual((device["icon"], device["device_class"], device["battery"]), ("audio-headphones", 0x240418, 64))
+
+    def test_snapshot_without_battery_or_icon(self):
+        device = self.controller().snapshot()["devices"][0]
+        self.assertEqual((device["icon"], device["device_class"], device["battery"]), ("", 0, None))
+
+    def test_last_audio_device_is_reconnected_once(self):
+        self.last.write_text("aa:bb:cc:dd:ee:ff\n", encoding="ascii")
+        controller = self.controller()
+        controller._reconnect_last_audio()
+        controller._reconnect_last_audio()
+        controller._call.assert_called_once()
+        self.assertEqual(controller._call.call_args.args[:3], (DEVICE_PATH, bluetoothd.DEVICE, "Connect"))
+
+    def test_waits_for_the_adapter_to_be_powered(self):
+        self.last.write_text("AA:BB:CC:DD:EE:FF", encoding="ascii")
+        controller = self.controller(powered=False)
+        controller._reconnect_last_audio()
+        controller._call.assert_not_called()
+        self.assertFalse(controller.reconnect_tried)
+
+    def test_connected_unpaired_missing_or_bad_entries_are_skipped(self):
+        for objects, text in (
+            ({"connected": True}, "AA:BB:CC:DD:EE:FF"),
+            ({"paired": False}, "AA:BB:CC:DD:EE:FF"),
+            ({}, "11:22:33:44:55:77"),
+            ({}, "not an address"),
+            ({}, None),
+        ):
+            with self.subTest(objects=objects, text=text):
+                if text is None:
+                    self.last.unlink(missing_ok=True)
+                else:
+                    self.last.write_text(text, encoding="ascii")
+                controller = self.controller(**objects)
+                controller._reconnect_last_audio()
+                controller._call.assert_not_called()
+
+
 class ErrorReportingTest(unittest.TestCase):
     def controller(self, adapters=("hci0",)):
         directory = tempfile.TemporaryDirectory()
