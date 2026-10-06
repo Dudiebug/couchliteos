@@ -337,6 +337,13 @@ class ContentTest(unittest.TestCase):
         self.assertIn("Y / SQUARE (OR F9)", text)
         self.assertIn("HOME ON A KEYBOARD", text)
 
+    def test_0_3_0_says_how_to_go_back_to_the_old_look_right_after_the_new_one(self):
+        # Upgraders get the new interface and theme; they learn at once that the old ones are kept.
+        _release, features = whatsnew.RELEASES[0]
+        self.assertIn("NEW TV HOME SCREEN", features[0])
+        self.assertEqual(features[1], "PREFER THE OLD LOOK? SETTINGS > APPEARANCE > INTERFACE > CLASSIC")
+        self.assertEqual(features[2], "AND THE OLD COLOURS: SETTINGS > APPEARANCE > THEME > TERMINAL")
+
     def test_0_2_7_says_guide_stays_with_the_stream_and_how_to_get_home(self):
         release, features = whatsnew.RELEASES[1]
         self.assertEqual(release, "0.2.7")
