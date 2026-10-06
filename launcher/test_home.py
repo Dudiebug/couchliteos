@@ -386,6 +386,15 @@ class StatusTest(HomeTestCase):
             home.Status(clock="12:05", network="ONLINE", battery="CONTROLLER 80%", battery_low=True, update="0.3.1"),
         )
 
+    def test_the_pcs_own_battery_comes_first_and_its_low_level_counts(self):
+        pads = Monitors(line="CONTROLLER 80%", low=[], available="")
+        system = mock.Mock(line=mock.Mock(return_value="BATTERY 9%"), low=mock.Mock(return_value=True))
+        status = self.model(controllers=pads, battery=system, network=lambda: "", clock=lambda: self.NOON).status()
+        self.assertEqual((status.battery, status.battery_low), ("BATTERY 9% · CONTROLLER 80%", True))
+        system.line.return_value, system.low.return_value = "", False  # a box with no battery shows nothing new
+        status = self.model(controllers=pads, battery=system, network=lambda: "", clock=lambda: self.NOON).status()
+        self.assertEqual((status.battery, status.battery_low), ("CONTROLLER 80%", False))
+
     def test_without_monitors_the_fields_are_empty(self):
         status = self.model(network=lambda: "OFFLINE", clock=lambda: self.NOON).status()
         self.assertEqual((status.battery, status.battery_low, status.update), ("", False, ""))

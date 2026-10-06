@@ -70,7 +70,7 @@ class Status:
 
     clock: str  # "21:04"
     network: str  # "ONLINE" / "OFFLINE", or what the front end's network source says
-    battery: str  # the controllers' battery line
+    battery: str  # the PC's own battery, then the controllers' battery line
     battery_low: bool
     update: str  # the newer release on offer, "" when none
 
@@ -114,6 +114,7 @@ class HomeModel:
         history: Callable[[], dict[recent.Key, float]] = recent.load,
         controllers: object | None = None,  # controllers.Monitor: line(), low()
         updates: object | None = None,  # update.Checker: available()
+        battery: object | None = None,  # battery.Monitor (the PC's own): line(), low()
         network: Callable[[], str] = link_status,
         clock: Callable[[], time.struct_time] = time.localtime,
     ) -> None:
@@ -123,6 +124,7 @@ class HomeModel:
         self.history = history
         self.controllers = controllers
         self.updates = updates
+        self.battery = battery
         self.network = network
         self.clock = clock
         self.rows: list[Row] = []
@@ -253,17 +255,17 @@ class HomeModel:
         def clock() -> str:
             return time.strftime("%H:%M", self.clock())
 
-        def low() -> bool:
+        def low(monitor: object | None) -> bool:
             try:
-                return bool(self.controllers.low()) if self.controllers is not None else False
+                return bool(monitor.low()) if monitor is not None else False
             except Exception:  # noqa: BLE001
                 return False
 
-        controllers, updates = self.controllers, self.updates
+        lines = [_text(monitor.line) for monitor in (self.battery, self.controllers) if monitor is not None]
         return Status(
             clock=_text(clock),
             network=_text(self.network),
-            battery=_text(controllers.line) if controllers is not None else "",
-            battery_low=low(),
-            update=_text(updates.available) if updates is not None else "",
+            battery=" · ".join(line for line in lines if line),
+            battery_low=low(self.battery) or low(self.controllers),
+            update=_text(self.updates.available) if self.updates is not None else "",
         )

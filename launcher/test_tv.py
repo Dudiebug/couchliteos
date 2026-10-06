@@ -272,6 +272,36 @@ class ScreensTest(unittest.TestCase):
             tv.after_screen.assert_called()
 
 
+class BatteryTest(unittest.TestCase):
+    """The PC's own battery: a toast once per warning level, and the battery's screen-off times on unplug."""
+
+    def tick(self, warning=None, source_change=False):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.toast_feed, tv.toasts, tv.idle, tv.quick_open = mock.Mock(), mock.Mock(), mock.Mock(), False
+        tv.can_sleep, tv.can_wake = True, True
+        tv.battery = mock.Mock(take_warning=mock.Mock(return_value=warning),
+                               take_source_change=mock.Mock(return_value=source_change),
+                               on_battery=mock.Mock(return_value=True))
+        with mock.patch.object(module.controls, "detect_family", return_value="xbox"), \
+                mock.patch.object(module.power, "load_settings", return_value=module.power.Settings()):
+            tv.tick_quick()
+        return module, tv
+
+    def test_a_crossed_warning_level_is_a_toast(self):
+        module, tv = self.tick(warning=10)
+        tv.toasts.push.assert_called_once_with(module.battery.warning_text(10))
+
+    def test_no_warning_no_toast_and_no_power_change(self):
+        _module, tv = self.tick()
+        tv.toasts.push.assert_not_called()
+        tv.idle.apply.assert_not_called()
+
+    def test_unplugging_applies_the_battery_settings(self):
+        _module, tv = self.tick(source_change=True)
+        tv.idle.apply.assert_called_once()
+
+
 class LaunchFailureTest(unittest.TestCase):
     """A start that failed: the classic launcher's failure screen and its buttons, without GTK."""
 

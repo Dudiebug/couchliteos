@@ -37,6 +37,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_apps as apps
 import couchliteos_artwork as artwork
+import couchliteos_battery as battery
 import couchliteos_controllers as controllers
 import couchliteos_controls as controls
 import couchliteos_display as display
@@ -458,7 +459,7 @@ class Screens:
         self.updates.reload()  # SOFTWARE UPDATE's check is saved by the screen's own process
         self.can_sleep = power.can_suspend()
         self.can_wake = bool(power.wake_sources())
-        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
+        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()))
         self.size = (0, 0)  # the theme or the picture size may be new: CSS and sizes again
         self.relayout(self.screen_size())
         self.settings.refresh()
@@ -733,11 +734,14 @@ class Tv(Screens, Look, Script, session.Session):
         self.stream_host: stream.Host | None = None
         self.controllers = controllers.Monitor()
         self.updates = update.Checker()
-        self.model = home.HomeModel(applications=visible_applications, controllers=self.controllers, updates=self.updates)
+        self.battery = battery.Monitor()  # the PC's own battery; nothing shown without one
+        self.model = home.HomeModel(
+            applications=visible_applications, controllers=self.controllers, updates=self.updates, battery=self.battery,
+        )
         self.can_sleep = power.can_suspend()
         self.can_wake = bool(power.wake_sources())
         self.idle = tvlayout.IdleWatch(
-            power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake),
+            power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()),
             apps_running=self.apps_running, enabled=lambda: not power.smoke_test_active(),
         )
         self.css = Gtk.CssProvider()
@@ -1334,7 +1338,7 @@ class Tv(Screens, Look, Script, session.Session):
             self.idle.resumed()
             self.blank.set_visible(False)
             self.can_sleep = power.can_suspend()
-            self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake))
+            self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()))
             self.status = "RESUMED FROM SLEEP"
             session.focus_launcher()
             self.show("home")
@@ -1592,6 +1596,11 @@ class Tv(Screens, Look, Script, session.Session):
         """Once a second: the pad family for the prompts, new toasts, and the open menu's values."""
         self.family = controls.detect_family()
         self.toast_feed.poll()
+        if self.battery.take_source_change():  # mains <-> battery: the battery's screen-off times apply
+            self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()))
+        level = self.battery.take_warning()
+        if level is not None:
+            self.toasts.push(battery.warning_text(level))
         if self.quick_open:
             self.quick.refresh()
             self.render_quick()
@@ -1894,6 +1903,7 @@ class Tv(Screens, Look, Script, session.Session):
             return
         self.prepare_session()
         self.controllers.start()
+        self.battery.start()
         self.updates.start()
         self.pcstatus.start()
         self.build()
