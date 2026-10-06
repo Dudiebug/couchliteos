@@ -1667,6 +1667,8 @@ class LauncherTest(unittest.TestCase):
         ), mock.patch.object(launcher.controllers, "start"), mock.patch.object(
             launcher.pcstatus, "start"
         ), mock.patch.object(launcher.updates, "start"), mock.patch.object(
+            launcher.mic, "start"  # its thread would poll PipeWire through every later test's mocks
+        ), mock.patch.object(launcher.battery, "start"), mock.patch.object(
             self.module.curses, "curs_set"
         ), mock.patch.object(self.module.curses, "use_default_colors"), self.assertRaisesRegex(RuntimeError, "stop"):
             launcher.run()
