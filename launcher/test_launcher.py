@@ -1928,5 +1928,28 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(self.module.format_elapsed(65.9), "01:05")
 
 
+class RunScreenTest(unittest.TestCase):
+    """--screen NAME (the TV interface opening a classic screen) has no Launcher.run() loop."""
+
+    def test_the_battery_is_read_before_the_screen_draws(self):
+        # Otherwise it stays NO_BATTERY: no battery row in SLEEP & SCREEN, mains settings applied.
+        from test_controls import load_launcher
+
+        module = load_launcher()
+        launcher = mock.Mock()
+        seen = []
+        screens = {"sleep": lambda settings, app: seen.append(launcher.battery.refresh.called)}
+        with mock.patch.object(module, "Launcher", return_value=launcher), \
+                mock.patch.object(module, "register_failure_actions"), \
+                mock.patch.object(module, "connect_tv_control"), \
+                mock.patch.object(module, "Settings"), \
+                mock.patch.object(module, "SCREENS", screens), \
+                mock.patch.object(module.curses, "set_escdelay"), \
+                mock.patch.object(module.curses, "curs_set"), \
+                mock.patch.object(module.curses, "use_default_colors"):
+            module.run_screen(mock.Mock(), "sleep")
+        self.assertEqual(seen, [True])
+
+
 if __name__ == "__main__":
     unittest.main()

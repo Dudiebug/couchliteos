@@ -3573,6 +3573,8 @@ def run_screen(screen: curses.window, name: str, app: str = "") -> None:
         curses.use_default_colors()
     except curses.error:
         pass
+    # No run() loop here to start the battery monitor: read it once, or SLEEP & SCREEN sees no battery.
+    launcher.battery.refresh()
     SCREENS[name](Settings(screen, launcher), app)
 
 
