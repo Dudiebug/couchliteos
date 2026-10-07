@@ -40,6 +40,9 @@ def link(root, rel, target):
 
 class TmpCase(unittest.TestCase):
     def setUp(self):
+        # The updater runs as root (umask 022) and refuses group-writable folders; a login with
+        # umask 002 would otherwise make every fixture folder look tampered with.
+        self.addCleanup(os.umask, os.umask(0o022))
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = pathlib.Path(self._tmp.name)
