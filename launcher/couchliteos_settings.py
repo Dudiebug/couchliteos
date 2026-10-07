@@ -147,8 +147,12 @@ def delete_section(section: str, path: pathlib.Path = CONFIG) -> bool:
 
 
 def update_section(section: str, changes: dict, path: pathlib.Path = CONFIG) -> dict:
-    """Merge changes into the section and write it; returns the new section."""
-    values = read_section(section, path)
+    """Merge changes into the section and write it; returns the new section.
+
+    Existing entries write_section would refuse (hand-edited: a tab, a space in the key) are
+    dropped, or one of them would block every later save of the section."""
+    values = {key: value for key, value in read_section(section, path).items()
+              if _valid_key(key) and _valid_value(value)}
     values.update({key: str(value) for key, value in changes.items()})
     write_section(section, values, path)
     return values

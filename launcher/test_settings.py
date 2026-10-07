@@ -42,6 +42,15 @@ class SectionTest(unittest.TestCase):
         self.assertEqual(result, {"name": "midnight", "accent": "amber"})
         self.assertEqual(settings.read_section("theme", self.path), result)
 
+    def test_an_unwritable_hand_edited_entry_does_not_block_saving_the_section(self):
+        # A tab in a value or a space in a key: write_section refuses those, so update_section drops them.
+        self.path.write_text("[update]\nnote = a\tb\nmy key = 1\nauto = off\n")
+        result = settings.update_section("update", {"auto": "on"}, self.path)
+        self.assertEqual(result, {"auto": "on"})
+        self.assertEqual(settings.read_section("update", self.path), {"auto": "on"})
+        with self.assertRaises(ValueError):  # a bad new value is still refused
+            settings.update_section("update", {"auto": "a\tb"}, self.path)
+
     def test_bad_keys_values_and_sections_are_refused_and_nothing_is_written(self):
         for section, values in (
             ("ui", {"Bad Key": "x"}),
