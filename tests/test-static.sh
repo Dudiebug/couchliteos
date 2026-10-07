@@ -934,6 +934,11 @@ rg -q '^WantedBy=timers.target$' services/couchliteos-security-update.timer serv
 rg -q '^Unit=couchliteos-security-update.service$' services/couchliteos-security-update.path
 rg -q '^Unit=couchliteos-app-update.service$' services/couchliteos-app-update.path
 rg -q '^ProtectSystem=strict$' services/couchliteos-app-update.service
+# Under strict, its lock (/run/couchliteos-update), log and apps folders must be writable.
+rg -q '^ReadWritePaths=.* /var/lib/couchliteos-apps$' services/couchliteos-app-update.service
+rg -q '^RuntimeDirectory=couchliteos-update$' services/couchliteos-app-update.service
+rg -q '^RuntimeDirectoryPreserve=yes$' services/couchliteos-app-update.service
+rg -q '^LogsDirectory=couchliteos-update$' services/couchliteos-app-update.service
 rg -q 'test_appupdate.py test_securityupdate.py' launcher/Makefile
 refute rg -q 'Automatic-Reboot "true"' build/unattended-upgrades.sh
 

@@ -17,7 +17,12 @@ IOSchedulingClass=idle
 # Root only writes below these: a symlink planted in the couchliteos user's own folders cannot
 # point it at the system. New app versions are test-run as the couchliteos user (setpriv).
 ProtectSystem=strict
-ReadWritePaths=/var/lib/couchliteos /var/cache/couchliteos /var/log/couchliteos /run/couchliteos -/var/lib/flatpak
+ReadWritePaths=/var/lib/couchliteos /var/cache/couchliteos /var/log/couchliteos /run/couchliteos -/var/lib/flatpak /var/lib/couchliteos-apps
+# The lock and log folders are root's own (couchliteos_safefile.root_dir); systemd makes them so
+# they are writable here. Kept on stop: the browser installer takes its lock in the same folder.
+RuntimeDirectory=couchliteos-update
+RuntimeDirectoryPreserve=yes
+LogsDirectory=couchliteos-update
 ProtectHome=yes
 PrivateTmp=yes
 StandardOutput=journal
