@@ -361,6 +361,7 @@ rg -q 'install -d -o root -g root -m 0700 /var/lib/couchliteos/rdp-secrets' conf
 rg -q 'couchliteos_rdp.py' build/configure.sh
 rg -q 'couchliteos-rdp-secret' build/configure.sh
 rg -q 'InaccessiblePaths=.*-/var/lib/couchliteos/rdp-secrets' services/couchliteos-support-export.service
+rg -q '^TimeoutStartSec=5min$' services/couchliteos-support-export.service
 rg -q 'FREERDP_SECRET_ARGUMENT' scripts/couchliteos-support-export
 rg -q 'BTN_NORTH: ecodes.KEY_F12' launcher/gamepad-nav.py
 rg -q '"REMOTE DESKTOP"' launcher/couchliteos-launcher.py

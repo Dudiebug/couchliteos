@@ -8,6 +8,8 @@ User=root
 Group=root
 ExecStart=/usr/libexec/couchliteos-support-export
 UMask=0077
+# The launcher gives up waiting after 180 s; never let a stuck collector hold the unit forever.
+TimeoutStartSec=5min
 # No NoNewPrivileges: with it setpriv cannot drop to the couchliteos user
 # ("setresuid failed: Operation not permitted"), and wlr-randr, vainfo and
 # vulkaninfo are run as that user. RestrictSUIDSGID still forbids set-id files.
