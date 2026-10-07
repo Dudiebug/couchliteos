@@ -168,11 +168,15 @@ class UnitTest(unittest.TestCase):
         self.assertIn("/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1", unit)
         # 45 s (x the QEMU timeout scale): two TV attempts (12 s each) and the classic launcher.
         self.assertIn("for ((i = 0; i < 450 * s; i++))", unit)
-        self.assertIn("read -r s 2>/dev/null < /sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.timeout-scale/raw;"
+        self.assertIn("read -r s 2>/dev/null < /run/couchliteos-timeout-scale;"
                       " [[ $${s-} =~ ^[1-9]$$ ]] || s=1;", unit)
+        # fw_cfg files are root-only (0400): a root step copies the scale for the service user.
+        self.assertIn("\nExecStartPre=+/bin/sh -c 'cat /sys/firmware/qemu_fw_cfg/by_name/opt/"
+                      "couchliteos.timeout-scale/raw > /run/couchliteos-timeout-scale 2>/dev/null; exit 0'\n", unit)
         self.assertIn("\nTimeoutStartSec=600\n", unit)  # the wait above, not systemd's 90 s, decides
         script = SCRIPT.read_text()
         self.assertIn("READY_SECONDS=$(( ${COUCHLITEOS_READY_SECONDS:-12} * scale ))", script)
+        self.assertIn("SCALE_FILE=${COUCHLITEOS_SCALE_FILE:-/run/couchliteos-timeout-scale}", script)
 
     def test_the_build_installs_both_front_ends(self):
         configure = (ROOT / "build/configure.sh").read_text()

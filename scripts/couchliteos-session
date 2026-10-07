@@ -32,8 +32,9 @@ LAUNCHER=${COUCHLITEOS_LAUNCHER:-/usr/libexec/couchliteos-launcher}
 CONFIG=$STATE_DIR/config.ini
 INIT_FAILED=3
 # QEMU without KVM is many times slower than any PC: the QEMU tests pass their slow-down factor
-# (1-9) in fw_cfg, and the first-frame limit grows with it. PCs have no such file: 12 s.
-SCALE_FILE=${COUCHLITEOS_SCALE_FILE:-/sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.timeout-scale/raw}
+# (1-9) in fw_cfg, and the first-frame limit grows with it. The unit copies it here as root
+# (fw_cfg is root-only); on a PC the file is empty: 12 s.
+SCALE_FILE=${COUCHLITEOS_SCALE_FILE:-/run/couchliteos-timeout-scale}
 read -r scale 2>/dev/null < "$SCALE_FILE"
 [[ ${scale-} =~ ^[1-9]$ ]] || scale=1
 READY_SECONDS=$(( ${COUCHLITEOS_READY_SECONDS:-12} * scale ))

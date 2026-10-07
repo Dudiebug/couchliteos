@@ -33,10 +33,12 @@ ExecStartPre=/bin/bash -c 'f=/var/log/couchliteos/launcher.log; if [ "$$(stat -c
 # couchliteos-session runs the TV interface, retries it without GL, then falls back to the
 # classic launcher (curses in foot); the wait below (45 s) covers all three starts, each TV
 # attempt getting 12 s for its first frame. Both grow with the QEMU tests' slow-down factor
-# (fw_cfg; PCs have none), so the wait, not systemd's 90 s start limit, decides.
+# (fw_cfg; PCs have none), so the wait, not systemd's 90 s start limit, decides. fw_cfg files are
+# root-only (0400), so this root step (+) copies the factor where the service user can read it.
+ExecStartPre=+/bin/sh -c 'cat /sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.timeout-scale/raw > /run/couchliteos-timeout-scale 2>/dev/null; exit 0'
 TimeoutStartSec=600
 ExecStart=/bin/bash -o pipefail -c '/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1 | /usr/bin/tee -a /var/log/couchliteos/launcher.log'
-ExecStartPost=/bin/bash -c 'read -r s 2>/dev/null < /sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.timeout-scale/raw; [[ $${s-} =~ ^[1-9]$$ ]] || s=1; for ((i = 0; i < 450 * s; i++)); do if test -e /run/couchliteos/launcher-ready; then echo COUCHLITEOS_LAUNCHER_READY; exit 0; fi; sleep 0.1; done; exit 1'
+ExecStartPost=/bin/bash -c 'read -r s 2>/dev/null < /run/couchliteos-timeout-scale; [[ $${s-} =~ ^[1-9]$$ ]] || s=1; for ((i = 0; i < 450 * s; i++)); do if test -e /run/couchliteos/launcher-ready; then echo COUCHLITEOS_LAUNCHER_READY; exit 0; fi; sleep 0.1; done; exit 1'
 Restart=always
 RestartSec=2
 TTYPath=/dev/tty1
