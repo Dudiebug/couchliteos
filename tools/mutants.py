@@ -16,6 +16,7 @@ LAUNCHER = ("launcher/couchliteos-launcher.py", ["test_launcher.py"], ROOT / "la
 EXPORT = ("scripts/couchliteos-support-export", ["tests/test_support.py"], ROOT)
 PERSIST = ("scripts/couchliteos-persist-setup", ["tests/test_persist_setup.py"], ROOT)
 APPUPDATE = ("launcher/couchliteos_appupdate.py", ["test_appupdate.py"], ROOT / "launcher")
+SESSION = ("scripts/couchliteos-session", ["tests/test_tv_fallback.py"], ROOT)
 MUTANTS = (
     (
         ISO_BOOT,
@@ -119,6 +120,18 @@ MUTANTS = (
         "install a download whose checksum does not match",
         "    if digest.hexdigest() != entry.sha256:",
         "    if False:",
+    ),
+    (
+        SESSION,
+        "ignore the QEMU timeout scale",
+        "READY_SECONDS=$(( ${COUCHLITEOS_READY_SECONDS:-12} * scale ))",
+        "READY_SECONDS=${COUCHLITEOS_READY_SECONDS:-12}",
+    ),
+    (
+        SESSION,
+        "accept any number as the scale",
+        "[[ ${scale-} =~ ^[1-9]$ ]] || scale=1",
+        "[[ ${scale-} =~ ^[0-9]+$ ]] || scale=1",
     ),
 )
 

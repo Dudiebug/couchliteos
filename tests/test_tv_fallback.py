@@ -11,7 +11,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "couchliteos-session"
 # The fake TV interface: exits with the next status from $FAKE_STATUSES ("3 0" = fails, then works),
 # writing launcher-ready first when the status is listed in $FAKE_READY_ON. "hang" never draws a
-# frame; "segv" draws one (launcher-ready) and is killed by SIGSEGV at once, "late-segv" 2 s later.
+# frame; "segv" draws one (launcher-ready) and is killed by SIGSEGV at once, "late-segv" 2 s later;
+# "slow" draws its first frame after 2 s and then runs normally.
 FAKE_TV = """#!/bin/bash
 count=$(wc -l < "$FAKE_LOG" 2>/dev/null || echo 0)
 printf 'tv GSK_RENDERER=%s\\n' "${GSK_RENDERER:-}" >> "$FAKE_LOG"
@@ -21,6 +22,7 @@ case $status in
   hang) exec sleep 60 ;;
   segv) touch "$COUCHLITEOS_RUN_DIR/launcher-ready"; kill -SEGV $$ ;;
   late-segv) touch "$COUCHLITEOS_RUN_DIR/launcher-ready"; sleep 2; kill -SEGV $$ ;;
+  slow) sleep 2; touch "$COUCHLITEOS_RUN_DIR/launcher-ready"; exit 0 ;;
 esac
 for ready in $FAKE_READY_ON; do
   [[ $ready == "$status" ]] && touch "$COUCHLITEOS_RUN_DIR/launcher-ready"
@@ -48,10 +50,14 @@ class FallbackTest(unittest.TestCase):
         self.tv.chmod(0o755)
         self.foot.chmod(0o755)
 
-    def session(self, statuses="0", ready_on="0", config=None):
+    def session(self, statuses="0", ready_on="0", config=None, scale=None):
         if config is not None:
             (self.state / "config.ini").write_text(config)
+        scale_file = self.run.parent / "timeout-scale"
+        if scale is not None:
+            scale_file.write_bytes(scale)
         env = {
+            "COUCHLITEOS_SCALE_FILE": str(scale_file),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "COUCHLITEOS_STATE_DIR": str(self.state), "COUCHLITEOS_RUN_DIR": str(self.run),
             "COUCHLITEOS_TV": str(self.tv), "COUCHLITEOS_FOOT": str(self.foot),
@@ -121,6 +127,20 @@ class FallbackTest(unittest.TestCase):
         self.assertEqual(result.returncode, 128 + 11)
         self.assertEqual(calls, ["tv GSK_RENDERER="])
 
+    def test_the_qemu_timeout_scale_gives_a_slow_first_frame_more_time(self):
+        # QEMU without KVM (tests/qemu-*.sh pass opt/couchliteos.timeout-scale): 1 s x 3.
+        result, calls = self.session("slow", scale=b"3")
+        self.assertEqual(calls, ["tv GSK_RENDERER="])
+        self.assertEqual(self.interface(), ["tv", "first try"])
+        self.assertNotIn("no first frame", result.stderr)
+
+    def test_without_a_usable_scale_a_slow_first_frame_is_stopped(self):
+        for scale in (None, b"", b"0", b"abc", b"10", b"3; touch x"):
+            self.log.unlink(missing_ok=True)
+            result, calls = self.session("slow 0", scale=scale)
+            self.assertEqual(calls, ["tv GSK_RENDERER=", "tv GSK_RENDERER=cairo"], scale)
+            self.assertIn("no first frame within 1 s", result.stderr)
+
     def test_interface_classic_skips_the_tv_interface(self):
         for config in ("[appearance]\ninterface = classic\n", "[Appearance]\nInterface=CLASSIC\n"):
             self.log.unlink(missing_ok=True)
@@ -146,9 +166,13 @@ class UnitTest(unittest.TestCase):
     def test_the_launcher_unit_runs_the_session_wrapper_and_waits_for_a_double_fallback(self):
         unit = (ROOT / "services/couchliteos-launcher.service").read_text()
         self.assertIn("/usr/bin/cage -s -- /usr/libexec/couchliteos-session 2>&1", unit)
-        self.assertIn("for i in {1..450}", unit)  # 45 s: two TV attempts (12 s each) and the classic launcher
+        # 45 s (x the QEMU timeout scale): two TV attempts (12 s each) and the classic launcher.
+        self.assertIn("for ((i = 0; i < 450 * s; i++))", unit)
+        self.assertIn("read -r s 2>/dev/null < /sys/firmware/qemu_fw_cfg/by_name/opt/couchliteos.timeout-scale/raw;"
+                      " [[ $${s-} =~ ^[1-9]$$ ]] || s=1;", unit)
+        self.assertIn("\nTimeoutStartSec=600\n", unit)  # the wait above, not systemd's 90 s, decides
         script = SCRIPT.read_text()
-        self.assertIn("READY_SECONDS=${COUCHLITEOS_READY_SECONDS:-12}", script)
+        self.assertIn("READY_SECONDS=$(( ${COUCHLITEOS_READY_SECONDS:-12} * scale ))", script)
 
     def test_the_build_installs_both_front_ends(self):
         configure = (ROOT / "build/configure.sh").read_text()
