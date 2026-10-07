@@ -6,7 +6,7 @@ shows at once; nothing restarts.
 
 | Row | Does |
 |---|---|
-| THEME | Picks a theme: one of the four built in, or one of your own (below) |
+| THEME | Picks a theme: one of the five built in, or one of your own (below) |
 | ACCENT | THEME DEFAULT, or BLUE, AMBER, GREEN, RED, PURPLE, PINK, TEAL or ORANGE in place of the theme's own accent colour |
 | SOUNDS | The navigation sounds ON or OFF |
 | ARTWORK | Cover lookup for games |
@@ -19,6 +19,7 @@ shows at once; nothing restarts.
 | SLATE | Dark grey with an amber accent |
 | DAYLIGHT | Light background with dark text, for a bright room |
 | HIGH CONTRAST | Black and white with a yellow focus; text on the focus is black |
+| TERMINAL | The look before 0.3.0: white text on black, the selection in reverse video |
 
 | MIDNIGHT | SLATE |
 |---|---|

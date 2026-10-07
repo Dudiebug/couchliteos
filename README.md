@@ -29,7 +29,7 @@ It is built on Debian 13 and is not a general-purpose desktop.
 - **Per-game stream settings:** hold X / Triangle on a game to pick
   PERFORMANCE, BALANCED, QUALITY or your own resolution, frame rate and bitrate
   for that game alone.
-- **Themes:** four built in (including a light one and a high-contrast one),
+- **Themes:** five built in (including a light one and a high-contrast one),
   eight accent colours, and [your own](docs/THEMES.md).
 - **Couch-first controls:** every screen works with an Xbox, PlayStation,
   Nintendo-style or generic controller, a keyboard, or the TV remote over
@@ -51,8 +51,8 @@ It is built on Debian 13 and is not a general-purpose desktop.
   network, and turn the TV on and off with the box.
 - **Updates from the couch, and a way back:** CouchLiteOS checks for a new
   release at every start and asks if you want it; Settings > SOFTWARE UPDATE
-  installs it and keeps your settings and pairings. It saves the current system
-  first, so if the new version misbehaves, RESTORE PREVIOUS VERSION (or the boot
+  installs it and keeps your settings and pairings. By default (SAVE BEFORE
+  UPDATE) it saves the current system first, so if the new version misbehaves, RESTORE PREVIOUS VERSION (or the boot
   menu) puts it back. Older boxes, including MoonlightOS, update from the USB
   stick with UPDATE THE INSTALLED SYSTEM; see
   [Updating](https://github.com/Dudiebug/couchliteos/wiki/Updating).

@@ -4,8 +4,8 @@ This page moved to the wiki: [Install](https://github.com/Dudiebug/couchliteos/w
 
 In short:
 
-- A disk of 32 GB or more is recommended: every update keeps the system it
-  replaces (about 2 GB), and needs about 7 GB free to save it
+- A disk of 32 GB or more is recommended: with SAVE BEFORE UPDATE on (the
+  default), every update keeps the system it replaces (about 2 GB), and needs about 7 GB free to save it
   ([Disk space](https://github.com/Dudiebug/couchliteos/wiki/Install#disk-space)).
 - The download no longer includes a web browser. You pick Firefox or Google
   Chrome during setup, or later in Settings > APPLICATIONS > ADD A WEB BROWSER,

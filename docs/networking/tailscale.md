@@ -86,8 +86,9 @@ No router port forwards are required for the tailnet path.
 ## Tailscale SSH
 
 Tailscale SSH is off by default and no OpenSSH server is installed. After
-enrollment, choose **Enable Tailscale SSH**. This runs the supported incremental
-command `tailscale set --ssh=true`. Both a network grant and an SSH rule in the
+enrollment, turn it on from a console with `sudo couchliteos-tailscale ssh-enable`
+(there is no launcher item for it). This runs the supported incremental command
+`tailscale set --ssh=true`. Both a network grant and an SSH rule in the
 tailnet policy remain mandatory. `couchliteos-tailscale logout` refuses to run
 without `--confirm` because logout destroys the node identity.
 
