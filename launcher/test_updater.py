@@ -524,6 +524,21 @@ class RsyncStepsTest(unittest.TestCase):
                         "/etc/", "/var/", "/usr/lib/locale/locale-archive"):
             self.assertIn(f"--exclude={pattern}", argv)
 
+    @unittest.skipUnless(shutil.which("rsync"), "needs rsync (the build VMs have it)")
+    def test_the_system_run_keeps_the_boxs_initrds_until_the_boot_menu_step(self):
+        # The image has no initrd (config/live-build/rootfs/excludes). Deleting the box's would leave
+        # it unbootable until update-initramfs runs, minutes later: a power cut in between is fatal.
+        with tempfile.TemporaryDirectory() as tmp:
+            image, target, rules = pathlib.Path(tmp, "image"), pathlib.Path(tmp, "target"), pathlib.Path(tmp, "a.rules")
+            put(image, "boot/vmlinuz-6.12.2", "new kernel")
+            put(target, "boot/vmlinuz-6.12.1", "old kernel")
+            put(target, "boot/initrd.img-6.12.1", "old initrd")
+            rules.write_text("")
+            argv = dict(updater.rsync_steps(image, target, rules, rules))["system"]
+            subprocess.run(argv, check=True, capture_output=True)
+            self.assertEqual(sorted(p.name for p in (target / "boot").iterdir()),
+                             ["initrd.img-6.12.1", "vmlinuz-6.12.2"])
+
     def test_etc_run_has_no_delete_and_excludes_the_keep_list(self):
         argv = self.steps()[0]["etc"]
         self.assertNotIn("--delete-after", argv)
@@ -1627,6 +1642,18 @@ class ApplyRootTest(TmpCase):
         names = [call[-1] for call in self.runner.commands("rsync")]
         self.assertEqual(names, [
             f"{self.target}/", f"{self.target}/etc/", f"{self.target}/var/", f"{self.target}/var/lib/dpkg/"])
+
+    def test_after_the_boot_menu_only_initrds_whose_kernel_is_gone_are_removed(self):
+        put(self.target, "boot/initrd.img-6.1.0", "old")  # its vmlinuz went with the system step
+        self.apply()
+        self.assertEqual(sorted(p.name for p in (self.target / "boot").glob("initrd.img-*")), ["initrd.img-6.12.1"])
+
+    def test_a_failed_boot_menu_removes_no_initrd(self):
+        put(self.target, "boot/initrd.img-6.1.0", "old")
+        self.fail = {"update-grub": (1, "")}
+        with self.assertRaises(updater.UpdateFailed):
+            self.apply()
+        self.assertTrue((self.target / "boot/initrd.img-6.1.0").exists())
 
     def test_after_the_syncs_the_target_gets_its_boot_menu_rebuilt_in_a_chroot(self):
         t = str(self.target)

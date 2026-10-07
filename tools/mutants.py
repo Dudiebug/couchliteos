@@ -17,6 +17,7 @@ EXPORT = ("scripts/couchliteos-support-export", ["tests/test_support.py"], ROOT)
 PERSIST = ("scripts/couchliteos-persist-setup", ["tests/test_persist_setup.py"], ROOT)
 APPUPDATE = ("launcher/couchliteos_appupdate.py", ["test_appupdate.py"], ROOT / "launcher")
 SESSION = ("scripts/couchliteos-session", ["tests/test_tv_fallback.py"], ROOT)
+UPDATER = ("launcher/couchliteos_updater.py", ["test_updater.py"], ROOT / "launcher")
 MUTANTS = (
     (
         ISO_BOOT,
@@ -132,6 +133,12 @@ MUTANTS = (
         "accept any number as the scale",
         "[[ ${scale-} =~ ^[1-9]$ ]] || scale=1",
         "[[ ${scale-} =~ ^[0-9]+$ ]] || scale=1",
+    ),
+    (
+        UPDATER,
+        "delete the box's initrds in the system copy",
+        '"--exclude=/boot/initrd.img-*", _rsync_dir(image, "/")',
+        '_rsync_dir(image, "/")',
     ),
 )
 

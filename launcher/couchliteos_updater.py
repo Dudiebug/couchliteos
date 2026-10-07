@@ -844,8 +844,10 @@ def rsync_steps(
 
     base = list(RSYNC_BASE)
     return [
+        # The image has no initrd: the box's stay until _boot_menu has made the new ones (a power
+        # cut in between must not leave a kernel without one), then it removes those without a kernel.
         ("system", [*base, "--delete-after", f"--filter=merge {filter_system}", *excludes(SYSTEM_EXCLUDES),
-                    _rsync_dir(image, "/"), _rsync_dir(target, "/")]),
+                    "--exclude=/boot/initrd.img-*", _rsync_dir(image, "/"), _rsync_dir(target, "/")]),
         ("etc", [*base, *excludes(ETC_KEEP), _rsync_dir(image, "/etc/"), _rsync_dir(target, "/etc/")]),
         ("var", [*base, *excludes(VAR_EXCLUDES), _rsync_dir(image, "/var/"), _rsync_dir(target, "/var/")]),
         ("dpkg", [*base, "--delete-after", f"--filter=merge {filter_dpkg}", "--exclude=/status",
@@ -1072,6 +1074,10 @@ def _boot_menu(target: pathlib.Path, env: Env, log: Callable[[str], None], step,
         for command in commands:
             if sh(env, ["chroot", str(target), *command], log).returncode != 0:
                 raise UpdateFailed(MSG_BOOT_MENU)
+    for initrd in (target / "boot").glob("initrd.img-*"):  # kept by the system step for safety
+        if initrd.name.removeprefix("initrd.img-") not in kernels:
+            log(f"removing /boot/{initrd.name}: its kernel is gone")
+            initrd.unlink()
 
 
 # ------------------------------------------------------------------ the snapshot before an update
