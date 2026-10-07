@@ -6,7 +6,9 @@ ConditionKernelCommandLine=|couchliteos.restore=1
 # The request is in root's own directory: the couchliteos user cannot create it.
 ConditionPathExists=|/var/lib/couchliteos-update/snapshot/restore-request
 After=local-fs.target systemd-tmpfiles-setup.service
-Before=couchliteos-launcher.service couchliteos-update.path couchliteos-snapshot-delete.path
+# The services, not their .path units: those start before basic.target and this after it, so
+# ordering against them is a cycle systemd breaks by dropping a job (the restore request's watch).
+Before=couchliteos-launcher.service couchliteos-update.service couchliteos-snapshot-delete.service
 # Nothing running as the couchliteos user may start while the restore rewrites its directories:
 # these two start before the launcher; every other User=couchliteos unit starts after it.
 Before=couchliteos-bluetooth.service couchliteos-audio.service

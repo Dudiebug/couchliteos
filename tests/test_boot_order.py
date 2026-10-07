@@ -8,7 +8,6 @@ the device jobs time out after 90 s and the box lands in emergency mode.
 v0.2.1 shipped exactly that (couchliteos-migrate.service).
 """
 
-import configparser
 import pathlib
 import unittest
 
@@ -18,10 +17,15 @@ NEEDS_UDEV = {"local-fs.target", "swap.target", "remote-fs.target", "sysinit.tar
 
 
 def parse(text):
-    parser = configparser.ConfigParser(strict=False, interpolation=None, delimiters=("=",))
-    parser.optionxform = str
-    parser.read_string(text)
-    unit = parser["Unit"] if parser.has_section("Unit") else {}
+    # Not configparser: systemd adds up repeated keys (two Before= lines), configparser keeps the last.
+    unit, section = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Unit]" and "=" in line and not line.startswith(("#", ";")):
+            key, value = line.split("=", 1)
+            unit[key.strip()] = (unit.get(key.strip(), "") + " " + value).strip()
     words = lambda key: unit.get(key, "").split()
     return {
         "after": set(words("After")),
@@ -57,6 +61,24 @@ def violations(units):
             problems.append(f"{name} runs before udev but has RequiresMountsFor=")
         if spec["default_deps"]:
             problems.append(f"{name} runs before udev but keeps DefaultDependencies")
+    return problems
+
+
+EARLY_KINDS = (".path", ".socket", ".timer")  # with default deps: before paths/sockets/timers.target
+
+
+def basic_cycles(units):
+    """A service with default dependencies starts after basic.target, and a path, socket or timer
+    unit before it: ordering the first before the second is a cycle, and systemd breaks it by
+    dropping one of the jobs (0.3.0 beta: the restore request's .path unit never started)."""
+    problems = []
+    for name, spec in units.items():
+        if not (name.endswith(".service") and spec["default_deps"]):
+            continue
+        later = set(spec["before"]) | {other for other, o in units.items() if name in o["after"]}
+        for other in sorted(later):
+            if other.endswith(EARLY_KINDS) and units.get(other, {"default_deps": True})["default_deps"]:
+                problems.append(f"{name} runs after basic.target but is ordered before {other}")
     return problems
 
 
@@ -99,6 +121,22 @@ class BootOrderTest(unittest.TestCase):
         units = {"migrate.service": parse("[Unit]\nDefaultDependencies=no\nAfter=local-fs.target\n"
                                           "Before=sysinit.target systemd-tmpfiles-setup.service\n")}
         self.assertEqual(violations(units), [])
+
+    def test_no_service_is_ordered_before_a_path_socket_or_timer_unit(self):
+        self.assertEqual(basic_cycles(load()), [])
+
+    def test_catches_the_restore_path_cycle_both_ways(self):
+        units = {
+            "restore.service": parse("[Unit]\nBefore=update.path\n"),
+            "update.path": parse("[Unit]\n"),
+            "delete.path": parse("[Unit]\nAfter=restore.service\n"),
+            "early.service": parse("[Unit]\nDefaultDependencies=no\nBefore=update.path\n"),
+            "late.service": parse("[Unit]\nBefore=update.service\n"),
+        }
+        self.assertEqual(sorted(basic_cycles(units)), [
+            "restore.service runs after basic.target but is ordered before delete.path",
+            "restore.service runs after basic.target but is ordered before update.path",
+        ])
 
 
 if __name__ == "__main__":
