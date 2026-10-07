@@ -209,6 +209,7 @@ class DiagnosticsViewerTest(TerminalAppTest):
         for name in (
             "couchliteos-usbip", "journalctl", "systemctl", "clear", "vulkaninfo", "vainfo",
             "wpctl", "aplay", "nmcli", "ip", "lsusb", "lspci", "lscpu", "rfkill", "wlr-randr",
+            "systemd-analyze",  # 8 s per call on a busy build VM: the report outran read_until
         ):
             self.stub(name, "exit 0\n")
 
