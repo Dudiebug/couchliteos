@@ -166,6 +166,9 @@ case $mode in
     printf '\n[qemu-smoke]\nafter_snapshot = yes\n' >> /var/lib/couchliteos/config.ini
     python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
       /var/lib/couchliteos-update/snapshot/previous.json > /var/lib/couchliteos-smoke-restore-version
+    # The request service restarts the box at once, which may stop this script mid-wait.
+    trap '[[ -e /var/lib/couchliteos-update/snapshot/restore-request ]] || exit 1
+          echo COUCHLITEOS_SMOKE_RESTORE_REQUESTED; exit 0' TERM
     runuser -u couchliteos -- touch /run/couchliteos/restore-request
     wait_for_file /var/lib/couchliteos-update/snapshot/restore-request 'the restore request'
     sync
