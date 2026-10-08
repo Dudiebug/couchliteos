@@ -201,4 +201,4 @@ for problem in problems:
     print(f"tv-headless: {problem}", file=sys.stderr)
 sys.exit(1 if problems else 0)
 EOF
-echo "tv-headless: all screens open at 1920x1080 and 1280x720, first boot opens setup ($PYTHON); screenshots in $SHOTS"
+echo "tv-headless: all screens open at 1920x1080 and 1280x720 (XMB and rows), first boot opens setup ($PYTHON); screenshots in $SHOTS"
