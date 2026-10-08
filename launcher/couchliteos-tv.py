@@ -1963,13 +1963,13 @@ class Tv(Screens, Look, Script, session.Session):
 
     def music_holds(self) -> None:
         """The music fades out while an application or a stream is in front, a classic screen is
-        open (some have their own test sounds), something starts, or the screen is blank."""
+        open (some have their own test sounds), something starts (not a question), or the screen is blank."""
         try:
             running = self.apps_running()
         except Exception:  # noqa: BLE001
             running = True
         for reason, held in (("app", running), ("screen", self.child_pid is not None),
-                             ("start", bool(self.busy_depth)), ("blank", self.idle.blanked)):
+                             ("start", bool(self.busy_depth) and self.mode == "busy"), ("blank", self.idle.blanked)):
             (self.music.hold if held else self.music.release)(reason)
 
     def stop_music(self, _application=None) -> None:
