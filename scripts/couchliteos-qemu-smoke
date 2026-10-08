@@ -359,14 +359,15 @@ updater.refuse_layout(updater.Env())
     ;;
   live-update-apply)
     # Boot 1 of the self-update proof. The stick boots from its own virtio disk, so the update ISO
-    # attached as a CD-ROM is the only optical drive with a disc. Its name depends on what else the host
-    # attached (sr0 or sr1), so look it up in sysfs and insist on exactly one disc.
+    # attached as a CD-ROM is the only optical drive with a disc (q35 adds an empty one). Its name depends
+    # on what else the host attached (sr0 or sr1), so probe each and insist on exactly one disc. blkid -p,
+    # not /sys/block/sr*/size: that stays 0 until something opens the drive.
     update_cd=
     for _ in $(seq 1 "$(scaled 600)"); do
       discs=()
-      for disc in /sys/block/sr*; do
-        [[ -e $disc ]] || continue
-        (( $(< "$disc/size") > 0 )) && discs+=("/dev/${disc##*/}")
+      for disc in /dev/sr*; do
+        [[ -b $disc ]] || continue
+        [[ $(blkid -p -s TYPE -o value "$disc" 2>/dev/null) == iso9660 ]] && discs+=("$disc")
       done
       if (( ${#discs[@]} == 1 )); then
         update_cd=${discs[0]}

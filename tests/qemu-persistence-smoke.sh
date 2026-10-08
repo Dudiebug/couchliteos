@@ -146,7 +146,7 @@ boot_and_wait live-persist-setup-check COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_KEPT
 # SELF-UPDATING STICK: the same ISO is attached as a CD-ROM and installed into the stick's live slot
 # (live-update/current on the persistence partition). Boot 1 applies it from the CD-ROM, which is the
 # only optical drive: the stick boots from its own virtio disk (-boot order=c keeps it first). Boot 2
-# has no CD-ROM: GRUB must pick the "(Updated)" entry by itself (next_entry on the stick's grubenv),
+# has no CD-ROM: GRUB must pick the "(Updated)" entry by itself (it is listed first once its slot is ok),
 # and the state written before the update must still be there.
 BOOT_LIMIT=2700 boot_and_wait live-update-apply COUCHLITEOS_SMOKE_LIVE_UPDATE_APPLIED \
   -boot order=c -drive "file=$ISO,media=cdrom,readonly=on"
