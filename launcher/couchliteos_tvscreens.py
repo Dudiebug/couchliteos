@@ -24,7 +24,6 @@ import pathlib
 import time
 from collections.abc import Callable, Mapping
 
-import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_power as power
 import couchliteos_softwareupdate as softwareupdate
@@ -52,7 +51,7 @@ SCREENS = (
     "display", "appearance", "audio", "bluetooth", "controllers", "network", "sleep", "applications",
     "remote-desktop", "streaming", "tv-control", "software-update", "controls", "setup-wizard",
     "support-file",
-    "setup",  # the first-run wizard (and the CONTROLS screen once after it)
+    "setup",  # the first-run wizard
     "connect",  # start the Remote Desktop connection --app names: certificate and password first
 )
 
@@ -63,7 +62,7 @@ SCREEN, APP, VIEW = "screen", "app", "view"  # a curses screen, an application, 
 class Entry:
     label: str  # the classic SETTINGS_MENU row
     kind: str  # SCREEN, APP or VIEW
-    target: str  # the --screen name, the application id, or the view ("active", "updates", "home")
+    target: str  # the --screen name, the application id, or the view ("active", "updates", "help", "home")
     help: str  # the right pane: what is in there
 
 
@@ -87,6 +86,7 @@ ENTRIES = (
     Entry("SETUP WIZARD", SCREEN, "setup-wizard", "GO THROUGH THE FIRST-START SETUP AGAIN"),
     Entry("GENERATE SUPPORT FILE", SCREEN, "support-file", "SAVE THE LOGS FOR A BUG REPORT"),
     Entry("SYSTEM DIAGNOSTICS", APP, "system-diagnostics", "CHECKS OF THIS BOX'S HARDWARE AND NETWORK"),
+    Entry("HELP", VIEW, "help", "SHORT ANSWERS TO COMMON QUESTIONS, AND THE TOUR AGAIN"),
     Entry("BACK", VIEW, "home", "BACK TO THE HOME SCREEN"),
 )
 # The home screen's own tiles (couchliteos_home SYSTEM_TILES) that are curses screens.
@@ -105,14 +105,12 @@ def child_command(name: str, app: str = "") -> list[str]:
             *(["--app", app] if app else [])]
 
 
-def setup_due(run: pathlib.Path = RUN, setup_marker: pathlib.Path | None = None,
-              controls_marker: pathlib.Path | None = None) -> bool:
-    """Whether the start needs `--screen setup`: setup is not complete, it restarted mid-way for a
-    new picture size, or the CONTROLS screen has not been shown once after it."""
+def setup_due(run: pathlib.Path = RUN, setup_marker: pathlib.Path | None = None) -> bool:
+    """Whether the start needs `--screen setup`: setup is not complete, or it restarted mid-way for
+    a new picture size. The buttons it used to show once afterwards are the TV's tour now
+    (couchliteos_help), drawn by the TV interface itself."""
     setup_marker = setup_marker or STATE / "setup-complete"
-    controls_marker = controls_marker or controls.SHOWN
-    return (not setup_marker.exists() or (run / REOPEN_SETUP).exists()
-            or controls.should_show_once(controls_marker, setup_marker))
+    return not setup_marker.exists() or (run / REOPEN_SETUP).exists()
 
 
 def take_reopen_display(run: pathlib.Path = RUN) -> bool:

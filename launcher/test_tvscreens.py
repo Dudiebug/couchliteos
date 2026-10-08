@@ -51,7 +51,7 @@ class DispatchTest(unittest.TestCase):
             if entry.kind == tvscreens.SCREEN:
                 self.assertIn(entry.target, self.launcher.SCREENS, entry)
             elif entry.kind == tvscreens.VIEW:
-                self.assertIn(entry.target, ("active", "updates", "home"), entry)
+                self.assertIn(entry.target, ("active", "updates", "help", "home"), entry)
 
     def test_app_entries_name_shipped_applications(self):
         manifests = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
@@ -93,13 +93,14 @@ class DispatchTest(unittest.TestCase):
                 self.launcher.SCREENS[name](mock.Mock(), "")
             run.assert_called_once()
 
-    def test_setup_runs_the_wizard_then_controls_once_and_resumes_after_a_restart(self):
+    def test_setup_runs_the_wizard_and_resumes_after_a_restart(self):
         launcher = mock.Mock()
         marker = self.launcher.RUN / "reopen-setup"
+        # The CONTROLS screen is not shown here any more: the TV's tour has the buttons.
         with mock.patch.object(self.launcher.controls, "show_once") as controls:
             self.launcher.SCREENS["setup"](types.SimpleNamespace(launcher=launcher), "")
             launcher.setup_wizard.assert_called_once_with()
-            controls.assert_called_once_with(launcher.screen)
+            controls.assert_not_called()
             marker.touch()
             launcher.reset_mock()
             self.launcher.SCREENS["setup"](types.SimpleNamespace(launcher=launcher), "")
@@ -300,16 +301,14 @@ class StartTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.base = pathlib.Path(temporary.name)
 
-    def test_setup_is_due_until_complete_after_a_restart_and_until_controls_were_shown(self):
-        run, setup, shown = self.base / "run", self.base / "setup-complete", self.base / "controls-shown"
+    def test_setup_is_due_until_complete_and_after_a_restart(self):
+        run, setup = self.base / "run", self.base / "setup-complete"
         run.mkdir()
-        self.assertTrue(tvscreens.setup_due(run, setup, shown))
+        self.assertTrue(tvscreens.setup_due(run, setup))
         setup.touch()
-        self.assertTrue(tvscreens.setup_due(run, setup, shown))  # CONTROLS once after setup
-        shown.touch()
-        self.assertFalse(tvscreens.setup_due(run, setup, shown))
+        self.assertFalse(tvscreens.setup_due(run, setup))  # the tour, not --screen setup, has the buttons
         (run / tvscreens.REOPEN_SETUP).touch()
-        self.assertTrue(tvscreens.setup_due(run, setup, shown))
+        self.assertTrue(tvscreens.setup_due(run, setup))
 
     def test_markers_are_taken_once(self):
         (self.base / tvscreens.REOPEN_DISPLAY).touch()

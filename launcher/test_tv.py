@@ -236,19 +236,54 @@ class ScreensTest(unittest.TestCase):
 
     def test_the_start_runs_whats_new_then_setup_then_the_auto_stream(self):
         module, tv = self.tv()
-        tv.starting, tv.start_steps = True, ["whatsnew", "setup", "update", "autostream"]
+        tv.starting, tv.start_steps = True, ["whatsnew", "setup", "update", "tutorial", "autostream"]
         tv.open_screen.return_value = True
+        tv.open_tutorial = mock.Mock()
         with mock.patch.object(module.whatsnew, "due", return_value=("0.3.0", "0.2.7")), \
                 mock.patch.object(module.tvscreens, "setup_due", return_value=True), \
-                mock.patch.object(module.tvscreens, "update_running", return_value=False):
+                mock.patch.object(module.tvscreens, "update_running", return_value=False), \
+                mock.patch.object(module.tvhelp, "tour_due", return_value=False), \
+                mock.patch.object(module.tvhelp, "mark_tour_seen") as seen:
             tv.continue_start()
             tv.open_whatsnew.assert_called_once_with("0.3.0", "0.2.7")
+            seen.assert_called_once_with()  # an upgrade: What's New is the one notice, never the tour too
             tv.continue_start()
             tv.open_screen.assert_called_once_with("setup")
             tv.autostream.assert_not_called()
             tv.continue_start()
+        tv.open_tutorial.assert_not_called()
         tv.autostream.assert_called_once_with()
         self.assertFalse(tv.starting)
+
+    def test_a_new_install_gets_setup_then_the_tour_once_then_the_auto_stream(self):
+        module, tv = self.tv()
+        tv.starting, tv.start_steps = True, ["whatsnew", "setup", "update", "tutorial", "autostream"]
+        tv.open_screen.return_value = True
+        tv.open_tutorial = mock.Mock()
+        with mock.patch.object(module.whatsnew, "due", return_value=None), \
+                mock.patch.object(module.tvscreens, "setup_due", return_value=True), \
+                mock.patch.object(module.tvscreens, "update_running", return_value=False), \
+                mock.patch.object(module.tvhelp, "tour_due", return_value=True), \
+                mock.patch.object(module.tvhelp, "mark_tour_seen") as seen:
+            tv.continue_start()
+            tv.open_screen.assert_called_once_with("setup")
+            tv.open_tutorial.assert_not_called()
+            tv.continue_start()  # setup closed
+            seen.assert_called_once_with()  # before it is drawn
+            tv.open_tutorial.assert_called_once_with()
+            tv.autostream.assert_not_called()
+            tv.continue_start()  # the tour closed
+        tv.autostream.assert_called_once_with()
+        self.assertFalse(tv.starting)
+
+    def test_help_opens_from_settings_and_from_the_xmb(self):
+        module, tv = self.tv()
+        tv.open_help = mock.Mock()
+        self.focus(tv, "HELP")
+        tv.settings_key("activate")
+        tv.open_help.assert_called_once_with("settings")
+        tv.run_xmb_action(("entry", module.tvscreens.VIEW, "help"))
+        tv.open_help.assert_called_with()
 
     def test_when_a_classic_screen_closes_its_markers_decide_what_comes_next(self):
         module, tv = self.tv()
@@ -271,6 +306,113 @@ class ScreensTest(unittest.TestCase):
             tv.watch_update.assert_called_once_with("0.3.0")
             self.assertEqual(tv.status, "SOFTWARE UPDATE CLOSED WITH AN ERROR (1)")
             tv.after_screen.assert_called()
+
+
+class HelpTest(unittest.TestCase):
+    """The tour and HELP: which page shows, which way a card slides and where B goes back to,
+    with the drawing left out."""
+
+    def tv(self, starting=False):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.cross, tv.family, tv.motion_level = True, "xbox", module.motion.FULL
+        tv.mode, tv.starting = "home", starting
+        tv.stack, tv.tour_page, tv.help_page = mock.Mock(), mock.Mock(), mock.Mock()
+        for name in ("show", "render_home", "render_settings", "close_screen", "continue_start"):
+            setattr(tv, name, mock.Mock())
+        tv.init_help()
+        return module, tv
+
+    def test_the_tour_goes_card_by_card_then_home_and_on_with_the_start(self):
+        module, tv = self.tv(starting=True)
+        with mock.patch.object(module, "Gtk", create=True):
+            tv.open_tutorial()
+            tv.show.assert_called_with("tutorial")
+            view, direction, level = tv.tour_page.show_card.call_args.args
+            self.assertEqual((view.title, direction, level), (tv.tour.cards[0].title, 0, module.motion.FULL))
+            tv.tutorial_key("right")
+            self.assertEqual(tv.tour_page.show_card.call_args.args[1], 1)  # in from the right
+            tv.tutorial_key("left")
+            self.assertEqual(tv.tour_page.show_card.call_args.args[1], -1)
+            tv.continue_start.assert_not_called()
+            tv.tutorial_key("back")  # SKIP on the first card
+        tv.show.assert_called_with("home")
+        tv.render_home.assert_called_once_with()
+        tv.continue_start.assert_called_once_with()
+
+    def test_the_tour_fades_in_unless_motion_is_off(self):
+        module, tv = self.tv()
+        with mock.patch.object(module, "Gtk", create=True) as gtk:
+            tv.open_tutorial()
+            tv.stack.set_visible_child_full.assert_called_once_with("tutorial", gtk.StackTransitionType.CROSSFADE)
+            tv.stack.set_transition_duration.assert_called_once_with(module.motion.FADE_MS)
+            tv.stack.reset_mock()
+            tv.motion_level = module.motion.OFF
+            tv.open_tutorial()
+            tv.stack.set_visible_child_full.assert_called_once_with("tutorial", gtk.StackTransitionType.NONE)
+            tv.stack.set_transition_duration.assert_called_once_with(0)
+
+    def test_help_reads_a_topic_scrolls_it_and_goes_back_to_settings(self):
+        module, tv = self.tv()
+        tv.open_help("settings")
+        tv.show.assert_called_with("help")
+        tv.help_page.scroll_to_top.assert_called_once_with()
+        tv.help_key("down")
+        self.assertEqual(tv.help_model.focus, 1)
+        tv.help_page.render.assert_called_with(tv.help_model, "xbox")
+        tv.help_key("activate")
+        self.assertTrue(tv.help_model.reading)
+        tv.help_key("down")
+        tv.help_page.scroll.assert_called_once_with(1, module.motion.FULL)
+        tv.help_key("up")
+        tv.help_page.scroll.assert_called_with(-1, module.motion.FULL)
+        tv.help_key("back")
+        self.assertFalse(tv.help_model.reading)
+        tv.render_settings.assert_not_called()
+        tv.help_key("back")
+        tv.render_settings.assert_called_once_with()
+        tv.show.assert_called_with("settings")
+        tv.close_screen.assert_not_called()
+
+    def test_help_from_the_xmb_goes_back_home(self):
+        module, tv = self.tv()
+        tv.open_help()
+        tv.help_key("back")
+        tv.close_screen.assert_called_once_with()
+        tv.render_settings.assert_not_called()
+
+    def test_the_tour_from_help_comes_back_to_help_and_never_moves_the_start_on(self):
+        module, tv = self.tv(starting=True)
+        tv.open_help()
+        tv.help_model.focus = [topic.action for topic in tv.help_model.topics].index(module.tvhelp.TOUR)
+        with mock.patch.object(module, "Gtk", create=True):
+            tv.help_key("activate")
+            tv.show.assert_called_with("tutorial")
+            tv.tutorial_key("back")
+        tv.show.assert_called_with("help")
+        tv.continue_start.assert_not_called()
+        tv.render_home.assert_not_called()
+
+    def test_the_busy_screen_has_a_ring_not_a_text_spinner(self):
+        module, tv = self.tv()
+        tv.show_text = mock.Mock()
+        tv.draw_launching("MOONLIGHT", "|")
+        self.assertEqual(tv.show_text.call_args.args[:2], ("busy", "STARTING MOONLIGHT"))
+
+    def test_open_loading_shows_the_starting_screen_until_a_key(self):
+        module, tv = self.tv()
+        tv.busy_depth, tv.busy_pressed = 0, False
+        tv.draw_launching = mock.Mock()
+
+        def pump(_seconds):
+            self.assertEqual(tv.busy_depth, 1)  # keys go to the loop, as while an app starts
+            tv.busy_pressed = tv.draw_launching.call_count >= 3
+
+        tv.pump = mock.Mock(side_effect=pump)
+        tv.script_loading()
+        self.assertEqual(tv.draw_launching.call_count, 3)
+        self.assertEqual((tv.busy_depth, tv.busy_pressed), (0, False))
+        tv.show.assert_called_once_with("home")
 
 
 class BatteryTest(unittest.TestCase):

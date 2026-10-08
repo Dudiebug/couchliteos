@@ -62,7 +62,7 @@ ENTRY_ICONS = {
     "APPLICATIONS": "squares-four", "REMOTE DESKTOP": "desktop", "STREAMING": "broadcast",
     "TV CONTROL": "television", "SOFTWARE UPDATE": "download", "CHECK FOR UPDATES": "arrows-clockwise",
     "CONTROLS": "keyboard", "SETUP WIZARD": "magic-wand", "GENERATE SUPPORT FILE": "lifebuoy",
-    "SYSTEM DIAGNOSTICS": "stethoscope",
+    "SYSTEM DIAGNOSTICS": "stethoscope", "HELP": "question",
 }
 POWER_ICONS = {"suspend": "moon", "reboot": "arrows-clockwise", "poweroff": "power"}
 # Known websites by what they are, for the icon shown until the site's own icon is fetched (one of
