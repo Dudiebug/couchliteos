@@ -49,7 +49,7 @@ APP_CATEGORIES = {
     "network-setup": NETWORK, "terminal": APPS, "system-diagnostics": APPS, "audio-test": APPS,
 }
 APP_ICONS = {
-    "chiaki-ng": "playstation", "firefox": "browser", "google-chrome": "browser", "tailscale": "shield",
+    "chiaki-ng": "game-controller", "firefox": "browser", "google-chrome": "browser", "tailscale": "shield",
     "network-setup": "wifi-high", "terminal": "terminal-window", "system-diagnostics": "stethoscope",
     "audio-test": "speaker-high",
 }
