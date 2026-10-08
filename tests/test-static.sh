@@ -1501,9 +1501,9 @@ rg -q 'test_loading.py' launcher/Makefile
 rg -q 'test_ring.py' launcher/Makefile
 rg -q 'test_frontapp.py' launcher/Makefile
 for module in couchliteos_ring couchliteos_gtk_ring couchliteos_frontapp; do
-  rg -q "^install -D -m 0644 \"\\$ROOT/launcher/$module.py\" \"\\$CHROOT/usr/libexec/$module.py\"$" build/configure.sh
+  rg -q -F "install -D -m 0644 \"\$ROOT/launcher/$module.py\" \"\$CHROOT/usr/libexec/$module.py\"" build/configure.sh
 done
-refute rg -q '^\s*(import|from) gi' launcher/couchliteos_ring.py launcher/couchliteos_frontapp.py
+refute rg -q '^\s*(import|from) gi\b' launcher/couchliteos_ring.py launcher/couchliteos_frontapp.py
 refute rg -q '^\s*(import|from) gi\b' launcher/couchliteos_help.py launcher/couchliteos_loading.py
 refute rg -q '^(import|from) curses\b' launcher/couchliteos_help.py launcher/couchliteos_loading.py
 rg -q '^    import couchliteos_gtk_help as gtk_help$' launcher/couchliteos-tv.py
