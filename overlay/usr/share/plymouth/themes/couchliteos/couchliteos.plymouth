@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=CouchLiteOS
+Description=The CouchLiteOS logo on a dark blue gradient, with a slow glowing wave
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/couchliteos
+ScriptFile=/usr/share/plymouth/themes/couchliteos/couchliteos.script

@@ -20,7 +20,11 @@ controller, a TV remote and a keyboard all work. Guide / Home arrives as home.re
 
 Exit status INIT_FAILED (3) means GTK could not start (no gi, no display, no renderer):
 couchliteos-session then tries once more with GSK_RENDERER=cairo, then starts the classic
-launcher. `launcher-ready` is written after the first frame is drawn.
+launcher. `launcher-ready` is written after the home screen's first frame is drawn.
+
+Before anything else is built the window shows the boot picture Plymouth showed
+(couchliteos_gtk_boot); the home screen is built behind it once it is on screen, and it fades
+away when the home screen has been drawn.
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ try:
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
+    import couchliteos_gtk_boot as gtk_boot
     import couchliteos_gtk_xmb as gtk_xmb
 except (ImportError, ValueError) as _error:  # no PyGObject or no GTK 4 typelib
     Gtk = None
@@ -81,6 +86,7 @@ INIT_FAILED = 3
 TITLE = "CouchLiteOS Launcher"  # the classic launcher's title too: focus_launcher() finds either
 APPLICATION_ID = "org.couchliteos.Launcher"
 TICK_SECONDS = 1
+LOADING_WAIT_MS = 2000  # build the home screen anyway if the boot picture's frame never comes
 RELOAD_SECONDS = 5  # how often the rows are read again (pairing, apps added in Settings)
 AUTOSTREAM_SECONDS = 5
 REPO_THEMES = pathlib.Path(__file__).resolve().parents[1] / "overlay/usr/share/couchliteos/themes"
@@ -771,6 +777,8 @@ class Tv(Screens, Look, Script, session.Session):
         self.choice = 0
         self.active_index = 0
         self.ready_written = False
+        self.home_built = False
+        self.loading: "gtk_boot.LoadingScreen | None" = None
         self.size = (0, 0)
         self.last_reload = time.monotonic()
         self.was_running = False
@@ -795,11 +803,36 @@ class Tv(Screens, Look, Script, session.Session):
 
     # ------------------------------------------------------------------ building
 
-    def build(self) -> None:
+    def show_loading(self) -> None:
+        """The window with only the boot picture in it, on screen as early as can be: the home
+        screen is built once that frame is up (build_home), under it."""
         window = self.window = Gtk.ApplicationWindow(application=self.application, title=TITLE)
         window.add_css_class("tv-root")
+        self.root = Gtk.Overlay()
+        window.set_child(self.root)
+        self.loading = gtk_boot.LoadingScreen(self.motion_level)
+        self.root.add_overlay(self.loading)
+        window.connect("map", lambda _window: self.when_painted(window, self.loading_drawn))
+        GLib.timeout_add(LOADING_WAIT_MS, self.build_home)
+        window.fullscreen()
+        window.present()
+
+    def loading_drawn(self) -> bool:
+        print(f"couchliteos-tv: boot picture drawn {time.monotonic():.1f} s after boot", file=sys.stderr)
+        return self.build_home()
+
+    def build_home(self) -> bool:
+        if not self.home_built:
+            self.home_built = True
+            self.build()
+            GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
+            GLib.timeout_add(TOAST_TICK_MS, self.render_toast)
+        return False
+
+    def build(self) -> None:
+        window = self.window
         overlay = Gtk.Overlay()
-        window.set_child(overlay)
+        self.root.set_child(overlay)
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         self.build_backdrop(overlay)
@@ -878,14 +911,12 @@ class Tv(Screens, Look, Script, session.Session):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.on_key)
         window.add_controller(keys)
-        window.connect("map", self.on_map)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self.css, Gtk.STYLE_PROVIDER_PRIORITY_USER,
         )
         self.relayout(self.screen_size())
         self.render_home()
-        window.fullscreen()
-        window.present()
+        self.watch_first_frame(window)
 
     def screen_size(self) -> tuple[int, int]:
         """The window's size once shown, else the first monitor's."""
@@ -2100,24 +2131,32 @@ class Tv(Screens, Look, Script, session.Session):
 
     # ------------------------------------------------------------------ start
 
-    def on_map(self, window) -> None:
-        # launcher-ready only once the first frame is painted: a tick callback runs in the frame's
-        # UPDATE phase, before the renderer draws, and a GL driver that crashes or hangs in that
-        # first paint must leave no mark (couchliteos-session then retries with cairo).
+    def when_painted(self, window, then) -> None:
+        """Call `then` (when idle) once the window's next frame has been painted. A tick callback
+        runs in the frame's UPDATE phase, before the renderer draws: the paint's own after-paint
+        signal is the frame on screen."""
         def painted(clock) -> None:
-            clock.disconnect(self.paint_handler)
-            GLib.idle_add(self.first_frame_painted)
+            clock.disconnect(handler)
+            GLib.idle_add(then)
 
         def first_tick(*_args) -> bool:
-            clock = window.get_frame_clock()
-            self.paint_handler = clock.connect("after-paint", painted)
+            nonlocal handler
+            handler = window.get_frame_clock().connect("after-paint", painted)
             return False
 
+        handler = 0
         window.add_tick_callback(first_tick)
+
+    def watch_first_frame(self, window) -> None:
+        # launcher-ready only once the home screen's first frame is painted: a GL driver that
+        # crashes or hangs in that first paint must leave no mark (couchliteos-session then
+        # retries with cairo).
+        self.when_painted(window, self.first_frame_painted)
 
     def first_frame_painted(self) -> bool:
         if not self.ready_written:
             self.ready_written = True
+            print(f"couchliteos-tv: home screen drawn {time.monotonic():.1f} s after boot", file=sys.stderr)
             try:
                 (self.run_dir / "launcher-ready").touch()
             except OSError as error:
@@ -2130,14 +2169,27 @@ class Tv(Screens, Look, Script, session.Session):
             self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
             self.render_bar()
         self.continue_start()
-        self.start_script()
         if self.cross and hasattr(self, "wave"):
             self.wave.start()  # after the first frame: a GL driver that fails here leaves launcher-ready
             self.refresh_xmb_settings()
         self.ui_sound("startup")
         self.music_holds()
         self.music.start()
+        self.hide_loading()
         return False
+
+    def hide_loading(self) -> None:
+        """Fade the boot picture away over the home screen; test steps start once it is gone."""
+        loading, self.loading = self.loading, None
+        if loading is None:
+            self.start_script()
+            return
+
+        def gone() -> None:
+            self.root.remove_overlay(loading)
+            self.start_script()
+
+        loading.fade_out(gone)
 
     def activate(self, _application) -> None:
         if self.window is not None:
@@ -2149,9 +2201,7 @@ class Tv(Screens, Look, Script, session.Session):
         self.battery.start()
         self.updates.start()
         self.pcstatus.start()
-        self.build()
-        GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
-        GLib.timeout_add(TOAST_TICK_MS, self.render_toast)
+        self.show_loading()
 
 
 def main(argv: list[str] | None = None) -> int:

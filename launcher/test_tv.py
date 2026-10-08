@@ -407,7 +407,7 @@ class ReadyMarkTest(unittest.TestCase):
         window.get_frame_clock.return_value = clock
         with mock.patch.object(module, "GLib", glib, create=True), \
                 mock.patch.object(module.session.Session, "run_dir", run):
-            tv.on_map(window)
+            tv.watch_first_frame(window)
             tick = window.add_tick_callback.call_args.args[0]
             self.assertFalse(tick(window, clock))
             self.assertFalse((run / "launcher-ready").exists(), "not in the UPDATE phase")
