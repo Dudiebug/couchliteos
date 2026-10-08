@@ -150,7 +150,7 @@ class SparkleTest(unittest.TestCase):
         self.assertNotEqual(set(first), set(later))
         self.assertLess(len(first), self.WIDTH * self.HEIGHT * 0.1)  # dots, not a haze
         dark = [time for time in range(200) if not wave.sparkle_field(8, 8, float(time), [0.6] * 8)]
-        self.assertTrue(all(value <= 1.5 for value in first.values()))
+        self.assertTrue(all(value <= sum(layer.brightness for layer in wave.LAYERS) * 1.3 for value in first.values()))
         self.assertLess(len(dark), 200)
 
     def test_brightest_near_the_wave(self):

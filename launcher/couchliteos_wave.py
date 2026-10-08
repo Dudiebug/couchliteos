@@ -53,11 +53,11 @@ class Layer:
 
 
 # Far (small, slow, dim) and near (larger, faster): the near ones pass the far ones, as on the console.
-LAYERS = (Layer(0.05, 0.22, 0.0016, (0.010, -0.003), 0.6), Layer(0.10, 0.30, 0.0028, (0.018, -0.006), 1.0))
+LAYERS = (Layer(0.05, 0.25, 0.0017, (0.010, -0.003), 1.0), Layer(0.10, 0.45, 0.0032, (0.018, -0.006), 1.7))
 SPARKLE_MARGIN = 0.3  # of a cell: where a sparkle's centre may sit, before it wanders
 SPARKLE_WANDER = 0.1  # of a cell: how far it wanders; its glow ends inside the cell (MARGIN - WANDER)
-SPARKLE_NEAR = 0.12  # sparkles are brightest within about this of the main ribbon
-SPARKLE_FLOOR = 0.2  # and this bright far from it
+SPARKLE_NEAR = 0.09  # sparkles are brightest within about this of the main ribbon
+SPARKLE_FLOOR = 0.1  # and this bright far from it
 SPARKLE_WHITE = 0.6  # a sparkle is the ribbon colour this far towards white
 
 
