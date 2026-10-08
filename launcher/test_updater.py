@@ -1605,6 +1605,15 @@ class LiveStickTest(TmpCase):
         self.assertEqual(self.final()["message"], updater.MSG_STICK_DONE)
         self.assertIn("REBOOT TO FINISH", self.final()["message"])
 
+    def test_the_first_update_on_a_stick_without_a_live_update_folder_yet(self):
+        def fresh_stick(env, mountinfo=None):  # the storage partition, before any update made the folder
+            self.base.parent.mkdir(parents=True, exist_ok=True)
+            yield self.base
+        self.env.free_bytes = updater._free_bytes  # the real statvfs: it needs a path that exists
+        with mock.patch.object(liveslot, "slot_base", contextlib.contextmanager(fresh_stick)):
+            self.assertEqual(updater.main(["apply-iso", str(self.iso_file())], env=self.env), 0)
+        self.assertEqual(len(self.installed), 1)
+
     def test_the_first_update_records_the_iso_the_stick_was_made_from(self):
         self.assertEqual(updater.run(self.env, self.status), 0)
         self.assertEqual((self.base.parent / liveslot.ISO_VERSION_FILE).read_text(encoding="utf-8"), "0.2.1\n")

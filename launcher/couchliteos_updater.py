@@ -406,7 +406,8 @@ class Stick:
 
     @property
     def room(self) -> pathlib.Path:
-        return self.ventoy_root if self.kind == "ventoy" else self.base
+        # dd: the storage partition itself; live-update/ is made by the first update, after this check.
+        return self.ventoy_root if self.kind == "ventoy" else self.base.parent
 
     def check_room(self, new_bytes: int) -> None:
         """The new system and the kept previous one (the current slot, or the running ISO) must fit."""
