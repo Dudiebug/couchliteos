@@ -149,14 +149,14 @@ def allowed_url(url: str) -> bool:
             and not parts.username and not parts.password)
 
 
-def _redirects_class() -> type:
+def _redirects_class(check: Callable[[str], bool] = allowed_url) -> type:
     """The redirect check, built on first use: urllib.request (and http.client) stay out of the
     TV interface's start; the lookup runs on the worker threads."""
     import urllib.request
 
     class Redirects(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
-            if not allowed_url(newurl):
+            if not check(newurl):
                 raise ArtworkError("redirect to a host that is not allowed")
             new = super().redirect_request(req, fp, code, msg, headers, newurl)
             if new is not None and urllib.parse.urlsplit(newurl).hostname != urllib.parse.urlsplit(req.full_url).hostname:
@@ -172,16 +172,16 @@ def __getattr__(name: str):
     raise AttributeError(name)
 
 
-def default_opener() -> Callable[..., object]:
+def default_opener(check: Callable[[str], bool] = allowed_url) -> Callable[..., object]:
     import urllib.request
 
-    return urllib.request.build_opener(_redirects_class()()).open
+    return urllib.request.build_opener(_redirects_class(check)()).open
 
 
 def fetch(url: str, opener: Callable[..., object], limit: int, timeout: float = TIMEOUT,
-          headers: dict[str, str] | None = None) -> bytes:
-    """GET `url` (HTTPS, allowed hosts only), at most `limit` bytes."""
-    if not allowed_url(url):
+          headers: dict[str, str] | None = None, check: Callable[[str], bool] = allowed_url) -> bytes:
+    """GET `url` (HTTPS, allowed hosts only: `check`), at most `limit` bytes."""
+    if not check(url):
         raise ArtworkError("host is not allowed")
     import urllib.request
 
@@ -189,7 +189,7 @@ def fetch(url: str, opener: Callable[..., object], limit: int, timeout: float = 
     try:
         with opener(request, timeout=timeout) as response:
             final = getattr(response, "geturl", lambda: url)()
-            if final and not allowed_url(final):
+            if final and not check(final):
                 raise ArtworkError("redirect to a host that is not allowed")
             length = str((getattr(response, "headers", None) or {}).get("Content-Length") or "")
             if length.isdigit() and int(length) > limit:
@@ -329,12 +329,15 @@ def image_kind(data: bytes) -> str:
         return "png"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
-    raise ArtworkError("not a JPEG, PNG or WebP image")
+    if data[:4] == b"\x00\x00\x01\x00":
+        return "ico"  # a site's favicon.ico
+    raise ArtworkError("not a JPEG, PNG, WebP or ICO image")
 
 
-def gdk_reencode(data: bytes, size: tuple[int, int] = TILE, alpha: bool = False) -> bytes:
+def gdk_reencode(data: bytes, size: tuple[int, int] = TILE, alpha: bool = False, smallest: int = 16) -> bytes:
     """Decode with GdkPixbuf, shrink to fit `size`, and return a fresh JPEG (a PNG that keeps
-    its transparency with `alpha`, for icons and logos). Raises ArtworkError."""
+    its transparency with `alpha`, for icons and logos). Raises ArtworkError, also for a
+    picture under `smallest` pixels a side."""
     if len(data) > MAX_IMAGE:
         raise ArtworkError("image is too large")
     kind = image_kind(data)
@@ -346,7 +349,7 @@ def gdk_reencode(data: bytes, size: tuple[int, int] = TILE, alpha: bool = False)
     too_big = []
 
     def prepared(loader, width, height) -> None:
-        if width * height > MAX_PIXELS or width < 16 or height < 16:
+        if width * height > MAX_PIXELS or width < smallest or height < smallest:
             too_big.append(True)
             loader.set_size(1, 1)  # do not decode the full picture
 

@@ -1475,7 +1475,9 @@ rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_wave.py" "\$CHROOT/usr/l
 rg -q 'test_wave.py' launcher/Makefile
 rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_icons.py" "\$CHROOT/usr/libexec/couchliteos_icons.py"$' build/configure.sh
 rg -q 'test_icons.py' launcher/Makefile
-refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py launcher/couchliteos_wave.py launcher/couchliteos_icons.py
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_siteicon.py" "\$CHROOT/usr/libexec/couchliteos_siteicon.py"$' build/configure.sh
+rg -q 'test_siteicon.py' launcher/Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py launcher/couchliteos_wave.py launcher/couchliteos_icons.py launcher/couchliteos_siteicon.py
 # The built-in SteamGridDB key comes from the build machine, is never in git and never printed.
 rg -q '^steamgriddb\.key$' .gitignore
 [[ -z $(git ls-files '*steamgriddb.key' '*secrets*') ]]
