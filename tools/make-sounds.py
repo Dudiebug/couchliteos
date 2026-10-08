@@ -5,7 +5,7 @@
 
 Writes OUT/sounds/<name>.wav (mono, 16 bit, 22.05 kHz) for every UI sound and
 OUT/music/ambient.ogg: a seamless ambient loop (pads, a bell arpeggio and a soft bass in
-D major, 32 bars at 68 bpm, about 113 s), encoded with ffmpeg (libvorbis). Everything is
+D major, 32 bars at 68 bpm, about 113 s, no seam), encoded with ffmpeg (libvorbis). Everything is
 synthesised here and deterministic (a fixed seed), so the files carry this project's licence and
 running it again gives the same sound. Pure Python, no numpy: the music takes a minute or two.
 """
@@ -244,7 +244,7 @@ PROGRESSION = (  # MIDI notes, lowest first: D major with a Lydian lift
     (43, 50, 54, 57, 59),  # Gmaj9
     (45, 52, 57, 62, 64),  # Asus4
 )
-LOOP_BARS = 2 * len(PROGRESSION) * CHORD_BARS  # the progression twice: plain, then with more bells
+LOOP_BARS = 2 * len(PROGRESSION) * CHORD_BARS  # the progression twice
 TABLE_SIZE = 4096
 
 
@@ -325,8 +325,10 @@ def music() -> tuple[array.array, array.array]:
     pads = {chord: pad(chord, hold, 3.0, table) for chord in PROGRESSION}
     basses = {chord: bass(chord[0], hold, 1.2) for chord in PROGRESSION}
     bells: dict[int, array.array] = {}
-    plain = (0, 6, 11)  # eighth notes of the two bars that ring, first time round: sparse, airy
-    busy = (0, 4, 7, 10, 14)  # and a little more the second time
+    # The loop must not have a seam you can hear: no sections. Every pattern repeats with a period
+    # (4 chords) that divides the loop (16 chords), so the jump from the last chord back to the
+    # first is exactly like the jump between any two chords inside it.
+    patterns = ((0, 6, 11), (0, 4, 7, 10, 14), (0, 6, 11), (0, 3, 8, 12))  # eighth notes that ring
     for slot in range(LOOP_BARS // CHORD_BARS):
         chord = PROGRESSION[slot % len(PROGRESSION)]
         start = round(slot * hold * RATE)
@@ -334,12 +336,11 @@ def music() -> tuple[array.array, array.array]:
         add(right, pads[chord][1], start)
         add(left, basses[chord], start)
         add(right, basses[chord], start)
-        second = slot >= len(PROGRESSION)
         tones = [note + 12 for note in chord[1:]]
-        if second:
+        if slot % 2:
             tones = tones[::-1]
-        for k, eighth in enumerate(busy if second else plain):
-            note = tones[k % len(tones)] + (12 if second and k % 4 == 3 else 0)
+        for k, eighth in enumerate(patterns[slot % len(patterns)]):
+            note = tones[k % len(tones)] + (12 if slot % 4 == 1 and k == 3 else 0)
             if note not in bells:
                 bells[note] = bell(hz(note), 2.2, 0.55, ratio=3.5, index=0.9, attack=0.006)
             velocity = 0.045 + 0.03 * rng.random()
