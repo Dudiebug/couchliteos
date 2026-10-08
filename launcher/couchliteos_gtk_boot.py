@@ -70,7 +70,7 @@ class LoadingScreen(Gtk.Widget):
         self.sizes = {name: (texture.get_width(), texture.get_height()) for name, texture in self.textures.items()}
         self.started: float | None = None  # the first frame: time 0 of the motion
         self.drawn_at = 0.0
-        self.fading: motion.Tween | None = None
+        self.fading: motion.FrameFade | None = None
         self.done: Callable[[], None] | None = None
         self.tick_id = 0
         self.set_hexpand(True)
@@ -87,15 +87,15 @@ class LoadingScreen(Gtk.Widget):
             done()
             return
         self.done = done
-        self.fading = motion.Tween(1.0, 0.0, time.monotonic(), seconds, motion.ease_in_out_cubic)
+        self.fading = motion.FrameFade(seconds)  # by drawn frames: the home screen's slow first frames cannot skip it
         if not self.tick_id:
             self.tick_id = self.add_tick_callback(self.on_tick)
 
     def on_tick(self, _widget, _clock) -> bool:
         now = time.monotonic()
         if self.fading is not None:
-            self.set_opacity(self.fading.value(now))
-            if self.fading.done(now):
+            self.set_opacity(1.0 - motion.ease_in_out_cubic(self.fading.advance(now)))
+            if self.fading.done:
                 self.tick_id = 0
                 done, self.done, self.fading = self.done, None, None
                 if done is not None:

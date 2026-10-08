@@ -123,6 +123,34 @@ class AnimatorTest(unittest.TestCase):
         self.assertEqual(self.anim.target("missing", 3), 3)
 
 
+class FrameFadeTest(unittest.TestCase):
+    def test_smooth_frames_take_the_duration(self):
+        fade = motion.FrameFade(0.45)
+        frames = [fade.advance(i / 60) for i in range(21)]
+        self.assertEqual(frames[0], 0.0)
+        self.assertAlmostEqual(frames[20], 20 / 60 / 0.45, places=6)
+        self.assertFalse(fade.done)
+        for i in range(21, 29):
+            fade.advance(i / 60)
+        self.assertTrue(fade.done)  # 0.45 s of 60 fps frames, and one more
+
+    def test_a_stalled_frame_moves_it_one_step_not_to_the_end(self):
+        fade = motion.FrameFade(0.45)
+        fade.advance(0.0)
+        self.assertAlmostEqual(fade.advance(0.3), motion.MAX_STEP / 0.45)  # a 300 ms frame
+        self.assertFalse(fade.done)
+
+    def test_it_ends_at_one_and_stays(self):
+        fade = motion.FrameFade(0.1)
+        for i in range(20):
+            fade.advance(i / 30)
+        self.assertTrue(fade.done)
+        self.assertEqual(fade.progress, 1.0)
+
+    def test_no_duration_is_done_at_once(self):
+        self.assertTrue(motion.FrameFade(0).done)
+
+
 class LevelTest(unittest.TestCase):
     def test_the_software_renderer_is_at_most_reduced(self):
         self.assertEqual(motion.level_for("full", "cairo"), motion.REDUCED)

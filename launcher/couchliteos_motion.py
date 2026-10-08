@@ -72,6 +72,30 @@ class Tween:
         return self.progress(now) >= 1
 
 
+MAX_STEP = 1 / 30  # the most a FrameFade moves in one drawn frame, in seconds
+
+
+class FrameFade:
+    """Progress from 0 to 1 over `duration` seconds of drawn frames. Each advance() moves it by the
+    time since the one before, but at most MAX_STEP: a slow frame (the first frames of a screen
+    just built, a busy software renderer) slows the fade down instead of skipping it."""
+
+    def __init__(self, duration: float) -> None:
+        self.duration = duration
+        self.progress = 0.0 if duration > 0 else 1.0
+        self.last: float | None = None
+
+    def advance(self, now: float) -> float:
+        if self.last is not None and self.progress < 1:
+            self.progress = clamp(self.progress + min(max(now - self.last, 0.0), MAX_STEP) / self.duration)
+        self.last = now
+        return self.progress
+
+    @property
+    def done(self) -> bool:
+        return self.progress >= 1
+
+
 def scaled(ms: float, level: str) -> float:
     """`ms` as seconds at motion `level`: REDUCED keeps short fades, OFF jumps."""
     if level == OFF:

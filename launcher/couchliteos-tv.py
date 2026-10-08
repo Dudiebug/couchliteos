@@ -2224,21 +2224,20 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         level = self.motion_level
         if level == motion.OFF:
             return
-        span = (WAKE_MS if level == motion.FULL else WAKE_REDUCED_MS) / 1000
-        start = time.monotonic()
+        fade = motion.FrameFade((WAKE_MS if level == motion.FULL else WAKE_REDUCED_MS) / 1000)
         self.blank.set_opacity(1.0)
         self.blank.set_visible(True)
 
-        def step() -> bool:
-            t = (time.monotonic() - start) / span
-            if t >= 1 or self.idle.blanked:
+        def step(_widget, _clock) -> bool:
+            t = fade.advance(time.monotonic())  # by drawn frames: a slow first frame after sleep cannot skip it
+            if fade.done or self.idle.blanked:
                 self.blank.set_visible(self.idle.blanked)
                 self.blank.set_opacity(1.0)
                 return False
             self.blank.set_opacity(1.0 - motion.ease_in_out_cubic(t))
             return True
 
-        GLib.timeout_add(16, step)
+        self.blank.add_tick_callback(step)
 
     def ui_sound(self, name: str) -> None:
         """A UI sound; the music ducks under the bigger ones and comes back up."""
@@ -2450,7 +2449,11 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             self.root.remove_overlay(loading)
             self.start_script()
 
-        loading.fade_out(gone)
+        def fade() -> bool:
+            loading.fade_out(gone)
+            return False
+
+        self.when_painted(self.window, fade)  # the home screen's first, slowest frame is drawn under it
 
     def activate(self, _application) -> None:
         if self.window is not None:
