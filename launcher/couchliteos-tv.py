@@ -47,6 +47,7 @@ import couchliteos_controllers as controllers
 import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_errors as errors
+import couchliteos_frontapp as frontapp
 import couchliteos_help as tvhelp
 import couchliteos_home as home
 import couchliteos_icons as icons
@@ -93,6 +94,8 @@ INIT_FAILED = 3
 TITLE = "CouchLiteOS Launcher"  # the classic launcher's title too: focus_launcher() finds either
 APPLICATION_ID = "org.couchliteos.Launcher"
 TICK_SECONDS = 1
+WAKE_MS = 1100  # back from sleep: the home screen fades in out of black (MOTION FULL)
+WAKE_REDUCED_MS = 300
 LOADING_WAIT_MS = 2000  # build the home screen anyway if the boot picture's frame never comes
 RELOAD_SECONDS = 5  # how often the rows are read again (pairing, apps added in Settings)
 AUTOSTREAM_SECONDS = 5
@@ -931,6 +934,8 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.status_since = 0.0
         self.mode = "home"  # home, active, message, busy
         self.busy_depth = 0  # > 0 while a start or a wait runs its own loop
+        self.front = frontapp.Front()  # who has the screen; the TV rests behind a game
+        self.loading_view: "gtk_loading.LoadingView | None" = None
         self.busy_pressed = False
         self.answer: str | None = None  # what the message screen's keys chose
         self.choices: list[str] = []  # the message screen's buttons (choose), focus at choice
@@ -997,6 +1002,10 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         self.build_backdrop(overlay)
+        # The loading screen while something starts, under the quick menu, the toast and the blank screen.
+        self.loading_view = gtk_loading.LoadingView(getattr(self, "motion_level", motion.FULL))
+        self.loading_view.set_can_target(False)
+        overlay.add_overlay(self.loading_view)
         self.build_quick(overlay)
         self.blank = Gtk.Box()
         self.blank.add_css_class("tv-blank")
@@ -1246,17 +1255,25 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
                 time.sleep(0.01)
 
     def draw_launching(self, label_text: str, _frame: str) -> None:
-        """The busy screen; its loading ring moves on its own (the text spinner `frame` is the classic one's)."""
+        """The busy screen; its loading ring moves on its own (the text spinner `frame` is the classic one's).
+        A start (launch_wait_begin) draws the loading screen over it: black, then the name."""
+        view = self.loading_view
+        if view is not None and self.front.starting and not view.shown:
+            view.set_level(self.motion_level)
+            view.start(label_text, "", None, "PRESS THE HOME KEY TO COME BACK HERE")
         self.show_text("busy", f"STARTING {label_text}", "PLEASE WAIT",
                        "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE")
 
     def launch_wait_begin(self) -> None:
         self.busy_depth += 1
+        if not self.front.starting:
+            self.front_plan(self.front.start())
 
     def launch_wait(self) -> None:
         self.pump(0.1)
 
     def launch_wait_end(self) -> None:
+        self.front.start_done()
         self.busy_depth -= 1
         if self.busy_depth == 0:
             self.show("home")
@@ -1296,6 +1313,8 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         """The classic launcher's failure screen (couchliteos_errors): what went wrong, what to do,
         and its buttons. NETWORK SETTINGS, SAVE SUPPORT FILE and BLUETOOTH SETTINGS open the classic
         screen on top and come back here, as WAKE PC does, with TRY AGAIN one press away."""
+        if self.front.starting or self.front.dark:
+            self.front_plan(self.front.failed())
         failure = errors.describe_failure(
             label_text, message, app_id=app.id if app else "", app_kind=app.kind if app else "",
             online=stream.link_up(), retry=retry,
@@ -1594,6 +1613,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
 
     def tick_once(self) -> None:
         self.music_holds()
+        self.front_tick()
         if self.busy_depth:
             self.idle.keep_awake()
             return
@@ -1606,6 +1626,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             self.music.release("sleep")
             self.idle.resumed()
             self.blank.set_visible(False)
+            self.wake_in()
             self.can_sleep = power.can_suspend()
             self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()))
             self.status = "RESUMED FROM SLEEP"
@@ -2150,6 +2171,66 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.music = music.Music()
 
     # ------------------------------------------------------------------ sounds and music
+
+    def front_tick(self) -> None:
+        """Rest while a game, a stream or an application has the screen (or it is blank), wake when
+        the TV is in front again (couchliteos_frontapp decides; this carries it out)."""
+        try:
+            seen = frontapp.look(self.run_dir, blank=self.idle.blanked)
+        except Exception:  # noqa: BLE001
+            return
+        self.front_plan(self.front.update(seen))
+
+    def front_plan(self, plan: frontapp.Plan) -> None:
+        if not plan:
+            return
+        wave = getattr(self, "wave", None) if self.cross else None
+        if plan.rest:
+            if wave is not None:
+                wave.rest()
+            self.battery.awake.clear()
+            self.music_rest()
+        if plan.wake:
+            self.battery.awake.set()
+            if wave is not None:
+                wave.wake()
+        if plan.sound:
+            self.ui_sound(plan.sound)
+        if self.loading_view is not None:
+            if plan.black:
+                self.loading_view.black()
+            if plan.reveal:
+                self.loading_view.reveal()
+
+    def music_rest(self) -> bool:
+        """End the music player once its fade-out is over (again when it is not yet)."""
+        left = self.music.rest()
+        if left is not None and self.front.resting:
+            GLib.timeout_add(round(left * 1000) + 50, self.music_rest)
+        return False
+
+    def wake_in(self) -> None:
+        """Back from sleep: the wake sound, and the home screen fades in out of black. Not the boot
+        screen (no logo, no ribbons): the box was only asleep."""
+        self.ui_sound("wake")
+        level = self.motion_level
+        if level == motion.OFF:
+            return
+        span = (WAKE_MS if level == motion.FULL else WAKE_REDUCED_MS) / 1000
+        start = time.monotonic()
+        self.blank.set_opacity(1.0)
+        self.blank.set_visible(True)
+
+        def step() -> bool:
+            t = (time.monotonic() - start) / span
+            if t >= 1 or self.idle.blanked:
+                self.blank.set_visible(self.idle.blanked)
+                self.blank.set_opacity(1.0)
+                return False
+            self.blank.set_opacity(1.0 - motion.ease_in_out_cubic(t))
+            return True
+
+        GLib.timeout_add(16, step)
 
     def ui_sound(self, name: str) -> None:
         """A UI sound; the music ducks under the bigger ones and comes back up."""

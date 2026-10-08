@@ -199,6 +199,20 @@ def ui_sounds() -> dict[str, tuple[array.array, float]]:
         "notify": (echo(mix(0.9, (0, bubble(hz(A5) * 0.94, hz(A5), 0.8, 0.22, glide=0.02), 1.0),
                             (0.12, bubble(hz(E6) * 0.94, hz(E6), 0.75, 0.22, glide=0.02), 0.8))), 0.45),
         "startup": (startup(), 0.65),
+        # A game or an application starts: a swell of air that rises and opens on a bright fifth.
+        "launch": (echo(mix(1.0, (0, air(0.9, 400, 6500, 0.28, attack=0.3, q=3.5, wobble=0.25, rate=6), 1.0),
+                            (0.32, bell(hz(74), 0.65, 0.22, ratio=2.0, index=0.6), 0.45),
+                            (0.36, bell(hz(81), 0.6, 0.2, ratio=2.0, index=0.5), 0.35))), 0.45),
+        # The TV is back in front: the same air falling, landing on a low, warm note.
+        "return": (echo(mix(0.9, (0, air(0.6, 6000, 500, 0.18, attack=0.04, q=3.5, wobble=0.25, rate=6), 1.0),
+                            (0.22, bell(hz(62), 0.65, 0.25, ratio=2.0, index=0.4), 0.5))), 0.4),
+        # A start failed: two low drops, the second lower.
+        "error": (mix(0.45, (0, bubble(520, 430, 0.18, 0.05, glide=0.02), 1.0),
+                      (0.15, bubble(400, 300, 0.25, 0.07, glide=0.03), 1.0)), 0.42),
+        # Back from sleep (not the start-up swell): two soft bells rising a fifth over a breath.
+        "wake": (echo(mix(1.5, (0, air(1.3, 1500, 5000, 0.45, attack=0.5, q=5.0, wobble=0.2, rate=4), 0.5),
+                          (0.15, bell(hz(69), 1.2, 0.45, ratio=2.0, index=0.3, attack=0.03), 0.8),
+                          (0.45, bell(hz(76), 1.0, 0.45, ratio=2.0, index=0.3, attack=0.03), 0.7))), 0.42),
     }
 
 
