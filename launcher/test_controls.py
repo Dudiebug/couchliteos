@@ -560,6 +560,10 @@ class LauncherHookTest(unittest.TestCase):
         order = []
         with mock.patch.object(launcher, "network_summary", return_value="OFFLINE"):
             app = launcher.Launcher(FakeScreen())
+        # run() starts these polling threads; left running they reach every later test's mocks
+        # (the mic monitor's pw-dump calls counted in test_mic).
+        for monitor in (app.controllers, app.battery, app.mic, app.pcstatus, app.updates):
+            monitor.start = mock.Mock()
         app.prepare_session = lambda: None
         app.draw = lambda: None
         app.setup_wizard = lambda: order.append("wizard")
