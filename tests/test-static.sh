@@ -1493,6 +1493,22 @@ for sound in move select back; do
 done
 rg -q '"pw-play"' launcher/couchliteos_quick.py
 rg -q '^pipewire$' config/live-build/package-lists/couchliteos.list.chroot
+# The XMB sounds and the background music (tools/make-sounds.py makes them all; couchliteos-music plays the loop)
+for sound in category edge open close notify startup; do
+  [[ -f overlay/usr/share/couchliteos/sounds/$sound.wav ]]
+done
+[[ -f overlay/usr/share/couchliteos/music/ambient.ogg ]]
+(( $(stat -c %s overlay/usr/share/couchliteos/music/ambient.ogg) < 3000000 ))
+python3 -m py_compile tools/make-sounds.py launcher/couchliteos_music.py launcher/couchliteos-music.py
+[[ $(git ls-files -s launcher/couchliteos-music.py | cut -d' ' -f1) == 100755 ]]
+rg -q '^install -D -m 0755 "\$ROOT/launcher/couchliteos-music.py" "\$CHROOT/usr/libexec/couchliteos-music"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_music.py" "\$CHROOT/usr/libexec/couchliteos_music.py"$' build/configure.sh
+rg -q 'test_music.py' launcher/Makefile
+for package in gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire; do
+  rg -q "^$package\$" config/live-build/package-lists/couchliteos.list.chroot
+done
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_music.py
+refute rg -q 'shell=True' launcher/couchliteos_music.py launcher/couchliteos-music.py
 rg -q 'HOME_REQUEST.write_text\("guide\\n" if guide else "shortcut\\n"' launcher/gamepad-nav.py
 
 # Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)

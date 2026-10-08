@@ -377,7 +377,7 @@ class ToastFeed:
 
 SOUNDS_DIR = pathlib.Path("/usr/share/couchliteos/sounds")
 REPO_SOUNDS = pathlib.Path(__file__).resolve().parents[1] / "overlay/usr/share/couchliteos/sounds"
-SOUND_NAMES = ("move", "select", "back")
+SOUND_NAMES = ("move", "select", "back", "category", "edge", "open", "close", "notify", "startup")
 SOUND_KEYS = {"up": "move", "down": "move", "left": "move", "right": "move", "activate": "select", "back": "back"}
 SOUND_VOLUME = "0.5"  # quiet: pw-play's own volume, on top of the system one
 

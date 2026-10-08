@@ -62,6 +62,10 @@ dmsetup
 # Audio and input
 pipewire
 pipewire-audio
+# Background music in the TV interface (couchliteos-music)
+gir1.2-gstreamer-1.0
+gstreamer1.0-plugins-base
+gstreamer1.0-pipewire
 wireplumber
 alsa-utils
 # apt-recommends is off, so libasound2-data's Recommends must be listed. SOF and AMD ACP
