@@ -100,9 +100,11 @@ class Base(unittest.TestCase):
         (self.root / "etc/machine-id").write_text("0123456789abcdef0123456789abcdef\n")
         (self.root / "var/lib/couchliteos").mkdir(parents=True)
         (self.root / "var/lib/couchliteos/config.ini").write_text("[launcher]\n")
-        # The kernel's view of the partition setup adds (DOS_ISO: it starts at 4194304).
-        (self.root / "sys/class/block/sdb/sdb3").mkdir(parents=True)
-        (self.root / "sys/class/block/sdb/sdb3/start").write_text("4194304\n")
+        # The kernel's view of the partitions setup adds (DOS_ISO: couchliteos-sys starts at 4194304,
+        # persistence after it).
+        for name, start in (("sdb3", 4194304), ("sdb4", 4194304 + (liveslot.SYS_PARTITION_BYTES >> 9))):
+            (self.root / f"sys/class/block/sdb/{name}").mkdir(parents=True)
+            (self.root / f"sys/class/block/sdb/{name}/start").write_text(f"{start}\n")
 
     def env(self, runner, **kwargs):
         return persist.Env(runner=runner, root=self.root, free_bytes=kwargs.pop("free", lambda path: 10 * GIB),
@@ -250,7 +252,8 @@ class DetectAndSetupTest(Base):
             self.assertEqual(persist.main(["setup", "--plan"], self.env(runner)), 0)
         text = output.getvalue()
         self.assertIn("sfdisk --no-reread --no-tell-kernel --append /dev/sdb", text)
-        self.assertIn("mkfs.ext4 -F -q -m 1 -L persistence /dev/sdb3", text)
+        self.assertIn("mkfs.ext4 -F -q -m 1 -L couchliteos-sys /dev/sdb3", text)
+        self.assertIn("mkfs.ext4 -F -q -m 1 -L persistence /dev/sdb4", text)
         self.assertIn("start=4194304", text)
         for tool in ("mkfs.ext4", "mount", "partx", "cp"):
             self.assertEqual(runner.ran(tool), [], tool)
@@ -261,7 +264,8 @@ class DetectAndSetupTest(Base):
         runner = FakeRunner()
         self.assertEqual(persist.main(["setup"], self.env(runner)), 0)
         tools = [call[0] for call in runner.calls if call[0] not in ("findmnt", "lsblk", "cp", "sync")]
-        self.assertEqual(tools, ["sfdisk", "sfdisk", "partx", "udevadm", "mkfs.ext4", "mount", "umount"])
+        self.assertEqual(tools, ["sfdisk", "sfdisk", "partx", "partx", "udevadm", "mkfs.ext4", "mkfs.ext4",
+                                 "mount", "umount"])
         self.assertTrue(runner.inputs["sfdisk"].startswith("start=4194304, size="))
         data = self.tmp / "work" / "data"
         conf = (data / "persistence.conf").read_text()
@@ -276,8 +280,8 @@ class DetectAndSetupTest(Base):
         runner = FakeRunner()
         runner.fail.add("partx")
         self.assertEqual(persist.main(["setup"], self.env(runner)), 0)
-        self.assertEqual(runner.ran("mkfs.ext4", "-F", "-q", "-m", "1", "-L", "persistence", "/dev/sdb3"),
-                         [["mkfs.ext4", "-F", "-q", "-m", "1", "-L", "persistence", "/dev/sdb3"]])
+        self.assertEqual(runner.ran("mkfs.ext4", "-F", "-q", "-m", "1", "-L", "persistence", "/dev/sdb4"),
+                         [["mkfs.ext4", "-F", "-q", "-m", "1", "-L", "persistence", "/dev/sdb4"]])
 
     def test_never_formats_a_partition_that_is_not_the_planned_one(self):
         for start in ("64\n", None):
