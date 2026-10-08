@@ -1471,7 +1471,9 @@ rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_motion.py" "\$CHROOT/usr
 rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_xmb.py" "\$CHROOT/usr/libexec/couchliteos_xmb.py"$' build/configure.sh
 rg -q 'test_motion.py' launcher/Makefile
 rg -q 'test_xmb.py' launcher/Makefile
-refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_wave.py" "\$CHROOT/usr/libexec/couchliteos_wave.py"$' build/configure.sh
+rg -q 'test_wave.py' launcher/Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py launcher/couchliteos_wave.py
 rg -q '^INIT_FAILED = 3$' launcher/couchliteos-tv.py
 rg -q '^INIT_FAILED=3$' scripts/couchliteos-session
 # TV interface Settings, power, What's New, update progress (0.3.0 G3); the rest opens the classic
