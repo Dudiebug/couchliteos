@@ -1476,6 +1476,13 @@ rg -q 'test_wave.py' launcher/Makefile
 rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_icons.py" "\$CHROOT/usr/libexec/couchliteos_icons.py"$' build/configure.sh
 rg -q 'test_icons.py' launcher/Makefile
 refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py launcher/couchliteos_wave.py launcher/couchliteos_icons.py
+# The built-in SteamGridDB key comes from the build machine, is never in git and never printed.
+rg -q '^steamgriddb\.key$' .gitignore
+[[ -z $(git ls-files '*steamgriddb.key' '*secrets*') ]]
+rg -q 'key_file=\$\{STEAMGRIDDB_KEY_FILE:-\$key_home/secrets/steamgriddb\.key\}' build/configure.sh
+rg -q '^BUILTIN_KEY_FILE = pathlib\.Path\("/usr/share/couchliteos/steamgriddb\.key"\)$' launcher/couchliteos_artwork.py
+[[ $(rg -c '\$sgdb_key' build/configure.sh) == 2 ]]  # read once, written to the image once
+refute rg -q 'echo .*\$sgdb_key|set -x' build/configure.sh
 rg -q '^INIT_FAILED = 3$' launcher/couchliteos-tv.py
 rg -q '^INIT_FAILED=3$' scripts/couchliteos-session
 # TV interface Settings, power, What's New, update progress (0.3.0 G3); the rest opens the classic

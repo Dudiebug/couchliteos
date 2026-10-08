@@ -65,7 +65,25 @@ STEAM_COVER = "https://cdn.akamai.steamstatic.com/steam/apps/{appid}/library_600
 GRID_SEARCH = "https://www.steamgriddb.com/api/v2/search/autocomplete/{term}"
 GRID_COVERS = "https://www.steamgriddb.com/api/v2/grids/game/{game}?dimensions=600x900&types=static"
 KEY_PATTERN = re.compile(r"[A-Za-z0-9]{16,128}")
-PRIVACY = "LOOKUP SENDS ONLY GAME NAMES: TO STEAM, AND TO STEAMGRIDDB WITH A KEY"
+# The key the build puts in the image (from a file on the build machine, never from git): used
+# when the user has none of their own. Anyone with the image can read it, as the owner accepted.
+BUILTIN_KEY_FILE = pathlib.Path("/usr/share/couchliteos/steamgriddb.key")
+PRIVACY = "LOOKUP SENDS ONLY GAME NAMES, TO STEAM AND TO STEAMGRIDDB"
+
+# The XMB's other pictures of a game (Extras): its icon, its logo and the wide hero behind it.
+ICON, LOGO, HERO = "icon", "logo", "hero"
+EXTRA_KINDS = (ICON, LOGO, HERO)
+EXTRA_SIZES = {ICON: (256, 256), LOGO: (800, 310), HERO: (1920, 620)}
+EXTRA_LIMITS = {ICON: 20 * 1024 * 1024, LOGO: 40 * 1024 * 1024, HERO: 150 * 1024 * 1024}
+STEAM_EXTRAS = {  # official, so first; Steam has no square icon
+    LOGO: "https://cdn.akamai.steamstatic.com/steam/apps/{appid}/logo.png",
+    HERO: "https://cdn.akamai.steamstatic.com/steam/apps/{appid}/library_hero.jpg",
+}
+GRID_EXTRAS = {
+    ICON: "https://www.steamgriddb.com/api/v2/icons/game/{game}?types=static&mimes=image/png",
+    LOGO: "https://www.steamgriddb.com/api/v2/logos/game/{game}?types=static&mimes=image/png",
+    HERO: "https://www.steamgriddb.com/api/v2/heroes/game/{game}?types=static",
+}
 
 # Suffixes that name an edition or a store, not the game. Removed from the end, longest first.
 EDITIONS = (
@@ -224,10 +242,26 @@ def grid_games(name: str, opener, key: str, timeout: float = TIMEOUT) -> list[tu
             if isinstance(item, dict) and isinstance(item.get("id"), int) and isinstance(item.get("name"), str)]
 
 
-def grid_covers(game: int, opener, key: str, timeout: float = TIMEOUT) -> list[str]:
-    data = fetch_json(GRID_COVERS.format(game=game), opener, timeout, _bearer(key))
+def grid_images(template: str, game: int, opener, key: str, timeout: float = TIMEOUT) -> list[str]:
+    data = fetch_json(template.format(game=game), opener, timeout, _bearer(key))
     return [item["url"] for item in data.get("data") or []
             if isinstance(item, dict) and isinstance(item.get("url"), str) and allowed_url(item["url"])]
+
+
+def grid_covers(game: int, opener, key: str, timeout: float = TIMEOUT) -> list[str]:
+    return grid_images(GRID_COVERS, game, opener, key, timeout)
+
+
+def _first(urls: list[str], opener, timeout: float) -> bytes | None:
+    """The first of `urls` (at most three) that downloads; Offline goes up."""
+    for url in urls[:3]:
+        try:
+            return fetch(url, opener, MAX_IMAGE, timeout)
+        except Offline:
+            raise
+        except ArtworkError:
+            continue
+    return None
 
 
 def find_cover(name: str, opener, key: str = "", timeout: float = TIMEOUT) -> bytes | None:
@@ -246,14 +280,35 @@ def find_cover(name: str, opener, key: str = "", timeout: float = TIMEOUT) -> by
     games = grid_games(name, opener, key, timeout)
     if not games or not matches(name, games[0][1]):
         return None
-    for url in grid_covers(games[0][0], opener, key, timeout)[:3]:
-        try:
-            return fetch(url, opener, MAX_IMAGE, timeout)
-        except Offline:
+    return _first(grid_covers(games[0][0], opener, key, timeout), opener, timeout)
+
+
+def find_extras(name: str, opener, key: str = "", timeout: float = TIMEOUT) -> dict[str, bytes]:
+    """{kind: image} of the EXTRA_KINDS found for `name`: Steam's logo and hero when its first
+    result matches, the rest from SteamGridDB (with a key). Raises Offline; BadKey only when
+    nothing was found before the key was refused."""
+    found: dict[str, bytes] = {}
+    apps = steam_apps(name, opener, timeout)
+    if apps and matches(name, apps[0][1]):
+        for kind, template in STEAM_EXTRAS.items():
+            data = _first([template.format(appid=apps[0][0])], opener, timeout)
+            if data is not None:
+                found[kind] = data
+    if not key or len(found) == len(EXTRA_KINDS):
+        return found
+    try:
+        games = grid_games(name, opener, key, timeout)
+        if not games or not matches(name, games[0][1]):
+            return found
+        for kind in EXTRA_KINDS:
+            if kind not in found:
+                data = _first(grid_images(GRID_EXTRAS[kind], games[0][0], opener, key, timeout), opener, timeout)
+                if data is not None:
+                    found[kind] = data
+    except BadKey:
+        if not found:
             raise
-        except ArtworkError:
-            continue
-    return None
+    return found
 
 
 def cover_choices(name: str, opener, key: str = "", timeout: float = TIMEOUT) -> list[str]:
@@ -277,8 +332,9 @@ def image_kind(data: bytes) -> str:
     raise ArtworkError("not a JPEG, PNG or WebP image")
 
 
-def gdk_reencode(data: bytes, size: tuple[int, int] = TILE) -> bytes:
-    """Decode with GdkPixbuf, shrink to fit `size`, and return a fresh JPEG. Raises ArtworkError."""
+def gdk_reencode(data: bytes, size: tuple[int, int] = TILE, alpha: bool = False) -> bytes:
+    """Decode with GdkPixbuf, shrink to fit `size`, and return a fresh JPEG (a PNG that keeps
+    its transparency with `alpha`, for icons and logos). Raises ArtworkError."""
     if len(data) > MAX_IMAGE:
         raise ArtworkError("image is too large")
     kind = image_kind(data)
@@ -307,6 +363,16 @@ def gdk_reencode(data: bytes, size: tuple[int, int] = TILE) -> bytes:
     width, height = pixbuf.get_width(), pixbuf.get_height()
     scale = min(size[0] / width, size[1] / height, 1.0)
     target = (max(1, round(width * scale)), max(1, round(height * scale)))
+    if alpha:
+        if target != (width, height):
+            pixbuf = pixbuf.scale_simple(*target, GdkPixbuf.InterpType.BILINEAR)
+        try:
+            ok, buffer = pixbuf.save_to_bufferv("png", [], [])
+        except GLib.Error:
+            raise ArtworkError("could not encode the image") from None
+        if not ok:
+            raise ArtworkError("could not encode the image")
+        return bytes(buffer)
     if pixbuf.get_has_alpha():  # JPEG has no transparency: flatten onto dark grey
         pixbuf = pixbuf.composite_color_simple(*target, GdkPixbuf.InterpType.BILINEAR, 255, 64, 0x202020, 0x202020)
     elif target != (width, height):
@@ -362,6 +428,15 @@ def load_key(path: pathlib.Path | None = None) -> str:
     return key if KEY_PATTERN.fullmatch(key) else ""
 
 
+def builtin_key() -> str:
+    return load_key(BUILTIN_KEY_FILE)
+
+
+def lookup_key() -> str:
+    """The key lookups use: the user's own, else the one built into the image, else none."""
+    return load_key() or builtin_key()
+
+
 def save_key(key: str, path: pathlib.Path | None = None) -> None:
     """Store the key 0600 (empty removes it). Raises ValueError for text that is not a key."""
     path = path or KEY_FILE
@@ -391,15 +466,16 @@ class Cache:
     the directory is over `limit` bytes."""
 
     def __init__(self, root: pathlib.Path | None = None, limit: int = CACHE_LIMIT,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, suffix: str = ".jpg") -> None:
         self.root = root or CACHE_DIR
         self.limit = limit
         self.clock = clock
+        self.suffix = suffix
         self.lock = threading.RLock()
         self.index = _read_json(self.root / "index.json")
 
     def path(self, key: str) -> pathlib.Path:
-        return self.root / f"{key}.jpg"
+        return self.root / f"{key}{self.suffix}"
 
     def lookup(self, key: str, not_before: float = 0.0) -> tuple[str, pathlib.Path | None] | None:
         """("found", file), ("miss", None) while still fresh, else None (look it up)."""
@@ -445,7 +521,7 @@ class Cache:
     def evict(self) -> None:
         with self.lock:
             files = []
-            for path in self.root.glob("*.jpg"):
+            for path in self.root.glob(f"*{self.suffix}"):
                 try:
                     info = path.stat()
                 except OSError:
@@ -534,7 +610,7 @@ class Worker:
         opener: Callable[..., object] | None = None,
         reencode: Callable[[bytes], bytes] = gdk_reencode,
         enabled: Callable[[], bool] = lookup_enabled,
-        key: Callable[[], str] = load_key,
+        key: Callable[[], str] = lookup_key,
         key_time: Callable[[], float] = key_changed_at,
         moonlight: Callable[[str, int | None], pathlib.Path | None] = moonlight_art,
         threads: int = WORKERS,
@@ -603,7 +679,7 @@ class Worker:
         if self.stopped or not self.enabled():
             return "skipped"
         try:
-            data = find_cover(app, self.opener, self.key(), self.timeout)
+            data = self.find(app)
         except BadKey:
             self.key_rejected = True
             data = None  # Steam found nothing and the key does not work: a miss until the key changes
@@ -617,6 +693,12 @@ class Worker:
             data = None
         with self.lock:
             self.failures = 0
+        return self.store(key, app, host_label, data)
+
+    def find(self, app: str):
+        return find_cover(app, self.opener, self.key(), self.timeout)
+
+    def store(self, key: str, app: str, host_label: str, data: bytes | None) -> str:
         if data is not None:
             try:
                 self.cache.put_image(key, self.reencode(data), app, host_label)
@@ -674,3 +756,60 @@ class Worker:
         else:
             self.picks.pick_image(key, pathlib.Path(choice).read_bytes())
         self._changed.set()
+
+
+class Extras(Worker):
+    """A game's ICON, LOGO and HERO (the XMB's game icon, and the backdrop behind a focused game),
+    looked up together in one job, cached per kind under CACHE_DIR/<kind>. A game whose cover the
+    user set to TITLE CARD shows none of them (a wrong match stays hidden)."""
+
+    def __init__(self, caches: dict[str, Cache] | None = None, picks: Picks | None = None, *,
+                 opener: Callable[..., object] | None = None,
+                 reencode: Callable[[bytes, str], bytes] | None = None,
+                 enabled: Callable[[], bool] = lookup_enabled,
+                 key: Callable[[], str] = lookup_key,
+                 key_time: Callable[[], float] = key_changed_at,
+                 threads: int = 2, timeout: float = TIMEOUT) -> None:
+        self.caches = caches or {
+            kind: Cache(CACHE_DIR / kind, EXTRA_LIMITS[kind], suffix=".jpg" if kind == HERO else ".png")
+            for kind in EXTRA_KINDS
+        }
+        super().__init__(self.caches[ICON], picks, opener=opener, enabled=enabled, key=key, key_time=key_time,
+                         moonlight=lambda _uuid, _app_id: None, threads=threads, timeout=timeout)
+        self.reencode_kind = reencode or (lambda data, kind: gdk_reencode(data, EXTRA_SIZES[kind], kind != HERO))
+
+    def art(self, host_uuid: str, app: str, app_id: int | None = None, host_label: str = "",
+            kind: str = ICON) -> pathlib.Path | None:
+        """The `kind` picture to draw now, or None; queues a lookup when one is due."""
+        key = cache_key(host_uuid, app)
+        if self.picks.get(key) == TITLE_CARD:
+            return None
+        cached = self.caches[kind].lookup(key, self.key_time())
+        if cached is not None:
+            return cached[1]
+        if self.enabled():
+            self.request(key, app, host_label)
+        return None
+
+    def find(self, app: str):
+        return find_extras(app, self.opener, self.key(), self.timeout)
+
+    def store(self, key: str, app: str, host_label: str, data) -> str:
+        found = data or {}
+        result = "miss"
+        for kind, cache in self.caches.items():
+            try:
+                if kind not in found:
+                    raise ArtworkError("not found")
+                cache.put_image(key, self.reencode_kind(found[kind], kind), app, host_label)
+                result = "found"
+                self._changed.set()
+            except Exception:  # noqa: BLE001 - not an image, or GdkPixbuf refused it
+                try:
+                    cache.put_miss(key, app, host_label)
+                except OSError:
+                    pass
+        return result
+
+    def pick(self, host_uuid: str, app: str, choice: pathlib.Path | str | None) -> None:
+        raise NotImplementedError("CHANGE ARTWORK picks covers (Worker.pick)")

@@ -598,6 +598,152 @@ class GdkReencodeTests(unittest.TestCase):
         with self.assertRaises(artwork.ArtworkError):
             artwork.gdk_reencode(self.image(5000, 4000, "jpeg"))  # over MAX_PIXELS
 
+    def test_icons_and_logos_keep_their_transparency(self):
+        out = artwork.gdk_reencode(self.image(1000, 400, alpha=True), artwork.EXTRA_SIZES[artwork.LOGO], alpha=True)
+        self.assertEqual(artwork.image_kind(out), "png")
+        loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+        loader.write(out)
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+        self.assertTrue(pixbuf.get_has_alpha())
+        self.assertEqual((pixbuf.get_width(), pixbuf.get_height()), (775, 310))
+
+
+GRID_ICONS = "https://www.steamgriddb.com/api/v2/icons/game/"
+GRID_LOGOS = "https://www.steamgriddb.com/api/v2/logos/game/"
+GRID_HEROES = "https://www.steamgriddb.com/api/v2/heroes/game/"
+ICON_PNG = PNG + b"icon"
+LOGO_PNG = PNG + b"logo"
+HERO_JPEG = JPEG + b"hero"
+
+
+def grid(*urls) -> dict:
+    return {"success": True, "data": [{"id": n, "url": url} for n, url in enumerate(urls)]}
+
+
+class KeyTests(unittest.TestCase):
+    def test_the_users_key_first_then_the_images(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        user, builtin = root / "artwork.key", root / "builtin.key"
+        with mock.patch.object(artwork, "KEY_FILE", user), mock.patch.object(artwork, "BUILTIN_KEY_FILE", builtin):
+            self.assertEqual(artwork.lookup_key(), "")
+            builtin.write_text("not a key!\n")
+            self.assertEqual(artwork.lookup_key(), "")
+            builtin.write_text("fedcba9876543210fedcba9876543210\n")
+            self.assertEqual(artwork.lookup_key(), "fedcba9876543210fedcba9876543210")
+            artwork.save_key(KEY, user)
+            self.assertEqual(artwork.lookup_key(), KEY)
+
+    def test_the_privacy_sentence_names_both_services(self):
+        self.assertIn("STEAM", artwork.PRIVACY)
+        self.assertIn("STEAMGRIDDB", artwork.PRIVACY)
+        self.assertNotIn("WITH A KEY", artwork.PRIVACY)  # there is always one now
+
+
+class FindExtrasTests(unittest.TestCase):
+    def test_steam_logo_and_hero_first_and_the_icon_from_steamgriddb(self):
+        web = FakeWeb({
+            STEAM_SEARCH: steam((620, "Portal 2")),
+            STEAM_CDN + "620/logo.png": LOGO_PNG,
+            STEAM_CDN + "620/library_hero.jpg": HERO_JPEG,
+            GRID_SEARCH: {"data": [{"id": 9, "name": "Portal 2"}]},
+            GRID_ICONS + "9": grid("https://cdn2.steamgriddb.com/icon/a.png"),
+            "https://cdn2.steamgriddb.com/icon/a.png": ICON_PNG,
+        })
+        found = artwork.find_extras("Portal 2", web, KEY)
+        self.assertEqual(found, {artwork.LOGO: LOGO_PNG, artwork.HERO: HERO_JPEG, artwork.ICON: ICON_PNG})
+        self.assertFalse(any(url.startswith((GRID_LOGOS, GRID_HEROES)) for url in web.urls()))
+        self.assertIn("mimes=image/png", [url for url in web.urls() if url.startswith(GRID_ICONS)][0])
+
+    def test_steamgriddb_fills_in_what_steam_lacks(self):
+        web = FakeWeb({
+            STEAM_SEARCH: steam((1, "Something Else")),
+            GRID_SEARCH: {"data": [{"id": 9, "name": "Emu Game"}]},
+            GRID_ICONS + "9": grid(),
+            GRID_LOGOS + "9": grid("https://evil.example/logo.png", "https://cdn2.steamgriddb.com/logo/b.png"),
+            "https://cdn2.steamgriddb.com/logo/b.png": LOGO_PNG,
+            GRID_HEROES + "9": grid("https://cdn2.steamgriddb.com/hero/c.jpg"),
+            "https://cdn2.steamgriddb.com/hero/c.jpg": HERO_JPEG,
+        })
+        self.assertEqual(artwork.find_extras("Emu Game", web, KEY), {artwork.LOGO: LOGO_PNG, artwork.HERO: HERO_JPEG})
+        self.assertFalse(any("evil" in url for url in web.urls()))
+
+    def test_without_a_key_only_steam(self):
+        web = FakeWeb({STEAM_SEARCH: steam((620, "Portal 2")), STEAM_CDN + "620/logo.png": LOGO_PNG})
+        self.assertEqual(artwork.find_extras("Portal 2", web), {artwork.LOGO: LOGO_PNG})
+        self.assertFalse(any("steamgriddb" in url for url in web.urls()))
+
+    def test_a_refused_key_keeps_what_steam_found(self):
+        web = FakeWeb({STEAM_SEARCH: steam((620, "Portal 2")), STEAM_CDN + "620/logo.png": LOGO_PNG, GRID_SEARCH: 401})
+        self.assertEqual(artwork.find_extras("Portal 2", web, KEY), {artwork.LOGO: LOGO_PNG})
+        with self.assertRaises(artwork.BadKey):
+            artwork.find_extras("Emu Game", FakeWeb({STEAM_SEARCH: steam(), GRID_SEARCH: 401}), KEY)
+
+    def test_offline_goes_up(self):
+        with self.assertRaises(artwork.Offline):
+            artwork.find_extras("Portal 2", FakeWeb({STEAM_SEARCH: OSError("down")}), KEY)
+
+
+class ExtrasWorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.clock = Clock()
+        self.caches = {kind: artwork.Cache(self.root / kind, clock=self.clock, suffix=".png")
+                       for kind in artwork.EXTRA_KINDS}
+        self.picks = artwork.Picks(self.root / "picks.json", self.root / "picked")
+        self.encoded: list[tuple[str, bytes]] = []
+
+    def reencode(self, data: bytes, kind: str) -> bytes:
+        artwork.image_kind(data)
+        self.encoded.append((kind, data))
+        return b"\x89PNG\r\n\x1a\n" + kind.encode()
+
+    def extras(self, web) -> artwork.Extras:
+        return artwork.Extras(self.caches, self.picks, opener=web, reencode=self.reencode,
+                              enabled=lambda: True, key=lambda: KEY, key_time=lambda: 0.0)
+
+    def test_one_job_fills_every_kind_and_misses_the_rest(self):
+        web = FakeWeb({
+            STEAM_SEARCH: steam((620, "Portal 2")),
+            STEAM_CDN + "620/logo.png": LOGO_PNG,
+            STEAM_CDN + "620/library_hero.jpg": b"not an image",
+            GRID_SEARCH: {"data": []},
+        })
+        extras = self.extras(web)
+        extras.request = mock.Mock()  # type: ignore[method-assign]
+        self.assertIsNone(extras.art("uuid", "Portal 2", kind=artwork.LOGO))
+        extras.request.assert_called_once()
+        key = artwork.cache_key("uuid", "Portal 2")
+        self.assertEqual(extras.run_job(key, "Portal 2"), "found")
+        self.assertTrue(extras.take_changed())
+        logo = extras.art("uuid", "Portal 2", kind=artwork.LOGO)
+        self.assertEqual(logo.read_bytes(), b"\x89PNG\r\n\x1a\nlogo")
+        self.assertIsNone(extras.art("uuid", "Portal 2", kind=artwork.HERO))  # remembered as a miss
+        self.assertIsNone(extras.art("uuid", "Portal 2", kind=artwork.ICON))
+        self.assertEqual(extras.request.call_count, 1)
+
+    def test_a_title_card_hides_them(self):
+        extras = self.extras(FakeWeb())
+        key = artwork.cache_key("uuid", "Portal 2")
+        self.caches[artwork.ICON].put_image(key, PNG)
+        self.assertIsNotNone(extras.art("uuid", "Portal 2"))
+        self.picks.pick_title_card(key)
+        self.assertIsNone(extras.art("uuid", "Portal 2"))
+
+    def test_offline_counts_towards_stopping(self):
+        extras = self.extras(FakeWeb({STEAM_SEARCH: OSError("down")}))
+        for _ in range(artwork.MAX_FAILURES):
+            self.assertEqual(extras.run_job("k", "Portal 2"), "failed")
+        self.assertTrue(extras.stopped)
+
+    def test_default_caches_sit_beside_the_covers(self):
+        with mock.patch.object(artwork, "CACHE_DIR", self.root / "artwork"):
+            extras = artwork.Extras(opener=FakeWeb())
+        self.assertEqual(extras.caches[artwork.HERO].path("k"), self.root / "artwork/hero/k.jpg")
+        self.assertEqual(extras.caches[artwork.LOGO].path("k"), self.root / "artwork/logo/k.png")
+
 
 class HostAppIdTests(unittest.TestCase):
     def test_app_ids_are_kept(self):
@@ -617,11 +763,13 @@ class HostAppIdTests(unittest.TestCase):
 class ArtworkSettingsScreenTests(unittest.TestCase):
     """Settings > APPEARANCE > ARTWORK in the classic (curses) launcher."""
 
-    def run_screen(self, keys, typed=None):
+    def run_screen(self, keys, typed=None, builtin=""):
         from test_controls import FakeScreen, load_launcher
 
         root = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
+        if builtin:
+            (root / "builtin.key").write_text(builtin + "\n")
         launcher = load_launcher()
         screen = FakeScreen(keys)
         menu = launcher.Settings(screen, mock.Mock())
@@ -635,6 +783,7 @@ class ArtworkSettingsScreenTests(unittest.TestCase):
         with mock.patch.object(launcher, "read_key", side_effect=lambda window, **_kw: window.getch()), \
                 mock.patch.object(artwork, "SETTINGS_FILE", root / "artwork.json"), \
                 mock.patch.object(artwork, "KEY_FILE", root / "artwork.key"), \
+                mock.patch.object(artwork, "BUILTIN_KEY_FILE", root / "builtin.key"), \
                 mock.patch.object(artwork, "CACHE_DIR", root / "cache"), \
                 mock.patch.object(menu, "draw", side_effect=draw), \
                 mock.patch.object(launcher.ApplicationsSettings, "text_input", return_value=typed) as text_input:
@@ -648,6 +797,14 @@ class ArtworkSettingsScreenTests(unittest.TestCase):
         self.assertEqual(rows, ["LOOKUP  ON", "STEAMGRIDDB KEY  NOT SET", "UNMATCHED GAMES  0", "BACK"])
         self.assertIn("ONLY GAME NAMES", status)
         self.assertLessEqual(len(status), 76)
+
+    def test_the_images_own_key_shows_as_built_in_and_never_as_text(self):
+        builtin = "fedcba9876543210fedcba9876543210"
+        _root, frames, _text_input = self.run_screen([27], builtin=builtin)
+        self.assertEqual(frames[0][1][1], "STEAMGRIDDB KEY  BUILT IN")
+        self.assertFalse(any(builtin in " ".join(rows) + status for _title, rows, status in frames))
+        _root, frames, _text_input = self.run_screen([258, 10, 27], typed=KEY, builtin=builtin)
+        self.assertEqual(frames[-1][1][1], "STEAMGRIDDB KEY  SET")
 
     def test_lookup_toggles_and_the_key_is_saved_but_never_shown(self):
         root, frames, text_input = self.run_screen([10, 258, 10, 27], typed=KEY)  # 258 = KEY_DOWN

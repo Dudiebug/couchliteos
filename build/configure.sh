@@ -200,6 +200,26 @@ printf 'CouchLiteOS: %s\nBuild profile: %s\nSource commit: %s\nSource state: %s\
   "$(< "$ROOT/VERSION")" "$PROFILE" "$build_commit" "$build_state" "$(date --utc --iso-8601=seconds)" \
   > "$CHROOT/usr/share/couchliteos/build-info"
 
+# The SteamGridDB key built into the image, for artwork lookups when the user has no key of their
+# own. It comes from the build machine (never from git) and is never printed; without the file
+# the image has none and lookups use Steam and the user's own key.
+key_home=$HOME
+[[ -n ${SUDO_USER:-} ]] && key_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+key_file=${STEAMGRIDDB_KEY_FILE:-$key_home/secrets/steamgriddb.key}
+if [[ -f "$key_file" ]]; then
+  sgdb_key=$(tr -d '[:space:]' < "$key_file")
+  if [[ $sgdb_key =~ ^[A-Za-z0-9]{16,128}$ ]]; then
+    printf '%s\n' "$sgdb_key" > "$CHROOT/usr/share/couchliteos/steamgriddb.key"
+    chmod 0644 "$CHROOT/usr/share/couchliteos/steamgriddb.key"
+    echo 'SteamGridDB key: built in'
+  else
+    echo "SteamGridDB key: not built in, $key_file does not hold a key" >&2
+  fi
+  unset sgdb_key
+else
+  echo 'SteamGridDB key: none built in'
+fi
+
 for unit in "$ROOT"/services/*; do
   install -D -m 0644 "$unit" "$CHROOT/etc/systemd/system/$(basename "$unit")"
 done

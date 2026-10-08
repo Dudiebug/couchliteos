@@ -2017,7 +2017,8 @@ class Settings:
     def run_artwork(self) -> None:
         """Cover lookup for games: LOOKUP ON/OFF, the user's STEAMGRIDDB KEY, the UNMATCHED GAMES.
 
-        The key is typed masked (or on a phone) and never shown again, only SET or NOT SET."""
+        The key is typed masked (or on a phone) and never shown again, only SET, NOT SET, or
+        BUILT IN when the image's own key is the one used."""
         selected = 0
         notice = ""
         while True:
@@ -2025,7 +2026,7 @@ class Settings:
             unmatched = artwork.Cache().unmatched(artwork.key_changed_at())
             rows = [
                 f"LOOKUP  {'ON' if on else 'OFF'}",
-                f"STEAMGRIDDB KEY  {'SET' if artwork.load_key() else 'NOT SET'}",
+                f"STEAMGRIDDB KEY  {'SET' if artwork.load_key() else 'BUILT IN' if artwork.builtin_key() else 'NOT SET'}",
                 f"UNMATCHED GAMES  {len(unmatched)}",
                 "BACK",
             ]
