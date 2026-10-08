@@ -62,12 +62,12 @@ class OpenRuleTest(TempDir):
 
 class PromptTest(unittest.TestCase):
     def test_glyph_selection_table(self):
-        self.assertEqual(quick.glyphs("xbox"), {"activate": "Ⓐ", "back": "Ⓑ", "keyboard": "Ⓧ", "close": "Ⓨ"})
+        self.assertEqual(quick.glyphs("xbox"), {"activate": "A", "back": "B", "keyboard": "X", "close": "Y"})
         self.assertEqual(quick.glyphs("playstation"), {"activate": "✕", "back": "○", "keyboard": "△", "close": "□"})
         # Nintendo prints B on the south button, which gamepad-nav sends as Enter.
-        self.assertEqual(quick.glyphs("nintendo")["activate"], "Ⓑ")
-        self.assertEqual(quick.glyphs("nintendo")["back"], "Ⓐ")
-        self.assertEqual(quick.glyphs("generic")["activate"], "Ⓐ / ✕")
+        self.assertEqual(quick.glyphs("nintendo")["activate"], "B")
+        self.assertEqual(quick.glyphs("nintendo")["back"], "A")
+        self.assertEqual(quick.glyphs("generic")["activate"], "A / ✕")
         self.assertEqual(quick.glyphs("not a family"), quick.glyphs("generic"))
 
     def test_the_family_comes_from_the_pads_names(self):
@@ -79,7 +79,7 @@ class PromptTest(unittest.TestCase):
             self.assertEqual(controls.family(names), family)
 
     def test_prompts_name_the_glyph_and_the_keyboard_key(self):
-        self.assertEqual(quick.prompt("xbox", quick.HOME_PROMPT), "Ⓐ OR ENTER  OPEN    Ⓑ OR ESC  BACK")
+        self.assertEqual(quick.prompt("xbox", quick.HOME_PROMPT), "A OR ENTER  OPEN    B OR ESC  BACK")
         self.assertEqual(quick.prompt("playstation", quick.ACTIVE_PROMPT),
                          "✕ OR ENTER  RESUME    □ OR DELETE  CLOSE    △ OR F12  TYPE INTO IT    ○ OR ESC  BACK")
         self.assertIn("LEFT / RIGHT  CHANGE", quick.prompt("xbox", quick.QUICK_CHANGE_PROMPT))
@@ -236,7 +236,7 @@ class QuickMenuTest(unittest.TestCase):
         self.assertNotIn("MUTE", menu.prompt("xbox"))
         self.assertIn("CHANGE", menu.prompt("xbox"))
         menu.move(1)
-        self.assertEqual(menu.prompt("xbox"), "Ⓐ OR ENTER  SELECT\nⒷ OR ESC  CLOSE")
+        self.assertEqual(menu.prompt("xbox"), "A OR ENTER  SELECT\nB OR ESC  CLOSE")
 
 
 class Clock:

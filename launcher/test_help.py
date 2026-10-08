@@ -99,9 +99,9 @@ class TourCardsTest(unittest.TestCase):
                                         f"{family} {chip.button}: {keys!r} has no keyboard key")
 
     def test_chip_keys_use_the_pads_own_glyphs_and_names(self):
-        self.assertEqual(tvhelp.chip_keys("activate", "xbox"), "Ⓐ OR ENTER")
+        self.assertEqual(tvhelp.chip_keys("activate", "xbox"), "A OR ENTER")
         self.assertEqual(tvhelp.chip_keys("activate", "playstation"), "✕ OR ENTER")
-        self.assertEqual(tvhelp.chip_keys("back", "nintendo"), "Ⓐ OR ESC")  # Nintendo's B is south
+        self.assertEqual(tvhelp.chip_keys("back", "nintendo"), "A OR ESC")  # Nintendo's B is south
         self.assertEqual(tvhelp.chip_keys("hold-x", "playstation"), "HOLD △ OR F10")
         self.assertEqual(tvhelp.chip_keys("phone", "xbox"), "VIEW OR F2")
         self.assertEqual(tvhelp.chip_keys("guide", "playstation"), "PS BUTTON OR HOME KEY")

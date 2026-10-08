@@ -82,11 +82,12 @@ def front_app_id(run: pathlib.Path = RUN) -> str:
 # Glyphs of gamepad-nav's BTN_SOUTH, EAST, NORTH and WEST per controls.FAMILY_NAMES family:
 # A / Enter opens, B / Esc goes back, X / Triangle is the keyboard (F12), Y / Square closes (Delete).
 # Nintendo's south button is labelled B.
+# Plain letters, not the circled ones: the image's fonts (DejaVu) have no circled letters.
 GLYPHS = {
-    "xbox": ("Ⓐ", "Ⓑ", "Ⓧ", "Ⓨ"),
-    "nintendo": ("Ⓑ", "Ⓐ", "Ⓧ", "Ⓨ"),
+    "xbox": ("A", "B", "X", "Y"),
+    "nintendo": ("B", "A", "X", "Y"),
     "playstation": ("✕", "○", "△", "□"),
-    "generic": ("Ⓐ / ✕", "Ⓑ / ○", "Ⓧ / △", "Ⓨ / □"),
+    "generic": ("A / ✕", "B / ○", "X / △", "Y / □"),
 }
 BUTTONS = ("activate", "back", "keyboard", "close")
 KEYBOARD = {"activate": "ENTER", "back": "ESC", "keyboard": "F12", "close": "DELETE", "change": "LEFT / RIGHT"}
