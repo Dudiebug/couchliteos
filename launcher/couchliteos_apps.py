@@ -34,6 +34,8 @@ FLATPAK = "/usr/bin/flatpak"
 FLATPAK_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*){2,}$")
 FLATHUB_REPO = pathlib.Path("/usr/share/couchliteos/flathub.flatpakrepo")
 # Controller buttons that gamepad-nav forwards to the launcher as F5-F8.
+CATEGORIES = {"games", "video", "apps", "network"}
+ICON_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 SHORTCUTS = {"lb": "LB / L1", "rb": "RB / R1", "view": "VIEW / SELECT", "menu": "MENU / START"}
 
 
@@ -63,6 +65,10 @@ class Application:
     flatpak: str = ""
     system: bool = False
     path: pathlib.Path | None = None
+    # Where the TV interface puts it ("games", "video", "apps" or "network"; "" = by what it is) and
+    # its icon (a bundled icon name); the classic launcher ignores both.
+    category: str = ""
+    icon: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -163,6 +169,12 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
             raise ManifestError("user applications must use kind=command")
         if not request.startswith("start-") or not ID_RE.fullmatch(request.removeprefix("start-")):
             raise ManifestError("invalid request name")
+    category = _scalar(section.get("category", "").strip().lower(), "category", 16)
+    if category and category not in CATEGORIES:
+        raise ManifestError("category must be games, video, apps, or network")
+    icon = _scalar(section.get("icon", "").strip().lower(), "icon", 48)
+    if icon and not ICON_RE.fullmatch(icon):
+        raise ManifestError("icon must be an icon name (a-z, 0-9 and -)")
     return_to_launcher = _boolean(section, "return_to_launcher", True)
     if not return_to_launcher:
         raise ManifestError("return_to_launcher=false is not supported")
@@ -198,6 +210,8 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
         flatpak=flatpak,
         system=system,
         path=path,
+        category=category,
+        icon=icon,
     )
 
 
@@ -330,6 +344,10 @@ def serialize(app: Application) -> str:
         parser["app"]["binary"] = app.binary
     if app.connection:
         parser["app"]["connection"] = app.connection
+    if app.category:
+        parser["app"]["category"] = app.category
+    if app.icon:
+        parser["app"]["icon"] = app.icon
     if flatpak:
         parser["app"]["flatpak"] = app.flatpak
     if app.shortcut:

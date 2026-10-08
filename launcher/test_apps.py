@@ -106,6 +106,25 @@ class ApplicationsTest(unittest.TestCase):
                 with self.assertRaisesRegex(apps.ManifestError, message):
                     apps.read_manifest(path)
 
+    def test_category_and_icon_are_read_checked_and_written_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "app.ini"
+            base = "[app]\nid = tv\nname = TV\nkind = command\ncommand = /bin/true\n"
+            path.write_text(base + "category = Video\nicon = play-circle\n", encoding="utf-8")
+            app = apps.read_manifest(path)
+            self.assertEqual((app.category, app.icon), ("video", "play-circle"))
+            path.write_text(apps.serialize(app), encoding="utf-8")
+            self.assertEqual(apps.read_manifest(path), app)
+            path.write_text(base, encoding="utf-8")
+            plain = apps.read_manifest(path)
+            self.assertEqual((plain.category, plain.icon), ("", ""))
+            self.assertNotIn("category", apps.serialize(plain))
+            for extra, message in (("category = power\n", "category"), ("icon = ../../etc/x\n", "icon"),
+                                   ("icon = A B\n", "icon")):
+                path.write_text(base + extra, encoding="utf-8")
+                with self.assertRaisesRegex(apps.ManifestError, message):
+                    apps.read_manifest(path)
+
     def test_user_manifests_cannot_request_services_or_shadow_fixed_controls(self):
         self.user.mkdir()
         for name, text in (

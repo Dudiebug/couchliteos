@@ -510,6 +510,7 @@ python3 -m py_compile launcher/couchliteos-launcher.py launcher/couchliteos_apps
   launcher/couchliteos_rdp.py launcher/couchliteos_stream.py launcher/couchliteos_controllers.py \
   launcher/couchliteos_pcstatus.py launcher/couchliteos_recent.py launcher/couchliteos_home.py \
   launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py \
+  launcher/couchliteos_motion.py launcher/couchliteos_xmb.py \
   launcher/couchliteos_update.py launcher/couchliteos_errors.py launcher/couchliteos_confirm.py \
   launcher/couchliteos_updater.py launcher/couchliteos_softwareupdate.py launcher/couchliteos_snapshot.py \
   launcher/couchliteos_browser.py launcher/couchliteos_browsersetup.py \
@@ -1465,6 +1466,12 @@ rg -q 'test_session.py' launcher/Makefile
 rg -q 'test_tvlayout.py' launcher/Makefile
 rg -q 'tests/test_tv_fallback.py' Makefile
 refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_session.py launcher/couchliteos_tvlayout.py
+# XMB home (0.3.0 beta 3+): GTK-free motion and cross models, installed and tested.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_motion.py" "\$CHROOT/usr/libexec/couchliteos_motion.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_xmb.py" "\$CHROOT/usr/libexec/couchliteos_xmb.py"$' build/configure.sh
+rg -q 'test_motion.py' launcher/Makefile
+rg -q 'test_xmb.py' launcher/Makefile
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py
 rg -q '^INIT_FAILED = 3$' launcher/couchliteos-tv.py
 rg -q '^INIT_FAILED=3$' scripts/couchliteos-session
 # TV interface Settings, power, What's New, update progress (0.3.0 G3); the rest opens the classic

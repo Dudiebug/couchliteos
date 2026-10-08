@@ -82,6 +82,8 @@ install -D -m 0755 "$ROOT/launcher/couchliteos-tv.py" "$CHROOT/usr/libexec/couch
 install -D -m 0755 "$ROOT/scripts/couchliteos-session" "$CHROOT/usr/libexec/couchliteos-session"
 install -D -m 0644 "$ROOT/launcher/couchliteos_session.py" "$CHROOT/usr/libexec/couchliteos_session.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_tvlayout.py" "$CHROOT/usr/libexec/couchliteos_tvlayout.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_motion.py" "$CHROOT/usr/libexec/couchliteos_motion.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_xmb.py" "$CHROOT/usr/libexec/couchliteos_xmb.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_tvscreens.py" "$CHROOT/usr/libexec/couchliteos_tvscreens.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_quick.py" "$CHROOT/usr/libexec/couchliteos_quick.py"
 install -D -m 0755 "$ROOT/launcher/gamepad-nav.py" "$CHROOT/usr/libexec/couchliteos-gamepad-nav"
