@@ -165,7 +165,8 @@ import json, pathlib, sys
 
 work, themes = pathlib.Path(sys.argv[1]), sys.argv[3:]
 sys.path.insert(0, sys.argv[2] + "/launcher")
-import couchliteos_month as month
+import couchliteos_theme as theme
+midnight = theme.load(pathlib.Path(sys.argv[2]) / "overlay/usr/share/couchliteos/themes/midnight.theme")
 MIN_FONT = 28
 SCREENS = {"home": "home", "quick": "home", "art": "art", "streamset": "streamset", "settings": "settings", "power": "power",
            "whatsnew": "whatsnew", "update": "update"}
@@ -173,6 +174,7 @@ XMB = ["home", "quick", "art", "streamset", "xmb-games", "xmb-video", "xmb-setti
        "xmb-apps", "xmb-network", "update"]
 LOOKS = ["bg-plain", "bg-calm", "accent-month", "bg-wave"]
 problems = []
+started = None  # how the XMB's wave ran at the start (GL where the GL wave runs here)
 for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (1920, 1080)), ("xmb720", (1280, 720))):
     names = XMB if run.startswith("xmb") else list(SCREENS)
     names = names + ([f"theme-{name}" for name in themes] if run.endswith("1080") else [])
@@ -193,6 +195,8 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (192
             problems.append(f"{where}: theme is still {dump['theme']}")
         if run.startswith("xmb") and "wave" not in dump:
             problems.append(f"{where}: no wave facts in the dump")
+        if run == "xmb1080" and name == "home":
+            started = dump.get("wave", {}).get("how")
         if name in LOOKS:
             wave = dump.get("wave", {})
             style = {"bg-plain": "plain", "bg-calm": "calm"}.get(name, "wave")
@@ -201,7 +205,9 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (192
                 problems.append(f"{where}: background {wave} is not {style}")
             if name == "bg-plain" and (wave.get("gl") or wave.get("how") == "gl"):
                 problems.append(f"{where}: PLAIN still runs the GL wave ({wave})")
-            accent = month.colour() if name == "accent-month" else "3b82f6"  # midnight's own
+            if name != "bg-plain" and (wave.get("how"), wave.get("gl")) != (started, started == "gl"):
+                problems.append(f"{where}: the wave is not back as it started ({started}): {wave}")
+            accent = theme.with_accent(midnight, "month" if name == "accent-month" else "").colours["accent"]
             if dump.get("accent") != accent:
                 problems.append(f"{where}: accent is {dump.get('accent')}, not {accent}")
         if not dump["labels"]:
