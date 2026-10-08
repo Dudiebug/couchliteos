@@ -757,6 +757,103 @@ class FetchReleaseTest(unittest.TestCase):
                 update.fetch_release("0.2.1", opener=mock.Mock(return_value=Response(body)))
 
 
+BETA_API = "https://api.github.com/repos/Dudiebug/couchliteos/releases?per_page=20"
+BETA_API_OLD = "https://api.github.com/repos/Dudiebug/moonlightos/releases?per_page=20"  # rename:keep
+LATEST_API = "https://api.github.com/repos/Dudiebug/couchliteos/releases/latest"
+
+
+def entry(tag, **extra):
+    name = f"couchliteos-{tag.removeprefix('v')}-amd64.iso"
+    return {"tag_name": tag, "assets": [{"name": name, "size": 10, "browser_download_url": f"https://x/{name}"}],
+            **extra}
+
+
+class ChannelTest(unittest.TestCase):
+    """SOFTWARE UPDATE > UPDATE CHANNEL: stable asks for the latest release, beta for every release."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.config = pathlib.Path(tmp.name) / "config.ini"
+
+    def saved(self, text):
+        self.config.write_text(f"[update]\nchannel = {text}\n")
+
+    def test_a_release_box_defaults_to_stable_and_a_pre_release_box_to_beta(self):
+        self.assertEqual(update.update_channel("0.3.0", self.config), "stable")
+        self.assertEqual(update.update_channel("0.3.0-beta", self.config), "beta")
+        self.assertEqual(update.update_channel("", self.config), "stable")
+
+    def test_the_saved_choice_wins_and_an_unknown_one_is_ignored(self):
+        self.saved("stable")
+        self.assertEqual(update.update_channel("0.3.0-beta", self.config), "stable")
+        self.saved("BETA")
+        self.assertEqual(update.update_channel("0.3.0", self.config), "beta")
+        self.saved("nightly")
+        self.assertEqual(update.update_channel("0.3.0", self.config), "stable")
+
+    def test_beta_offers_the_highest_release_including_pre_releases_never_a_draft(self):
+        opener = mock.Mock(return_value=Response([
+            entry("v0.3.0-beta", prerelease=True), entry("v0.3.1-beta", draft=True, prerelease=True),
+            entry("nightly"), "junk", {"tag_name": 5}, entry("v0.3.0-beta.2", prerelease=True), entry("v0.2.7"),
+        ]))
+        release = update.fetch_release("0.3.0-beta", opener=opener, channel="beta")
+        self.assertEqual(release.version, "0.3.0-beta.2")
+        self.assertEqual([asset.name for asset in release.assets], ["couchliteos-0.3.0-beta.2-amd64.iso"])
+        request = opener.call_args.args[0]
+        self.assertEqual(request.full_url, BETA_API)
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers["user-agent"], "CouchLiteOS/0.3.0-beta")
+        self.assertEqual(set(headers), {"user-agent", "accept"})
+
+    def test_beta_moves_on_to_the_final_release(self):
+        opener = mock.Mock(return_value=Response([entry("v0.3.0"), entry("v0.3.0-beta.2", prerelease=True)]))
+        self.assertEqual(update.fetch_release("0.3.0-beta.2", opener=opener, channel="beta").version, "0.3.0")
+
+    def test_stable_still_asks_only_for_the_latest_release(self):
+        opener = mock.Mock(return_value=Response(RELEASE_JSON))
+        self.assertEqual(update.fetch_release("0.3.0-beta", opener=opener, channel="stable").version, "0.2.2")
+        self.assertEqual([call.args[0].full_url for call in opener.call_args_list], [LATEST_API])
+
+    def test_beta_falls_back_to_the_old_repository_name(self):
+        missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        opener = mock.Mock(side_effect=[missing, Response([entry("v0.3.0-beta.2")])])
+        self.assertEqual(update.fetch_release("0.3.0-beta", opener=opener, channel="beta").version, "0.3.0-beta.2")
+        self.assertEqual([call.args[0].full_url for call in opener.call_args_list], [BETA_API, BETA_API_OLD])
+
+    def test_bad_beta_answers_raise(self):
+        valid = json.dumps(entry("v0.3.0")).encode()
+        too_large = b"[" + b" " * (update.LIST_MAX_BYTES - len(valid) - 1) + valid + b"]"  # whole, valid JSON
+        self.assertEqual(len(too_large), update.LIST_MAX_BYTES + 1)
+        for body in ([], [entry("nightly"), entry("v0.4.0", draft=True)], {"tag_name": "v0.3.0"}, b"not json",
+                     too_large):
+            with self.assertRaises(update.UpdateError, msg=repr(body)[:40]):
+                update.fetch_release("0.3.0-beta", opener=mock.Mock(return_value=Response(body)), channel="beta")
+
+    def test_without_a_channel_the_saved_one_is_used(self):
+        self.addCleanup(update.CONFIG.unlink, missing_ok=True)
+        update.CONFIG.write_text("[update]\nchannel = beta\n")
+        opener = mock.Mock(return_value=Response([entry("v0.3.0-beta")]))
+        self.assertEqual(update.fetch_release("0.2.7", opener=opener).version, "0.3.0-beta")
+        self.assertEqual(opener.call_args.args[0].full_url, BETA_API)
+
+    def test_the_background_check_follows_the_saved_channel(self):
+        self.addCleanup(update.CONFIG.unlink, missing_ok=True)
+        update.CONFIG.write_text("[update]\nchannel = beta\n")
+        opener = mock.Mock(return_value=Response([entry("v0.3.0-beta.2", prerelease=True)]))
+        with tempfile.TemporaryDirectory() as directory, mock.patch("urllib.request.urlopen", opener):
+            checker = update.Checker(current="0.2.7", state_path=pathlib.Path(directory) / "update-check.ini",
+                                     clock=lambda: NOW, online=lambda: True, live=lambda: False,
+                                     profile={"ISO_SUFFIX": ""})
+            checker.check_if_due()
+            self.assertEqual(checker.available(), "0.3.0-beta.2")
+        self.assertEqual(opener.call_args.args[0].full_url, BETA_API)
+
+    def test_going_back_to_stable_never_offers_an_older_release(self):
+        self.assertFalse(update.is_newer("0.3.0", "0.3.1-beta"))
+        self.assertTrue(update.is_newer("0.3.1", "0.3.1-beta"))
+
+
 class AssetSelectionTest(unittest.TestCase):
     def setUp(self):
         self.release = update.fetch_release("0.2.1", opener=mock.Mock(return_value=Response(RELEASE_JSON)))

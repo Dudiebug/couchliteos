@@ -27,6 +27,12 @@ API_URLS = (
     "https://api.github.com/repos/Dudiebug/couchliteos/releases/latest",
     "https://api.github.com/repos/Dudiebug/moonlightos/releases/latest",  # rename:keep
 )
+# The beta channel reads the newest releases, pre-releases included, and takes the highest version.
+BETA_URLS = (
+    "https://api.github.com/repos/Dudiebug/couchliteos/releases?per_page=20",
+    "https://api.github.com/repos/Dudiebug/moonlightos/releases?per_page=20",  # rename:keep
+)
+CHANNELS = ("stable", "beta")
 RELEASES_TEXT = "github.com/Dudiebug/couchliteos/releases"
 PROFILE_FILE = pathlib.Path("/usr/share/couchliteos/profile.conf")
 LIVE_MEDIUM = pathlib.Path("/run/live/medium")
@@ -60,6 +66,7 @@ START_GAP_SECONDS = 60.0
 POLL_SECONDS = 60.0
 TIMEOUT = 5
 MAX_BYTES = 512 * 1024
+LIST_MAX_BYTES = 4 * 1024 * 1024  # 20 releases with their notes and asset lists
 VERSION_RE = re.compile(
     r"^v?(\d{1,6})(?:\.(\d{1,6}))?(?:\.(\d{1,6}))?(?:-([0-9A-Za-z][0-9A-Za-z.-]{0,31}))?(?:\+[0-9A-Za-z.-]{1,32})?$"
 )
@@ -209,6 +216,20 @@ def paused_until(path: pathlib.Path = CONFIG) -> float:
         return 0.0
 
 
+def update_channel(current: str, path: pathlib.Path = CONFIG) -> str:
+    """config.ini [update] channel; without one a pre-release keeps getting betas, a release stays stable."""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(path.read_text(encoding="utf-8", errors="replace"))
+        saved = parser.get("update", "channel", fallback="").strip().lower()
+    except (OSError, configparser.Error):
+        saved = ""
+    if saved in CHANNELS:
+        return saved
+    version = parse_version(current)
+    return "beta" if version is not None and version[1] != (1,) else "stable"
+
+
 def due(state: State, now: float, *, start: bool = False, retry: bool = False, paused: float = 0.0) -> bool:
     """True when a release should be asked for now.
 
@@ -239,7 +260,7 @@ class Release:
     assets: tuple[Asset, ...] = ()
 
 
-def _release_json(current: str, opener: Callable[..., object] | None, timeout: float) -> dict:
+def _release_json(current: str, opener: Callable[..., object] | None, timeout: float, channel: str = "stable") -> dict:
     """The newest release's JSON. Sends no identifiers beyond the version in the User-Agent."""
     # Imported here, on the check's own thread, not when the launcher starts: urllib.request
     # brings http.client and email with it (about 10 ms of the TV interface's start).
@@ -248,18 +269,21 @@ def _release_json(current: str, opener: Callable[..., object] | None, timeout: f
 
     opener = opener or urllib.request.urlopen
     headers = {"User-Agent": f"CouchLiteOS/{current or 'unknown'}", "Accept": "application/vnd.github+json"}
+    urls, limit = (BETA_URLS, LIST_MAX_BYTES) if channel == "beta" else (API_URLS, MAX_BYTES)
     try:
-        for url in API_URLS:
+        for url in urls:
             try:
                 with opener(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
-                    body = response.read(MAX_BYTES + 1)
+                    body = response.read(limit + 1)
                 break
             except urllib.error.HTTPError as error:
-                if error.code != 404 or url == API_URLS[-1]:
+                if error.code != 404 or url == urls[-1]:
                     raise
-        if len(body) > MAX_BYTES:
+        if len(body) > limit:
             raise UpdateError("release answer is too large")
         data = json.loads(body.decode("utf-8"))
+        if channel == "beta":
+            data = _highest(data)
         if not isinstance(data, dict):
             raise UpdateError("release answer is not an object")
     except UpdateError:
@@ -271,6 +295,18 @@ def _release_json(current: str, opener: Callable[..., object] | None, timeout: f
     return data
 
 
+def _highest(listing: object) -> object:
+    """The release with the highest version in a GitHub release list; drafts and bad tags are skipped."""
+    if not isinstance(listing, list):
+        raise UpdateError("release list is not a list")
+    found = [(parse_version(entry.get("tag_name")), index, entry) for index, entry in enumerate(listing)
+             if isinstance(entry, dict) and not entry.get("draft")]
+    found = [item for item in found if item[0] is not None]
+    if not found:
+        raise UpdateError("release list has no release")
+    return max(found, key=lambda item: (item[0], -item[1]))[2]
+
+
 def fetch_latest(
     current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT
 ) -> str:
@@ -279,10 +315,11 @@ def fetch_latest(
 
 
 def fetch_release(
-    current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT
+    current: str, opener: Callable[..., object] | None = None, timeout: float = TIMEOUT, channel: str | None = None
 ) -> Release:
-    """The latest release with its downloadable files (malformed entries are ignored)."""
-    data = _release_json(current, opener, timeout)
+    """The newest release of the channel (default: the saved one) with its downloadable files
+    (malformed entries are ignored)."""
+    data = _release_json(current, opener, timeout, channel or update_channel(current))
     assets = []
     for entry in data.get("assets") or []:
         if not isinstance(entry, dict):

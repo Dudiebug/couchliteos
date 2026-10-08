@@ -1205,6 +1205,23 @@ class RunTest(TmpCase):
         self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
         self.assertEqual([url for url, _r, _t in self.net.requests], [API])
 
+    def test_the_channel_saved_on_the_box_chooses_the_lookup(self):
+        beta_api = "https://api.github.com/repos/Dudiebug/couchliteos/releases?per_page=20"
+        self.routes[beta_api] = b"[" + release_json("0.2.2") + b"]"
+        del self.routes[API]
+        put(self.env.root, updater.LEGACY_CONFIG_REL, "[update]\nchannel = beta\n")
+        self.assertEqual(self.run_update(), 0)
+        self.assertEqual(self.net.requests[0][0], beta_api)
+        self.assertEqual([item[0] for item in self.applied], [self.env.cache_dir / ISO_NAME])
+
+    def test_a_beta_box_without_a_saved_channel_stays_on_betas(self):
+        beta_api = "https://api.github.com/repos/Dudiebug/couchliteos/releases?per_page=20"
+        self.routes[beta_api] = b"[" + release_json("0.2.2-beta") + b"]"
+        put(self.env.root, "etc/couchliteos-version", "0.2.2-beta\n")
+        self.assertEqual(self.run_update(), 0)
+        self.assertEqual(self.final()["phase"], "uptodate")
+        self.assertEqual([url for url, _r, _t in self.net.requests], [beta_api])
+
     def test_live_boot_is_refused_before_any_network_use(self):
         (self.env.root / "run/live/medium").mkdir(parents=True)
         self.assertEqual(self.run_update(), 1)

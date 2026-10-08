@@ -1830,7 +1830,8 @@ def run(
             raise UpdateFailed("THIS BOX HAS NO VERSION FILE")
         profile = update.read_profile(env.root / PROFILE_REL)
         try:
-            release = update.fetch_release(current, env.opener, timeout=API_TIMEOUT)
+            channel = update.update_channel(current, env.root / LEGACY_CONFIG_REL)
+            release = update.fetch_release(current, env.opener, timeout=API_TIMEOUT, channel=channel)
         except update.UpdateError as error:
             env.note(f"release lookup: {error}")
             raise UpdateFailed(MSG_NETWORK) from error

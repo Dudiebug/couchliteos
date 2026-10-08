@@ -677,6 +677,51 @@ class BetweenReleasesTest(UiTest):
         self.assertNotIn("AUTOMATIC", self.screen.frames[0])
 
 
+class ChannelRowTest(UiTest):
+    """UPDATE CHANNEL: STABLE / BETA, saved as config.ini [update] channel."""
+
+    def press(self, label, *after, **overrides):
+        index = next(i for i, row in enumerate(self.make(**overrides).rows()) if row.startswith(label))
+        return [DOWN] * index + [ENTER, *after]
+
+    def saved_channel(self):
+        return settings.read_section("update", self.tmp / "config.ini").get("channel")
+
+    def test_a_release_box_starts_on_stable_and_the_row_switches_and_saves(self):
+        self.script = [ESC]
+        self.make().run()
+        self.assertIn("UPDATE CHANNEL: STABLE", self.screen.frames[0])
+        self.script = self.press("UPDATE CHANNEL: STABLE", ESC)
+        self.make().run()
+        self.assertIn("UPDATE CHANNEL: BETA", self.screen.frames[-1])
+        self.assertEqual(self.saved_channel(), "beta")
+        self.script = self.press("UPDATE CHANNEL: BETA", ESC)
+        self.make().run()
+        self.assertIn("UPDATE CHANNEL: STABLE", self.screen.frames[-1])
+        self.assertEqual(self.saved_channel(), "stable")
+
+    def test_a_beta_box_starts_on_beta(self):
+        self.assertIn("UPDATE CHANNEL: BETA", self.make(current="0.3.0-beta").rows())
+
+    def test_switching_keeps_the_other_update_settings(self):
+        (self.tmp / "config.ini").write_text("[update]\nauto_apps = off\nsnapshot = off\n")
+        self.script = self.press("UPDATE CHANNEL: STABLE", ESC)
+        self.make().run()
+        values = settings.read_section("update", self.tmp / "config.ini")
+        self.assertEqual(values, {"auto_apps": "off", "snapshot": "off", "channel": "beta"})
+
+    def test_switching_forgets_what_the_last_check_found(self):
+        # CHECK finds 0.2.2 (INSTALL UPDATE becomes the first row), then the channel row is switched.
+        index = self.make().rows().index("UPDATE CHANNEL: STABLE") + 1
+        self.script = [ENTER] + [DOWN] * index + [ENTER, ESC]
+        self.make().run()
+        self.assertIn("UPDATE CHANNEL: BETA", self.screen.frames[-1])
+        self.assertNotIn("INSTALL UPDATE", self.screen.frames[-1])
+
+    def test_not_on_the_live_stick(self):
+        self.assertFalse([row for row in self.make(live=True).rows() if "CHANNEL" in row])
+
+
 class StorageTest(UiTest):
     """Live stick without persistence: SET UP STORAGE ON THIS STICK (couchliteos-persist-setup)."""
 

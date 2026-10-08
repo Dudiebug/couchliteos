@@ -125,6 +125,8 @@ CHECK, INSTALL, BACK = "CHECK FOR UPDATES", "INSTALL UPDATE", "BACK"
 HINT = "A / CROSS SELECTS  ·  B / CIRCLE GOES BACK"
 SAVE_ON, SAVE_OFF, DELETE_SAVED = "SAVE BEFORE UPDATE: ON", "SAVE BEFORE UPDATE: OFF", "DELETE SAVED VERSION"
 RESTORE = "RESTORE PREVIOUS VERSION"
+CHANNEL = "UPDATE CHANNEL"
+BETA_TEXT = "BETA: TEST VERSIONS ARE OFFERED TOO. THEY CAN HAVE BUGS."
 NO_SAVED = "SAVED VERSION: NONE"
 DELETING = "DELETING THE SAVED VERSION..."
 LIVE_TEXT = (
@@ -263,9 +265,23 @@ class SoftwareUpdate:
             storage = [] if self.persistent() else [SET_UP_STORAGE]
             return ([UPDATE_DISK] if self.found() else []) + storage + self.stick_rows() + [BACK]
         rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
+        rows += [self.channel_row()]
         saved = self._saved()
         rows += [UPDATE_NOW] + self.auto_rows() + self.rollback_rows()
         return rows + (self.restore_rows(saved) if saved else []) + [BACK]
+
+    def channel_row(self) -> str:
+        return f"{CHANNEL}: {update.update_channel(self.current, self.config).upper()}"
+
+    def toggle_channel(self) -> None:
+        new = "stable" if update.update_channel(self.current, self.config) == "beta" else "beta"
+        try:
+            settings.update_section("update", {"channel": new}, self.config)
+        except OSError:
+            self.result = "COULD NOT SAVE THE SETTING"
+            return
+        self.release = self.asset = None  # found on the other channel: CHECK again
+        self.result = BETA_TEXT if new == "beta" else ""
 
     # -- the stick's own update slots ------------------------------------------------------------
 
@@ -461,6 +477,9 @@ class SoftwareUpdate:
                 if choice == CHECK:
                     self.check()
                     self.selected = 0  # INSTALL UPDATE when there is one, else CHECK again
+                elif choice.startswith(CHANNEL):
+                    self.toggle_channel()
+                    self.selected = self.rows().index(self.channel_row())
                 elif choice in (SAVE_ON, SAVE_OFF):
                     self.toggle_save_first(choice == SAVE_OFF)
                 elif choice == DELETE_SAVED:
