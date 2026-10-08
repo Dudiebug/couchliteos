@@ -1123,7 +1123,7 @@ touch "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/no
   "$initramfs_test/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz" \
   "$initramfs_test/lib/firmware/nvidia/gk104/fecs_inst.bin"
 # live-boot's kms hook queues nouveau, and mkinitramfs copies the queue after all hooks.
-[[ $("$initramfs_hook" prereqs) == 'kms' ]]
+[[ $("$initramfs_hook" prereqs) == 'kms plymouth' ]]  # the boot splash's plymouth hook runs first
 printf 'i915\nnouveau\nradeon\n' > "$initramfs_test/queue"
 DESTDIR=$initramfs_test __MODULES_TO_ADD=$initramfs_test/queue "$initramfs_hook"
 [[ $(< "$initramfs_test/queue") == $'i915\nradeon' ]]
