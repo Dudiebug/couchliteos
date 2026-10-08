@@ -149,7 +149,10 @@ pid=
 boot_and_wait() {
   local mode=$1 marker=$2 limit=$3
   local boot=(-boot order=c)
-  [[ $mode != disk-update ]] || boot=(-boot order=d -drive "file=$NEW_ISO,media=cdrom,readonly=on")
+  # bootindex, not -boot order=d: the old installer left a "debian" entry in the firmware's
+  # variables, and OVMF follows that over -boot (the old disk would start, not the new ISO).
+  [[ $mode != disk-update ]] || boot=(-drive "id=newiso,if=none,file=$NEW_ISO,media=cdrom,readonly=on"
+    -device ide-cd,drive=newiso,bootindex=0)
   printf '\n=== %s ===\n' "$mode" >> "$BOOT_LOG"
   find "$monitor" -delete 2>/dev/null || true
   qemu-system-x86_64 "${common[@]}" "${boot[@]}" -monitor "unix:$monitor,server=on,wait=off" \
