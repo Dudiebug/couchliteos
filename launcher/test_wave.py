@@ -1,4 +1,5 @@
 import testenv  # noqa: F401  (first: scratch run and state directories)
+import math
 import pathlib
 import re
 import unittest
@@ -108,22 +109,19 @@ class ShaderTest(unittest.TestCase):
 class SparkleTest(unittest.TestCase):
     WIDTH, HEIGHT = 96, 54
 
-    def waves(self, time=wave.STILL_TIME):
-        return [wave.ribbon_y((px + 0.5) / self.WIDTH, time, 0) for px in range(self.WIDTH)]
-
-    def brute(self, time, min_size=0.0):
-        waves, out = self.waves(time), {}
+    def brute(self, time, min_size=0.0, layers=wave.LAYERS):
+        out = {}
         for py in range(self.HEIGHT):
             for px in range(self.WIDTH):
                 value = sum(wave.sparkle((px + 0.5) / self.WIDTH, (py + 0.5) / self.HEIGHT, time,
-                                         self.WIDTH / self.HEIGHT, layer, waves[px], min_size) for layer in wave.LAYERS)
+                                         self.WIDTH / self.HEIGHT, layer, min_size) for layer in layers)
                 if value > 0:
                     out[py * self.WIDTH + px] = value
         return out
 
     def test_the_quick_field_is_every_pixel_worked_out(self):
         for time in (0.0, wave.STILL_TIME, 1234.5):
-            field = wave.sparkle_field(self.WIDTH, self.HEIGHT, time, self.waves(time), 0.8 / self.HEIGHT)
+            field = wave.sparkle_field(self.WIDTH, self.HEIGHT, time, 0.8 / self.HEIGHT)
             brute = self.brute(time, 0.8 / self.HEIGHT)
             self.assertTrue(brute, time)
             self.assertEqual(set(field), set(brute), time)
@@ -131,40 +129,76 @@ class SparkleTest(unittest.TestCase):
                 self.assertAlmostEqual(field[index], value)
 
     def test_a_sparkle_glows_only_inside_its_cell(self):
-        # So the shader only looks at a pixel's own cell: on every cell's edge, nothing.
+        # So the shader only looks at a pixel's own cell: on every cell's edge, nothing, even where
+        # the lane slopes most (a squarish screen).
+        for aspect in (1.0, 1.75):
+            for layer in wave.LAYERS:
+                rows = int(3 * wave.SPARKLE_BAND * layer.scale / layer.cell) + 2
+                for time in (0.0, 17.3, 400.0):
+                    left = layer.drift * time
+                    for cx in range(int(-left / layer.cell) - 1, int((aspect - left) / layer.cell) + 2):
+                        for cy in range(-rows, rows):
+                            for k in range(9):
+                                along = (k + 0.5) / 9
+                                for gx, gy in ((cx + along, cy), (cx, cy + along)):
+                                    x = (left + gx * layer.cell) / aspect
+                                    y = wave.lane_y(x, time, layer.scale) + gy * layer.cell
+                                    self.assertEqual(wave.sparkle(x, y, time, aspect, layer), 0.0, (layer, cx, cy))
+
+    def test_every_sparkle_fits_its_cell(self):
         for layer in wave.LAYERS:
-            for time in (0.0, 17.3, 400.0):
-                left, top = layer.drift[0] * time, layer.drift[1] * time
-                for cx in range(-3, 12):
-                    for cy in range(-4, 4):
-                        for k in range(9):
-                            along = (k + 0.5) / 9
-                            for gx, gy in ((cx + along, cy), (cx, cy + along)):
-                                x, y = (left + gx * layer.cell) / 1.75, 0.6 + top + gy * layer.cell
-                                self.assertEqual(wave.sparkle(x, y, time, 1.75, layer, 0.6), 0.0)
+            self.assertLessEqual(max(layer.size, layer.blur), 0.6 * wave.SPARKLE_CLEAR * layer.cell, layer)
+        self.assertEqual(len({layer.seed for layer in wave.LAYERS}), len(wave.LAYERS))
+
+    def test_nearer_is_larger_faster_lower_and_out_of_focus(self):
+        # The depth: what makes it look 3D.
+        layers = wave.LAYERS
+        for far, near in zip(layers, layers[1:]):
+            self.assertLess(far.scale, near.scale)
+            self.assertLess(far.drift, near.drift)
+            self.assertLess(far.cell, near.cell)
+            self.assertLess(max(far.size, far.blur), max(near.size, near.blur))
+            self.assertLess(wave.lane_y(0.5, 0.0, far.scale), wave.lane_y(0.5, 0.0, near.scale))
+        self.assertEqual([layer.blur > 0 for layer in layers], [layer.scale > 1.2 for layer in layers])
+        self.assertEqual(wave.SHARP + wave.SOFT, layers)
+        # At the wave's own depth the lane is the wave's swell; nearer, it swings further.
+        amplitude, frequency, speed, _ = wave.WAVES[0]
+        self.assertAlmostEqual(wave.lane_y(0.3, 5.0, 1.0), wave.BASE + amplitude * math.sin(0.3 * frequency + 5.0 * speed))
+
+        def swing(scale):
+            heights = [wave.lane_y(x / 50, time / 3, scale) for x in range(51) for time in range(60)]
+            return max(heights) - min(heights)
+        self.assertLess(swing(0.5), swing(1.0))
+        self.assertLess(swing(1.0), swing(2.3))
 
     def test_there_are_a_few_and_they_drift_and_twinkle(self):
-        first = wave.sparkle_field(self.WIDTH, self.HEIGHT, 100.0, self.waves(100.0))
-        later = wave.sparkle_field(self.WIDTH, self.HEIGHT, 103.0, self.waves(103.0))
+        first = wave.sparkle_field(self.WIDTH, self.HEIGHT, 100.0)
+        later = wave.sparkle_field(self.WIDTH, self.HEIGHT, 103.0)
         self.assertTrue(first)
         self.assertNotEqual(set(first), set(later))
         self.assertLess(len(first), self.WIDTH * self.HEIGHT * 0.1)  # dots, not a haze
-        self.assertTrue(all(value <= sum(layer.brightness for layer in wave.LAYERS) * 1.3 for value in first.values()))
+        self.assertTrue(all(value <= sum(layer.brightness * 1.3 for layer in wave.LAYERS) for value in first.values()))
         glints = [wave._sparkle_in(3, 1, time / 10)[2] for time in range(300)]
         self.assertAlmostEqual(min(glints), wave.SPARKLE_GLINT, places=2)
         self.assertGreater(max(glints), 0.95)
+        sizes = [wave._sparkle_in(x, y, 0.0)[3] for x in range(20) for y in range(5)]
+        self.assertTrue(all(0.6 <= size < 1.0 for size in sizes))
+        self.assertGreater(max(sizes) - min(sizes), 0.3)
 
-    def test_they_ride_the_wave(self):
-        for time in (0.0, wave.STILL_TIME, 300.0):
-            waves = self.waves(time)
-            field = wave.sparkle_field(self.WIDTH, self.HEIGHT, time, waves)
-            self.assertTrue(field)
-            for index in field:
-                py, px = divmod(index, self.WIDTH)
-                self.assertLessEqual(abs((py + 0.5) / self.HEIGHT - waves[px]), wave.SPARKLE_REACH)
-            # Closer to the ribbon, brighter: most of the light is within one band of it.
-            near = sum(v for i, v in field.items() if abs((i // self.WIDTH + 0.5) / self.HEIGHT - waves[i % self.WIDTH]) < wave.SPARKLE_BAND)
-            self.assertGreater(near, sum(field.values()) * 0.6)
+    def test_each_layer_keeps_to_its_lane(self):
+        for layer in wave.LAYERS:
+            band = wave.SPARKLE_BAND * layer.scale
+            near = total = 0.0
+            for time in range(0, 900, 37):
+                field = wave.sparkle_field(self.WIDTH, self.HEIGHT, time, 0.0, (layer,))
+                lanes = [wave.lane_y((px + 0.5) / self.WIDTH, time, layer.scale) for px in range(self.WIDTH)]
+                for index, value in field.items():
+                    py, px = divmod(index, self.WIDTH)
+                    off = abs((py + 0.5) / self.HEIGHT - lanes[px])
+                    self.assertLessEqual(off, 3 * band)
+                    near += value if off < band else 0.0
+                    total += value
+            self.assertGreater(near, total * 0.5, layer)  # closer to the lane, brighter
 
     def test_the_sheet_is_brighter_at_its_edges_and_nothing_outside(self):
         self.assertAlmostEqual(wave.sheet(0.5, 0.4, 0.6), wave.SHEET_ALPHA * 0.35)
@@ -176,7 +210,7 @@ class SparkleTest(unittest.TestCase):
         self.assertIn(f"return {wave._float(wave.SHEET_ALPHA)} * inside * (0.35 + 0.65 * pow(abs(2.0 * s - 1.0), 3.0));",
                       wave.fragment())
 
-    def test_the_hash_is_the_shaders(self):
+    def test_the_shader_is_the_same_sums(self):
         values = [wave.cell_hash(x, y) for x in range(-20, 20) for y in range(-5, 5)]
         self.assertTrue(all(0 <= value < 1 for value in values))
         self.assertGreater(len({round(value, 3) for value in values}), 300)
@@ -184,10 +218,13 @@ class SparkleTest(unittest.TestCase):
         self.assertIn("vec3 h = fract(vec3(p.xyx) * 0.1031);", source)
         self.assertIn("h += dot(h, h.yzx + 33.33);", source)
         for layer in wave.LAYERS:
-            self.assertIn(f"{wave._float(layer.cell)}, {wave._float(layer.density)}, {wave._float(layer.size)}, "
-                          f"vec2({wave._float(layer.drift[0])}, {wave._float(layer.drift[1])})", source)
-        self.assertIn(f"exp(-(above * above) / {wave._float(wave.SPARKLE_BAND ** 2)})", source)
-        self.assertIn(f"if (abs(above) > {wave._float(wave.SPARKLE_REACH)}) return 0.0;", source)
+            self.assertIn(wave._layer_call(layer), source)
+        self.assertIn(f"float soft = {' + '.join(wave._layer_call(layer) for layer in wave.SOFT)};", source)
+        self.assertIn(f"float sharp = {' + '.join(wave._layer_call(layer) for layer in wave.SHARP)};", source)
+        self.assertIn(f"float band = {wave._float(wave.SPARKLE_BAND)} * scale;", source)
+        self.assertIn(f"float reach = {wave._float(wave.SPARKLE_CLEAR)} * cell;", source)
+        self.assertIn(f"return {wave._float(wave.HORIZON)} + ({wave._float(wave.BASE)} + ", source)
+        self.assertIn("float min_size = 0.8 / u_size.y;", source)
 
     def test_dark_themes_sparkle_more_and_flat_has_none(self):
         dark = wave.palette(theme.FALLBACK, 12)
