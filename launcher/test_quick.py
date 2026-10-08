@@ -357,12 +357,15 @@ class SoundsTest(TempDir):
         self.assertEqual(config.read_text().count("[appearance]"), 1)
 
     def test_the_sound_files_are_short_quiet_wavs(self):
+        # A key press's sound must be over before the next repeat; the jingles may ring a little longer.
         directory = quick.REPO_SOUNDS
+        longer = {"open": 0.6, "close": 0.6, "notify": 1.0, "startup": 3.5}
         for name in quick.SOUND_NAMES:
             path = directory / f"{name}.wav"
-            self.assertLess(path.stat().st_size, 16 * 1024, name)
+            seconds = longer.get(name, 0.3)
+            self.assertLess(path.stat().st_size, 16 * 1024 * max(1, round(seconds / 0.3)), name)
             with wave.open(str(path)) as sound:
-                self.assertLess(sound.getnframes() / sound.getframerate(), 0.3, name)
+                self.assertLess(sound.getnframes() / sound.getframerate(), seconds, name)
                 self.assertEqual(sound.getnchannels(), 1)
 
 

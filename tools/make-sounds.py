@@ -3,7 +3,7 @@
 
     tools/make-sounds.py [OUT]       OUT defaults to overlay/usr/share/couchliteos
 
-Writes OUT/sounds/<name>.wav (mono, 16 bit, 44.1 kHz) for every UI sound and
+Writes OUT/sounds/<name>.wav (mono, 16 bit, 22.05 kHz) for every UI sound and
 OUT/music/ambient.ogg: a seamless ambient loop (pads, a bell arpeggio and a soft bass in
 D major, 32 bars at 68 bpm, about 113 s), encoded with ffmpeg (libvorbis). Everything is
 synthesised here and deterministic (a fixed seed), so the files carry this project's licence and
@@ -31,7 +31,12 @@ def hz(note: float) -> float:
     return 440.0 * 2 ** ((note - 69) / 12)
 
 
-def write_wav(path: pathlib.Path, channels: list[array.array], peak: float) -> None:
+def halve(samples: array.array) -> array.array:
+    """RATE to RATE / 2 (the UI sounds: small files, nothing up there worth keeping)."""
+    return array.array("d", ((samples[i] + samples[i + 1]) / 2 for i in range(0, len(samples) - 1, 2)))
+
+
+def write_wav(path: pathlib.Path, channels: list[array.array], peak: float, rate: int = RATE) -> None:
     """Float channels (same length) to 16-bit PCM, scaled so the loudest sample is `peak`."""
     top = max(max(abs(x) for x in channel) for channel in channels) or 1.0
     gain = peak / top
@@ -44,7 +49,7 @@ def write_wav(path: pathlib.Path, channels: list[array.array], peak: float) -> N
     with wave.open(str(path), "wb") as out:
         out.setnchannels(len(channels))
         out.setsampwidth(2)
-        out.setframerate(RATE)
+        out.setframerate(rate)
         out.writeframes(frames.tobytes())
 
 
@@ -96,8 +101,8 @@ def ui_sounds() -> dict[str, tuple[array.array, float]]:
         "move": (bell(hz(D6 + 12), 0.06, 0.018, ratio=2.0, index=0.4), 0.32),
         "category": (glide(520, 880, 0.12, 0.05), 0.30),
         "edge": (glide(190, 150, 0.12, 0.04), 0.40),
-        "select": (mix(0.32, (0, bell(hz(B5), 0.3, 0.09), 1.0), (0.07, bell(hz(FS6), 0.25, 0.09), 0.9)), 0.50),
-        "back": (mix(0.32, (0, bell(hz(FS6), 0.3, 0.08), 0.8), (0.07, bell(hz(B5), 0.25, 0.08), 0.9)), 0.42),
+        "select": (mix(0.28, (0, bell(hz(B5), 0.28, 0.08), 1.0), (0.07, bell(hz(FS6), 0.21, 0.07), 0.9)), 0.50),
+        "back": (mix(0.28, (0, bell(hz(FS6), 0.28, 0.07), 0.8), (0.07, bell(hz(B5), 0.21, 0.07), 0.9)), 0.42),
         "open": (mix(0.5, (0, bell(hz(D6), 0.45, 0.12), 0.8), (0.045, bell(hz(FS6), 0.4, 0.12), 0.8),
                      (0.09, bell(hz(A6), 0.4, 0.14), 0.9)), 0.45),
         "close": (mix(0.5, (0, bell(hz(A6), 0.45, 0.1), 0.7), (0.045, bell(hz(FS6), 0.4, 0.1), 0.8),
@@ -251,7 +256,7 @@ def music() -> tuple[array.array, array.array]:
 def main(argv: list[str]) -> int:
     out = pathlib.Path(argv[1]) if len(argv) > 1 else ROOT / "overlay/usr/share/couchliteos"
     for name, (samples, peak) in ui_sounds().items():
-        write_wav(out / "sounds" / f"{name}.wav", [samples], peak)
+        write_wav(out / "sounds" / f"{name}.wav", [halve(samples)], peak, RATE // 2)
         print(f"sounds/{name}.wav")
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
