@@ -10,10 +10,12 @@ Colours come from the theme: the background, tinted with the accent towards the 
 brighter by day and dimmer at night (as the console's wave follows the clock). The tint is held
 back until the theme's text keeps MIN_CONTRAST against the brightest part of the gradient.
 
-Over the ribbons float the sparkles: tiny lights that drift slowly along the wave and twinkle,
-brightest near it, as on the console. Each LAYER is a grid of cells drifting across the screen
-with at most one sparkle in a cell, whose glow stays inside it, so a pixel only looks at its own
-cell in each layer: a few dozen sums a pixel, nothing an old GPU notices.
+Between the first two ribbons hangs a sheet of light, brighter at its edges, that twists to a line
+where they cross: the console's silk. Along it ride the sparkles: tiny lights that flow with the
+wave and glint, and fade out a little above and below it. Each LAYER is a grid of cells that
+follows the main ribbon up and down and drifts along it, with at most one sparkle in a cell,
+whose glow stays inside it, so a pixel only looks at its own cell in each layer: a few dozen sums
+a pixel, nothing an old GPU notices.
 """
 
 from __future__ import annotations
@@ -37,14 +39,17 @@ WAVES = ((0.060, 2.1, 0.21, 1.7), (0.035, 4.7, -0.33, 0.9), (0.015, 9.3, 0.50, 1
 WIDTHS = (0.010, 0.016, 0.022)  # each ribbon's bright core, in screen heights
 HAZE = 0.09  # the soft glow around a ribbon
 RIBBON_ALPHA = (0.55, 0.35, 0.25)
+SHEET_ALPHA = 0.3  # the sheet between ribbons 0 and 1, at its edges (0.35 of that in its middle)
+SHEET_EDGE = 0.003  # its soft edge, in screen heights
 TAU = 2 * math.pi
-MAX_GLOW = sum(RIBBON_ALPHA) * 1.35  # every ribbon's core and haze on one pixel: the brightest it gets
+# Every ribbon's core and haze, and the sheet's edge, on one pixel: the brightest it gets.
+MAX_GLOW = sum(RIBBON_ALPHA) * 1.35 + SHEET_ALPHA
 LARGE_CONTRAST = 3.0  # WCAG AA for large text: the XMB's labels crossing a ribbon
 
 
 @dataclasses.dataclass(frozen=True)
 class Layer:
-    """One layer of sparkles; lengths in screen heights, x and y as on the screen (y down)."""
+    """One layer of sparkles; lengths in screen heights, x along the screen, y from the main ribbon."""
     cell: float  # the grid's cell size
     density: float  # the share of cells with a sparkle
     size: float  # the bright core's radius
@@ -53,11 +58,12 @@ class Layer:
 
 
 # Far (small, slow, dim) and near (larger, faster): the near ones pass the far ones, as on the console.
-LAYERS = (Layer(0.05, 0.25, 0.0017, (0.010, -0.003), 1.0), Layer(0.10, 0.45, 0.0032, (0.018, -0.006), 1.7))
+LAYERS = (Layer(0.035, 0.45, 0.0016, (0.022, 0.0), 1.1), Layer(0.07, 0.55, 0.003, (0.035, 0.0), 1.7))
 SPARKLE_MARGIN = 0.3  # of a cell: where a sparkle's centre may sit, before it wanders
 SPARKLE_WANDER = 0.1  # of a cell: how far it wanders; its glow ends inside the cell (MARGIN - WANDER)
-SPARKLE_NEAR = 0.09  # sparkles are brightest within about this of the main ribbon
-SPARKLE_FLOOR = 0.1  # and this bright far from it
+SPARKLE_BAND = 0.06  # sparkles live within about this of the main ribbon
+SPARKLE_REACH = 3 * SPARKLE_BAND  # and none at all beyond this
+SPARKLE_GLINT = 0.3  # a sparkle never goes quite dark: it glints up from this
 SPARKLE_WHITE = 0.6  # a sparkle is the ribbon colour this far towards white
 
 
@@ -159,8 +165,11 @@ def sparkle(x: float, y: float, time: float, aspect: float, layer: Layer, wave_y
     """How bright `layer`'s sparkle is at (x, y) (0..1 of the screen, y down) on a screen `aspect`
     wide for 1 high, with the main ribbon at `wave_y` there; 0 almost everywhere. `min_size` keeps
     a dot at least a pixel wide in the small still frame."""
+    above = y - wave_y
+    if abs(above) > SPARKLE_REACH:
+        return 0.0
     gx = (x * aspect - layer.drift[0] * time) / layer.cell
-    gy = (y - layer.drift[1] * time) / layer.cell
+    gy = (above - layer.drift[1] * time) / layer.cell
     cx, cy = math.floor(gx), math.floor(gy)
     if cell_hash(cx, cy) >= layer.density:
         return 0.0
@@ -169,17 +178,19 @@ def sparkle(x: float, y: float, time: float, aspect: float, layer: Layer, wave_y
     size = max(layer.size, min_size)
     glow = math.exp(-(d * d) / (size * size)) + 0.3 * math.exp(-(d * d) / (9 * size * size))
     reach = (SPARKLE_MARGIN - SPARKLE_WANDER) * layer.cell
-    near = SPARKLE_FLOOR + (1 - SPARKLE_FLOOR) * math.exp(-abs(y - wave_y) / SPARKLE_NEAR)
-    return layer.brightness * twinkle * twinkle * glow * (1 - _smoothstep(0.5 * reach, reach, d)) * near
+    band = math.exp(-(above * above) / (SPARKLE_BAND * SPARKLE_BAND))
+    return layer.brightness * twinkle * glow * (1 - _smoothstep(0.5 * reach, reach, d)) * band
 
 
 def _sparkle_in(cx: int, cy: int, time: float) -> tuple[float, float, float]:
-    """Where in its cell (0..1) the sparkle of cell (cx, cy) is at `time`, and its twinkle (0..1)."""
+    """Where in its cell (0..1) the sparkle of cell (cx, cy) is at `time`, and how bright it glints
+    (SPARKLE_GLINT..1)."""
     r2, r3 = cell_hash(cx + 17.0, cy + 5.0), cell_hash(cx + 3.0, cy + 29.0)
     spread = 1 - 2 * SPARKLE_MARGIN
     middle_x = SPARKLE_MARGIN + spread * r2 + SPARKLE_WANDER * math.sin(time * 0.7 * (0.5 + r3) + r2 * TAU)
     middle_y = SPARKLE_MARGIN + spread * r3 + SPARKLE_WANDER * math.sin(time * 0.5 * (0.5 + r2) + r3 * TAU)
-    return middle_x, middle_y, max(0.0, math.sin(time * (0.8 + 1.6 * r2) + r3 * TAU))
+    glint = max(0.0, math.sin(time * (1.2 + 2.4 * r2) + r3 * TAU))
+    return middle_x, middle_y, SPARKLE_GLINT + (1 - SPARKLE_GLINT) * glint * glint
 
 
 def sparkle_field(width: int, height: int, time: float, wave_ys: list[float], min_size: float = 0.0) -> dict[int, float]:
@@ -191,24 +202,22 @@ def sparkle_field(width: int, height: int, time: float, wave_ys: list[float], mi
     for layer in LAYERS:
         cell, (drift_x, drift_y) = layer.cell, layer.drift
         reach = (SPARKLE_MARGIN - SPARKLE_WANDER) * cell
-        left, top = drift_x * time, drift_y * time  # where cell (0, 0) is, in screen heights
+        tall = reach * 1.6 + 1 / height  # the grid leans with the wave: a dot's pixels reach a little further
+        left, top = drift_x * time, drift_y * time  # where cell (0, 0) is: across, and from the ribbon
         for cx in range(math.floor(-left / cell), math.floor((aspect - left) / cell) + 1):
-            for cy in range(math.floor(-top / cell), math.floor((1 - top) / cell) + 1):
+            for cy in range(math.floor((-SPARKLE_REACH - top) / cell), math.floor((SPARKLE_REACH - top) / cell) + 1):
                 if cell_hash(cx, cy) >= layer.density:
                     continue
-                middle_x, middle_y, twinkle = _sparkle_in(cx, cy, time)
-                if twinkle <= 0:
-                    continue
-                sx, sy = left + (cx + middle_x) * cell, top + (cy + middle_y) * cell  # screen heights
-                for py in range(max(0, math.floor((sy - reach) * height)), min(height, math.ceil((sy + reach) * height) + 1)):
+                middle_x, middle_y, _glint = _sparkle_in(cx, cy, time)
+                sx = left + (cx + middle_x) * cell  # screen heights across
+                sy = ribbon_y(min(1.0, max(0.0, sx / aspect)), time, 0) + top + (cy + middle_y) * cell
+                for py in range(max(0, math.floor((sy - tall) * height)), min(height, math.ceil((sy + tall) * height) + 1)):
                     y = (py + 0.5) / height
-                    if math.floor((y - top) / cell) != cy:
-                        continue  # a neighbouring cell's pixel: its own sparkle, if any, counts it
                     for px in range(max(0, math.floor((sx - reach) / aspect * width)),
                                     min(width, math.ceil((sx + reach) / aspect * width) + 1)):
                         x = (px + 0.5) / width
-                        if math.floor((x * aspect - left) / cell) != cx:
-                            continue
+                        if (math.floor((x * aspect - left) / cell), math.floor((y - wave_ys[px] - top) / cell)) != (cx, cy):
+                            continue  # a neighbouring cell's pixel: its own sparkle, if any, counts it
                         value = sparkle(x, y, time, aspect, layer, wave_ys[px], min_size)
                         if value > 0:
                             field[py * width + px] = field.get(py * width + px, 0.0) + value
@@ -250,7 +259,9 @@ def _sparkle_glsl() -> str:
         "}\n"
         "float sparkle(vec2 uv, float t, float aspect, float wave_y, float cell, float density, float size,"
         " vec2 drift, float brightness) {\n"
-        "  vec2 g = (vec2(uv.x * aspect, uv.y) - drift * t) / cell;\n"
+        "  float above = uv.y - wave_y;\n"
+        f"  if (abs(above) > {_float(SPARKLE_REACH)}) return 0.0;\n"
+        "  vec2 g = (vec2(uv.x * aspect, above) - drift * t) / cell;\n"
         "  vec2 id = floor(g);\n"
         "  if (cell_hash(id) >= density) return 0.0;\n"
         "  float r2 = cell_hash(id + vec2(17.0, 5.0));\n"
@@ -259,14 +270,33 @@ def _sparkle_glsl() -> str:
         f"  vec2 middle = vec2({margin} + spread * r2 + {wander} * sin(t * 0.7 * (0.5 + r3) + r2 * {_float(TAU)}),\n"
         f"                     {margin} + spread * r3 + {wander} * sin(t * 0.5 * (0.5 + r2) + r3 * {_float(TAU)}));\n"
         "  float d = length(g - id - middle) * cell;\n"
-        f"  float twinkle = max(0.0, sin(t * (0.8 + 1.6 * r2) + r3 * {_float(TAU)}));\n"
+        f"  float glint = max(0.0, sin(t * (1.2 + 2.4 * r2) + r3 * {_float(TAU)}));\n"
+        f"  float twinkle = {_float(SPARKLE_GLINT)} + {_float(1 - SPARKLE_GLINT)} * glint * glint;\n"
         "  float glow = exp(-(d * d) / (size * size)) + 0.3 * exp(-(d * d) / (9.0 * size * size));\n"
         f"  float reach = ({margin} - {wander}) * cell;\n"
-        f"  float near = {_float(SPARKLE_FLOOR)} + {_float(1 - SPARKLE_FLOOR)}"
-        f" * exp(-abs(uv.y - wave_y) / {_float(SPARKLE_NEAR)});\n"
-        "  return brightness * twinkle * twinkle * glow * (1.0 - smoothstep(0.5 * reach, reach, d)) * near;\n"
+        f"  float band = exp(-(above * above) / {_float(SPARKLE_BAND * SPARKLE_BAND)});\n"
+        "  return brightness * twinkle * glow * (1.0 - smoothstep(0.5 * reach, reach, d)) * band;\n"
         "}\n"
     )
+
+
+def _sheet_glsl() -> str:
+    edge = _float(SHEET_EDGE)
+    return (
+        "float sheet(float y, float lo, float hi) {\n"
+        "  float s = clamp((y - lo) / max(hi - lo, 0.0001), 0.0, 1.0);\n"
+        f"  float inside = smoothstep(lo - {edge}, lo + {edge}, y) * (1.0 - smoothstep(hi - {edge}, hi + {edge}, y));\n"
+        f"  return {_float(SHEET_ALPHA)} * inside * (0.35 + 0.65 * pow(abs(2.0 * s - 1.0), 3.0));\n"
+        "}\n"
+    )
+
+
+def sheet(y: float, lo: float, hi: float) -> float:
+    """The sheet's glow at height `y` between ribbons at `lo` and `hi` (lo <= hi): brighter at its
+    edges, as light catches the folds of silk."""
+    s = min(1.0, max(0.0, (y - lo) / max(hi - lo, 0.0001)))
+    inside = _smoothstep(lo - SHEET_EDGE, lo + SHEET_EDGE, y) * (1 - _smoothstep(hi - SHEET_EDGE, hi + SHEET_EDGE, y))
+    return SHEET_ALPHA * inside * (0.35 + 0.65 * abs(2 * s - 1) ** 3)
 
 
 def _layer_call(layer: Layer) -> str:
@@ -289,6 +319,7 @@ def fragment(version: str = "330 core") -> str:
         "out vec4 colour;\n"
         + _ribbon_glsl()
         + _sparkle_glsl()
+        + _sheet_glsl()
         + f"const float WIDTHS[{len(WIDTHS)}] = float[]({widths});\n"
         + f"const float ALPHAS[{len(RIBBON_ALPHA)}] = float[]({alphas});\n"
         + "void main() {\n"
@@ -302,6 +333,8 @@ def fragment(version: str = "330 core") -> str:
         f"    float haze = exp(-d / {_float(HAZE)}) * 0.35;\n"
         "    glow += ALPHAS[i] * (core + haze);\n"
         "  }\n"
+        "  float y1 = ribbon_y(uv.x, u_time, 1);\n"
+        "  glow += sheet(uv.y, min(wave_y, y1), max(wave_y, y1));\n"
         "  c = mix(c, u_ribbon, clamp(glow * u_alpha * u_fade, 0.0, 1.0));\n"
         "  if (u_sparkle > 0.0) {\n"
         "    float aspect = u_size.x / u_size.y;\n"
@@ -372,6 +405,9 @@ def still_frame(width: int, height: int, colours: Palette, time: float = STILL_T
                 for ribbon, middle in enumerate(ribbons):
                     d = abs(y - middle)
                     glow += RIBBON_ALPHA[ribbon] * (math.exp(-(d * d) / (WIDTHS[ribbon] ** 2)) + math.exp(-d / HAZE) * 0.35)
+                lo, hi = min(ribbons[0], ribbons[1]), max(ribbons[0], ribbons[1])
+                if lo - SHEET_EDGE < y < hi + SHEET_EDGE:  # sheet() is 0 outside: skip the sums
+                    glow += sheet(y, lo, hi)
             amount = min(1.0, max(0.0, glow * colours.alpha))
             shine = min(1.0, max(0.0, field.get(at // 3, 0.0) * colours.sparkle))
             for channel in range(3):
