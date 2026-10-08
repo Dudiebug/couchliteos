@@ -222,6 +222,7 @@ class GLWave(Gtk.GLArea):
         gl.uniform3f(location("u_bottom"), *map(float, self.colours.bottom))
         gl.uniform3f(location("u_ribbon"), *map(float, self.colours.ribbon))
         gl.uniform1f(location("u_alpha"), float(self.colours.alpha))
+        gl.uniform1f(location("u_sparkle"), float(self.colours.sparkle))
         gl.uniform1f(location("u_fade"), float(fade))
         gl.bind_vertex_array(self.vao.value)
         gl.draw_arrays(_GL.TRIANGLES, 0, 3)

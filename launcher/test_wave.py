@@ -91,11 +91,11 @@ class ShaderTest(unittest.TestCase):
         self.assertIn(f"return {wave._float(wave.BASE)} + OFFSETS[i]", source)
 
     def test_uniforms_and_versions(self):
-        for name in ("u_size", "u_time", "u_top", "u_bottom", "u_ribbon", "u_alpha", "u_fade"):
+        for name in ("u_size", "u_time", "u_top", "u_bottom", "u_ribbon", "u_alpha", "u_sparkle", "u_fade"):
             self.assertRegex(wave.fragment(), rf"uniform \w+ {name};")
         self.assertTrue(wave.fragment().startswith("#version 330 core\n"))
         es = wave.fragment("300 es")
-        self.assertTrue(es.startswith("#version 300 es\nprecision mediump float;\n"))
+        self.assertTrue(es.startswith("#version 300 es\nprecision highp float;\n"))
         self.assertTrue(wave.vertex("300 es").startswith("#version 300 es\n"))
 
     def test_braces_balance(self):
@@ -103,6 +103,88 @@ class ShaderTest(unittest.TestCase):
             self.assertEqual(source.count("{"), source.count("}"))
             self.assertEqual(source.count("("), source.count(")"))
         self.assertIsNone(re.search(r"\d\.(?!\d)", wave.fragment()))  # every float literal is "1.0", not "1."
+
+
+class SparkleTest(unittest.TestCase):
+    WIDTH, HEIGHT = 96, 54
+
+    def waves(self, time=wave.STILL_TIME):
+        return [wave.ribbon_y((px + 0.5) / self.WIDTH, time, 0) for px in range(self.WIDTH)]
+
+    def brute(self, time, min_size=0.0):
+        waves, out = self.waves(time), {}
+        for py in range(self.HEIGHT):
+            for px in range(self.WIDTH):
+                value = sum(wave.sparkle((px + 0.5) / self.WIDTH, (py + 0.5) / self.HEIGHT, time,
+                                         self.WIDTH / self.HEIGHT, layer, waves[px], min_size) for layer in wave.LAYERS)
+                if value > 0:
+                    out[py * self.WIDTH + px] = value
+        return out
+
+    def test_the_quick_field_is_every_pixel_worked_out(self):
+        for time in (0.0, wave.STILL_TIME, 1234.5):
+            field = wave.sparkle_field(self.WIDTH, self.HEIGHT, time, self.waves(time), 0.8 / self.HEIGHT)
+            brute = self.brute(time, 0.8 / self.HEIGHT)
+            self.assertTrue(brute, time)
+            self.assertEqual(set(field), set(brute), time)
+            for index, value in brute.items():
+                self.assertAlmostEqual(field[index], value)
+
+    def test_a_sparkle_glows_only_inside_its_cell(self):
+        # So the shader only looks at a pixel's own cell: on every cell's edge, nothing.
+        for layer in wave.LAYERS:
+            for time in (0.0, 17.3, 400.0):
+                left, top = layer.drift[0] * time, layer.drift[1] * time
+                for cx in range(-3, 12):
+                    for cy in range(-3, 12):
+                        for k in range(9):
+                            along = (k + 0.5) / 9
+                            for gx, gy in ((cx + along, cy), (cx, cy + along)):
+                                x, y = (left + gx * layer.cell) / 1.75, top + gy * layer.cell
+                                self.assertEqual(wave.sparkle(x, y, time, 1.75, layer, 0.6), 0.0)
+
+    def test_there_are_a_few_and_they_drift_and_twinkle(self):
+        first = wave.sparkle_field(self.WIDTH, self.HEIGHT, 100.0, self.waves(100.0))
+        later = wave.sparkle_field(self.WIDTH, self.HEIGHT, 103.0, self.waves(103.0))
+        self.assertTrue(first)
+        self.assertNotEqual(set(first), set(later))
+        self.assertLess(len(first), self.WIDTH * self.HEIGHT * 0.1)  # dots, not a haze
+        dark = [time for time in range(200) if not wave.sparkle_field(8, 8, float(time), [0.6] * 8)]
+        self.assertTrue(all(value <= 1.5 for value in first.values()))
+        self.assertLess(len(dark), 200)
+
+    def test_brightest_near_the_wave(self):
+        layer = wave.LAYERS[1]
+        for cx in range(40):
+            if wave.cell_hash(cx, 0) < layer.density:
+                break
+        middle_x, middle_y, twinkle = wave._sparkle_in(cx, 0, 0.0)
+        x, y = (cx + middle_x) * layer.cell, middle_y * layer.cell
+        near = wave.sparkle(x, y, 0.0, 1.0, layer, y)
+        far = wave.sparkle(x, y, 0.0, 1.0, layer, y + 0.5)
+        if twinkle > 0:
+            self.assertGreater(near, far * 3)
+
+    def test_the_hash_is_the_shaders(self):
+        values = [wave.cell_hash(x, y) for x in range(-20, 20) for y in range(-5, 5)]
+        self.assertTrue(all(0 <= value < 1 for value in values))
+        self.assertGreater(len({round(value, 3) for value in values}), 300)
+        source = wave.fragment()
+        self.assertIn("vec3 h = fract(vec3(p.xyx) * 0.1031);", source)
+        self.assertIn("h += dot(h, h.yzx + 33.33);", source)
+        for layer in wave.LAYERS:
+            self.assertIn(f"{wave._float(layer.cell)}, {wave._float(layer.density)}, {wave._float(layer.size)}, "
+                          f"vec2({wave._float(layer.drift[0])}, {wave._float(layer.drift[1])})", source)
+        self.assertIn(f"exp(-abs(uv.y - wave_y) / {wave._float(wave.SPARKLE_NEAR)})", source)
+
+    def test_dark_themes_sparkle_more_and_flat_has_none(self):
+        dark = wave.palette(theme.FALLBACK, 12)
+        themes, _ = theme.available(BUILTIN, pathlib.Path("/nonexistent"))
+        light = wave.palette(themes["daylight"], 12)
+        self.assertGreater(dark.sparkle, light.sparkle)
+        self.assertGreater(light.sparkle, 0)
+        flat = wave.Palette((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (1.0, 1.0, 1.0), 0.0)
+        self.assertEqual(flat.sparkle, 0.0)
 
 
 class ClockTest(unittest.TestCase):
@@ -137,6 +219,15 @@ class StillTest(unittest.TestCase):
         middle = round(wave.ribbon_y(32.5 / width, wave.STILL_TIME, 0) * height - 0.5)
         bare = wave.still_frame(width, height, wave.Palette(self.COLOURS.top, self.COLOURS.bottom, self.COLOURS.ribbon, 0.0))
         self.assertGreater(sum(self.pixel(data, width, 32, middle)), sum(self.pixel(bare, width, 32, middle)) + 60)
+
+    def test_the_still_frame_has_sparkles(self):
+        width, height = 160, 90
+        plain = wave.Palette(self.COLOURS.top, self.COLOURS.bottom, self.COLOURS.ribbon, 0.3)
+        sparkling = wave.Palette(self.COLOURS.top, self.COLOURS.bottom, self.COLOURS.ribbon, 0.3, 0.9)
+        a, b = wave.still_frame(width, height, plain), wave.still_frame(width, height, sparkling)
+        brighter = [i for i in range(0, len(a), 3) if sum(b[i:i + 3]) > sum(a[i:i + 3]) + 30]
+        self.assertTrue(10 < len(brighter) < width * height * 0.05, len(brighter))
+        self.assertFalse([i for i in range(0, len(a), 3) if sum(b[i:i + 3]) < sum(a[i:i + 3])])
 
     def test_flat_is_the_gradient_alone(self):
         flat = wave.Palette((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (1.0, 1.0, 1.0), 0.0)
