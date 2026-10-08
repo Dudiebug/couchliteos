@@ -243,6 +243,8 @@ class Monitor:
         self._source_changed = False
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self.awake = threading.Event()  # cleared while the TV interface rests: no polling then
+        self.awake.set()
 
     def refresh(self) -> None:
         try:
@@ -285,6 +287,7 @@ class Monitor:
     def start(self) -> None:
         def loop() -> None:
             while True:
+                self.awake.wait()
                 self.refresh()
                 if self._stop.wait(self.interval):
                     return

@@ -271,6 +271,8 @@ class Tiles:
         self.lock = threading.Lock()
         self._changed = threading.Event()
         self._started = False
+        self.awake = threading.Event()  # cleared while the TV interface rests: tiles wait
+        self.awake.set()
 
     def name(self, icon: pathlib.Path) -> str | None:
         try:
@@ -299,6 +301,7 @@ class Tiles:
     def _loop(self) -> None:
         while True:
             icon = self.jobs.get()
+            self.awake.wait()
             try:
                 self.run_job(icon)
             finally:

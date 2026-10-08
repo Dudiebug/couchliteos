@@ -26,8 +26,9 @@ class Player:
         self.lines.append(line)
         return True
 
-    def close(self):
+    def close(self, wait=True):
         self.alive = False
+        self.waited = wait
 
 
 class MusicTestCase(unittest.TestCase):
@@ -144,6 +145,62 @@ class MusicTest(MusicTestCase):
             player.release(music.APP)
         self.assertTrue(player.dead)
         self.assertLessEqual(len(self.players), music.RESTARTS + 1)
+
+    def test_rest_ends_the_player_once_it_has_faded_out(self):
+        player = self.music()
+        player.start()
+        self.assertIsNone(player.rest())  # it plays: nothing to do
+        player.hold(music.APP)
+        self.assertAlmostEqual(player.rest(), music.FADE_OUT)
+        self.assertTrue(self.players[0].alive)
+        self.clock.now += music.FADE_OUT
+        self.assertIsNone(player.rest())
+        self.assertFalse(self.players[0].alive)
+        self.assertFalse(self.players[0].waited)  # reaped on a thread: the UI never waits
+        self.assertIsNone(player.player)
+        self.assertIsNone(player.rest())
+
+    def test_the_next_player_seeks_to_where_the_last_one_stopped(self):
+        player = self.music()
+        player.start()
+        self.clock.now += 30
+        player.hold(music.APP)
+        self.clock.now += 5
+        player.rest()
+        player.release(music.APP)
+        self.assertEqual(len(self.players), 2)
+        self.assertEqual(self.players[1].lines, [f"play {self.track}", "seek 30.80", "level 0.3 2.5"])
+        self.assertTrue(player.playing)
+
+    def test_the_count_goes_on_through_ducks_and_a_fade_cut_short(self):
+        player = self.music()
+        player.start()
+        self.clock.now += 10
+        player.sound("select")
+        self.clock.now += 1
+        player.tick()
+        player.hold(music.BLANK)
+        self.clock.now += 0.3  # back before the fade-out ended: it never paused
+        player.release(music.BLANK)
+        self.clock.now += 2
+        self.assertAlmostEqual(player.position(), 13.3)
+        player.hold(music.BLANK)
+        self.clock.now += 100  # paused after FADE_OUT
+        self.assertAlmostEqual(player.position(), 13.3 + music.FADE_OUT)
+        player.release(music.BLANK)
+        self.clock.now += 1
+        self.assertAlmostEqual(player.position(), 14.3 + music.FADE_OUT)
+
+    def test_rest_without_a_player_or_while_it_plays_does_nothing(self):
+        player = self.music()
+        self.assertIsNone(player.rest())
+        player.start()
+        player.sound("launch")
+        self.assertIsNone(player.rest())
+        self.assertTrue(self.players[0].alive)
+
+    def test_the_launch_return_and_error_sounds_duck_it(self):
+        self.assertLessEqual({"launch", "return", "error"}, music.DUCKED_SOUNDS)
 
     def test_a_player_that_cannot_start_is_silence(self):
         def broken():

@@ -11,20 +11,25 @@ played by couchliteos-music (GStreamer, in its own process so a decoder crash ne
 interface down), driven over its stdin by one line per change:
 
     play <path>                     load the track and loop it, silent and paused
+    seek <seconds>                  start from there (wrapped at the track's end)
     level <0..1> <seconds>          ramp the volume there; at 0 it pauses, above 0 it plays
     quit
 
-A player that dies is started again at most RESTARTS times; after that there is no music, never
-an error on screen.
+While nothing of the TV interface can be heard or seen (a game in front, the blank screen, sleep)
+rest() ends the player process once it has faded out; the next one seeks to where it stopped, so
+the music resumes there with its fade-in. A player that dies is started again at most RESTARTS
+times; after that there is no music, never an error on screen.
 """
 
 from __future__ import annotations
 
 import configparser
+import math
 import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 
@@ -46,7 +51,7 @@ DUCK = 0.4  # of the volume, under a UI sound
 DUCK_IN = 0.06  # s
 DUCK_HOLD = 0.35  # s at the ducked level before coming back
 DUCK_OUT = 0.5  # s
-DUCKED_SOUNDS = {"select", "back", "open", "close", "notify", "startup"}  # not move: held keys would pump
+DUCKED_SOUNDS = {"select", "back", "open", "close", "notify", "startup", "launch", "return", "error"}  # not move
 RESTARTS = 3
 
 # Why the music is silent (Music.hold / Music.release).
@@ -118,14 +123,25 @@ class PlayerProcess:
             return False
         return True
 
-    def close(self) -> None:
+    def close(self, wait: bool = True) -> None:
+        """Ask it to quit; `wait=False` reaps it on a thread instead (the UI must not wait)."""
         self.send("quit")
         try:
             if self.process.stdin is not None:
                 self.process.stdin.close()
+        except OSError:
+            pass
+        if wait:
+            self.reap()
+        else:
+            threading.Thread(target=self.reap, name="music-reap", daemon=True).start()
+
+    def reap(self) -> None:
+        try:
             self.process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             self.process.kill()
+            self.process.wait()
 
 
 class Music:
@@ -153,6 +169,9 @@ class Music:
         self.level: float = 0.0  # the last level sent
         self.restarts = 0
         self.dead = False  # no player, no track, or it kept dying: silence
+        self.played = 0.0  # s of the track played before playing_since: where a new player seeks to
+        self.playing_since: float | None = None  # it has played since then (None: paused)
+        self.silent_at = -math.inf  # a fade to 0 ends then (and it pauses); inf while it plays
         self.settings()
 
     # ------------------------------------------------------------------ what it should be
@@ -207,13 +226,36 @@ class Music:
         """After a duck: come back up."""
         self._update(DUCK_OUT)
 
+    def rest(self) -> float | None:
+        """Nothing to hear (an application in front, the blank screen, sleep): once it is silent,
+        end the player process; the music comes back where it stopped, in a new one. Returns the
+        seconds until the fade-out ends when it has not yet, else None."""
+        if self.player is None or self.target() > 0:
+            return None
+        left = self.silent_at - self.clock()
+        if left > 0:
+            return left
+        self._drop(wait=False)
+        return None
+
+    def position(self) -> float:
+        """Seconds of the track played so far (the player wraps them at its end)."""
+        if self.playing_since is None:
+            return self.played
+        return self.played + max(0.0, min(self.clock(), self.silent_at) - self.playing_since)
+
     def close(self) -> None:
+        self._drop(wait=True)
+
+    def _drop(self, wait: bool) -> None:
         if self.player is not None:
+            self.played, self.playing_since = self.position(), None
             try:
-                self.player.close()
+                self.player.close(wait=wait)
             except Exception:  # noqa: BLE001
                 pass
         self.player = None
+        self.level = 0.0
 
     # ------------------------------------------------------------------ the player
 
@@ -226,16 +268,29 @@ class Music:
                 self.level = 0.0
                 return
         if self.player.send(f"level {level:g} {seconds:g}"):
-            self.level = level
+            self._sent(level, seconds)
             return
         # It died: start it again (from silence, fading in) a few times, then give up.
         self.close()
-        self.level = 0.0
         self.restarts += 1
         if self.restarts > RESTARTS:
             self.dead = True
         elif level > 0 and self._spawn() and self.player.send(f"level {level:g} {FADE_IN:g}"):
-            self.level = level
+            self._sent(level, FADE_IN)
+
+    def _sent(self, level: float, seconds: float) -> None:
+        """The player took `level`: keep count of where the track is. It plays while the level is
+        above 0, and on through a fade to 0 until that ends (then it pauses)."""
+        now = self.clock()
+        if level > 0:
+            if self.playing_since is not None and now >= self.silent_at:  # it had paused
+                self.played, self.playing_since = self.position(), None
+            if self.playing_since is None:
+                self.playing_since = now
+            self.silent_at = math.inf
+        elif self.level > 0:
+            self.silent_at = now + seconds
+        self.level = level
 
     def _spawn(self) -> bool:
         """Start the player on the track; False (and silence for good) when there is none."""
@@ -254,7 +309,8 @@ class Music:
         except Exception:  # noqa: BLE001 - no player script, no python3: silence
             self.player, self.dead = None, True
             return False
-        if not self.player.send(f"play {self.track}"):
+        if not self.player.send(f"play {self.track}") or (
+                self.played >= 0.05 and not self.player.send(f"seek {self.played:.2f}")):
             self.close()
             self.restarts += 1
             self.dead = self.restarts > RESTARTS
