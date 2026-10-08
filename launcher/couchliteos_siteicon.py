@@ -19,6 +19,7 @@ import urllib.parse
 from collections.abc import Callable
 
 import couchliteos_artwork as artwork
+import couchliteos_tile as tile
 
 SIZE = (256, 256)
 SMALLEST = 32  # a 16 px favicon blown up to an XMB icon looks worse than the bundled one
@@ -189,7 +190,8 @@ def find_icon(url: str, opener, reencode: Callable[[bytes], bytes], check: Calla
 
 
 def _reencode(data: bytes) -> bytes:
-    return artwork.gdk_reencode(data, SIZE, alpha=True, smallest=SMALLEST)
+    """Checked and re-encoded, then put on its glossy tile (couchliteos_tile)."""
+    return tile.make_tile(artwork.gdk_reencode(data, SIZE, alpha=True, smallest=SMALLEST))
 
 
 class SiteIcons(artwork.Worker):

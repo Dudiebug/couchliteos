@@ -88,6 +88,7 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_xmb.py" "$CHROOT/usr/libexec/couc
 install -D -m 0644 "$ROOT/launcher/couchliteos_wave.py" "$CHROOT/usr/libexec/couchliteos_wave.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_icons.py" "$CHROOT/usr/libexec/couchliteos_icons.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_siteicon.py" "$CHROOT/usr/libexec/couchliteos_siteicon.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_tile.py" "$CHROOT/usr/libexec/couchliteos_tile.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_music.py" "$CHROOT/usr/libexec/couchliteos_music.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_tvscreens.py" "$CHROOT/usr/libexec/couchliteos_tvscreens.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_quick.py" "$CHROOT/usr/libexec/couchliteos_quick.py"
