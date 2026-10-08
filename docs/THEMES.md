@@ -6,8 +6,9 @@ shows at once; nothing restarts.
 
 | Row | Does |
 |---|---|
-| THEME | Picks a theme: one of the five built in, or one of your own (below) |
-| ACCENT | THEME DEFAULT, or BLUE, AMBER, GREEN, RED, PURPLE, PINK, TEAL or ORANGE in place of the theme's own accent colour |
+| THEME | Picks a theme: one of the fourteen built in, or one of your own (below) |
+| ACCENT | THEME DEFAULT, or BLUE, AMBER, GREEN, RED, PURPLE, PINK, TEAL or ORANGE in place of the theme's own accent colour, or BY MONTH (below) |
+| BACKGROUND | What the TV home screen draws behind its menu: WAVE AND SPARKLES (the default), WAVE (no sparkles) or PLAIN (the theme's colours alone, nothing moving) |
 | SOUNDS | The navigation sounds ON or OFF |
 | ARTWORK | Cover lookup for games |
 
@@ -20,12 +21,35 @@ shows at once; nothing restarts.
 | DAYLIGHT | Light background with dark text, for a bright room |
 | HIGH CONTRAST | Black and white with a yellow focus; text on the focus is black |
 | TERMINAL | The look before 0.3.0: white text on black, the selection in reverse video |
+| OCEAN | Deep sea blue with a bright cyan accent |
+| CRIMSON | Near black with a red tint and a crimson accent |
+| EMERALD | Dark green with a green accent |
+| AMETHYST | Dark violet with a purple accent |
+| SUNSET | Burnt orange dusk with an orange accent |
+| ROSE | Dark plum with a pink accent |
+| GOLD | Olive black with a gold accent |
+| GRAPHITE | Neutral dark grey with a silver accent |
+| ARCTIC | A second light theme: icy white and pale cyan with a teal accent |
 
 | MIDNIGHT | SLATE |
 |---|---|
 | ![MIDNIGHT](images/theme-midnight.png) | ![SLATE](images/theme-slate.png) |
 | **DAYLIGHT** | **HIGH CONTRAST** |
 | ![DAYLIGHT](images/theme-daylight.png) | ![HIGH CONTRAST](images/theme-high-contrast.png) |
+
+An ACCENT colour that would be hard to see on the theme (AMBER on DAYLIGHT, say)
+is drawn a little darker, or lighter on a dark theme, until it stands out enough.
+
+## BY MONTH
+
+Like the PS3, the background can change colour through the year: ACCENT >
+BY MONTH takes a colour for each month (grey in January, then dull yellow, lime
+green, pink, dark green, light purple, teal, blue, purple, gold, brown and red in
+December). It moves to the month's colour about halfway through: from the 12th
+to the 14th last month's colour blends into it, and from the 15th it is this
+month's. It works with every theme, tints the wave on the home screen (darker at
+night) and colours the focused tile's edge and the values in Settings. A
+running TV picks up the new colour on its own.
 
 ## Make your own theme
 

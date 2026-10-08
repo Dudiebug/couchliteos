@@ -4,7 +4,8 @@
 # stream settings, what's new, the update progress) and --dump-layout records every label on each one.
 # Checks: each screen opened; no text under 28 px at 1920x1080; no label shortened or cut
 # at 1280x720 unless it is shortened on purpose (a tile's title); a live switch to each
-# built-in theme; no Python traceback in any run's log. A first-boot run (setup not complete)
+# built-in theme; on the XMB, a live switch to each BACKGROUND (WAVE AND SPARKLES, WAVE, PLAIN)
+# and to ACCENT > BY MONTH; no Python traceback in any run's log. A first-boot run (setup not complete)
 # starts the setup wizard on top (a fake foot records it) and still writes launcher-ready.
 # The XMB (the default home) and the rows ([appearance] home = rows) each get their runs.
 # Screenshots (1920x1080) go to build/out/screenshots/ (the XMB's to its xmb/ folder).
@@ -17,7 +18,7 @@ set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SHOTS=${COUCHLITEOS_SCREENSHOTS:-$ROOT/build/out/screenshots}
-THEMES=(midnight slate daylight high-contrast terminal)
+THEMES=(midnight slate daylight ocean crimson emerald amethyst sunset rose gold graphite arctic high-contrast terminal)
 
 missing() {
   if [[ ${1-} == --if-available ]]; then
@@ -145,7 +146,10 @@ home_layout=cross
 xmb='F1,dump:home,Home,dump:quick,Escape,F9,dump:art,Escape,F10,dump:streamset,Escape,Down,Down,dump:xmb-games'
 xmb+=',Left,dump:xmb-video,Left,dump:xmb-settings,Down,dump:xmb-settings-down,Left,dump:xmb-power'
 xmb+=',Right,Right,Right,Right,dump:xmb-apps,Right,dump:xmb-network,Right,Escape,Escape'
-run_tv xmb1080 1920 1080 "$xmb$themes,open:update,dump:update,quit" "$SHOTS/xmb"
+# What is behind the XMB, switched live as Settings > APPEARANCE saves it (the 1 s tick applies it).
+looks=',theme:midnight,background:plain,wait:1600,dump:bg-plain,background:calm,wait:1600,dump:bg-calm'
+looks+=',background:wave,accent:month,wait:1600,dump:accent-month,accent:,wait:1600,dump:bg-wave'
+run_tv xmb1080 1920 1080 "$xmb$themes$looks,open:update,dump:update,quit" "$SHOTS/xmb"
 run_tv xmb720 1280 720 "$xmb,open:update,dump:update,quit"
 # First boot: the wizard opens on top as `couchliteos-launcher --screen setup` in foot; when it
 # closes, the home screen.
@@ -156,19 +160,25 @@ if ! grep -q -- '--screen setup' "$work/firstboot/run/foot.log" 2>/dev/null; the
 fi
 [[ -e $work/firstboot/run/launcher-ready ]] || { echo 'tv-headless: first boot wrote no launcher-ready' >&2; exit 1; }
 
-"$PYTHON" - "$work" "${THEMES[@]}" <<'EOF'
+"$PYTHON" - "$work" "$ROOT" "${THEMES[@]}" <<'EOF'
 import json, pathlib, sys
 
-work, themes = pathlib.Path(sys.argv[1]), sys.argv[2:]
+work, themes = pathlib.Path(sys.argv[1]), sys.argv[3:]
+sys.path.insert(0, sys.argv[2] + "/launcher")
+import couchliteos_theme as theme
+midnight = theme.load(pathlib.Path(sys.argv[2]) / "overlay/usr/share/couchliteos/themes/midnight.theme")
 MIN_FONT = 28
 SCREENS = {"home": "home", "quick": "home", "art": "art", "streamset": "streamset", "settings": "settings", "power": "power",
            "whatsnew": "whatsnew", "update": "update"}
 XMB = ["home", "quick", "art", "streamset", "xmb-games", "xmb-video", "xmb-settings", "xmb-settings-down", "xmb-power",
        "xmb-apps", "xmb-network", "update"]
+LOOKS = ["bg-plain", "bg-calm", "accent-month", "bg-wave"]
 problems = []
+started = None  # how the XMB's wave ran at the start (GL where the GL wave runs here)
 for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (1920, 1080)), ("xmb720", (1280, 720))):
     names = XMB if run.startswith("xmb") else list(SCREENS)
     names = names + ([f"theme-{name}" for name in themes] if run.endswith("1080") else [])
+    names = names + (LOOKS if run == "xmb1080" else [])
     for name in names:
         path = work / run / "dump" / f"{name}.json"
         if not path.exists():
@@ -183,6 +193,23 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (192
             problems.append(f"{where}: showed {dump['screen']} (quick menu {dump['quick']})")
         if name.startswith("theme-") and dump["theme"] != name[6:]:
             problems.append(f"{where}: theme is still {dump['theme']}")
+        if run.startswith("xmb") and "wave" not in dump:
+            problems.append(f"{where}: no wave facts in the dump")
+        if run == "xmb1080" and name == "home":
+            started = dump.get("wave", {}).get("how")
+        if name in LOOKS:
+            wave = dump.get("wave", {})
+            style = {"bg-plain": "plain", "bg-calm": "calm"}.get(name, "wave")
+            ribbons, sparkles = name != "bg-plain", name in ("accent-month", "bg-wave")
+            if (wave.get("background"), wave.get("alpha", 0) > 0, wave.get("sparkle", 0) > 0) != (style, ribbons, sparkles):
+                problems.append(f"{where}: background {wave} is not {style}")
+            if name == "bg-plain" and (wave.get("gl") or wave.get("how") == "gl"):
+                problems.append(f"{where}: PLAIN still runs the GL wave ({wave})")
+            if name != "bg-plain" and (wave.get("how"), wave.get("gl")) != (started, started == "gl"):
+                problems.append(f"{where}: the wave is not back as it started ({started}): {wave}")
+            accent = theme.with_accent(midnight, "month" if name == "accent-month" else "").colours["accent"]
+            if dump.get("accent") != accent:
+                problems.append(f"{where}: accent is {dump.get('accent')}, not {accent}")
         if not dump["labels"]:
             problems.append(f"{where}: no text on screen")
         for label in dump["labels"]:

@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: olive black, gold accent.
+[theme]
+name = GOLD
+background = #1a1606
+surface = #2c2610
+text = #fffbe8
+muted = #cbbd8a
+accent = #f0c419
+focus = #6e5a0a
+warning = #ffa94d
+error = #ff7b7b

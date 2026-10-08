@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: neutral dark grey, silver accent.
+[theme]
+name = GRAPHITE
+background = #141414
+surface = #232323
+text = #f0f0f0
+muted = #a6a6a6
+accent = #b3bcc8
+focus = #454b54
+warning = #fbbf24
+error = #f87171

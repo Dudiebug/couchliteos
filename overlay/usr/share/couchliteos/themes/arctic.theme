@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: light, icy cyan, for bright rooms.
+[theme]
+name = ARCTIC
+background = #eef7f9
+surface = #d4e9ef
+text = #0a2530
+muted = #3d5c66
+accent = #0e7c99
+focus = #bde3ee
+warning = #9a5b00
+error = #b42318

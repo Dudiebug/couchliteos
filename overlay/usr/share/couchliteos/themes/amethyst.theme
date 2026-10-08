@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: deep violet, purple accent.
+[theme]
+name = AMETHYST
+background = #130a24
+surface = #21143b
+text = #f5f0ff
+muted = #b4a5d6
+accent = #a35cf0
+focus = #55289a
+warning = #fbbf24
+error = #fb8f8f

@@ -522,6 +522,99 @@ class LookTest(unittest.TestCase):
                 tv.theme_tick()
                 tv.load_css.assert_called_once()
 
+    def test_the_next_colour_of_the_month_reloads_the_stylesheets(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.layout = module.tvlayout.Layout(1920, 1080)
+        tv.load_css = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(module.theme, "CONFIG", pathlib.Path(directory) / "config.ini"):
+                with mock.patch.object(module.month, "colour", return_value="a3a9b4"):
+                    tv.theme_stamp = tv.theme_stamp_now()
+                    tv.theme_tick()
+                    tv.load_css.assert_not_called()
+                with mock.patch.object(module.month, "colour", return_value="c9b037"):  # the 12th
+                    tv.theme_tick()
+                    tv.load_css.assert_called_once()
+
+    @staticmethod
+    def xmb_tv(module):
+        """A TV on the XMB home, with the wave widget, the stylesheets and the XMB view left out."""
+        tv = object.__new__(module.Tv)
+        tv.cross = True
+        tv.layout = module.tvlayout.Layout(1920, 1080)
+        tv.css, tv.quick_css, tv.xmb_view, tv.wave = mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()
+        tv.motion_level = module.motion.FULL
+        tv.wave_failed = False
+        return tv
+
+    def test_a_saved_background_is_applied_at_once(self):
+        module = load_tv()
+        tv = self.xmb_tv(module)
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(module.theme, "CONFIG", pathlib.Path(directory) / "config.ini"), \
+                    mock.patch.dict(os.environ, {"GSK_RENDERER": "ngl"}):
+                tv.load_css()
+                tv.wave.set_how.assert_called_with(module.wave.GL)
+                self.assertGreater(tv.wave.set_colours.call_args.args[0].sparkle, 0)
+                # In this order each save changes config.ini's size: two saves in a few
+                # milliseconds can share a modification time.
+                for style, how, ribbons, sparkles in (("calm", module.wave.GL, True, False),
+                                                      ("plain", module.wave.STATIC, False, False),
+                                                      ("wave", module.wave.GL, True, True)):
+                    module.background.save(style)
+                    tv.theme_tick()
+                    colours = tv.wave.set_colours.call_args.args[0]
+                    with self.subTest(style):
+                        tv.wave.set_how.assert_called_with(how)
+                        self.assertEqual((colours.alpha > 0, colours.sparkle > 0), (ribbons, sparkles))
+                module.background.save("plain")
+                module.theme.save_choice("high-contrast", "")
+                tv.theme_tick()
+                tv.wave.set_how.assert_called_with(module.wave.FLAT)
+
+    def test_a_still_wave_stays_still_whatever_the_background(self):
+        module = load_tv()
+        tv = self.xmb_tv(module)
+        tv.motion_level = module.motion.OFF
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(module.theme, "CONFIG", pathlib.Path(directory) / "config.ini"):
+                for style in ("wave", "calm", "plain"):
+                    module.background.save(style)
+                    tv.load_css()
+                    tv.wave.set_how.assert_called_with(module.wave.STATIC)
+
+    def test_the_script_saves_a_background_and_an_accent(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.script = ["background:plain", "accent:month", "background:fireworks"]
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "config.ini"
+            with mock.patch.object(module.theme, "CONFIG", config), \
+                    mock.patch.object(module, "GLib", mock.Mock(), create=True), \
+                    mock.patch.object(module.sys, "stderr"):
+                module.theme.save_choice("ocean", "")
+                tv.script_step()
+                tv.script_step()
+                self.assertFalse(tv.script_failed)
+                self.assertEqual(module.background.load(), "plain")
+                self.assertEqual(module.theme.load_choice(), ("ocean", "month"))
+                tv.script_step()
+                self.assertTrue(tv.script_failed)
+                self.assertEqual(module.background.load(), "plain")
+
+    def test_the_layout_dump_says_what_is_behind_the_xmb(self):
+        module = load_tv()
+        tv = self.xmb_tv(module)
+        tv.background_style = "calm"
+        tv.wave.how = module.wave.GL
+        tv.wave.gl.get_visible.return_value = True
+        tv.wave.palette = module.background.wave_palette(module.wave.palette(module.theme.FALLBACK, 14), "calm")
+        facts = tv.wave_facts()
+        self.assertEqual((facts["background"], facts["how"], facts["gl"], facts["sparkle"]),
+                         ("calm", module.wave.GL, True, 0.0))
+        self.assertGreater(facts["alpha"], 0)
+
     def test_the_script_times_the_next_step_first_and_reports_a_bad_one(self):
         module = load_tv()
         tv = object.__new__(module.Tv)

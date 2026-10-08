@@ -24,6 +24,7 @@ import pathlib
 import time
 from collections.abc import Callable, Mapping
 
+import couchliteos_background as background
 import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_power as power
@@ -69,7 +70,7 @@ class Entry:
 
 ENTRIES = (
     Entry("DISPLAY", SCREEN, "display", "RESOLUTION, REFRESH RATE, SCREEN EDGES AND TEXT SIZE"),
-    Entry("APPEARANCE", SCREEN, "appearance", "THEME AND ACCENT COLOUR"),
+    Entry("APPEARANCE", SCREEN, "appearance", "THEME, ACCENT COLOUR AND BACKGROUND"),
     Entry("AUDIO", SCREEN, "audio", "WHERE THE SOUND GOES AND A TEST TONE"),
     Entry("BLUETOOTH", SCREEN, "bluetooth", "PAIR CONTROLLERS, HEADPHONES AND KEYBOARDS"),
     Entry("CONTROLLERS", SCREEN, "controllers", "CONNECTED CONTROLLERS, BATTERY AND A BUTTON TEST"),
@@ -169,7 +170,8 @@ def display_value() -> str:
 def appearance_value() -> str:
     name, accent = theme.load_choice()
     chosen = theme.chosen()
-    return f"{chosen.label if chosen else name or theme.DEFAULT}  ·  ACCENT {accent or 'THEME DEFAULT'}"
+    return (f"{chosen.label if chosen else name or theme.DEFAULT}  ·  ACCENT {theme.accent_label(accent)}"
+            f"  ·  {background.label(background.load())}")
 
 
 def sleep_value(can_sleep: bool) -> str:

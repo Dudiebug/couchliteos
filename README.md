@@ -29,8 +29,10 @@ It is built on Debian 13 and is not a general-purpose desktop.
 - **Per-game stream settings:** hold X / Triangle on a game to pick
   PERFORMANCE, BALANCED, QUALITY or your own resolution, frame rate and bitrate
   for that game alone.
-- **Themes:** five built in (including a light one and a high-contrast one),
-  eight accent colours, and [your own](docs/THEMES.md).
+- **Themes:** fourteen built in (including two light ones and a high-contrast
+  one), eight accent colours or a colour that changes with the month, a
+  background with or without the wave and its sparkles, and
+  [your own](docs/THEMES.md).
 - **Couch-first controls:** every screen works with an Xbox, PlayStation,
   Nintendo-style or generic controller, a keyboard, or the TV remote over
   HDMI-CEC. Settings > CONTROLLERS shows each pad with its battery, sets the
