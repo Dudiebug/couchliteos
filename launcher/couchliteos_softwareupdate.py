@@ -21,6 +21,10 @@ A live stick that keeps nothing offers SET UP STORAGE ON THIS STICK:
 /run/couchliteos/persist-setup-request starts couchliteos-persist-setup.service, whose progress
 (/run/couchliteos/persist-setup.json) shows on this screen.
 
+A live stick with storage shows its own update slots (couchliteos_liveslot): RUNNING FROM STICK, the
+updated system and the ISO it was made from, and ROLL BACK when a previous slot exists. ROLL BACK touches
+/run/couchliteos/rollback-live, which asks the updater to make the previous slot the one the next boot starts.
+
 Between releases (installed boxes): the last results of couchliteos-security-update and
 couchliteos-app-update (/var/lib/couchliteos/{security,app}-update.json), INSTALL ... NOW (their
 request files in /run/couchliteos), the [update] auto_security / auto_apps switches, and ROLL BACK
@@ -41,6 +45,7 @@ from typing import Any, Callable
 
 import couchliteos_confirm as confirmation
 import couchliteos_listview as listview
+import couchliteos_liveslot as liveslot
 import couchliteos_settings as settings
 import couchliteos_snapshot as snapshot
 import couchliteos_update as update
@@ -62,6 +67,10 @@ STORAGE_QUESTION = (
 )
 STORAGE_STARTED = "SETTING UP STORAGE..."
 MOUNTINFO = pathlib.Path("/proc/self/mountinfo")
+STICK_RUNNING = "RUNNING FROM STICK"
+STICK_ROLL_BACK = "ROLL BACK"  # the stick's own slots; the same words as the app rollback, checked first
+ISO_VERSION_FILE = liveslot.ISO_VERSION_FILE  # on the storage partition, beside live-update/: the ISO's version
+LIVE_ROLLBACK = "rollback-live"  # request file for the updater: the previous slot becomes the one GRUB starts
 
 
 def has_persistence(mountinfo: pathlib.Path = MOUNTINFO) -> bool:
@@ -71,6 +80,41 @@ def has_persistence(mountinfo: pathlib.Path = MOUNTINFO) -> bool:
     except OSError:
         return False
     return any(" /run/live/persistence/" in line for line in text.splitlines())
+
+
+def stick_mounts(mountinfo: pathlib.Path = MOUNTINFO) -> list[str]:
+    """Where live-boot mounted the stick's storage or its live medium, in mount-table order."""
+    try:
+        lines = mountinfo.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    points = [row[4].replace("\\040", " ") for row in (line.split() for line in lines) if len(row) > 4]
+    return [point for point in points if point == "/run/live/medium" or point.startswith("/run/live/persistence/")]
+
+
+def iso_version(mount: pathlib.Path) -> str:
+    """The version of the ISO the stick was made from, as the installer recorded it; "" when unknown."""
+    try:
+        value = (mount / ISO_VERSION_FILE).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+    return value if update.parse_version(value) is not None else ""
+
+
+def stick_state(mountinfo: pathlib.Path = MOUNTINFO, root: pathlib.Path = pathlib.Path("/")) -> dict[str, str]:
+    """The stick's own update slots and the ISO they came from; {} when it has no slots at all.
+
+    Reads only: nothing is mounted here, the mount table just says where live-boot mounted the storage.
+    """
+    for point in stick_mounts(mountinfo):
+        mount = root / point.lstrip("/")
+        base = mount / liveslot.SLOT_DIR
+        if (base / liveslot.CURRENT).exists() or (base / liveslot.PREVIOUS).exists():
+            slots = liveslot.slot_state(base)
+            return {"current": slots[liveslot.CURRENT], "previous": slots[liveslot.PREVIOUS], "iso": iso_version(mount)}
+    return {}
+
+
 REQUEST, CANCEL, STATUS = "update-install", "update-cancel", "update-status.json"
 DELETE_REQUEST, RESTORE_REQUEST = "snapshot-delete", "restore-request"
 DISK_REQUEST, INSTALLS = "disk-update", "installs.json"
@@ -180,6 +224,7 @@ class SoftwareUpdate:
         installs: Callable[[], list[dict[str, str]]] | None = None,
         state_dir: pathlib.Path = STATE_DIR, config: pathlib.Path = settings.CONFIG,
         persistent: Callable[[], bool] = has_persistence,
+        stick: Callable[[], dict[str, str]] = stick_state,
     ) -> None:
         self.screen = screen
         self.read_key = read_key
@@ -204,6 +249,7 @@ class SoftwareUpdate:
         self.state_dir = pathlib.Path(state_dir)
         self.config = pathlib.Path(config)
         self.persistent = persistent
+        self.stick = stick
         self.release: update.Release | None = None
         self.asset: update.Asset | None = None
         self.result = ""
@@ -215,11 +261,46 @@ class SoftwareUpdate:
     def rows(self) -> list[str]:
         if self.live:
             storage = [] if self.persistent() else [SET_UP_STORAGE]
-            return ([UPDATE_DISK] if self.found() else []) + storage + [BACK]
+            return ([UPDATE_DISK] if self.found() else []) + storage + self.stick_rows() + [BACK]
         rows = ([INSTALL] if self.release else []) + [CHECK, SAVE_ON if self._save_first() else SAVE_OFF]
         saved = self._saved()
         rows += [UPDATE_NOW] + self.auto_rows() + self.rollback_rows()
         return rows + (self.restore_rows(saved) if saved else []) + [BACK]
+
+    # -- the stick's own update slots ------------------------------------------------------------
+
+    def stick_info(self) -> dict[str, str]:
+        try:
+            return self.stick()
+        except Exception:  # noqa: BLE001 - a stick that cannot be read is shown as one with no slots
+            return {}
+
+    def stick_rows(self) -> list[str]:
+        """ROLL BACK only with storage on the stick and a previous slot to go back to."""
+        return [STICK_ROLL_BACK] if self.persistent() and self.stick_info().get("previous") else []
+
+    def stick_lines(self) -> list[str]:
+        info = self.stick_info()
+        if not info.get("current"):
+            return [STICK_RUNNING, f"ISO {self.current or 'UNKNOWN'}"]
+        return [STICK_RUNNING, f"UPDATED SYSTEM {info['current']}", f"ISO {info.get('iso') or 'UNKNOWN'}"]
+
+    def roll_back_live(self) -> None:
+        previous = self.stick_info().get("previous", "")
+        if not previous:
+            return
+        question = (
+            f"GO BACK TO COUCHLITEOS {previous}? THE UPDATED SYSTEM STAYS ON THE STICK AS THE PREVIOUS ONE. "
+            "RESTART THE BOX TO FINISH."
+        )
+        if not self.confirm(self.screen, question):
+            return
+        try:
+            (self.run_dir / LIVE_ROLLBACK).touch()
+        except OSError as error:
+            self.result = f"COULD NOT START THE ROLL BACK: {error.strerror or 'ERROR'}".upper()
+            return
+        self.result = f"ROLLING BACK TO COUCHLITEOS {previous}. RESTART THE BOX TO FINISH."
 
     # -- between releases ------------------------------------------------------------------------
 
@@ -344,14 +425,13 @@ class SoftwareUpdate:
         lines += [(storage, curses.A_BOLD)] if storage else []
         lines += [("", 0)]
         found = self.found() if self.live else None
+        if self.live and self.persistent():
+            lines += [(text, 0) for text in self.stick_lines()] + [("", 0)]
         if found:
             lines += [(self.found_line(found), 0)]
-            lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)] if self.result else []
         elif self.live:
             lines += [(text, 0) for text in textwrap.wrap(LIVE_TEXT, wrap)] + [("", 0), (update.RELEASES_TEXT, 0)]
-            lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)] if self.result else []
-        elif self.result:
-            lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)]
+        lines += [(text, curses.A_BOLD) for text in textwrap.wrap(self.result, wrap)] if self.result else []
         widest = max([len(text) for text, _attr in lines] + [len(row) + 3 for row in self.rows()])  # ">  " rows
         left = max(2, (width - widest) // 2)
         for text, attr in lines:
@@ -395,6 +475,8 @@ class SoftwareUpdate:
                     self.update_now()
                 elif choice.startswith(tuple(AUTO.values())):
                     self.toggle_auto(choice)
+                elif choice == STICK_ROLL_BACK:
+                    self.roll_back_live()
                 elif choice.startswith(ROLL_BACK):
                     self.roll_back(choice)
                 else:

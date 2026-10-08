@@ -1,0 +1,103 @@
+#!/usr/bin/python3 -I
+"""Mark the update slot a live stick booted from as booted, once the launcher is up.
+
+GRUB's "(Updated)" and "(Previous Update)" entries on the stick pass live-media-path=/live-update/<slot>.
+A boot from one of those slots gets a `booted` marker beside the slot's files, holding the version that
+reached the launcher. A slot without the marker has not proven itself yet. Other boots (the ISO's own
+system, Ventoy, installed systems) change nothing here: the Ventoy finish step is
+couchliteos-persist-setup boot-ok, which the same unit runs after this one.
+
+Never fails: the unit starts it with "-", and a stick that cannot be opened is written to the journal.
+"""
+
+import dataclasses
+import os
+import pathlib
+import subprocess
+import sys
+from typing import Callable
+
+sys.path.insert(0, "/usr/libexec")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "launcher"))
+import couchliteos_liveslot as liveslot  # noqa: E402
+
+BOOTED = "booted"
+LAUNCHER_READY = "/run/couchliteos/launcher-ready"
+CMDLINE = "/proc/cmdline"
+MOUNTINFO = "/proc/self/mountinfo"
+SLOT_ARG = "live-media-path=/live-update/"
+SLOTS = (liveslot.CURRENT, liveslot.PREVIOUS)
+
+
+@dataclasses.dataclass
+class Env:
+    """What this reads and runs; the tests point `root` at a temporary tree."""
+
+    root: pathlib.Path = pathlib.Path("/")
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    log: Callable[[str], None] = lambda text: print(text, file=sys.stderr)
+
+    def path(self, absolute: str) -> pathlib.Path:
+        return self.root / absolute.lstrip("/")
+
+
+def running_slot(cmdline: str) -> str:
+    """The slot GRUB started this boot from ("current" or "previous"), or "" for any other boot."""
+    for word in cmdline.split():
+        if word.startswith(SLOT_ARG):
+            name = word[len(SLOT_ARG):]
+            return name if name in SLOTS else ""
+    return ""
+
+
+def mark_booted(slot: pathlib.Path) -> str:
+    """Write the booted marker into a complete slot. Returns "marked", "already" or "incomplete"."""
+    if not liveslot.slot_is_good(slot):
+        return "incomplete"
+    version = liveslot.slot_version(slot)
+    marker = slot / BOOTED
+    try:
+        if marker.read_text(encoding="utf-8").strip() == version:
+            return "already"
+    except (OSError, UnicodeError):
+        pass  # no marker yet, or one that cannot be read: write it again
+    with open(marker, "w", encoding="utf-8") as stream:
+        stream.write(version + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return "marked"
+
+
+def read_cmdline(env: Env) -> str:
+    try:
+        return env.path(CMDLINE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def boot_ok(env: Env) -> str:
+    """"" when this boot has no slot step to do, else what mark_booted said about its slot."""
+    if not env.path(LAUNCHER_READY).exists():
+        return ""
+    slot = running_slot(read_cmdline(env))
+    if not slot:
+        return ""
+    device_env = liveslot.Env(runner=env.runner, log=env.log)
+    with liveslot.slot_base(device_env, env.path(MOUNTINFO)) as base:
+        result = mark_booted(base / slot)
+    if result == "marked":
+        env.log(f"live update: {slot} reached the launcher")
+    return result
+
+
+def main(env: Env | None = None) -> int:
+    env = env or Env()
+    try:
+        boot_ok(env)
+    except (liveslot.SlotError, OSError) as error:
+        env.log(f"live update: {getattr(error, 'message', error)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

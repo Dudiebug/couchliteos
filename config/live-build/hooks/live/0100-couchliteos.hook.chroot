@@ -90,7 +90,7 @@ systemctl enable couchliteos-restore-request.path couchliteos-restore.service
 # Live USB: find an installed system on the disks and update it on request (apply-disk).
 systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path
 # Live USB: SET UP STORAGE ON THIS STICK (couchliteos-persist-setup) on request.
-systemctl enable couchliteos-persist-setup.path
+systemctl enable couchliteos-persist-setup.path couchliteos-rollback-live.path
 systemctl enable couchliteos-browser.path couchliteos-browser-refresh.service
 # Security fixes and app updates between releases: daily, or when the launcher asks.
 systemctl enable couchliteos-security-update.timer couchliteos-security-update.path

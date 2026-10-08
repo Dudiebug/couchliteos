@@ -48,6 +48,7 @@ PERSISTENCE_LABEL = "persistence"
 SYS_LABEL = "couchliteos-sys"
 SLOT_LABELS = {"persistence": PERSISTENCE_LABEL, "sys": SYS_LABEL}
 SLOT_DIR = "live-update"
+ISO_VERSION_FILE = "couchliteos-iso-version"  # beside SLOT_DIR: the version of the ISO the stick was written with
 SYS_PARTITION_BYTES = 6 << 30  # two systems of about 2 GB each, with room to grow
 
 FILES = ("vmlinuz", "initrd.img", "filesystem.squashfs")
