@@ -1480,7 +1480,7 @@ rg -q 'test_siteicon.py' launcher/Makefile
 rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_tile.py" "\$CHROOT/usr/libexec/couchliteos_tile.py"$' build/configure.sh
 rg -q 'test_tile.py' launcher/Makefile
 # Tiles are made on the box from icons it already has; GdkPixbuf only inside make_tile.
-refute rg -q '^(import|from) (curses|gi)' launcher/couchliteos_tile.py
+refute rg -q '^(import|from) (curses|gi)\b' launcher/couchliteos_tile.py
 refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py launcher/couchliteos_wave.py launcher/couchliteos_icons.py launcher/couchliteos_siteicon.py
 # The built-in SteamGridDB key comes from the build machine, is never in git and never printed.
 rg -q '^steamgriddb\.key$' .gitignore
