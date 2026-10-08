@@ -106,7 +106,7 @@ rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- '--loadlin false' build/build.sh
 rg -q -- '--win32-loader false' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-[[ "$(< VERSION)" == 0.3.0-beta ]]
+[[ "$(< VERSION)" == 0.3.0-beta.2 ]]
 refute rg -q 'NONE PAIRED' launcher --glob '*.py'
 cmp -s VERSION overlay/etc/couchliteos-version
 rg -Fq 'path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso' .github/workflows/build.yml
