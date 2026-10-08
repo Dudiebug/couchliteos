@@ -1,11 +1,14 @@
 #!/bin/sh
-# CouchLiteOS: leave nouveau and its firmware (about 60 MiB) out of the initrd. Nothing
-# before the root filesystem needs a GPU driver; nouveau then loads from the root
-# filesystem, where its firmware is. mkinitramfs runs depmod after the hooks.
-# After kms (live-boot), which asks for i915, radeon and nouveau; it is skipped where absent.
-# Modules asked for by hooks are copied after all hooks ran (initramfs-tools 0.148
-# apply_add_modules), so nouveau also leaves that queue here.
-PREREQ="kms"
+# CouchLiteOS: keep the initrd small. Nothing before the root filesystem needs a GPU driver
+# but the boot splash, and that only to show itself sooner: the drivers without large
+# firmware stay (Intel, older Radeon, the virtual machines' own), every other one loads from
+# the root filesystem, where its firmware is, and Plymouth moves over to it then (amdgpu's
+# firmware alone is about 90 MiB; nouveau's about 60 MiB). mkinitramfs runs depmod after the hooks.
+# After kms (live-boot), which asks for i915, radeon and nouveau, and plymouth, which asks for
+# every DRM driver; either is skipped where absent. Modules asked for by hooks are copied after
+# all hooks ran (initramfs-tools 0.148 apply_add_modules), so they leave that queue here; a
+# kept driver's helpers (drm, ttm, ...) come back as its dependencies.
+PREREQ="kms plymouth"
 prereqs()
 {
 	echo "$PREREQ"
@@ -17,8 +20,24 @@ prereqs)
 	;;
 esac
 
+KEEP_DRM="i915 radeon virtio-gpu virtio_gpu bochs bochs-drm qxl vmwgfx hyperv_drm cirrus cirrus-qemu"
+
 if [ -n "${__MODULES_TO_ADD:-}" ] && [ -f "${__MODULES_TO_ADD}" ]; then
-	sed -i '/^nouveau$/d' "${__MODULES_TO_ADD}"
+	drm=""
+	if [ -n "${MODULESDIR:-}" ] && [ -d "${MODULESDIR}/kernel/drivers/gpu/drm" ]; then
+		drm=$(find "${MODULESDIR}/kernel/drivers/gpu/drm" -name '*.ko*' -printf '%f\n' | sed 's/\..*$//')
+	fi
+	while read -r module; do
+		case " $KEEP_DRM " in
+		*" $module "*) ;;
+		*)
+			[ "$module" = nouveau ] && continue
+			printf '%s\n' "$drm" | grep -qxF -e "$module" && continue
+			;;
+		esac
+		printf '%s\n' "$module"
+	done < "${__MODULES_TO_ADD}" > "${__MODULES_TO_ADD}.slim"
+	mv -f "${__MODULES_TO_ADD}.slim" "${__MODULES_TO_ADD}"
 fi
 rm -rf "${DESTDIR}"/lib/modules/*/kernel/drivers/gpu/drm/nouveau \
 	"${DESTDIR}"/usr/lib/modules/*/kernel/drivers/gpu/drm/nouveau \

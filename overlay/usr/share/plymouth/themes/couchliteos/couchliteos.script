@@ -1,0 +1,85 @@
+# The CouchLiteOS boot splash. Written by tools/make-logo.py from launcher/couchliteos_boot.py,
+# which couchliteos-tv's loading screen draws too: change them there, not here.
+# No text (plymouth-label is not installed): Esc shows the boot messages (Plymouth's details
+# view), and the units that print (the restore, a failed screen) quit the splash first.
+
+Window.SetBackgroundTopColor(0.0863, 0.1647, 0.3176);
+Window.SetBackgroundBottomColor(0.0353, 0.051, 0.102);
+
+screen.width = Window.GetWidth();
+screen.height = Window.GetHeight();
+screen.x = Window.GetX();
+screen.y = Window.GetY();
+scale = screen.height / 1080;
+
+fun scaled(image) {
+  if (scale == 1) {
+    return image;
+  }
+  return image.Scale(Math.Int(image.GetWidth() * scale + 0.5), Math.Int(image.GetHeight() * scale + 0.5));
+}
+
+fun centre(sprite, image, x, y, z) {
+  sprite.SetPosition(x - image.GetWidth() / 2, y - image.GetHeight() / 2, z);
+}
+
+ribbon[0].image = Image("ribbon-1.png");
+ribbon[0].image = ribbon[0].image.Scale(screen.width, Math.Int(ribbon[0].image.GetHeight() * scale + 0.5));
+ribbon[0].a = Sprite(ribbon[0].image);
+ribbon[0].b = Sprite(ribbon[0].image);
+ribbon[0].y = screen.y + screen.height * 0.68 - ribbon[0].image.GetHeight() / 2;
+ribbon[0].seconds = 21;
+ribbon[0].a.SetPosition(screen.x, ribbon[0].y, 1);
+ribbon[0].b.SetPosition(screen.x + screen.width, ribbon[0].y, 1);
+ribbon[1].image = Image("ribbon-2.png");
+ribbon[1].image = ribbon[1].image.Scale(screen.width, Math.Int(ribbon[1].image.GetHeight() * scale + 0.5));
+ribbon[1].a = Sprite(ribbon[1].image);
+ribbon[1].b = Sprite(ribbon[1].image);
+ribbon[1].y = screen.y + screen.height * 0.7 - ribbon[1].image.GetHeight() / 2;
+ribbon[1].seconds = 13;
+ribbon[1].a.SetPosition(screen.x, ribbon[1].y, 1);
+ribbon[1].b.SetPosition(screen.x + screen.width, ribbon[1].y, 1);
+
+halo.image = scaled(Image("halo.png"));
+halo.sprite = Sprite(halo.image);
+centre(halo.sprite, halo.image, screen.x + screen.width / 2, screen.y + screen.height * 0.42, 2);
+halo.sprite.SetOpacity(0.45);
+
+logo.image = scaled(Image("logo.png"));
+logo.sprite = Sprite(logo.image);
+centre(logo.sprite, logo.image, screen.x + screen.width / 2, screen.y + screen.height * 0.42, 3);
+
+dot_image = scaled(Image("dot.png"));
+i = 0;
+while (i < 3) {
+  dot[i].sprite = Sprite(dot_image);
+  centre(dot[i].sprite, dot_image, screen.x + screen.width / 2 + (i - 1) * 0.03 * screen.height,
+         screen.y + screen.height * 0.86, 3);
+  dot[i].sprite.SetOpacity(0.15);
+  i = i + 1;
+}
+
+frame = 0;
+
+fun refresh_callback() {
+  global.frame = global.frame + 1;
+  t = global.frame / 50;
+  i = 0;
+  while (i < 2) {
+    shift = t / ribbon[i].seconds;
+    shift = shift - Math.Int(shift);
+    x = screen.x - shift * screen.width;
+    ribbon[i].a.SetX(x);
+    ribbon[i].b.SetX(x + screen.width);
+    i = i + 1;
+  }
+  halo.sprite.SetOpacity(0.45 + 0.55 * (0.5 - 0.5 * Math.Cos(2 * Math.Pi * t / 3.6)));
+  i = 0;
+  while (i < 3) {
+    pulse = 0.5 + 0.5 * Math.Cos(2 * Math.Pi * (t - i * 0.2) / 1.5);
+    dot[i].sprite.SetOpacity(0.15 + 0.85 * pulse * pulse * pulse);
+    i = i + 1;
+  }
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
