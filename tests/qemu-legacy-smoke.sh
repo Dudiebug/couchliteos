@@ -94,6 +94,10 @@ mkdir "$work/http"
 } > "$work/http/installer-preseed.cfg"
 python3 -m http.server 8000 --bind 0.0.0.0 --directory "$work/http" > "$work/preseed-http.log" 2>&1 &
 server_pid=$!
+if ! python3 "$ROOT/tests/preseed_ready.py" "$work/http/installer-preseed.cfg"; then
+  cat "$work/preseed-http.log" >&2
+  exit 1
+fi
 timeout $((25 * SCALE))m qemu-system-x86_64 "${common[@]}" \
   -boot order=d -drive "file=$OLD_ISO,media=cdrom,readonly=on" \
   -netdev user,id=installnet -device e1000,netdev=installnet \

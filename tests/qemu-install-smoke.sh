@@ -100,6 +100,10 @@ printf 'blank_disk=true\nvirtual_size=%s\n' "$virtual_size" >> "$CONFIG_LOG"
 python3 -m http.server 8000 --bind 0.0.0.0 --directory "$ROOT/tests" \
   > "$work/preseed-http.log" 2>&1 &
 server_pid=$!
+if ! python3 "$ROOT/tests/preseed_ready.py" "$ROOT/tests/installer-preseed.cfg"; then
+  cat "$work/preseed-http.log" >&2
+  exit 1
+fi
 
 printf '%q ' qemu-system-x86_64 "${common[@]}" \
   -boot order=d \

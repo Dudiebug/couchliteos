@@ -467,6 +467,9 @@ rg -q '^d-i passwd/root-password-crypted password \*$' config/live-build/include
 refute rg -q '^d-i passwd/' tests/installer-preseed.cfg
 rg -q "'d-i passwd/make-user boolean false'" tests/qemu-legacy-smoke.sh
 rg -q '^d-i preseed/late_command string in-target .*useradd .*--groups sudo .*installer-test' tests/installer-preseed.cfg
+# A preseed server left by a killed run holds port 8000: the smokes check theirs answers first.
+rg -q 'tests/preseed_ready.py' tests/qemu-install-smoke.sh
+rg -q 'tests/preseed_ready.py' tests/qemu-legacy-smoke.sh
 rg -q '32G' tests/qemu-install-smoke.sh
 rg -q 'blank_disk=true' tests/qemu-install-smoke.sh
 rg -q 'COUCHLITEOS_SMOKE_INSTALLED_DISK_READY' scripts/couchliteos-qemu-smoke tests/qemu-install-smoke.sh
