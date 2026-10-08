@@ -94,6 +94,8 @@ class Monitor:
         self.interval = interval
         self._text = ""
         self._stop = threading.Event()
+        self.awake = threading.Event()  # cleared while the TV interface rests: no polling then
+        self.awake.set()
 
     def _compute(self) -> str:
         if not self.link():
@@ -123,6 +125,7 @@ class Monitor:
     def start(self) -> None:
         def loop() -> None:
             while True:
+                self.awake.wait()
                 wait = self.interval if self.refresh() else min(self.interval, RETRY)
                 if self._stop.wait(wait):
                     return

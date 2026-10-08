@@ -166,6 +166,7 @@ class GLWave(Gtk.GLArea):
         self.running = False
         self.tick_id = 0
         self.shown_at: float | None = None
+        self.frames = 0  # drawn, for tests/tv-headless.sh
         self.set_has_depth_buffer(False)
         self.set_can_target(False)
         self.connect("realize", self.on_realize)
@@ -226,6 +227,7 @@ class GLWave(Gtk.GLArea):
         gl.uniform1f(location("u_fade"), float(fade))
         gl.bind_vertex_array(self.vao.value)
         gl.draw_arrays(_GL.TRIANGLES, 0, 3)
+        self.frames += 1
         if self.first:
             self.first = False
             GLib.idle_add(self.drawn)
@@ -274,8 +276,12 @@ class Wave(Gtk.Overlay):
         super().__init__()
         self.how = how
         self.log = log
+        self.colours = colours
+        self.run_dir = run_dir
         self.started = False
         self.running = True  # what set_running() last asked for
+        self.resting = False
+        self.frames_before = 0  # drawn by GL waves dropped at a rest
         self.still = Gtk.Picture()
         self.still.set_content_fit(Gtk.ContentFit.FILL)
         self.still.set_can_shrink(True)
@@ -295,7 +301,7 @@ class Wave(Gtk.Overlay):
     def set_how(self, how: str) -> None:
         """Another theme or [appearance] background: GL, STATIC or FLAT from now on (GL only where
         the GL wave was made and works). set_colours() next draws the still frame for it."""
-        if how == wave.GL and (self.gl is None or self.gl.broken):
+        if how == wave.GL and not self.resting and (self.gl is None or self.gl.broken):
             how = wave.STATIC
         self.how = how
         self.show_gl()
@@ -309,6 +315,7 @@ class Wave(Gtk.Overlay):
             self.gl.set_running(shown and self.running)
 
     def set_colours(self, colours: wave.Palette) -> None:
+        self.colours = colours
         if self.how == wave.FLAT:
             colours = wave.Palette(colours.top, colours.top, colours.ribbon, 0.0)
         self.palette = colours  # as drawn (tv-headless.sh reads it)
@@ -325,6 +332,34 @@ class Wave(Gtk.Overlay):
         self.running = running
         if self.gl is not None and self.gl.get_visible():
             self.gl.set_running(running)
+
+    @property
+    def frames(self) -> int:
+        return self.frames_before + (self.gl.frames if self.gl is not None else 0)
+
+    def rest(self) -> None:
+        """Nothing of it is seen (a game in front, the blank screen, sleep): drop the GL wave, its
+        context, shader and buffers with it, and keep the still frame. wake() makes a new one."""
+        if self.gl is None:
+            return
+        self.gl.set_running(False)
+        self.frames_before += self.gl.frames
+        self.remove_overlay(self.gl)  # unrealized: on_unrealize frees the program and the buffers
+        self.gl = None
+        self.resting = True
+
+    def wake(self) -> None:
+        """A new GL wave fades in over the still frame, as at the start (still under the black)."""
+        if not self.resting:
+            return
+        self.resting = False
+        if self.how != wave.GL:  # it failed meanwhile
+            return
+        self.gl = GLWave(self.colours, self.run_dir, self.gl_failed)
+        self.gl.set_visible(False)
+        self.add_overlay(self.gl)
+        if self.started:
+            self.start()
 
 
 def make_wave(how: str, colours: wave.Palette, run_dir: pathlib.Path, log: Callable[[str], None],
@@ -444,6 +479,13 @@ class XmbView(Gtk.Widget):
     def forget_pictures(self) -> None:
         self.textures.clear()
         self.queue_draw()
+
+    def rest(self) -> None:
+        """Behind a game: no tick and no textures (they are made again when it is drawn next)."""
+        if self.tick_id:
+            self.remove_tick_callback(self.tick_id)
+            self.tick_id = 0
+        self.textures.clear()
 
     # -------------------------------------------------------------- text
 

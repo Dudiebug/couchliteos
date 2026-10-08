@@ -2,6 +2,7 @@
 """The TV interface's background music player (couchliteos_music drives it over stdin).
 
     play <path>              load the track and loop it, silent and paused
+    seek <seconds>           go there (wrapped at the track's end): a new player resumes the old one
     level <0..1> <seconds>   ramp the volume there; at 0 it pauses (and resumes from there)
     quit
 
@@ -90,6 +91,16 @@ def main() -> int:
                 player.set_property("volume", 0.0)
                 player.set_property("uri", state["uri"])
                 player.set_state(Gst.State.PAUSED)
+        elif word == "seek" and state["uri"]:
+            try:
+                offset = max(0.0, float(rest))
+            except ValueError:
+                return False
+            player.get_state(2 * Gst.SECOND)  # the track has to be loaded (paused) before it can seek
+            known, duration = player.query_duration(Gst.Format.TIME)
+            if known and duration > 0:
+                player.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.ACCURATE,
+                                   round(offset * Gst.SECOND) % duration)
         elif word == "level":
             try:
                 level, seconds = (float(part) for part in rest.split())

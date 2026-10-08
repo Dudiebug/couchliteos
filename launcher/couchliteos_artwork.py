@@ -637,6 +637,8 @@ class Worker:
         self.lock = threading.Lock()
         self._changed = threading.Event()
         self._started = False
+        self.awake = threading.Event()  # cleared while the TV interface rests: lookups wait
+        self.awake.set()
 
     def art(self, host_uuid: str, app: str, app_id: int | None = None, host_label: str = "") -> pathlib.Path | None:
         """The cover to draw now, or None for the title card; queues a lookup when one is due."""
@@ -671,6 +673,7 @@ class Worker:
     def _loop(self) -> None:
         while True:
             key, app, host_label = self.jobs.get()
+            self.awake.wait()
             try:
                 self.run_job(key, app, host_label)
             finally:

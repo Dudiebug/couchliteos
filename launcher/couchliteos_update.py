@@ -445,6 +445,8 @@ class Checker:
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._wake = threading.Event()
+        self.awake = threading.Event()  # cleared while the TV interface rests: no polling then
+        self.awake.set()
         self._state = load_state(state_path)
         self._checked = False  # a check has succeeded since this launcher started
         self._failed = False  # an attempt has failed since then
@@ -537,6 +539,7 @@ class Checker:
     def start(self) -> None:
         def loop() -> None:
             while True:
+                self.awake.wait()
                 self.check_if_due()
                 self._wake.wait(POLL_SECONDS)
                 self._wake.clear()
