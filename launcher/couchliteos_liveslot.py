@@ -21,9 +21,9 @@ A Ventoy stick boots the ISO file itself, so an update there copies the new ISO 
 old one, gives it the old one's persistence entry in ventoy/ventoy.json, and deletes the old
 ISO only after the new one has reached the launcher once (`ventoy_finish`).
 
-Where the slot lives is one setting, SLOT_DESIGN: on the `persistence` partition itself, or
-on a small separate ext4 partition labelled `couchliteos-sys`. The GRUB hook looks for both
-labels (couchliteos-sys first), so either layout boots.
+Where the slot lives is one setting, SLOT_DESIGN: on a small separate ext4 partition labelled
+`couchliteos-sys` (the default), or on the `persistence` partition itself. The GRUB hook looks
+for both labels (couchliteos-sys first), so either layout boots.
 """
 
 from __future__ import annotations
@@ -39,17 +39,17 @@ import subprocess
 import tempfile
 from typing import Callable, Iterable, Iterator
 
-# "persistence": live-update/ sits on the persistence partition (live-boot then uses that
-# partition both as the live medium and for persistence).
 # "sys": live-update/ sits on its own ext4 partition labelled couchliteos-sys, made by
 # couchliteos-persist-setup next to the persistence partition.
-SLOT_DESIGN = "persistence"
+# "persistence": live-update/ on the persistence partition. Does not work: live-boot mounts the
+# partition it boots from read-only as the medium and then keeps no persistence (QEMU smoke test).
+SLOT_DESIGN = "sys"
 PERSISTENCE_LABEL = "persistence"
 SYS_LABEL = "couchliteos-sys"
 SLOT_LABELS = {"persistence": PERSISTENCE_LABEL, "sys": SYS_LABEL}
 SLOT_DIR = "live-update"
 ISO_VERSION_FILE = "couchliteos-iso-version"  # beside SLOT_DIR: the version of the ISO the stick was written with
-SYS_PARTITION_BYTES = 6 << 30  # two systems of about 2 GB each, with room to grow
+SYS_PARTITION_BYTES = 4 << 30  # two systems of about 1.2 GB each with room to grow; fits an 8 GB stick
 
 FILES = ("vmlinuz", "initrd.img", "filesystem.squashfs")
 ISO_FILES = {"vmlinuz": "live/vmlinuz", "initrd.img": "live/initrd.img",

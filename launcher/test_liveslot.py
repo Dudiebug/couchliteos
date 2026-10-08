@@ -156,6 +156,16 @@ class SlotTest(unittest.TestCase):
     def test_slot_design_is_one_known_setting(self):
         self.assertIn(liveslot.SLOT_DESIGN, liveslot.SLOT_LABELS)
 
+    def test_updates_live_on_their_own_partition(self):
+        # The QEMU persistence smoke test (0.3.0 beta): booted from live-update/ on the persistence
+        # partition, live-boot mounts that partition read-only as the medium and keeps no persistence.
+        self.assertEqual(liveslot.SLOT_DESIGN, "sys")
+
+    def test_the_update_partition_leaves_room_on_an_8_gb_stick(self):
+        stick, iso, persistence_min = 7_450_000_000, 1_200_000_000, 1 << 30  # an "8 GB" stick holds 7.45 GB
+        self.assertLessEqual(liveslot.SYS_PARTITION_BYTES + iso + persistence_min, stick)
+        self.assertGreaterEqual(liveslot.SYS_PARTITION_BYTES, liveslot.space_needed([1_200_000_000] * 2))
+
 
 class VentoyJsonTest(unittest.TestCase):
     def setUp(self):

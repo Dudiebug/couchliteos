@@ -136,15 +136,16 @@ boot_and_wait live-persistence-absent COUCHLITEOS_SMOKE_LIVE_PERSISTENCE_IGNORED
   -drive "file=$ISO,media=cdrom,readonly=on"
 
 # SET UP STORAGE ON THIS STICK on a stick written like Etcher or dd: the ISO at the start of a
-# bigger disk. Setup adds the persistence partition after it; the next boot keeps the state.
+# bigger disk ("8 GB"). Setup adds couchliteos-sys (for updates) and the persistence partition after
+# it; the next boot keeps the state.
 cp -- "$ISO" "$work/stick.img"
-truncate -s 4G "$work/stick.img"
+truncate -s 8G "$work/stick.img"
 common=("${common[@]//persistence.img/stick.img}")
 boot_and_wait live-persist-setup COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_DONE
 boot_and_wait live-persist-setup-check COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_KEPT
 
 # SELF-UPDATING STICK: the same ISO is attached as a CD-ROM and installed into the stick's live slot
-# (live-update/current on the persistence partition). Boot 1 applies it from the CD-ROM, which is the
+# (live-update/current on couchliteos-sys). Boot 1 applies it from the CD-ROM, which is the
 # only optical drive: the stick boots from its own virtio disk (-boot order=c keeps it first). Boot 2
 # has no CD-ROM: GRUB must pick the "(Updated)" entry by itself (it is listed first once its slot is ok),
 # and the state written before the update must still be there.

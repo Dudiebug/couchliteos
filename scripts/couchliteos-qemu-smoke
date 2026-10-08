@@ -347,8 +347,9 @@ updater.refuse_layout(updater.Env())
     exit 0
     ;;
   live-persist-setup-check)
-    # The next boot keeps its state on the new third partition, and setup now says so.
-    findmnt -n -o SOURCE /run/live/persistence/vda3
+    # The next boot keeps its state on the new fourth partition (the third is couchliteos-sys, for
+    # updates), and setup now says so.
+    findmnt -n -o SOURCE /run/live/persistence/vda4
     [[ $(/usr/libexec/couchliteos-persist-setup status) == *'"persistent": true'* ]]
     grep -Fxq 'live_persistence = verified' /var/lib/couchliteos/config.ini
     test -f /var/lib/bluetooth/qemu-state
@@ -396,7 +397,8 @@ updater.refuse_layout(updater.Env())
     test -f /var/lib/couchliteos/qemu-live-update-state
     # live-boot-ok writes "booted" into the slot once the launcher is up (the wait at the top of this
     # script), holding the version that got there. Only that marker proves the slot itself.
-    slot=/run/live/persistence/vda3/live-update/current
+    # The slot's partition (couchliteos-sys) is the live medium of this boot.
+    slot=/run/live/medium/live-update/current
     for _ in $(seq 1 "$(scaled 600)"); do
       [[ -s $slot/booted ]] && break
       sleep 0.1
