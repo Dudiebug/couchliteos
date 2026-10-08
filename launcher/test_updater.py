@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
+import couchliteos_liveslot as liveslot
 import couchliteos_update as update
 import couchliteos_updater as updater
 
@@ -977,15 +978,16 @@ class DownloadTest(TmpCase):
 class RefusalTest(TmpCase):
     def test_live_boot_is_refused_by_the_medium_or_the_command_line(self):
         env = make_env(self.tmp)
-        updater.refuse_live(env)  # an installed box passes
+        updater.refuse_live_without_persistence(env)  # an installed box passes
         (env.root / "run/live/medium").mkdir(parents=True)
-        with self.assertRaises(updater.UpdateFailed) as caught:
-            updater.refuse_live(env)
-        self.assertEqual(caught.exception.message, "UPDATES NEED COUCHLITEOS INSTALLED TO A DISK")
+        with self.assertRaises(updater.UpdateFailed) as caught:  # no storage on the stick: refused
+            updater.refuse_live_without_persistence(env)
+        self.assertEqual(caught.exception.message,
+                         "UPDATES NEED STORAGE ON THIS STICK: SET UP STORAGE ON THIS STICK FIRST, OR INSTALL TO A DISK")
         (env.root / "run/live/medium").rmdir()
         put(env.root, "proc/cmdline", "BOOT_IMAGE=/live/vmlinuz boot=live quiet\n")
         with self.assertRaises(updater.UpdateFailed):
-            updater.refuse_live(env)
+            updater.refuse_live_without_persistence(env)
 
     def test_separate_boot_usr_or_var_mounts_are_refused(self):
         for mount in ("/boot", "/usr", "/var"):
@@ -1207,7 +1209,8 @@ class RunTest(TmpCase):
         (self.env.root / "run/live/medium").mkdir(parents=True)
         self.assertEqual(self.run_update(), 1)
         self.assertEqual(self.final()["phase"], "failed")
-        self.assertEqual(self.final()["message"], "UPDATES NEED COUCHLITEOS INSTALLED TO A DISK")
+        self.assertEqual(self.final()["message"],
+                         "UPDATES NEED STORAGE ON THIS STICK: SET UP STORAGE ON THIS STICK FIRST, OR INSTALL TO A DISK")
         self.assertEqual(self.net.requests, [])
 
     def test_an_unsupported_layout_is_refused_before_the_download(self):
@@ -1426,8 +1429,10 @@ class ApplyIsoTest(TmpCase):
         (self.env.root / "run/live/medium").mkdir(parents=True)
         with self.assertRaises(updater.UpdateFailed) as caught:
             self.apply()
-        self.assertEqual(caught.exception.message, "UPDATES NEED COUCHLITEOS INSTALLED TO A DISK")
-        self.assertEqual(self.env.runner.calls, [])
+        self.assertEqual(caught.exception.message,
+                         "UPDATES NEED STORAGE ON THIS STICK: SET UP STORAGE ON THIS STICK FIRST, OR INSTALL TO A DISK")
+        # Only the probes that look for the stick's storage run before the refusal: no mount, no chroot.
+        self.assertEqual([call[0] for call in self.env.runner.calls if call[0] not in ("findmnt", "blkid")], [])
 
     def test_a_separate_usr_is_refused_before_any_mount(self):
         self.env.runner = Runner(lambda argv: (0, "/usr\n") if argv[-1] == "/usr" else None)
@@ -1484,6 +1489,200 @@ class ApplyIsoTest(TmpCase):
         with self.assertRaises(updater.UpdateFailed) as caught:
             self.apply()
         self.assertEqual(caught.exception.message, "INSTALL FAILED: SEE /var/log/couchliteos-update/update.log")
+
+
+class LiveStickTest(TmpCase):
+    """A stick booted live with its own storage: run, apply-iso and rollback-live update the stick itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.mode = "dd"
+        self.routes = {API: release_json(), BASE_URL + "SHA256SUMS": SUMS.encode(), BASE_URL + ISO_NAME: ISO_BYTES}
+        self.net = Net(self.routes)
+        self.env = make_env(self.tmp, opener=self.net, runner=Runner(self.reply))
+        self.runner = self.env.runner
+        put(self.env.root, "etc/couchliteos-version", "0.2.1\n")
+        put(self.env.root, "usr/share/couchliteos/profile.conf", "PROFILE_NAME=general\nISO_SUFFIX=\n")
+        put(self.env.root, "proc/cmdline", "BOOT_IMAGE=/live/vmlinuz boot=live quiet\n")
+        (self.env.root / "run/live/medium").mkdir(parents=True)
+        self.base = self.tmp / "stick" / "live-update"
+        self.ventoy_root = self.tmp / "ventoy"
+        self.status = RecordingStatus(self.env.run_dir / "update-status.json")
+        self.installed = []
+        self.rolled = []
+        fakes = {
+            "slot_base": self.fake_slot_base, "install_from_iso": self.fake_install,
+            "ventoy_partition": self.fake_ventoy_partition, "ventoy_install_iso": self.fake_ventoy_install,
+            "rollback": self.fake_rollback,
+        }
+        for name, fake in fakes.items():
+            patcher = mock.patch.object(liveslot, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # main() makes its own status and takes the update lock in root's own directory. This class checks
+        # what the stick does with the update, so main() reports into self.status and the lock is a no-op
+        # here (the lock has its own tests in MainTest).
+        stand_ins = {
+            "Status": lambda *args, **kwargs: self.status,
+            "own_dir": lambda env, *names: self.tmp,
+            "acquire_lock": lambda path: contextlib.nullcontext(),
+        }
+        for name, fake in stand_ins.items():
+            patcher = mock.patch.object(updater, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def reply(self, argv):
+        if argv[0] == "blkid":
+            label = argv[argv.index("-t") + 1]
+            devices = {"LABEL=persistence": "/dev/sdb2", "LABEL=Ventoy": "/dev/sdb1"}
+            return (0, devices.get(label, "") + "\n")
+        if argv[0] == "findmnt" and "SOURCE" in argv:
+            return (0, ("/dev/mapper/ventoy" if self.mode == "ventoy" else "/dev/sdb1") + "\n")
+        if argv[0] == "blockdev":
+            return (0, f"{len(ISO_BYTES) if argv[-1] == '/dev/mapper/ventoy' else GIB}\n")
+        return None
+
+    def use_ventoy(self):
+        self.mode = "ventoy"
+        self.ventoy_root.mkdir(parents=True, exist_ok=True)
+        (self.ventoy_root / "couchliteos-0.2.1-amd64.iso").write_bytes(ISO_BYTES)
+
+    def iso_file(self):
+        path = self.tmp / ISO_NAME
+        path.write_bytes(ISO_BYTES)
+        return path
+
+    @contextlib.contextmanager
+    def fake_slot_base(self, env, mountinfo=None):
+        self.base.mkdir(parents=True, exist_ok=True)
+        yield self.base
+
+    def fake_install(self, base, iso, version, env, progress=None, mountpoint=None):
+        self.installed.append(("dd", base, iso, version))
+
+    @contextlib.contextmanager
+    def fake_ventoy_partition(self, env, device, sectors, mountpoint, writable):
+        yield self.ventoy_root
+
+    def fake_ventoy_install(self, ventoy_root, current_iso, new_iso, name, version, env, **kwargs):
+        self.installed.append(("ventoy", ventoy_root, current_iso.name, name, version))
+        return ventoy_root / name
+
+    def fake_rollback(self, base, env):
+        self.rolled.append(base)
+
+    def final(self):
+        # the last status the update wrote (the status file itself is checked by the MainTest and StatusTest cases)
+        phase, message, percent = self.status.history[-1]
+        return {"phase": phase, "message": message, "percent": percent}
+
+    def test_storage_on_the_stick_lets_a_live_boot_update_it(self):
+        updater.refuse_live_without_persistence(self.env)  # no raise
+
+    def test_restore_and_request_restore_refuse_a_stick_even_with_storage(self):
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.refuse_live_boot(self.env)
+        self.assertEqual(caught.exception.message, updater.MSG_LIVE)
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.restore(self.env, self.status)
+        self.assertEqual(caught.exception.message, updater.MSG_LIVE)
+        with self.assertRaises(updater.UpdateFailed) as caught:
+            updater.request_restore(self.env, self.status)
+        self.assertEqual(caught.exception.message, updater.MSG_LIVE)
+
+    def test_run_on_a_stick_installs_with_dd_and_leaves_grub_alone(self):
+        self.assertEqual(updater.run(self.env, self.status), 0)
+        self.assertEqual(self.installed, [("dd", self.base, self.env.cache_dir / ISO_NAME, "0.2.2")])
+        self.assertEqual(self.runner.commands("grub-editenv"), [],
+                         "the ISO's GRUB menu lists the Updated entry first (0100-autoboot.hook.binary)")
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+        self.assertEqual(self.runner.commands("chroot"), [], "no new image is entered on a stick")
+        self.assertEqual(self.runner.commands("mount"), [])
+        self.assertFalse(any("--target" in call for call in self.runner.commands("findmnt")),
+                         "no layout check on a stick")
+        self.assertEqual(self.final()["phase"], "updated")
+        self.assertEqual(self.final()["message"], updater.MSG_STICK_DONE)
+        self.assertIn("REBOOT TO FINISH", self.final()["message"])
+
+    def test_the_first_update_records_the_iso_the_stick_was_made_from(self):
+        self.assertEqual(updater.run(self.env, self.status), 0)
+        self.assertEqual((self.base.parent / liveslot.ISO_VERSION_FILE).read_text(encoding="utf-8"), "0.2.1\n")
+
+    def test_an_update_from_an_updated_system_keeps_the_recorded_iso(self):
+        put(self.env.root, "proc/cmdline", "boot=live live-media-path=/live-update/current\n")
+        self.base.mkdir(parents=True)
+        self.assertEqual(updater.run(self.env, self.status), 0)
+        self.assertEqual(len(self.installed), 1)
+        self.assertFalse((self.base.parent / liveslot.ISO_VERSION_FILE).exists(),
+                         "the running system is an update, not the ISO's own")
+
+    def test_the_space_check_runs_before_the_download(self):
+        self.env.free_bytes = lambda _path: 1 << 20
+        self.assertEqual(updater.run(self.env, self.status), 1)
+        self.assertRegex(self.final()["message"], r"^NOT ENOUGH SPACE ON THE STICK: \d+ MB MORE NEEDED$")
+        self.assertNotIn(BASE_URL + ISO_NAME, [url for url, _range, _timeout in self.net.requests])
+        self.assertEqual(self.installed, [])
+
+    def test_the_space_message_counts_the_new_iso_and_the_kept_slot(self):
+        (self.base / "current").mkdir(parents=True)
+        (self.base / "current" / "filesystem.squashfs").write_bytes(b"x" * (2 << 20))
+        needed = liveslot.space_needed([len(ISO_BYTES), 2 << 20])
+        self.env.free_bytes = lambda _path: needed - (5 << 20)
+        self.assertEqual(updater.run(self.env, self.status), 1)
+        self.assertEqual(self.final()["message"], "NOT ENOUGH SPACE ON THE STICK: 5 MB MORE NEEDED")
+
+    def test_a_liveslot_failure_is_shown_as_the_update_message(self):
+        def refuse(*_args, **_kwargs):
+            raise liveslot.SlotError("THE STICK DID NOT KEEP THE UPDATE: IT MAY BE FAILING")
+        with mock.patch.object(liveslot, "install_from_iso", refuse):
+            self.assertEqual(updater.run(self.env, self.status), 1)
+        self.assertEqual(self.final()["phase"], "failed")
+        self.assertEqual(self.final()["message"], "THE STICK DID NOT KEEP THE UPDATE: IT MAY BE FAILING")
+        self.assertEqual(self.runner.commands("grub-editenv"), [], "no next entry after a failed install")
+
+    def test_apply_iso_on_a_stick_installs_without_mounting_chrooting_or_saving(self):
+        iso = self.iso_file()
+        saved = []
+        updater.apply_iso(iso, self.env, self.status, save=lambda env, status: saved.append(True))
+        self.assertEqual(self.installed, [("dd", self.base, iso, "0.2.2")])
+        self.assertEqual(saved, [], "a stick keeps no saved copy of the running system")
+        self.assertEqual([call[0] for call in self.runner.calls if call[0] in ("mount", "umount", "chroot")], [])
+        self.assertEqual(self.final()["phase"], "updated")
+
+    def test_apply_iso_on_a_stick_does_not_reboot_the_box(self):
+        iso = self.iso_file()
+        self.assertEqual(updater.main(["apply-iso", str(iso)], env=self.env), 0)
+        self.assertNotIn(["systemctl", "reboot"], self.runner.calls)
+        self.assertEqual(len(self.installed), 1)
+
+    def test_a_ventoy_stick_copies_the_iso_and_sets_no_grub_entry(self):
+        self.use_ventoy()
+        self.assertEqual(updater.run(self.env, self.status), 0)
+        self.assertEqual(self.installed,
+                         [("ventoy", self.ventoy_root, "couchliteos-0.2.1-amd64.iso", ISO_NAME, "0.2.2")])
+        self.assertEqual(self.runner.commands("grub-editenv"), [], "ventoy.json already selects the new ISO")
+        self.assertEqual(self.final()["phase"], "updated")
+
+    def test_rollback_live_on_a_stick_rolls_back_and_boots_the_updated_entry(self):
+        self.assertEqual(updater.main(["rollback-live"], env=self.env), 0)
+        self.assertEqual(self.rolled, [self.base])
+        self.assertEqual(self.runner.commands("grub-editenv"), [], "the swapped slot is the Updated entry")
+        self.assertEqual(self.final()["phase"], "updated")
+        self.assertIn("REBOOT TO FINISH", self.final()["message"])
+
+    def test_rollback_live_on_ventoy_is_refused_with_the_plain_reason(self):
+        self.use_ventoy()
+        self.assertEqual(updater.main(["rollback-live"], env=self.env), 1)
+        self.assertEqual(self.final()["message"], "NO EARLIER SYSTEM IS KEPT ON THIS STICK")
+        self.assertEqual(self.rolled, [])
+
+    def test_rollback_live_is_refused_on_an_installed_box(self):
+        (self.env.root / "run/live/medium").rmdir()
+        put(self.env.root, "proc/cmdline", "BOOT_IMAGE=/vmlinuz root=/dev/sda2 ro quiet\n")
+        self.assertEqual(updater.main(["rollback-live"], env=self.env), 1)
+        self.assertEqual(self.final()["message"], updater.MSG_NOT_STICK)
+        self.assertEqual(self.rolled, [])
 
 
 # ---------------------------------------------------------------- apply_root (inside the new image)
@@ -2171,7 +2370,7 @@ class RestoreTest(TmpCase):
 
     def test_todays_updater_and_its_modules_run_inside_and_are_removed_afterwards(self):
         updater.restore(self.env, self.status)
-        self.assertEqual(self.seen["tool"], ["couchliteos_browser.py", "couchliteos_safefile.py",
+        self.assertEqual(self.seen["tool"], ["couchliteos_browser.py", "couchliteos_liveslot.py", "couchliteos_safefile.py",
                                              "couchliteos_snapshot.py", "couchliteos_update.py",
                                              "couchliteos_updater.py"])
         self.assertFalse((self.tmp / "work/restore/tool").exists())

@@ -908,6 +908,11 @@ rg -q '^ExecStart=/usr/libexec/couchliteos-updater find-installs$' services/couc
 rg -q '^PathExists=/run/couchliteos/disk-update$' services/couchliteos-disk-update.path
 rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/disk-update$' services/couchliteos-disk-update.service
 rg -q 'couchliteos-updater apply-disk --found$' services/couchliteos-disk-update.service
+rg -q '^PathExists=/run/couchliteos/rollback-live$' services/couchliteos-rollback-live.path
+rg -q '^ExecStartPre=/usr/bin/rm -f /run/couchliteos/rollback-live$' services/couchliteos-rollback-live.service
+rg -q '^ExecStart=/usr/libexec/couchliteos-updater rollback-live$' services/couchliteos-rollback-live.service
+rg -q '^systemctl enable couchliteos-persist-setup.path couchliteos-rollback-live.path$' config/live-build/hooks/live/0100-couchliteos.hook.chroot
+rg -q '^LIVE_ROLLBACK = "rollback-live"' launcher/couchliteos_softwareupdate.py
 rg -q '^systemctl enable couchliteos-find-installs.service couchliteos-disk-update.path$' \
   config/live-build/hooks/live/0100-couchliteos.hook.chroot
 rg -q 'UPDATE THE INSTALLED SYSTEM \(KEEPS PAIRINGS AND SETTINGS\)' launcher/couchliteos_softwareupdate.py
@@ -1655,5 +1660,17 @@ for module in couchliteos_audiomenu couchliteos_battery; do
 done
 for test in test_audio_bluetooth test_mic test_battery; do rg -q "$test.py" launcher/Makefile; done
 refute rg -q 'shell=True|\bsudo\b' launcher/couchliteos_audio.py launcher/couchliteos_audiomenu.py launcher/couchliteos_battery.py
+# Live stick boot-OK: marks the running update slot once the launcher is up; never ordered before a path, socket or timer.
+rg -q '^ConditionPathExists=/run/live/medium$' services/couchliteos-live-boot-ok.service
+rg -q '^ConditionPathExists=/run/couchliteos/launcher-ready$' services/couchliteos-live-boot-ok.service
+rg -q '^After=couchliteos-launcher.service$' services/couchliteos-live-boot-ok.service
+rg -q '^ExecStart=-/usr/libexec/couchliteos-live-boot-ok$' services/couchliteos-live-boot-ok.service
+rg -q '^ExecStart=-/usr/libexec/couchliteos-persist-setup boot-ok$' services/couchliteos-live-boot-ok.service
+rg -q '^WantedBy=multi-user.target$' services/couchliteos-live-boot-ok.service
+refute rg -q '^Before=|live-update\.json|ConditionPathExists=/var/lib' services/couchliteos-live-boot-ok.service
+rg -Fxq 'install -D -m 0755 "$ROOT/scripts/couchliteos-live-boot-ok" "$CHROOT/usr/libexec/couchliteos-live-boot-ok"' build/configure.sh
+rg -q '^#!/usr/bin/python3 -I$' scripts/couchliteos-live-boot-ok
+rg -Fq 'live-media-path=/live-update/' scripts/couchliteos-live-boot-ok
+refute rg -q 'shell=True|\bsudo\b' scripts/couchliteos-live-boot-ok
 
 printf 'Static tests passed.\n'

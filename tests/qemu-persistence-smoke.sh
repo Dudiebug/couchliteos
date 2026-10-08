@@ -96,8 +96,9 @@ elif [[ -n ${COUCHLITEOS_QEMU_ACCEL_ARGS:-} ]]; then
 fi
 install -D -m 0644 /dev/null "$LOG"
 
+# BOOT_LIMIT (unscaled seconds, default 240) lets a caller give one boot more time, as the update boots need.
 boot_and_wait() {
-  local mode=$1 marker=$2
+  local mode=$1 marker=$2 limit=${BOOT_LIMIT:-240}
   shift 2
   printf '\n=== live boot: %s ===\n' "$mode" >> "$LOG"
   qemu-system-x86_64 \
@@ -106,12 +107,16 @@ boot_and_wait() {
     -fw_cfg "name=opt/couchliteos.timeout-scale,string=$SCALE" \
     -serial stdio "$@" >> "$LOG" 2>&1 &
   pid=$!
-  for _ in $(seq 1 $((240 * SCALE))); do
+  for _ in $(seq 1 $((limit * SCALE))); do
     if grep -q "$marker" "$LOG"; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       pid=
       return 0
+    fi
+    # An update mode that failed in the guest prints this (scripts/couchliteos-qemu-smoke): stop waiting.
+    if grep -q COUCHLITEOS_SMOKE_UPDATE_FAILED "$LOG"; then
+      break
     fi
     kill -0 "$pid" 2>/dev/null || break
     sleep 1
@@ -138,4 +143,14 @@ common=("${common[@]//persistence.img/stick.img}")
 boot_and_wait live-persist-setup COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_DONE
 boot_and_wait live-persist-setup-check COUCHLITEOS_SMOKE_LIVE_PERSIST_SETUP_KEPT
 
-echo 'QEMU persistence smoke test passed: state survived a persistent live reboot, nopersistence ignored the attached backend, and SET UP STORAGE kept state on a dd-written stick.'
+# SELF-UPDATING STICK: the same ISO is attached as a CD-ROM and installed into the stick's live slot
+# (live-update/current on the persistence partition). Boot 1 applies it from the CD-ROM, which is the
+# only optical drive: the stick boots from its own virtio disk (-boot order=c keeps it first). Boot 2
+# has no CD-ROM: GRUB must pick the "(Updated)" entry by itself (next_entry on the stick's grubenv),
+# and the state written before the update must still be there.
+BOOT_LIMIT=2700 boot_and_wait live-update-apply COUCHLITEOS_SMOKE_LIVE_UPDATE_APPLIED \
+  -boot order=c -drive "file=$ISO,media=cdrom,readonly=on"
+# The booted marker is written once the launcher is up, so this boot gets a longer limit than the default.
+BOOT_LIMIT=480 boot_and_wait live-update-check COUCHLITEOS_SMOKE_LIVE_UPDATE_READY
+
+echo 'QEMU persistence smoke test passed: state survived a persistent live reboot, nopersistence ignored the attached backend, SET UP STORAGE kept state on a dd-written stick, and the stick updated itself from the attached ISO and booted the updated slot with its state.'

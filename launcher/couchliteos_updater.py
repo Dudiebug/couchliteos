@@ -20,6 +20,7 @@ config.ini, whatsnew-seen) are written through a descriptor of their directory (
     restore                                   put the saved previous version back, then restart (boot)
     find-installs                             live USB: list the installed systems on the disks
     apply-disk DEVICE|--found [--force]       live USB: update the installed system on DEVICE
+    rollback-live                             live USB stick: the earlier system starts at the next boot
 
 Before anything is written, `run` and `apply-iso` save the running system as the one snapshot
 (couchliteos_snapshot) unless --no-snapshot is given or config.ini says [update] snapshot = off.
@@ -34,6 +35,12 @@ Progress goes to a small JSON status file the launcher polls.
 
 `restore` works the same way the other way round: it mounts the saved image and runs THIS program's
 `apply-root /mnt --restore` inside a chroot of it, so the newest logic puts the old files back.
+
+On a live USB stick, `run` and `apply-iso` update the stick itself (couchliteos_liveslot): the new
+system goes into the stick's own storage (persistence or couchliteos-sys), or beside the running ISO
+on its Ventoy partition. There is no new image to enter, no snapshot and no reboot: the next boot of
+a dd stick starts the updated entry (first in its GRUB menu), and the user restarts to finish. A stick
+without storage is refused. `restore` and `request-restore` are refused on every live boot.
 
 Standard library only; every system effect goes through Env so tests can use temp directories.
 """
@@ -63,6 +70,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator
 
+import couchliteos_liveslot as liveslot
 import couchliteos_snapshot as snapshot
 import couchliteos_browser as browser
 import couchliteos_safefile as safefile
@@ -79,9 +87,13 @@ MANIFEST_REL = "var/lib/couchliteos-update/etc-manifest"
 UPDATER_REL = "usr/libexec/couchliteos-updater"
 VERSION_REL = "etc/couchliteos-version"
 PROFILE_REL = "usr/share/couchliteos/profile.conf"
+VENTOY_MAPPER = "/dev/mapper/ventoy"  # the booted Ventoy ISO, as the live medium sees it (a device path string)
+VENTOY_LABEL = "Ventoy"                  # the exFAT data partition the ISO files sit on
+ISO_VERSION_RE = re.compile(r"couchliteos-(\d+\.\d+\.\d+)")
 
 PHASES = ("checking", "downloading", "verifying", "saving", "installing", "restarting", "failed", "cancelled", "uptodate")
 GIB = 1 << 30
+MIB = 1 << 20
 SPACE_MARGIN = 4 * GIB      # free space needed on top of the download
 SPACE_FOR_INSTALL = 3 * GIB  # free space needed on the box to copy the new files in
 CHUNK = 1 << 20
@@ -94,6 +106,15 @@ USER_AGENT = "CouchLiteOS-updater"
 
 MSG_NETWORK = "COULD NOT REACH GITHUB: CHECK SETTINGS > NETWORK"
 MSG_LIVE = "UPDATES NEED COUCHLITEOS INSTALLED TO A DISK"
+MSG_NEEDS_STORAGE = "UPDATES NEED STORAGE ON THIS STICK: SET UP STORAGE ON THIS STICK FIRST, OR INSTALL TO A DISK"
+MSG_NOT_STICK = "ROLLBACK IS ONLY FOR A COUCHLITEOS USB STICK"
+MSG_NO_EARLIER = "NO EARLIER SYSTEM IS KEPT ON THIS STICK"
+MSG_NO_VENTOY_DATA = "CANNOT FIND THE STICK'S VENTOY DATA AREA"
+MSG_NO_RUNNING_ISO = "CANNOT FIND THE ISO THIS STICK STARTED FROM"
+MSG_NOT_ISO = "THE UPDATE FILE MUST BE AN ISO FILE"
+MSG_STICK_SPACE = "NOT ENOUGH SPACE ON THE STICK: {} MB MORE NEEDED"
+MSG_STICK_DONE = "UPDATE DONE. REBOOT TO FINISH: REBOOT OR POWER > RESTART ON THE HOME SCREEN."
+MSG_ROLLED_BACK = "ROLLED BACK. REBOOT TO FINISH: REBOOT OR POWER > RESTART ON THE HOME SCREEN."
 MSG_LAYOUT = "UNSUPPORTED DISK LAYOUT"
 MSG_OTHER_BOX = "THIS ISO IS FOR A DIFFERENT KIND OF BOX"
 MSG_GENERIC = "UPDATE FAILED: SEE /var/log/couchliteos-update/update.log"
@@ -313,9 +334,203 @@ def sh(env: Env, argv: Iterable[object], log: Callable[[str], None] | None = Non
 # ------------------------------------------------------------------ refusals
 
 
-def refuse_live(env: Env) -> None:
-    if update.is_live(env.root / "run/live/medium", env.root / "proc/cmdline"):
+def is_stick(env: Env) -> bool:
+    """A live boot: the USB stick. An update then goes into the stick's own storage, not into a disk."""
+    return update.is_live(env.root / "run/live/medium", env.root / "proc/cmdline")
+
+
+def refuse_live_boot(env: Env) -> None:
+    """Restore and request-restore: a live boot never restores, with or without storage."""
+    if is_stick(env):
         raise UpdateFailed(MSG_LIVE)
+
+
+def refuse_live_without_persistence(env: Env) -> None:
+    """A live boot may update only when the stick has storage (persistence or couchliteos-sys)."""
+    if not is_stick(env):
+        return
+    try:
+        liveslot.find_slot_device(liveslot_env(env))
+    except liveslot.SlotError as error:
+        raise UpdateFailed(MSG_NEEDS_STORAGE) from error
+
+
+def liveslot_env(env: Env) -> liveslot.Env:
+    return liveslot.Env(runner=env.runner, free_bytes=env.free_bytes, log=env.note)
+
+
+def live_kind(env: Env) -> str:
+    """"ventoy" when the stick booted a Ventoy ISO (its medium is Ventoy's device-mapper map), else "dd"."""
+    result = sh(env, ["findmnt", "-n", "-o", "SOURCE", "/run/live/medium"])
+    return "ventoy" if (result.stdout or "").strip() == VENTOY_MAPPER else "dd"
+
+
+def _first_device(env: Env, label: str) -> str | None:
+    result = sh(env, ["blkid", "-t", f"LABEL={label}", "-o", "device"])
+    devices = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    return devices[0] if result.returncode == 0 and devices else None
+
+
+def _device_bytes(env: Env, device: object) -> int:
+    result = sh(env, ["blockdev", "--getsize64", device])
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError as error:
+        raise UpdateFailed(MSG_GENERIC) from error
+
+
+def _tree_bytes(path: pathlib.Path) -> int:
+    total = 0
+    for directory, _subdirs, files in os.walk(path):
+        for name in files:
+            with contextlib.suppress(OSError):
+                total += (pathlib.Path(directory) / name).stat().st_size
+    return total
+
+
+def _iso_version(name: str) -> str:
+    match = ISO_VERSION_RE.search(name)
+    return match.group(1) if match else ""
+
+
+@dataclasses.dataclass
+class Stick:
+    """The stick's storage for one update: where the free space is and how the new system goes in."""
+
+    env: Env
+    lenv: liveslot.Env
+    kind: str                             # "dd": a live-update directory; "ventoy": ISO files on Ventoy's partition
+    base: pathlib.Path | None = None      # dd
+    ventoy_root: pathlib.Path | None = None
+    running: pathlib.Path | None = None   # ventoy: the ISO file the stick booted from
+
+    @property
+    def room(self) -> pathlib.Path:
+        return self.ventoy_root if self.kind == "ventoy" else self.base
+
+    def check_room(self, new_bytes: int) -> None:
+        """The new system and the kept previous one (the current slot, or the running ISO) must fit."""
+        if self.kind == "ventoy":
+            kept = self.running.stat().st_size
+        else:
+            kept = _tree_bytes(self.base / liveslot.CURRENT)
+        needed = liveslot.space_needed([new_bytes, kept])
+        free = self.env.free_bytes(self.room)
+        if free < needed:
+            raise UpdateFailed(MSG_STICK_SPACE.format(-(-(needed - free) // MIB)))
+
+    def install(self, iso: pathlib.Path, version: str, status: Status) -> None:
+        progress = _progress(status)
+        try:
+            if self.kind == "ventoy":
+                liveslot.ventoy_install_iso(self.ventoy_root, self.running, iso, iso.name, version,
+                                            self.lenv, progress=progress)
+            else:
+                liveslot.install_from_iso(self.base, iso, version, self.lenv, progress=progress)
+        except ValueError as error:  # ventoy_install_iso: the file name is not a plain .iso name
+            raise UpdateFailed(MSG_NOT_ISO) from error
+        except liveslot.SlotError as error:
+            raise UpdateFailed(error.message) from error
+
+
+def _progress(status: Status) -> Callable[[int], None]:
+    """liveslot reports each block copied; the status shows the megabytes so far, once per megabyte."""
+    done = [0]
+
+    def report(size: int) -> None:
+        before = done[0] // MIB
+        done[0] += size
+        if done[0] // MIB != before:
+            status.set("installing", f"INSTALLING THE UPDATE ONTO THE STICK: {done[0] // MIB} MB DONE. "
+                                     "KEEP THE STICK PLUGGED IN.")
+    return report
+
+
+@contextlib.contextmanager
+def open_stick(env: Env) -> Iterator[Stick]:
+    """The stick's storage, open for one update: the slot directory, or the Ventoy partition mounted."""
+    lenv = liveslot_env(env)
+    with contextlib.ExitStack() as stack:
+        try:
+            if live_kind(env) == "ventoy":
+                stick = _open_ventoy(env, lenv, stack)
+            else:
+                stick = Stick(env, lenv, "dd", base=stack.enter_context(liveslot.slot_base(lenv)))
+        except liveslot.SlotError as error:
+            raise UpdateFailed(error.message) from error
+        yield stick
+
+
+def _open_ventoy(env: Env, lenv: liveslot.Env, stack: contextlib.ExitStack) -> Stick:
+    device = _first_device(env, VENTOY_LABEL)
+    if device is None:
+        raise UpdateFailed(MSG_NO_VENTOY_DATA)
+    sectors = _device_bytes(env, device) // 512
+    mountpoint = liveslot.MOUNT_DIR / "ventoy"
+    root = stack.enter_context(liveslot.ventoy_partition(lenv, device, sectors, mountpoint, True))
+    found = liveslot.find_ventoy_iso(root, _device_bytes(env, VENTOY_MAPPER))
+    if not found:
+        raise UpdateFailed(MSG_NO_RUNNING_ISO)
+    return Stick(env, lenv, "ventoy", ventoy_root=root, running=found[0])
+
+
+def finish_stick(stick: Stick, env: Env, status: Status, message: str) -> None:
+    """The new system is on the stick: ask for the reboot. Nothing to point at it: the ISO's GRUB menu
+    lists `live-update/current` first (0100-autoboot.hook.binary), and ventoy.json names the new ISO."""
+    if stick.kind == "dd":
+        record_iso_version(stick.base.parent, env)
+    status.set("updated", message, 100)
+
+
+def record_iso_version(storage: pathlib.Path, env: Env) -> None:
+    """Settings shows the ISO a stick was written with. Only the ISO's own system knows it: a boot
+    from an update slot passes live-media-path=/live-update/..., and then the record stays as it is."""
+    try:
+        cmdline = (env.root / "proc/cmdline").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    version = _read_version(env.root / VERSION_REL)
+    if version and f"live-media-path=/{liveslot.SLOT_DIR}/" not in cmdline:
+        with contextlib.suppress(OSError):  # a nicety for the Settings screen, never a failed update
+            write_atomic(storage / liveslot.ISO_VERSION_FILE, version + "\n", 0o644)
+
+
+def install_iso_on_stick(source: pathlib.Path, env: Env, status: Status) -> None:
+    """apply-iso on a stick: the ISO goes into the stick's own storage. No saved copy, no chroot."""
+    version = _iso_version(source.name)
+    with open_stick(env) as stick:
+        size = source.stat().st_size if source.is_file() else _device_bytes(env, source)
+        stick.check_room(size)
+        status.version = version
+        stick.install(source, version, status)
+        finish_stick(stick, env, status, MSG_STICK_DONE)
+
+
+def run_on_stick(env: Env, status: Status, asset: update.Asset, expected: str) -> int:
+    """run on a stick: check the room before the download, then install from the downloaded ISO."""
+    with open_stick(env) as stick:
+        stick.check_room(asset.size)
+        iso = download_iso(asset, expected, env, status)
+        stick.install(iso, status.version, status)
+        finish_stick(stick, env, status, MSG_STICK_DONE)
+    clean_cache(env.cache_dir)
+    return 0
+
+
+def rollback_live(env: Env, status: Status) -> None:
+    """rollback-live (USB stick): the earlier system starts at the next boot. Only dd sticks keep one."""
+    if not is_stick(env):
+        raise UpdateFailed(MSG_NOT_STICK)
+    refuse_live_without_persistence(env)
+    if live_kind(env) == "ventoy":
+        raise UpdateFailed(MSG_NO_EARLIER)
+    with open_stick(env) as stick:
+        status.set("installing", "ROLLING BACK TO THE EARLIER SYSTEM... KEEP THE STICK PLUGGED IN.")
+        try:
+            liveslot.rollback(stick.base, stick.lenv)
+        except liveslot.SlotError as error:
+            raise UpdateFailed(error.message) from error
+        finish_stick(stick, env, status, MSG_ROLLED_BACK)
 
 
 def refuse_layout(env: Env) -> None:
@@ -1144,7 +1359,10 @@ def apply_iso(
     """Open the ISO, save this box (unless `save_first` is off), then run the ISO's own updater
     against it (see the module docstring)."""
     status.set("installing", "INSTALLING THE UPDATE... KEEP THE BOX PLUGGED IN.")
-    refuse_live(env)
+    refuse_live_without_persistence(env)
+    if is_stick(env):  # the stick's own storage: no new image to enter, nothing to snapshot
+        install_iso_on_stick(source, env, status)
+        return
     refuse_layout(env)
     iso_dir, new = own_dir(env, "update", "iso"), own_dir(env, "update", "root")
 
@@ -1178,7 +1396,7 @@ def apply_iso(
 
 # This program and the modules it imports, copied out so the snapshot's python3 runs today's logic.
 TOOL = (pathlib.Path(__file__), pathlib.Path(update.__file__), pathlib.Path(snapshot.__file__),
-        pathlib.Path(browser.__file__), pathlib.Path(safefile.__file__))
+        pathlib.Path(browser.__file__), pathlib.Path(safefile.__file__), pathlib.Path(liveslot.__file__))
 
 
 def load_squashfs(env: Env) -> None:
@@ -1192,7 +1410,7 @@ def load_squashfs(env: Env) -> None:
 
 def request_restore(env: Env, status: Status) -> None:
     """Settings > RESTORE PREVIOUS VERSION: leave the request for the boot service (then restart)."""
-    refuse_live(env)
+    refuse_live_boot(env)
     saved = snapshot.info(env.root)
     if saved is None or not snapshot.request(env, env.root):
         raise UpdateFailed(MSG_NO_SAVED)
@@ -1208,7 +1426,7 @@ def restore(env: Env, status: Status) -> str:
     copied to root's own directory in /run (WORK_DIR/restore), which the chroot sees through its
     bind of /run. A failure once that chroot runs raises RestoreIncomplete: files may be written.
     """
-    refuse_live(env)
+    refuse_live_boot(env)
     refuse_layout(env)
     status.set("installing", "CHECKING THE SAVED VERSION...")
     held = env.root / HELD_REL
@@ -1602,8 +1820,10 @@ def run(
     (env.run_dir / CANCEL_NAME).unlink(missing_ok=True)  # a cancel from an earlier run must not count
     try:
         status.set("checking", "CHECKING FOR UPDATES...")
-        refuse_live(env)
-        refuse_layout(env)
+        refuse_live_without_persistence(env)
+        stick = is_stick(env)
+        if not stick:
+            refuse_layout(env)
         current = _read_version(env.root / VERSION_REL)
         if not current:
             raise UpdateFailed("THIS BOX HAS NO VERSION FILE")
@@ -1623,6 +1843,8 @@ def run(
         except update.UpdateError as error:
             env.note(f"release assets: {error}")
             raise UpdateFailed(update.not_ready(release, profile) or "THIS RELEASE HAS NO FILE FOR THIS BOX") from error
+        if stick:  # the space is checked before the download, inside run_on_stick
+            return run_on_stick(env, status, asset, expected_sha(sums, asset.name))
         iso = download_iso(asset, expected_sha(sums, asset.name), env, status)
         if save_first:
             (save or save_snapshot)(env, status)
@@ -1675,6 +1897,7 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
     commands.add_parser("request-restore", help="restore the saved previous version at the next start")
     commands.add_parser("restore", help="restore the saved previous version now (the boot service)")
     commands.add_parser("find-installs", help="live USB: list the installed systems on the disks")
+    commands.add_parser("rollback-live", help="live USB stick: start the earlier system at the next boot")
     disk = commands.add_parser("apply-disk", help="live USB: update the installed system on a disk")
     disk.add_argument("device", nargs="?", help="the partition holding the installed root")
     disk.add_argument("--found", action="store_true", help="the one installed system find-installs sees")
@@ -1721,6 +1944,8 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
                 if code == 0:
                     reboot(env)
                 return code
+            if args.command == "rollback-live":
+                return _guarded(env, status, lambda: rollback_live(env, status))
             if args.command == "find-installs":
                 write_installs(env.run_dir / INSTALLS_NAME, find_installs(env))
                 return 0
@@ -1732,7 +1957,7 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
                 return code
             code = _guarded(env, status, lambda: apply_iso(
                 pathlib.Path(args.path), env, status, force=args.force, save_first=not args.no_snapshot))
-            if code == 0 and not args.no_reboot:
+            if code == 0 and not args.no_reboot and not is_stick(env):  # a stick: the user reboots when ready
                 reboot(env)
             return code
     except UpdateFailed as error:  # another update holds the lock: leave its status alone

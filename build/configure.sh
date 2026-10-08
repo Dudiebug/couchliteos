@@ -156,6 +156,7 @@ install -D -m 0755 "$ROOT/scripts/couchliteos-hardware-report" "$CHROOT/usr/bin/
 install -D -m 0755 "$ROOT/scripts/couchliteos-hwdetect" "$CHROOT/usr/libexec/couchliteos-hwdetect"
 install -D -m 0755 "$ROOT/scripts/couchliteos-migrate" "$CHROOT/usr/libexec/couchliteos-migrate"
 install -D -m 0755 "$ROOT/scripts/couchliteos-persist-setup" "$CHROOT/usr/libexec/couchliteos-persist-setup"
+install -D -m 0755 "$ROOT/scripts/couchliteos-live-boot-ok" "$CHROOT/usr/libexec/couchliteos-live-boot-ok"
 install -D -m 0755 "$ROOT/scripts/couchliteos-network-ready" "$CHROOT/usr/libexec/couchliteos-network-ready"
 install -D -m 0755 "$ROOT/scripts/couchliteos-boot-time" "$CHROOT/usr/libexec/couchliteos-boot-time"
 install -D -m 0755 "$ROOT/scripts/couchliteos-firewall" "$CHROOT/usr/libexec/couchliteos-firewall"

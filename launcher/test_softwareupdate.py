@@ -4,16 +4,27 @@ import testenv  # noqa: F401  (first: scratch run and state directories)
 import curses
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
 import tempfile
 import unittest
 from unittest import mock
 
-import couchliteos_settings as settings
-import couchliteos_snapshot as snapshot
-import couchliteos_softwareupdate as su
-import couchliteos_update as update
+# couchliteos_snapshot -> couchliteos_safefile needs Linux-only os names at import (open flags, and os.chown
+# as a default argument). No test here writes through them, so where they are missing (Windows) stand-ins
+# are enough. Linux has them: no-op.
+for _flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"):
+    if not hasattr(os, _flag):
+        setattr(os, _flag, 0)
+if not hasattr(os, "chown"):
+    os.chown = lambda *_args, **_kwargs: None
+
+import couchliteos_liveslot as liveslot  # noqa: E402
+import couchliteos_settings as settings  # noqa: E402
+import couchliteos_snapshot as snapshot  # noqa: E402
+import couchliteos_softwareupdate as su  # noqa: E402
+import couchliteos_update as update  # noqa: E402
 
 ENTER, ESC, DOWN, UP = 10, 27, curses.KEY_DOWN, curses.KEY_UP
 BASE = "https://github.com/Dudiebug/couchliteos/releases/download/v0.2.2/"
@@ -126,7 +137,7 @@ class UiTest(unittest.TestCase):
             keep_awake=self.keep_awake, current="0.2.1", profile={"PROFILE_NAME": "general", "ISO_SUFFIX": ""},
             live=False, fetch=self.fetch, run_dir=self.tmp, clock=lambda: self.now,
             saved=lambda: self.saved, save_first=lambda: self.save_on, set_save_first=self.set_save_first,
-            state_dir=self.tmp, config=self.tmp / "config.ini", persistent=lambda: True,
+            state_dir=self.tmp, config=self.tmp / "config.ini", persistent=lambda: True, stick=lambda: {},
         )
         values.update(overrides)
         return su.SoftwareUpdate(self.screen, **values)
@@ -736,6 +747,7 @@ class FitTest(UiTest):
         self.assertTrue(any("1881 OF 1900 MB" in frame for frame in self.screen.frames))
 
 
+@unittest.skipUnless(hasattr(os, "getuid"), "the launcher imports pwd: Linux only")
 class WiringTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -770,6 +782,136 @@ class WiringTest(unittest.TestCase):
         with mock.patch.object(self.module.softwareupdate, "show", side_effect=RuntimeError("boom")):
             settings.activate()
         self.assertEqual(settings.status, "COULD NOT OPEN SOFTWARE UPDATE")
+
+
+def make_slot(path, version):
+    """A complete update slot, written the way couchliteos_liveslot writes one (ok last)."""
+    path.mkdir(parents=True)
+    for name in liveslot.FILES:
+        (path / name).write_text("x")
+    (path / liveslot.VERSION).write_text(version + "\n")
+    (path / liveslot.OK).write_text(version + "\n")
+
+
+class StickTest(UiTest):
+    """A live stick with storage: its own update slots (couchliteos_liveslot) show on this screen."""
+
+    UPDATED = {"current": "0.3.2", "previous": "0.3.1", "iso": "0.3.1"}
+
+    def stick_rows(self, stick):
+        return self.make(live=True, stick=stick).rows()
+
+    def test_a_stick_with_no_update_says_it_runs_from_the_stick_and_names_its_iso(self):
+        self.script = [ESC]
+        self.make(live=True).run()
+        frame = flat(self.screen.frames[0])
+        self.assertIn("RUNNING FROM STICK", frame)
+        self.assertIn("ISO 0.2.1", frame, "with no update on the stick, the running system is the ISO's")
+        self.assertNotIn("UPDATED SYSTEM", frame)
+        self.assertNotIn("ROLL BACK", frame)
+
+    def test_an_updated_stick_shows_the_slot_version_and_the_iso_it_came_from(self):
+        self.script = [ESC]
+        self.make(live=True, stick=lambda: self.UPDATED).run()
+        frame = flat(self.screen.frames[0])
+        self.assertIn("RUNNING FROM STICK", frame)
+        self.assertIn("UPDATED SYSTEM 0.3.2", frame)
+        self.assertIn("ISO 0.3.1", frame)
+
+    def test_an_updated_stick_that_does_not_record_its_iso_says_unknown(self):
+        self.script = [ESC]
+        self.make(live=True, stick=lambda: {"current": "0.3.2", "previous": "", "iso": ""}).run()
+        self.assertIn("ISO UNKNOWN", flat(self.screen.frames[0]))
+
+    def test_a_stick_that_cannot_read_its_slots_still_says_it_runs_from_the_stick(self):
+        def broken():
+            raise OSError("gone")
+
+        self.script = [ESC]
+        self.make(live=True, stick=broken).run()
+        frame = flat(self.screen.frames[0])
+        self.assertIn("RUNNING FROM STICK", frame)
+        self.assertIn("ISO 0.2.1", frame)
+        self.assertNotIn("UPDATED SYSTEM", frame)
+
+    def test_roll_back_is_listed_only_with_a_previous_slot(self):
+        self.assertEqual(self.stick_rows(lambda: self.UPDATED)[-2:], ["ROLL BACK", "BACK"])
+        only_current = {"current": "0.3.2", "previous": "", "iso": "0.3.1"}
+        self.assertNotIn("ROLL BACK", self.stick_rows(lambda: only_current))
+        self.assertNotIn("ROLL BACK", self.stick_rows(lambda: {}))
+
+    def test_roll_back_asks_first_then_asks_the_updater_for_rollback_live(self):
+        self.script = [ENTER, ESC]  # the first row on a stick with a previous slot
+        self.make(live=True, stick=lambda: self.UPDATED).run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertIn("GO BACK TO COUCHLITEOS 0.3.1", flat(self.questions[0]))
+        self.assertEqual(su.LIVE_ROLLBACK, "rollback-live")
+        self.assertTrue((self.tmp / "rollback-live").exists())
+        self.assertIn("ROLLING BACK TO COUCHLITEOS 0.3.1", flat(self.screen.frames[-1]))
+
+    def test_no_to_roll_back_changes_nothing(self):
+        self.answer = False
+        self.script = [ENTER, ESC]
+        self.make(live=True, stick=lambda: self.UPDATED).run()
+        self.assertEqual(len(self.questions), 1)
+        self.assertFalse((self.tmp / "rollback-live").exists())
+
+    def test_without_persistence_the_stick_keeps_the_explanation(self):
+        self.script = [ESC]
+        self.make(live=True, persistent=lambda: False, stick=lambda: self.UPDATED).run()
+        frame = self.screen.frames[0]
+        self.assertIn(flat(su.LIVE_TEXT), flat(frame))
+        self.assertIn("SET UP STORAGE ON THIS STICK", frame)
+        for text in ("RUNNING FROM STICK", "UPDATED SYSTEM", "ROLL BACK"):
+            self.assertNotIn(text, frame)
+
+
+class StickStateTest(unittest.TestCase):
+    """What the screen reads from a stick: the mount table, then the slot files. Nothing is mounted."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.mountinfo = self.tmp / "mountinfo"
+        self.part = self.tmp / "run/live/persistence/sdb3"
+
+    def mounted_at(self, point):
+        self.mountinfo.write_text("22 1 0:20 / / rw - overlay overlay rw\n"
+                                  f"41 22 8:3 / {point} rw - ext4 /dev/sdb3 rw\n")
+
+    def read(self):
+        return su.stick_state(self.mountinfo, self.tmp)
+
+    def test_a_stick_with_no_slot_has_no_stick_state(self):
+        self.mounted_at("/run/live/persistence/sdb3")
+        self.assertEqual(self.read(), {})
+
+    def test_the_current_and_previous_slots_and_the_iso_version_are_read(self):
+        make_slot(self.part / "live-update/current", "0.3.2")
+        make_slot(self.part / "live-update/previous", "0.3.1")
+        (self.part / su.ISO_VERSION_FILE).write_text("0.3.1\n")
+        self.mounted_at("/run/live/persistence/sdb3")
+        self.assertEqual(self.read(), {"current": "0.3.2", "previous": "0.3.1", "iso": "0.3.1"})
+
+    def test_a_slot_without_its_ok_marker_is_not_shown_as_updated(self):
+        make_slot(self.part / "live-update/current", "0.3.2")
+        (self.part / "live-update/current" / liveslot.OK).unlink()
+        self.mounted_at("/run/live/persistence/sdb3")
+        self.assertEqual(self.read(), {"current": "", "previous": "", "iso": ""})
+
+    def test_a_slot_on_the_live_medium_is_found_too(self):
+        make_slot(self.tmp / "run/live/medium/live-update/current", "0.3.2")
+        self.mounted_at("/run/live/medium")
+        self.assertEqual(self.read()["current"], "0.3.2")
+
+    def test_a_stick_booted_from_its_iso_has_no_slot_on_the_medium(self):
+        (self.tmp / "run/live/medium").mkdir(parents=True)  # the ISO itself: no live-update directory
+        self.mounted_at("/run/live/medium")
+        self.assertEqual(self.read(), {})
+
+    def test_roll_back_names_the_updater_command_as_its_request_file(self):
+        self.assertEqual(su.LIVE_ROLLBACK, "rollback-live")
+        self.assertEqual(su.STICK_ROLL_BACK, "ROLL BACK")
 
 
 if __name__ == "__main__":

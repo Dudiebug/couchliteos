@@ -1,0 +1,6 @@
+[Path]
+PathExists=/run/couchliteos/rollback-live
+Unit=couchliteos-rollback-live.service
+
+[Install]
+WantedBy=graphical.target
