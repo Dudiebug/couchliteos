@@ -31,7 +31,16 @@ shows at once; nothing restarts.
 | GRAPHITE | Neutral dark grey with a silver accent |
 | ARCTIC | A second light theme: icy white and pale cyan with a teal accent |
 
-### BY MONTH
+| MIDNIGHT | SLATE |
+|---|---|
+| ![MIDNIGHT](images/theme-midnight.png) | ![SLATE](images/theme-slate.png) |
+| **DAYLIGHT** | **HIGH CONTRAST** |
+| ![DAYLIGHT](images/theme-daylight.png) | ![HIGH CONTRAST](images/theme-high-contrast.png) |
+
+An ACCENT colour that would be hard to see on the theme (AMBER on DAYLIGHT, say)
+is drawn a little darker, or lighter on a dark theme, until it stands out enough.
+
+## BY MONTH
 
 Like the PS3, the background can change colour through the year: ACCENT >
 BY MONTH takes a colour for each month (grey in January, then dull yellow, lime
@@ -41,12 +50,6 @@ to the 14th last month's colour blends into it, and from the 15th it is this
 month's. It works with every theme, tints the wave on the home screen (darker at
 night) and colours the focused tile's edge and the values in Settings. A
 running TV picks up the new colour on its own.
-
-| MIDNIGHT | SLATE |
-|---|---|
-| ![MIDNIGHT](images/theme-midnight.png) | ![SLATE](images/theme-slate.png) |
-| **DAYLIGHT** | **HIGH CONTRAST** |
-| ![DAYLIGHT](images/theme-daylight.png) | ![HIGH CONTRAST](images/theme-high-contrast.png) |
 
 ## Make your own theme
 
