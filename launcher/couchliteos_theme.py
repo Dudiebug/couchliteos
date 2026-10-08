@@ -35,6 +35,8 @@ DEFAULT = "midnight"
 FIELDS = ("background", "surface", "text", "muted", "accent", "focus", "warning", "error")
 MAX_FILE = 4096
 MIN_CONTRAST = 4.5  # WCAG AA for normal text
+# WCAG's 3 to 1 for what is not body text: the focused tile's edge, the bold values in Settings.
+ACCENT_CONTRAST = 3.0
 COLOUR = re.compile(r"#?([0-9a-fA-F]{6})")
 THEME_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 # Accent presets (Settings > APPEARANCE > ACCENT); "" keeps the theme's own accent, and
@@ -131,11 +133,28 @@ def available(builtin: pathlib.Path | None = None, user: pathlib.Path | None = N
 
 def with_accent(theme: Theme, accent: str) -> Theme:
     """The theme with an ACCENTS preset, or today's colour of the month, in place of its own
-    accent; unknown or "" keeps it."""
+    accent (kept readable: readable_accent); unknown or "" keeps it."""
     colour = month.colour() if accent == month.NAME else dict(ACCENTS).get(accent)
     if colour is None:
         return theme
-    return dataclasses.replace(theme, colours={**theme.colours, "accent": colour})
+    return dataclasses.replace(theme, colours={**theme.colours, "accent": readable_accent(theme, colour)})
+
+
+def readable_accent(theme: Theme, colour: str) -> str:
+    """`colour`, or as little of the theme's text colour mixed in as keeps ACCENT_CONTRAST against
+    the surface and the background. The accent draws the values in Settings and the focused tile's
+    edge: AMBER or October's gold would all but vanish on a light theme, so they turn darker there."""
+    colours = theme.colours
+    for step in range(11):
+        mixed = _mix(colour, colours["text"], step / 10)
+        if min(contrast(mixed, colours["surface"]), contrast(mixed, colours["background"])) >= ACCENT_CONTRAST:
+            return mixed
+    return colours["text"]
+
+
+def _mix(a: str, b: str, amount: float) -> str:
+    return "".join(f"{round(int(a[at:at + 2], 16) * (1 - amount) + int(b[at:at + 2], 16) * amount):02x}"
+                   for at in (0, 2, 4))
 
 
 def _luminance(colour: str) -> float:

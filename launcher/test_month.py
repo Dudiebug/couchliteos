@@ -72,19 +72,37 @@ class SwitchTest(unittest.TestCase):
             self.assertEqual(month.colour(), month.COLOURS[7])
 
 
+def every_month_look():
+    """Every built-in theme with every month's colour (and the blending days') as BY MONTH gives it."""
+    themes, problems = theme.available(BUILTIN, pathlib.Path("/nonexistent"))
+    assert problems == [], problems
+    colours = set(month.COLOURS) | {month.colour(day(number, 13)) for number in range(1, 13)}
+    for item in themes.values():
+        for colour in sorted(colours):
+            with mock.patch.object(month, "colour", return_value=colour):
+                yield item, colour, theme.with_accent(item, month.NAME)
+
+
 class ReadableTest(unittest.TestCase):
+    def test_the_accent_stays_readable_in_every_month_on_every_theme(self):
+        # The values in Settings are drawn in it: on a light theme the lighter months turn darker.
+        for item, colour, look in every_month_look():
+            accent = look.colours["accent"]
+            for field in ("surface", "background"):
+                self.assertGreaterEqual(theme.contrast(accent, item.colours[field]), theme.ACCENT_CONTRAST,
+                                        (item.name, colour, field))
+            if item.name == "midnight":
+                self.assertEqual(accent, colour, "readable as it is: the month's own colour")
+
     def test_the_wave_stays_readable_in_every_month_on_every_theme(self):
-        themes, problems = theme.available(BUILTIN, pathlib.Path("/nonexistent"))
-        self.assertEqual(problems, [])
-        colours = set(month.COLOURS) | {month.colour(day(number, 13)) for number in range(1, 13)}
-        for item in themes.values():
+        for item, colour, drawn in every_month_look():
             text = item.colours["text"]
-            for colour in colours:
-                look = dataclasses.replace(item, colours={**item.colours, "accent": colour})
+            raw = dataclasses.replace(item, colours={**item.colours, "accent": colour})
+            for look in (drawn, raw):  # as drawn, and the month's own colour before it was kept readable
                 for hour in range(0, 24, 2):
                     palette = wave.palette(look, hour)
                     for part in ("top", "bottom"):
-                        where = (item.name, colour, hour, part)
+                        where = (item.name, look.colours["accent"], hour, part)
                         self.assertGreaterEqual(theme.contrast(text, palette.hex(part)), theme.MIN_CONTRAST, where)
                         under_ribbon = wave._mix(getattr(palette, part), palette.ribbon,
                                                  min(1.0, wave.MAX_GLOW * palette.alpha))

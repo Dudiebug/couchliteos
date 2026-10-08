@@ -132,8 +132,27 @@ class BuiltinTest(unittest.TestCase):
                 self.assertGreaterEqual(theme.contrast(colours["muted"], colours["surface"]), 4.5)
                 self.assertGreaterEqual(theme.contrast(colours["warning"], colours["background"]), 4.5)
                 self.assertGreaterEqual(theme.contrast(colours["error"], colours["background"]), 4.5)
-                # The focused tile's edge: WCAG's 3 to 1 for parts of the picture that are not text.
-                self.assertGreaterEqual(theme.contrast(colours["accent"], colours["surface"]), 3.0)
+                # The focused tile's edge and the values in Settings: WCAG's 3 to 1 for parts of the
+                # picture that are not body text.
+                self.assertGreaterEqual(theme.contrast(colours["accent"], colours["surface"]), theme.ACCENT_CONTRAST)
+                self.assertGreaterEqual(theme.contrast(colours["accent"], colours["background"]), theme.ACCENT_CONTRAST)
+                self.assertEqual(theme.readable_accent(item, colours["accent"]), colours["accent"])
+
+    def test_every_accent_preset_stays_readable_on_every_built_in(self):
+        # (test_month.py checks every month's colour.) AMBER on DAYLIGHT is a darker amber, not black.
+        for name, item in self.themes.items():
+            for preset, colour in theme.ACCENTS:
+                accent = theme.with_accent(item, preset).colours["accent"]
+                for field in ("surface", "background"):
+                    self.assertGreaterEqual(theme.contrast(accent, item.colours[field]), theme.ACCENT_CONTRAST,
+                                            (name, preset, field))
+                if name in ("midnight", "ocean", "graphite"):
+                    self.assertEqual(accent, colour, (name, preset, "readable as it is"))
+        amber = theme.with_accent(self.themes["daylight"], "amber").colours["accent"]
+        red, green, blue = (int(amber[at:at + 2], 16) for at in (0, 2, 4))
+        self.assertNotEqual(amber, "f59e0b")
+        self.assertGreater(red, green)
+        self.assertGreater(green, blue)
 
     def test_the_wave_stays_readable_with_each_themes_own_accent(self):
         # test_wave.py checks every ACCENTS preset, test_month.py every month's colour.
