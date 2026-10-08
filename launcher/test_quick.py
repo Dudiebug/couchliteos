@@ -359,7 +359,8 @@ class SoundsTest(TempDir):
     def test_the_sound_files_are_short_quiet_wavs(self):
         # A key press's sound must be over before the next repeat; the jingles may ring a little longer.
         directory = quick.REPO_SOUNDS
-        longer = {"open": 0.6, "close": 0.6, "notify": 1.0, "startup": 3.5}
+        longer = {"open": 0.6, "close": 0.6, "notify": 1.0, "startup": 3.5,
+                  "launch": 1.1, "return": 1.0, "error": 0.5, "wake": 1.6}
         for name in quick.SOUND_NAMES:
             path = directory / f"{name}.wav"
             seconds = longer.get(name, 0.3)

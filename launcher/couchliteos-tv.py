@@ -927,6 +927,16 @@ def whatsnew_versions() -> tuple[str, str]:
 class Tv(Screens, HelpScreens, Look, Script, session.Session):
     cross = False  # the XMB home (init_xmb), else the rows
     music = music.Music(enabled=lambda: False, track=lambda: None)  # silent until init_xmb
+    loading_view: "gtk_loading.LoadingView | None" = None  # the loading screen while something starts
+    _front: frontapp.Front | None = None
+
+    @property
+    def front(self) -> frontapp.Front:
+        """Who has the screen; the TV rests behind a game (made on first use)."""
+        if self._front is None:
+            self._front = frontapp.Front()
+        return self._front
+
     def __init__(self, application: "Gtk.Application") -> None:
         self.application = application
         self.window: Gtk.ApplicationWindow | None = None
@@ -934,8 +944,6 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.status_since = 0.0
         self.mode = "home"  # home, active, message, busy
         self.busy_depth = 0  # > 0 while a start or a wait runs its own loop
-        self.front = frontapp.Front()  # who has the screen; the TV rests behind a game
-        self.loading_view: "gtk_loading.LoadingView | None" = None
         self.busy_pressed = False
         self.answer: str | None = None  # what the message screen's keys chose
         self.choices: list[str] = []  # the message screen's buttons (choose), focus at choice
