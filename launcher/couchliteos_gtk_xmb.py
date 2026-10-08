@@ -263,21 +263,26 @@ class GLWave(Gtk.GLArea):
 
 
 class Wave(Gtk.Overlay):
-    """The still frame, and over it the GL wave when it runs."""
+    """The still frame, and over it the GL wave when it runs. `animate`: whether the GL wave is
+    made at all (default: `how` is GL), so set_how() can turn it on later (a theme or background
+    that was flat or plain at the start)."""
 
     __gtype_name__ = "CouchliteWave"
 
-    def __init__(self, how: str, colours: wave.Palette, run_dir: pathlib.Path, log: Callable[[str], None]) -> None:
+    def __init__(self, how: str, colours: wave.Palette, run_dir: pathlib.Path, log: Callable[[str], None],
+                 animate: bool | None = None) -> None:
         super().__init__()
         self.how = how
         self.log = log
+        self.started = False
+        self.running = True  # what set_running() last asked for
         self.still = Gtk.Picture()
         self.still.set_content_fit(Gtk.ContentFit.FILL)
         self.still.set_can_shrink(True)
         self.still.set_can_target(False)
         self.set_child(self.still)
         self.gl: GLWave | None = None
-        if how == wave.GL:
+        if how == wave.GL if animate is None else animate:
             self.gl = GLWave(colours, run_dir, self.gl_failed)
             self.gl.set_visible(False)  # start(): not in the first frame
             self.add_overlay(self.gl)
@@ -287,26 +292,44 @@ class Wave(Gtk.Overlay):
         self.how = wave.STATIC
         self.log(f"tv wave: GL off, still frame instead: {why}")
 
+    def set_how(self, how: str) -> None:
+        """Another theme or [appearance] background: GL, STATIC or FLAT from now on (GL only where
+        the GL wave was made and works). set_colours() next draws the still frame for it."""
+        if how == wave.GL and (self.gl is None or self.gl.broken):
+            how = wave.STATIC
+        self.how = how
+        self.show_gl()
+
+    def show_gl(self) -> None:
+        if self.gl is not None and not self.gl.broken:
+            shown = self.started and self.how == wave.GL
+            if shown and not self.gl.get_visible():
+                self.gl.shown_at = None  # fade in again over the still frame
+            self.gl.set_visible(shown)
+            self.gl.set_running(shown and self.running)
+
     def set_colours(self, colours: wave.Palette) -> None:
         if self.how == wave.FLAT:
             colours = wave.Palette(colours.top, colours.top, colours.ribbon, 0.0)
+        self.palette = colours  # as drawn (tv-headless.sh reads it)
         self.still.set_paintable(still_texture(colours))
         if self.gl is not None:
             self.gl.set_colours(colours)
 
     def start(self) -> None:
         """Show the GL wave (after the first frame) and let it run."""
-        if self.gl is not None and not self.gl.broken:
-            self.gl.set_visible(True)
-            self.gl.set_running(True)
+        self.started = True
+        self.show_gl()
 
     def set_running(self, running: bool) -> None:
+        self.running = running
         if self.gl is not None and self.gl.get_visible():
             self.gl.set_running(running)
 
 
-def make_wave(how: str, colours: wave.Palette, run_dir: pathlib.Path, log: Callable[[str], None]) -> Wave:
-    return Wave(how, colours, run_dir, log)
+def make_wave(how: str, colours: wave.Palette, run_dir: pathlib.Path, log: Callable[[str], None],
+              animate: bool | None = None) -> Wave:
+    return Wave(how, colours, run_dir, log, animate)
 
 
 def wave_failed_before(run_dir: pathlib.Path) -> bool:

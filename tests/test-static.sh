@@ -1623,9 +1623,23 @@ rg -q 'couchliteos_theme.py .*gamepad-nav.py' launcher/Makefile
 rg -q 'test_theme.py' launcher/Makefile
 rg -q '^    import couchliteos_theme as theme$' launcher/couchliteos_foot.py
 rg -q '^    import couchliteos_theme as theme$' launcher/couchliteos_osk.py
-for name in midnight slate daylight high-contrast; do
+for name in midnight slate daylight high-contrast terminal ocean crimson emerald amethyst sunset rose gold graphite arctic; do
   test -f "overlay/usr/share/couchliteos/themes/$name.theme"
 done
+# ACCENT > BY MONTH and BACKGROUND: GTK-free, in the image, tested; the TV reads both.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_month.py" "\$CHROOT/usr/libexec/couchliteos_month.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_background.py" "\$CHROOT/usr/libexec/couchliteos_background.py"$' build/configure.sh
+rg -q 'couchliteos_month.py' launcher/Makefile
+rg -q 'couchliteos_background.py' launcher/Makefile
+rg -q 'test_month.py' launcher/Makefile
+rg -q 'test_background.py' launcher/Makefile
+rg -q '^import couchliteos_month as month$' launcher/couchliteos_theme.py
+rg -q '^import couchliteos_background as background$' launcher/couchliteos-launcher.py
+rg -q '^import couchliteos_background as background$' launcher/couchliteos-tv.py
+rg -q 'month\.colour\(\)' launcher/couchliteos-tv.py
+refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_month.py launcher/couchliteos_background.py
+# The month module stays standard library only: couchliteos_theme imports it.
+refute rg -q '^import couchliteos_' launcher/couchliteos_month.py
 
 # FIND GAMING PCS: one mDNS question for _nvstream._tcp.local, standard library only, in the image and tested.
 rg -qF 'couchliteos_discover.py" "$CHROOT/usr/libexec/couchliteos_discover.py"' build/configure.sh

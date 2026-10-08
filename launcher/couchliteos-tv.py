@@ -37,6 +37,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import couchliteos_apps as apps
 import couchliteos_artwork as artwork
+import couchliteos_background as background
 import couchliteos_battery as battery
 import couchliteos_controllers as controllers
 import couchliteos_controls as controls
@@ -44,6 +45,7 @@ import couchliteos_display as display
 import couchliteos_errors as errors
 import couchliteos_home as home
 import couchliteos_icons as icons
+import couchliteos_month as month
 import couchliteos_motion as motion
 import couchliteos_music as music
 import couchliteos_pcstatus as pcstatus
@@ -547,10 +549,13 @@ class Look:
     def build_backdrop(self, overlay: "Gtk.Overlay") -> None:
         """The background picture (the XMB's wave), with the stack of screens over it."""
         if self.cross:
-            failed = gtk_xmb.wave_failed_before(self.run_dir)
-            how = wave.mode(os.environ.get("GSK_RENDERER"), self.motion_level, current_theme().name, failed)
-            self.wave = gtk_xmb.make_wave(how, self.wave_palette(), self.run_dir,
-                                          lambda text: display.log(text, session.LOG))
+            self.wave_failed = gtk_xmb.wave_failed_before(self.run_dir)
+            self.background_style = background.load()
+            # The GL wave is made wherever it can run, even behind HIGH CONTRAST or PLAIN, so
+            # choosing another theme or background turns it on without a restart.
+            animate = wave.mode(os.environ.get("GSK_RENDERER"), self.motion_level, "", self.wave_failed) == wave.GL
+            self.wave = gtk_xmb.make_wave(self.wave_how(), self.wave_palette(), self.run_dir,
+                                          lambda text: display.log(text, session.LOG), animate)
             self.wave.set_can_target(False)
             overlay.set_child(self.wave)
             overlay.add_overlay(self.stack)
@@ -566,12 +571,14 @@ class Look:
 
     @staticmethod
     def theme_stamp_now() -> object:
-        """What changes when Settings > APPEARANCE saves another theme or accent."""
+        """What changes when Settings > APPEARANCE saves another theme, accent or background, or
+        when the colour of the month moves on (ACCENT: BY MONTH) while the TV is running."""
         try:
             info = theme.CONFIG.stat()
-            return info.st_mtime_ns, info.st_size
+            saved = info.st_mtime_ns, info.st_size
         except OSError:
-            return None
+            saved = None
+        return saved, month.colour()
 
     def load_css(self) -> None:
         """Every stylesheet (home and its screens, the quick menu) from the current theme, at user
@@ -583,18 +590,28 @@ class Look:
         self.quick_css.load_from_data(quick.stylesheet(colours, self.layout).encode(), -1)
         self.render_backdrop()
         if self.cross and hasattr(self, "wave"):
+            self.background_style = background.load()
+            self.wave.set_how(self.wave_how())
             self.wave.set_colours(self.wave_palette())
             self.xmb_view.text_colour = tuple(int(theme.parse_colour(colours.colours["text"])[at:at + 2], 16) / 255
                                               for at in (0, 2, 4))
             self.xmb_view.queue_draw()
 
+    def wave_how(self) -> str:
+        """GL, STATIC or FLAT for the current theme and [appearance] background."""
+        how = wave.mode(os.environ.get("GSK_RENDERER"), self.motion_level, current_theme().name,
+                        getattr(self, "wave_failed", False))
+        return background.wave_mode(how, getattr(self, "background_style", background.DEFAULT))
+
     def wave_palette(self) -> "wave.Palette":
         now = time.localtime()
         self.wave_quarter = now.tm_hour * WAVE_HOURS + now.tm_min * WAVE_HOURS // 60
-        return wave.palette(current_theme(), self.wave_quarter / WAVE_HOURS)
+        return background.wave_palette(wave.palette(current_theme(), self.wave_quarter / WAVE_HOURS),
+                                       getattr(self, "background_style", background.DEFAULT))
 
     def theme_tick(self) -> None:
-        """The 1 s tick: a theme or accent saved since the CSS was written is applied now."""
+        """The 1 s tick: a theme, accent or background saved since the CSS was written (or the
+        month's next colour) is applied now."""
         if hasattr(self, "layout") and self.theme_stamp_now() != self.theme_stamp:
             self.load_css()
             self.music.settings()
@@ -666,8 +683,8 @@ class Script:
             GLib.timeout_add(SCRIPT_STEP_MS, self.script_step)
 
     def script_step(self) -> bool:
-        """One step: a Gdk key name, `wait:<ms>`, `dump:<name>`, `theme:<name>` (saved as Settings
-        saves it), `open:whatsnew`, `open:update` (writes a downloading status) or `quit`. The next step is timed before this one
+        """One step: a Gdk key name, `wait:<ms>`, `dump:<name>`, `theme:<name>`, `accent:<name>`
+        and `background:<style>` (saved as Settings saves them), `open:whatsnew`, `open:update` (writes a downloading status) or `quit`. The next step is timed before this one
         runs, so a step that waits for an answer (a question) is answered by the next one."""
         if not self.script:
             return False
@@ -683,6 +700,10 @@ class Script:
                 self.dump_layout(value)
             elif kind == "theme":
                 theme.save_choice(value, "")
+            elif kind == "accent":
+                theme.save_choice(theme.load_choice()[0], value)
+            elif kind == "background":
+                background.save(value)
             elif step == "open:whatsnew":
                 self.open_whatsnew(*whatsnew_versions())
             elif step == "open:update":  # as if the update service were downloading
@@ -721,7 +742,10 @@ class Script:
         if self.cross and self.mode == "home":
             labels += self.xmb_view.drawn_labels
         record = {"name": name, "screen": self.mode, "quick": self.quick_open, "theme": self.colours.name,
+                  "accent": self.colours.colours["accent"],
                   "width": self.window.get_width(), "height": self.window.get_height(), "labels": labels}
+        if self.cross:
+            record["wave"] = self.wave_facts()
         if self.dump_dir is not None:
             self.dump_dir.mkdir(parents=True, exist_ok=True)
             (self.dump_dir / f"{name}.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
@@ -729,6 +753,15 @@ class Script:
             self.shot_dir.mkdir(parents=True, exist_ok=True)
             self.pump(0.2)  # the frame with this screen on it
             subprocess.run(["grim", str(self.shot_dir / f"{name}.png")], check=True, timeout=30)
+
+    def wave_facts(self) -> dict:
+        """What is behind the XMB: the background style, the wave's mode, whether the GL wave is
+        showing, and the colours it was last given."""
+        colours = self.wave.palette
+        return {"background": self.background_style, "how": self.wave.how,
+                "gl": self.wave.gl is not None and self.wave.gl.get_visible(),
+                "top": colours.hex("top"), "bottom": colours.hex("bottom"),
+                "alpha": colours.alpha, "sparkle": colours.sparkle}
 
     def label_facts(self, widget: "Gtk.Label") -> dict:
         font = widget.get_pango_context().get_font_description()
