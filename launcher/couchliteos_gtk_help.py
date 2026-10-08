@@ -141,6 +141,7 @@ class TourPage(Gtk.Box):
         for slot in self.slots:
             frame = Gtk.ScrolledWindow()
             frame.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
+            frame.set_propagate_natural_height(True)  # as tall as the card wants, when it fits
             frame.set_child(slot)
             self.frames.append(frame)
             self.slides.add_child(frame)
