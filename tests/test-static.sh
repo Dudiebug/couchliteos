@@ -1534,6 +1534,11 @@ for package in gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipew
 done
 refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_music.py
 refute rg -q 'shell=True' launcher/couchliteos_music.py launcher/couchliteos-music.py
+# The TV interface plays it: started after the first frame, held while anything else is in front.
+rg -Fq 'self.music = music.Music()' launcher/couchliteos-tv.py
+rg -Fq 'self.music.start()' launcher/couchliteos-tv.py
+rg -Fq '("app", running), ("screen", self.child_pid is not None)' launcher/couchliteos-tv.py
+rg -q 'music = off' tests/tv-headless.sh
 rg -q 'HOME_REQUEST.write_text\("guide\\n" if guide else "shortcut\\n"' launcher/gamepad-nav.py
 
 # Settings > CONTROLLERS: player order, IDENTIFY, TEST, SWAP A/B and X/Y (gamepad-nav applies the swaps)

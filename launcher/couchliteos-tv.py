@@ -45,6 +45,7 @@ import couchliteos_errors as errors
 import couchliteos_home as home
 import couchliteos_icons as icons
 import couchliteos_motion as motion
+import couchliteos_music as music
 import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
 import couchliteos_quick as quick
@@ -596,6 +597,7 @@ class Look:
         """The 1 s tick: a theme or accent saved since the CSS was written is applied now."""
         if hasattr(self, "layout") and self.theme_stamp_now() != self.theme_stamp:
             self.load_css()
+            self.music.settings()
         elif self.cross and hasattr(self, "wave"):
             now = time.localtime()
             if now.tm_hour * WAVE_HOURS + now.tm_min * WAVE_HOURS // 60 != self.wave_quarter:
@@ -755,6 +757,7 @@ def whatsnew_versions() -> tuple[str, str]:
 
 class Tv(Screens, Look, Script, session.Session):
     cross = False  # the XMB home (init_xmb), else the rows
+    music = music.Music(enabled=lambda: False, track=lambda: None)  # silent until init_xmb
     def __init__(self, application: "Gtk.Application") -> None:
         self.application = application
         self.window: Gtk.ApplicationWindow | None = None
@@ -1226,7 +1229,7 @@ class Tv(Screens, Look, Script, session.Session):
             self.busy_pressed = True
             return True
         if not (self.cross and self.mode == "home" and not self.quick_open):
-            self.sounds.for_key(name)  # the XMB plays its own: a category, an edge
+            self.ui_sound(quick.SOUND_KEYS.get(name, ""))  # the XMB plays its own: a category, an edge
         if self.mode not in ("message", "update") and (name == "home" or self.quick_open):
             self.quick_key_or_open(name)  # a question on screen keeps Home as its NO
             return True
@@ -1389,6 +1392,7 @@ class Tv(Screens, Look, Script, session.Session):
         return True  # keep the timeout
 
     def tick_once(self) -> None:
+        self.music_holds()
         if self.busy_depth:
             self.idle.keep_awake()
             return
@@ -1398,6 +1402,7 @@ class Tv(Screens, Look, Script, session.Session):
         self.relayout(self.screen_size())
         self.theme_tick()
         if self.take_resumed():
+            self.music.release("sleep")
             self.idle.resumed()
             self.blank.set_visible(False)
             self.can_sleep = power.can_suspend()
@@ -1417,6 +1422,7 @@ class Tv(Screens, Look, Script, session.Session):
             self.blank.set_visible(True)
         elif action == power.SLEEP and self.can_sleep:
             try:
+                self.music.hold("sleep")
                 self.request("suspend")  # couchliteos-suspend.path removes it before suspending
             except OSError:
                 pass
@@ -1940,6 +1946,34 @@ class Tv(Screens, Look, Script, session.Session):
         self.site_icons = siteicon.SiteIcons()
         self.xmb_pictures: dict[str, "gtk_xmb.Picture | None"] = {}
         self.wave_quarter = -1
+        self.music = music.Music()
+
+    # ------------------------------------------------------------------ sounds and music
+
+    def ui_sound(self, name: str) -> None:
+        """A UI sound; the music ducks under the bigger ones and comes back up."""
+        if name and self.sounds.play(name):
+            seconds = self.music.sound(name)
+            if seconds is not None:
+                GLib.timeout_add(round(seconds * 1000) + 10, self.music_tick)
+
+    def music_tick(self) -> bool:
+        self.music.tick()
+        return False
+
+    def music_holds(self) -> None:
+        """The music fades out while an application or a stream is in front, a classic screen is
+        open (some have their own test sounds), something starts, or the screen is blank."""
+        try:
+            running = self.apps_running()
+        except Exception:  # noqa: BLE001
+            running = True
+        for reason, held in (("app", running), ("screen", self.child_pid is not None),
+                             ("start", bool(self.busy_depth)), ("blank", self.idle.blanked)):
+            (self.music.hold if held else self.music.release)(reason)
+
+    def stop_music(self, _application=None) -> None:
+        self.music.close()
 
     def power_choices(self) -> tvscreens.PowerModel:
         try:
@@ -2011,15 +2045,15 @@ class Tv(Screens, Look, Script, session.Session):
         model = self.xmb
         if name in ("left", "right"):
             moved = model.move_h(1 if name == "right" else -1) == xmb.MOVED
-            self.sounds.play("category" if moved else "edge")
+            self.ui_sound("category" if moved else "edge")
         elif name in ("up", "down"):
             moved = model.move_v(1 if name == "down" else -1) == xmb.MOVED
-            self.sounds.play("move" if moved else "edge")
+            self.ui_sound("move" if moved else "edge")
         elif name == "back":
             if model.back() == xmb.MOVED:
-                self.sounds.play("back")
+                self.ui_sound("back")
         elif name == "activate":
-            self.sounds.play("select")
+            self.ui_sound("select")
             self.run_xmb_action(model.activate())
         else:
             self.home_key(name)  # Home, hold Y, hold X, the shortcut buttons
@@ -2100,6 +2134,9 @@ class Tv(Screens, Look, Script, session.Session):
         if self.cross and hasattr(self, "wave"):
             self.wave.start()  # after the first frame: a GL driver that fails here leaves launcher-ready
             self.refresh_xmb_settings()
+        self.ui_sound("startup")
+        self.music_holds()
+        self.music.start()
         return False
 
     def activate(self, _application) -> None:
@@ -2136,6 +2173,7 @@ def main(argv: list[str] | None = None) -> int:
     tv.dump_dir = pathlib.Path(args.dump_layout) if args.dump_layout else None
     tv.shot_dir = pathlib.Path(args.screenshots) if args.screenshots else None
     application.connect("activate", tv.activate)
+    application.connect("shutdown", tv.stop_music)
     status = application.run([sys.argv[0]])
     if tv.script_failed:
         return 1

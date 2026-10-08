@@ -70,7 +70,7 @@ fixture() {
   printf '999.0.0\n' | tee "$state/whatsnew-seen" > "$base/run/whatsnew-seen"  # opened by the script
   printf '[updates]\nenabled = false\n' > "$state/update-check.ini"
   printf '{"lookup": false}\n' > "$state/artwork.json"
-  printf '[appearance]\ntheme = midnight\naccent = \nsounds = off\nhome = %s\n' "$home_layout" > "$state/config.ini"
+  printf '[appearance]\ntheme = midnight\naccent = \nsounds = off\nmusic = off\nhome = %s\n' "$home_layout" > "$state/config.ini"
   local conf="$state/home/.config/Moonlight Game Streaming Project"
   local art="$state/home/.cache/Moonlight Game Streaming Project/Moonlight/boxart/FIXTURE-UUID"
   mkdir -p "$conf" "$art"
