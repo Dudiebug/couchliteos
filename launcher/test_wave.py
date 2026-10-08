@@ -122,5 +122,26 @@ class ClockTest(unittest.TestCase):
         self.assertTrue(clock.due(1 / wave.FPS))
 
 
+class StillTest(unittest.TestCase):
+    COLOURS = wave.Palette((0.2, 0.3, 0.6), (0.0, 0.0, 0.1), (1.0, 1.0, 1.0), 0.3)
+
+    def pixel(self, data, width, x, y):
+        at = (y * width + x) * 3
+        return tuple(data[at:at + 3])
+
+    def test_size_gradient_and_a_ribbon_where_the_shader_puts_it(self):
+        width, height = 64, 36
+        data = wave.still_frame(width, height, self.COLOURS)
+        self.assertEqual(len(data), width * height * 3)
+        self.assertGreater(sum(self.pixel(data, width, 0, 0)), sum(self.pixel(data, width, width - 1, height - 1)))
+        middle = round(wave.ribbon_y(32.5 / width, wave.STILL_TIME, 0) * height - 0.5)
+        far = 2 if middle > height / 2 else height - 3
+        self.assertGreater(sum(self.pixel(data, width, 32, middle)), sum(self.pixel(data, width, 32, far)) + 60)
+
+    def test_flat_is_the_gradient_alone(self):
+        flat = wave.Palette((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (1.0, 1.0, 1.0), 0.0)
+        self.assertEqual(set(wave.still_frame(8, 8, flat)), {128})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,7 @@ jobs:
             debian-archive-keyring e2fsprogs xorriso squashfs-tools grub-pc-bin \
             grub-efi-amd64-bin mtools dosfstools qemu-system-x86 ovmf ripgrep zstd
           # tests/tv-headless.sh: the TV interface in a headless Cage (test-only, not in the ISO).
-          sudo apt-get install --yes cage grim python3-gi gir1.2-gtk-4.0
+          sudo apt-get install --yes cage grim python3-gi gir1.2-gtk-4.0 librsvg2-common
           curl --fail --location --output /tmp/live-build.deb \
             https://deb.debian.org/debian/pool/main/l/live-build/live-build_20250505+deb13u1_all.deb
           sudo apt-get install --yes /tmp/live-build.deb

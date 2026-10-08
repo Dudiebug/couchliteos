@@ -192,3 +192,33 @@ class Clock:
     def due(self, now: float) -> bool:
         """At most FPS frames a second."""
         return self.last is None or now - self.last >= 1 / FPS - 0.002
+
+
+STILL_SIZE = (320, 180)  # the still frame is made this small and stretched: the wave is all soft edges
+
+
+def still_frame(width: int, height: int, colours: Palette, time: float = STILL_TIME) -> bytes:
+    """One frame of FRAGMENT's picture as RGB bytes, for the software renderer, MOTION OFF and the
+    moment before the GL wave's first frame. A palette with alpha 0 is the gradient alone (FLAT)."""
+    columns = []
+    for px in range(width):
+        x = (px + 0.5) / width
+        columns.append((x, [ribbon_y(x, time, ribbon) for ribbon in range(len(WIDTHS))]))
+    out = bytearray(width * height * 3)
+    at = 0
+    for py in range(height):
+        y = (py + 0.5) / height
+        for x, ribbons in columns:
+            t = min(1.0, max(0.0, y * 0.85 + x * 0.15))
+            t = t * t * (3 - 2 * t)  # smoothstep
+            glow = 0.0
+            if colours.alpha > 0:
+                for ribbon, middle in enumerate(ribbons):
+                    d = abs(y - middle)
+                    glow += RIBBON_ALPHA[ribbon] * (math.exp(-(d * d) / (WIDTHS[ribbon] ** 2)) + math.exp(-d / HAZE) * 0.35)
+            amount = min(1.0, max(0.0, glow * colours.alpha))
+            for channel in range(3):
+                base = colours.top[channel] + (colours.bottom[channel] - colours.top[channel]) * t
+                out[at + channel] = round(255 * (base + (colours.ribbon[channel] - base) * amount))
+            at += 3
+    return bytes(out)

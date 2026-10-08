@@ -6,7 +6,8 @@
 # at 1280x720 unless it is shortened on purpose (a tile's title); a live switch to each
 # built-in theme; no Python traceback in any run's log. A first-boot run (setup not complete)
 # starts the setup wizard on top (a fake foot records it) and still writes launcher-ready.
-# Screenshots (1920x1080) go to build/out/screenshots/.
+# The XMB (the default home) and the rows ([appearance] home = rows) each get their runs.
+# Screenshots (1920x1080) go to build/out/screenshots/ (the XMB's to its xmb/ folder).
 #
 # Test-only tools, not in the image: cage, grim, and a Python with GTK 4 (PyGObject).
 # COUCHLITEOS_TV_PYTHON picks the Python (default: the first of python3, python3.13 and
@@ -69,7 +70,7 @@ fixture() {
   printf '999.0.0\n' | tee "$state/whatsnew-seen" > "$base/run/whatsnew-seen"  # opened by the script
   printf '[updates]\nenabled = false\n' > "$state/update-check.ini"
   printf '{"lookup": false}\n' > "$state/artwork.json"
-  printf '[appearance]\ntheme = midnight\naccent = \nsounds = off\n' > "$state/config.ini"
+  printf '[appearance]\ntheme = midnight\naccent = \nsounds = off\nhome = %s\n' "$home_layout" > "$state/config.ini"
   local conf="$state/home/.config/Moonlight Game Streaming Project"
   local art="$state/home/.cache/Moonlight Game Streaming Project/Moonlight/boxart/FIXTURE-UUID"
   mkdir -p "$conf" "$art"
@@ -134,9 +135,18 @@ themes=''
 for theme in "${THEMES[@]}"; do
   themes+=",theme:$theme,wait:1600,dump:theme-$theme"
 done
-rm -f -- "$SHOTS"/*.png
+rm -f -- "$SHOTS"/*.png "$SHOTS"/xmb/*.png
+home_layout=rows
 run_tv 1080 1920 1080 "$screens$themes,open:update,dump:update,quit" "$SHOTS"
 run_tv 720 1280 720 "$screens,open:update,dump:update,quit"
+# The XMB: every category (GAMES first; left to POWER, right to NETWORK), the quick menu, change
+# artwork and stream settings over it, every theme behind the wave.
+home_layout=cross
+xmb='F1,dump:home,Home,dump:quick,Escape,F9,dump:art,Escape,F10,dump:streamset,Escape,Down,Down,dump:xmb-games'
+xmb+=',Left,dump:xmb-video,Left,dump:xmb-settings,Down,dump:xmb-settings-down,Left,dump:xmb-power'
+xmb+=',Right,Right,Right,Right,dump:xmb-apps,Right,dump:xmb-network,Right,Escape,Escape'
+run_tv xmb1080 1920 1080 "$xmb$themes,open:update,dump:update,quit" "$SHOTS/xmb"
+run_tv xmb720 1280 720 "$xmb,open:update,dump:update,quit"
 # First boot: the wizard opens on top as `couchliteos-launcher --screen setup` in foot; when it
 # closes, the home screen.
 run_tv firstboot 1280 720 'wait:4000,dump:home,quit' '' firstboot
@@ -153,9 +163,12 @@ work, themes = pathlib.Path(sys.argv[1]), sys.argv[2:]
 MIN_FONT = 28
 SCREENS = {"home": "home", "quick": "home", "art": "art", "streamset": "streamset", "settings": "settings", "power": "power",
            "whatsnew": "whatsnew", "update": "update"}
+XMB = ["home", "quick", "art", "streamset", "xmb-games", "xmb-video", "xmb-settings", "xmb-settings-down", "xmb-power",
+       "xmb-apps", "xmb-network", "update"]
 problems = []
-for run, size in (("1080", (1920, 1080)), ("720", (1280, 720))):
-    names = list(SCREENS) + ([f"theme-{name}" for name in themes] if run == "1080" else [])
+for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (1920, 1080)), ("xmb720", (1280, 720))):
+    names = XMB if run.startswith("xmb") else list(SCREENS)
+    names = names + ([f"theme-{name}" for name in themes] if run.endswith("1080") else [])
     for name in names:
         path = work / run / "dump" / f"{name}.json"
         if not path.exists():
@@ -174,9 +187,9 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720))):
             problems.append(f"{where}: no text on screen")
         for label in dump["labels"]:
             text = label["text"][:60]
-            if run == "1080" and label["font_px"] < MIN_FONT:
+            if run.endswith("1080") and label["font_px"] < MIN_FONT:
                 problems.append(f"{where}: {label['font_px']} px text {text!r} {label['classes']}")
-            if run == "720" and not label["on_purpose"]:
+            if run.endswith("720") and not label["on_purpose"]:
                 cut = label["ellipsized"] or (not label["wrap"] and label["natural"] > label["width"] + 1)
                 if cut or label["x"] < 0 or label["right"] > size[0] + 1:
                     problems.append(f"{where}: clipped {text!r} {label['classes']} "

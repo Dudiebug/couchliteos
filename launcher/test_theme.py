@@ -205,6 +205,14 @@ class InterfaceTest(TempDir):
         theme.save_interface("tv", self.config)
         self.assertEqual(theme.load_interface(self.config), "tv")
 
+    def test_any_appearance_value(self):
+        self.assertEqual(theme.load_value("home", "cross", self.config), "cross")
+        self.config.write_text("[appearance]\nhome = Rows \n")
+        self.assertEqual(theme.load_value("home", "cross", self.config), "rows")
+        self.assertEqual(theme.load_value("motion", path=self.config), "")
+        self.config.write_text("not ini")
+        self.assertEqual(theme.load_value("home", "cross", self.config), "cross")
+
     def test_the_session_script_reads_the_same_key(self):
         script = (pathlib.Path(__file__).resolve().parents[1] / "scripts/couchliteos-session").read_text()
         self.assertIn('section == "appearance"', script)

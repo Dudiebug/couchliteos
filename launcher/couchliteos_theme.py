@@ -228,6 +228,17 @@ def load_interface(path: pathlib.Path | None = None) -> str:
     return "classic" if parser.get(SECTION, "interface", fallback="").strip().lower() == "classic" else "tv"
 
 
+def load_value(key: str, fallback: str = "", path: pathlib.Path | None = None) -> str:
+    """Any [appearance] key, lower case and stripped ([appearance] home, motion); `fallback` when
+    the file or the key is missing or unreadable."""
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read_string((CONFIG if path is None else path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, configparser.Error):
+        return fallback
+    return parser.get(SECTION, key, fallback=fallback).strip().lower()
+
+
 def save_interface(interface: str, path: pathlib.Path | None = None) -> None:
     """Raises OSError. The session reads it when the launcher service starts again."""
     save_values({"interface": "classic" if interface == "classic" else "tv"}, path)

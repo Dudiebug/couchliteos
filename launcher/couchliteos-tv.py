@@ -43,17 +43,23 @@ import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_errors as errors
 import couchliteos_home as home
+import couchliteos_icons as icons
+import couchliteos_motion as motion
 import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
 import couchliteos_quick as quick
 import couchliteos_session as session
+import couchliteos_siteicon as siteicon
 import couchliteos_softwareupdate as softwareupdate
 import couchliteos_stream as stream
 import couchliteos_theme as theme
+import couchliteos_tile as tile
 import couchliteos_tvlayout as tvlayout
 import couchliteos_tvscreens as tvscreens
 import couchliteos_update as update
+import couchliteos_wave as wave
 import couchliteos_whatsnew as whatsnew
+import couchliteos_xmb as xmb
 
 try:
     import gi
@@ -62,6 +68,8 @@ try:
     gi.require_version("Gdk", "4.0")
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
+
+    import couchliteos_gtk_xmb as gtk_xmb
 except (ImportError, ValueError) as _error:  # no PyGObject or no GTK 4 typelib
     Gtk = None
     GI_ERROR = str(_error)
@@ -95,6 +103,8 @@ BACKDROP_WALLPAPER_ALPHA = 140  # of 255: the theme's wallpaper, dimmed less
 BACKDROP_MAX_FILE = 20 * 1024 * 1024
 BACKDROP_CACHE = 16
 SCRIPT_STEP_MS = 400
+ROWS = "rows"  # [appearance] home = rows: the rows of tiles instead of the XMB (until beta 8)
+WAVE_HOURS = 4  # the wave's colours follow the time of day, in quarter hours
 
 
 def visible_applications() -> apps.LoadResult:
@@ -534,7 +544,17 @@ class Look:
         self.backdrop_textures: dict[tuple, "Gdk.Texture | None"] = {}
 
     def build_backdrop(self, overlay: "Gtk.Overlay") -> None:
-        """The background picture, with the stack of screens over it."""
+        """The background picture (the XMB's wave), with the stack of screens over it."""
+        if self.cross:
+            failed = gtk_xmb.wave_failed_before(self.run_dir)
+            how = wave.mode(os.environ.get("GSK_RENDERER"), self.motion_level, current_theme().name, failed)
+            self.wave = gtk_xmb.make_wave(how, self.wave_palette(), self.run_dir,
+                                          lambda text: display.log(text, session.LOG))
+            self.wave.set_can_target(False)
+            overlay.set_child(self.wave)
+            overlay.add_overlay(self.stack)
+            overlay.set_measure_overlay(self.stack, True)
+            return
         picture = self.backdrop = Gtk.Picture()
         picture.set_content_fit(Gtk.ContentFit.COVER)
         picture.set_can_shrink(True)
@@ -561,11 +581,25 @@ class Look:
                                  + tvscreens.stylesheet(colours, self.layout)).encode(), -1)
         self.quick_css.load_from_data(quick.stylesheet(colours, self.layout).encode(), -1)
         self.render_backdrop()
+        if self.cross and hasattr(self, "wave"):
+            self.wave.set_colours(self.wave_palette())
+            self.xmb_view.text_colour = tuple(int(theme.parse_colour(colours.colours["text"])[at:at + 2], 16) / 255
+                                              for at in (0, 2, 4))
+            self.xmb_view.queue_draw()
+
+    def wave_palette(self) -> "wave.Palette":
+        now = time.localtime()
+        self.wave_quarter = now.tm_hour * WAVE_HOURS + now.tm_min * WAVE_HOURS // 60
+        return wave.palette(current_theme(), self.wave_quarter / WAVE_HOURS)
 
     def theme_tick(self) -> None:
         """The 1 s tick: a theme or accent saved since the CSS was written is applied now."""
         if hasattr(self, "layout") and self.theme_stamp_now() != self.theme_stamp:
             self.load_css()
+        elif self.cross and hasattr(self, "wave"):
+            now = time.localtime()
+            if now.tm_hour * WAVE_HOURS + now.tm_min * WAVE_HOURS // 60 != self.wave_quarter:
+                self.wave.set_colours(self.wave_palette())
 
     def render_backdrop(self) -> None:
         if not hasattr(self, "backdrop"):
@@ -682,6 +716,8 @@ class Script:
                 child = child.get_next_sibling()
 
         walk(self.window)
+        if self.cross and self.mode == "home":
+            labels += self.xmb_view.drawn_labels
         record = {"name": name, "screen": self.mode, "quick": self.quick_open, "theme": self.colours.name,
                   "width": self.window.get_width(), "height": self.window.get_height(), "labels": labels}
         if self.dump_dir is not None:
@@ -751,6 +787,7 @@ class Tv(Screens, Look, Script, session.Session):
         self.init_look()
         self.init_screens()
         self.init_quick()
+        self.init_xmb()
 
     # ------------------------------------------------------------------ building
 
@@ -797,7 +834,16 @@ class Tv(Screens, Look, Script, session.Session):
         page.append(self.home_status)
         self.home_prompt = label(tvlayout.HOME_HINT, "tv-prompt", xalign=0.5)
         page.append(self.home_prompt)
-        self.stack.add_named(page, "home")
+        if self.cross:
+            self.xmb_view = gtk_xmb.XmbView(self.xmb, self.xmb_picture, icons.bundled, self.xmb_status,
+                                            self.motion_level)
+            home_overlay = Gtk.Overlay()
+            home_overlay.set_child(page)
+            home_overlay.add_overlay(self.xmb_view)
+            page.set_visible(False)  # the rows' widgets stay for the code that sets them
+            self.stack.add_named(home_overlay, "home")
+        else:
+            self.stack.add_named(page, "home")
 
         # STARTING / WAITING and messages share one simple layout: title, body, hint.
         self.pages: dict[str, tuple[Gtk.Box, Gtk.Label, Gtk.Label, Gtk.Label]] = {}
@@ -898,6 +944,12 @@ class Tv(Screens, Look, Script, session.Session):
     def render_home(self) -> None:
         if not hasattr(self, "layout"):
             return
+        if self.cross:
+            self.xmb.reload(reread_home=False)
+            self.xmb_pictures.clear()
+            self.xmb_view.sync()
+            self.render_bar()
+            return
         focus_row, focus_column = self.model.focus
         for index, (title, tiles) in enumerate(self.row_boxes):
             clear(tiles)
@@ -924,6 +976,9 @@ class Tv(Screens, Look, Script, session.Session):
         self.bar_update.set_visible(bool(status.update))
         self.home_status.set_label(self.home_line())
         self.home_prompt.set_label(quick.prompt(self.family, quick.HOME_PROMPT))
+        if self.cross:
+            self.xmb_view.message = self.home_line()
+            self.xmb_view.queue_draw()
 
     def home_line(self) -> str:
         """The home screen's status line: the last result, else, on a live stick, the installed
@@ -1169,14 +1224,17 @@ class Tv(Screens, Look, Script, session.Session):
         if self.busy_depth and self.mode != "message":
             self.busy_pressed = True
             return True
-        self.sounds.for_key(name)
+        if not (self.cross and self.mode == "home" and not self.quick_open):
+            self.sounds.for_key(name)  # the XMB plays its own: a category, an edge
         if self.mode not in ("message", "update") and (name == "home" or self.quick_open):
             self.quick_key_or_open(name)  # a question on screen keeps Home as its NO
             return True
         if self.status and self.mode == "home":
             self.status = ""  # a press dismisses the last result
             self.home_status.set_label(self.home_line())
-        handler = {"home": self.home_key, "active": self.active_key, "message": self.message_key,
+            if self.cross:
+                self.xmb_view.message = self.home_line()
+        handler = {"home": self.xmb_key if self.cross else self.home_key, "active": self.active_key, "message": self.message_key,
                    "art": self.art_key, "streamset": self.stream_settings_key, **self.screen_keys()}.get(self.mode)
         if handler is not None:
             handler(name)
@@ -1310,6 +1368,7 @@ class Tv(Screens, Look, Script, session.Session):
         """Back from a start: read the rows again, land on the game just played."""
         self.model.reload()
         self.model.focus_last_played()
+        self.xmb_last_played()
         self.show("home")
         self.render_home()
 
@@ -1366,15 +1425,19 @@ class Tv(Screens, Look, Script, session.Session):
             if self.was_running and not running:
                 self.model.reload()
                 self.model.focus_last_played()  # back from a stream: on the game just played
+                self.xmb_last_played()
             elif self.mode == "home":
                 self.model.reload()
             self.last_reload = now
             if self.mode == "home":
                 self.render_home()
         self.was_running = running
+        if self.cross and hasattr(self, "wave") and self.ready_written:
+            self.wave.set_running(not running and not self.idle.blanked)
         self.tick_quick()
         if self.mode == "home":
             self.art_tick()
+            self.xmb_tick()
             self.render_bar()
             if not self.quick_open:
                 self.offer_update()
@@ -1668,7 +1731,7 @@ class Tv(Screens, Look, Script, session.Session):
 
     def change_artwork(self) -> None:
         """Hold Y on a game: up to 12 covers to pick from, RESET and TITLE CARD."""
-        item = self.model.focused()
+        item = self.focused_item()
         if item is None or not item.action or item.action[0] != "stream":
             return
         _kind, host, app = item.action
@@ -1779,7 +1842,7 @@ class Tv(Screens, Look, Script, session.Session):
 
     def open_stream_settings(self) -> None:
         """Hold X on a game: STREAM SETTINGS, a preset or CUSTOM kept for that game alone."""
-        item = self.model.focused()
+        item = self.focused_item()
         if item is None or not item.action or item.action[0] != "stream":
             return
         _kind, host, app = item.action
@@ -1865,6 +1928,141 @@ class Tv(Screens, Look, Script, session.Session):
         self.status = ""
         self.render_stream_settings()
 
+    # ------------------------------------------------------------------ the XMB
+
+    def init_xmb(self) -> None:
+        self.cross = theme.load_value("home") != ROWS
+        self.motion_level = motion.level_for(theme.load_value("motion"), os.environ.get("GSK_RENDERER"))
+        self.xmb = xmb.XmbModel(self.model, self.settings, power=self.power_choices)
+        self.icons = icons.Icons()
+        self.tiles = tile.Tiles()
+        self.site_icons = siteicon.SiteIcons()
+        self.xmb_pictures: dict[str, "gtk_xmb.Picture | None"] = {}
+        self.wave_quarter = -1
+
+    def power_choices(self) -> tvscreens.PowerModel:
+        try:
+            running = [app.name for app in self.running_applications()]
+        except Exception:  # noqa: BLE001 - the power column must always be there
+            running = []
+        return tvscreens.PowerModel(self.can_sleep, self.can_wake, running)
+
+    def focused_item(self):
+        return self.xmb.focused() if self.cross else self.model.focused()
+
+    def xmb_status(self) -> tuple[str, str]:
+        """The clock, and under it the network, the battery and a newer release, as the bar has them."""
+        status = self.model.status()
+        line = "   ".join(part for part in (status.network, status.battery,
+                                            f"UPDATE {status.update}" if status.update else "") if part)
+        return status.clock, line
+
+    def xmb_picture(self, item: "xmb.Item") -> "gtk_xmb.Picture | None":
+        """What the XMB draws for an item: a game's cover, a site's or an application's own icon as a
+        glossy tile (once made; the bundled icon until then), else None for the bundled icon."""
+        if item.key not in self.xmb_pictures:
+            self.xmb_pictures[item.key] = self.find_xmb_picture(item)
+        return self.xmb_pictures[item.key]
+
+    def find_xmb_picture(self, item: "xmb.Item") -> "gtk_xmb.Picture | None":
+        try:
+            if item.game is not None:
+                cover = self.cover(item)
+                return gtk_xmb.Picture(cover, gtk_xmb.COVER) if cover is not None else None
+            if item.url:
+                site = self.site_icons.icon(item.url)
+                if site is not None:
+                    return gtk_xmb.Picture(site, gtk_xmb.TILE)
+            if item.app:
+                path, official = self.icons.for_item(item.icon, self.app_by_id(item.app))
+                made = self.tiles.tile(path) if official else None
+                if made is not None:
+                    return gtk_xmb.Picture(made, gtk_xmb.TILE)
+        except Exception as error:  # noqa: BLE001 - the bundled icon is always there
+            display.log(f"tv xmb picture {item.key}: {error!r}", session.LOG)
+        return None
+
+    def xmb_tick(self) -> None:
+        """New covers, tiles or site icons arrived: draw them."""
+        if self.cross and (self.tiles.take_changed() | self.site_icons.take_changed()):
+            self.xmb_pictures.clear()
+            self.xmb_view.queue_draw()
+
+    def xmb_last_played(self) -> None:
+        if self.cross:
+            self.xmb.reload(reread_home=False)
+            self.xmb.focus_last_played()
+
+    def refresh_xmb_settings(self) -> None:
+        """The SETTINGS column's value lines, read off the main loop (some ask other programs)."""
+        def read() -> None:
+            self.settings.refresh()
+            GLib.idle_add(self.xmb_settings_ready)
+
+        threading.Thread(target=read, daemon=True).start()
+
+    def xmb_settings_ready(self) -> bool:
+        self.xmb.settings_values(self.settings.values)
+        self.xmb_view.queue_draw()
+        return False
+
+    def xmb_key(self, name: str) -> None:
+        model = self.xmb
+        if name in ("left", "right"):
+            moved = model.move_h(1 if name == "right" else -1) == xmb.MOVED
+            self.sounds.play("category" if moved else "edge")
+        elif name in ("up", "down"):
+            moved = model.move_v(1 if name == "down" else -1) == xmb.MOVED
+            self.sounds.play("move" if moved else "edge")
+        elif name == "back":
+            if model.back() == xmb.MOVED:
+                self.sounds.play("back")
+        elif name == "activate":
+            self.sounds.play("select")
+            self.run_xmb_action(model.activate())
+        else:
+            self.home_key(name)  # Home, hold Y, hold X, the shortcut buttons
+        if self.mode == "home":
+            self.xmb_view.sync()
+
+    def run_xmb_action(self, action: "xmb.Action | None") -> None:
+        if not action:
+            return
+        if action[0] == "entry":
+            _kind, kind, target = action
+            if kind == tvscreens.SCREEN:
+                self.open_screen(target)
+            elif kind == tvscreens.APP:
+                self.launch_by_id(target)
+                self.after_launch()
+            elif target == "active":
+                self.open_active()
+        elif action[0] == "updates":
+            self.status = tvscreens.toggle_updates(self.updates)
+            self.refresh_xmb_settings()
+            self.render_bar()
+        elif action[0] == "power":
+            self.xmb_power(action[1])
+        else:
+            self.run_action(action)
+
+    def xmb_power(self, request: str) -> None:
+        """POWER's items ask first, as the POWER screen does."""
+        self.can_sleep = power.can_suspend()
+        choice = next((item for item in self.power_choices().choices if item.request == request), None)
+        if choice is None:
+            return
+        if request == "suspend" and not self.can_sleep:
+            self.status = "SLEEP IS NOT SUPPORTED ON THIS PC"
+        elif self.ask(choice.label, choice.question, tvlayout.QUESTION_HINT) == "yes":
+            try:
+                self.request(request)  # couchliteos-<request>.path carries it out as root
+                self.status = tvscreens.PowerModel.done(request)
+            except OSError as error:
+                self.status = f"COULD NOT ASK FOR {choice.label}: {error.strerror or 'ERROR'}".upper()
+        self.show("home")
+        self.render_home()
+
     # ------------------------------------------------------------------ start
 
     def on_map(self, window) -> None:
@@ -1898,6 +2096,9 @@ class Tv(Screens, Look, Script, session.Session):
             self.render_bar()
         self.continue_start()
         self.start_script()
+        if self.cross and hasattr(self, "wave"):
+            self.wave.start()  # after the first frame: a GL driver that fails here leaves launcher-ready
+            self.refresh_xmb_settings()
         return False
 
     def activate(self, _application) -> None:

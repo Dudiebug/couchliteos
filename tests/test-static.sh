@@ -294,7 +294,7 @@ rg -Fq 'unittest -v tests/test_migrate.py' Makefile
 rg -Fq 'TV_HEADLESS_ARGS ?= --if-available' Makefile
 rg -Fq './tests/tv-headless.sh $(TV_HEADLESS_ARGS)' Makefile
 rg -q 'make test TV_HEADLESS_ARGS=$' .github/workflows/build.yml
-rg -q 'cage grim python3-gi gir1.2-gtk-4.0' .github/workflows/build.yml
+rg -q 'cage grim python3-gi gir1.2-gtk-4.0 librsvg2-common' .github/workflows/build.yml
 
 refute rg -q '^(intel-media-va-driver|firmware-intel-graphics|intel-gpu-tools)$' config/live-build/package-lists
 rg -q '^intel-media-va-driver$' config/profiles/intel/package-lists/intel-graphics.list.chroot
@@ -390,6 +390,7 @@ rg -q 'qrencode -t ANSIUTF8' scripts/couchliteos-tailscale-enrollment
 rg -q "trap 'rm -f --.*URL_FILE.*' EXIT" scripts/couchliteos-tailscale
 refute rg -q 'libfuse' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^gir1.2-gtk-4.0$' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^librsvg2-common$' config/live-build/package-lists/couchliteos.list.chroot
 rg -q 'OVMF_VARS_4M.fd' tests/qemu-smoke.sh
 rg -q 'unit=1,file=' tests/qemu-smoke.sh
 rg -q 'screendump' tests/qemu-smoke.sh
@@ -1482,6 +1483,13 @@ rg -q 'test_tile.py' launcher/Makefile
 # Tiles are made on the box from icons it already has; GdkPixbuf only inside make_tile.
 refute rg -q '^(import|from) (curses|gi)\b' launcher/couchliteos_tile.py
 refute rg -q '^\s*(import|from) (curses|gi)\b' launcher/couchliteos_motion.py launcher/couchliteos_xmb.py launcher/couchliteos_wave.py launcher/couchliteos_icons.py launcher/couchliteos_siteicon.py
+# The XMB on screen: installed, imported only once GTK is (inside couchliteos-tv's gi import), no
+# curses; GTK 4.14 has no GskGLShader to lean on, the wave is a Gtk.GLArea.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_gtk_xmb.py" "\$CHROOT/usr/libexec/couchliteos_gtk_xmb.py"$' build/configure.sh
+rg -q '^    import couchliteos_gtk_xmb as gtk_xmb$' launcher/couchliteos-tv.py
+refute rg -q '^import couchliteos_gtk_xmb' launcher/couchliteos-tv.py
+refute rg -q '^\s*(import|from) curses\b|GLShader' launcher/couchliteos_gtk_xmb.py
+rg -q 'Gtk.GLArea' launcher/couchliteos_gtk_xmb.py
 # The built-in SteamGridDB key comes from the build machine, is never in git and never printed.
 rg -q '^steamgriddb\.key$' .gitignore
 [[ -z $(git ls-files '*steamgriddb.key' '*secrets*') ]]
