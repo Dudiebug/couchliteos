@@ -1,12 +1,14 @@
 #!/bin/bash
 # The TV interface (launcher/couchliteos-tv.py) in a headless Cage, with a fixture home.
 # Its --script opens every screen (home, settings, power, the quick menu, change artwork,
-# stream settings, what's new, the update progress) and --dump-layout records every label on each one.
+# stream settings, what's new, the update progress, the tour, HELP, the loading screen) and
+# --dump-layout records every label on each one.
 # Checks: each screen opened; no text under 28 px at 1920x1080; no label shortened or cut
 # at 1280x720 unless it is shortened on purpose (a tile's title); a live switch to each
 # built-in theme; on the XMB, a live switch to each BACKGROUND (WAVE AND SPARKLES, WAVE, PLAIN)
 # and to ACCENT > BY MONTH; no Python traceback in any run's log. A first-boot run (setup not complete)
-# starts the setup wizard on top (a fake foot records it) and still writes launcher-ready.
+# starts the setup wizard on top (a fake foot records it), then the tour, and still writes
+# launcher-ready.
 # The XMB (the default home) and the rows ([appearance] home = rows) each get their runs.
 # Screenshots (1920x1080) go to build/out/screenshots/ (the XMB's to its xmb/ folder).
 #
@@ -67,7 +69,7 @@ fixture() {
   rm -rf -- "$base"
   mkdir -p "$base/run" "$state" "$base/home" "$base/xdg"
   chmod 700 "$base/xdg"
-  touch "$state/setup-complete" "$state/controls-shown"
+  touch "$state/setup-complete" "$state/controls-shown" "$state/tutorial-seen"  # the script opens the tour
   printf '999.0.0\n' | tee "$state/whatsnew-seen" > "$base/run/whatsnew-seen"  # opened by the script
   printf '[updates]\nenabled = false\n' > "$state/update-check.ini"
   printf '{"lookup": false}\n' > "$state/artwork.json"
@@ -99,12 +101,12 @@ EOF
 
 # run_tv <name> <width> <height> <script> [screenshots] [firstboot]: the TV interface at that
 # size until the script's `quit`; its dumps land in $work/<name>/dump. With firstboot, setup is
-# not complete.
+# not complete and the tour not seen.
 run_tv() {
   local name=$1 width=$2 height=$3 script=$4 shots=${5:-} firstboot=${6:-}
   local base=$work/$name
   fixture "$base"
-  [[ -z $firstboot ]] || rm -f -- "$base/state/setup-complete"
+  [[ -z $firstboot ]] || rm -f -- "$base/state/setup-complete" "$base/state/tutorial-seen"
   local status=0
   COUCHLITEOS_RUN_DIR=$base/run COUCHLITEOS_STATE_DIR=$base/state HOME=$base/home \
     XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot PATH=$work/bin:$PATH \
@@ -132,6 +134,10 @@ run_tv() {
 # F1 first: nothing uses it (a key sent at the very start must not matter).
 screens='F1,dump:home,Home,dump:quick,Escape,F9,dump:art,Escape,F10,dump:streamset,Escape,Down,Down,Down,Return,dump:settings,Escape'
 screens+=',Right,Right,Return,dump:power,Escape,open:whatsnew,dump:whatsnew,Return,Up,Up,Up'
+# The tour to its last card, HELP's list and a topic's text, and the busy screen's loading ring.
+help=',open:tutorial,dump:tutorial,Right,Right,Right,Right,dump:tutorial-last,Return'
+help+=',open:help,dump:help,Down,Return,dump:help-reading,Escape,Escape,open:loading,dump:loading,Escape'
+screens+=$help
 themes=''
 for theme in "${THEMES[@]}"; do
   themes+=",theme:$theme,wait:1600,dump:theme-$theme"
@@ -145,15 +151,15 @@ run_tv 720 1280 720 "$screens,open:update,dump:update,quit"
 home_layout=cross
 xmb='F1,dump:home,Home,dump:quick,Escape,F9,dump:art,Escape,F10,dump:streamset,Escape,Down,Down,dump:xmb-games'
 xmb+=',Left,dump:xmb-video,Left,dump:xmb-settings,Down,dump:xmb-settings-down,Left,dump:xmb-power'
-xmb+=',Right,Right,Right,Right,dump:xmb-apps,Right,dump:xmb-network,Right,Escape,Escape'
+xmb+=',Right,Right,Right,Right,dump:xmb-apps,Right,dump:xmb-network,Right,Escape,Escape'$help
 # What is behind the XMB, switched live as Settings > APPEARANCE saves it (the 1 s tick applies it).
 looks=',theme:midnight,background:plain,wait:1600,dump:bg-plain,background:calm,wait:1600,dump:bg-calm'
 looks+=',background:wave,accent:month,wait:1600,dump:accent-month,accent:,wait:1600,dump:bg-wave'
 run_tv xmb1080 1920 1080 "$xmb$themes$looks,open:update,dump:update,quit" "$SHOTS/xmb"
 run_tv xmb720 1280 720 "$xmb,open:update,dump:update,quit"
 # First boot: the wizard opens on top as `couchliteos-launcher --screen setup` in foot; when it
-# closes, the home screen.
-run_tv firstboot 1280 720 'wait:4000,dump:home,quit' '' firstboot
+# closes, the tour; B on its first card skips it, then the home screen.
+run_tv firstboot 1280 720 'wait:4000,dump:tutorial,Escape,wait:1000,dump:home,quit' '' firstboot
 if ! grep -q -- '--screen setup' "$work/firstboot/run/foot.log" 2>/dev/null; then
   echo "tv-headless: first boot did not open the setup wizard (foot: $(cat "$work/firstboot/run/foot.log" 2>/dev/null || echo 'not started'))" >&2
   exit 1
@@ -169,9 +175,10 @@ import couchliteos_theme as theme
 midnight = theme.load(pathlib.Path(sys.argv[2]) / "overlay/usr/share/couchliteos/themes/midnight.theme")
 MIN_FONT = 28
 SCREENS = {"home": "home", "quick": "home", "art": "art", "streamset": "streamset", "settings": "settings", "power": "power",
-           "whatsnew": "whatsnew", "update": "update"}
+           "whatsnew": "whatsnew", "tutorial": "tutorial", "tutorial-last": "tutorial", "help": "help",
+           "help-reading": "help", "loading": "busy", "update": "update"}
 XMB = ["home", "quick", "art", "streamset", "xmb-games", "xmb-video", "xmb-settings", "xmb-settings-down", "xmb-power",
-       "xmb-apps", "xmb-network", "update"]
+       "xmb-apps", "xmb-network", "tutorial", "tutorial-last", "help", "help-reading", "loading", "update"]
 LOOKS = ["bg-plain", "bg-calm", "accent-month", "bg-wave"]
 problems = []
 started = None  # how the XMB's wave ran at the start (GL where the GL wave runs here)
@@ -221,11 +228,14 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (192
                 if cut or label["x"] < 0 or label["right"] > size[0] + 1:
                     problems.append(f"{where}: clipped {text!r} {label['classes']} "
                                     f"({label['natural']} px in {label['width']} px at x={label['x']})")
+tour = work / "firstboot" / "dump" / "tutorial.json"
+if not tour.exists() or json.loads(tour.read_text())["screen"] != "tutorial":
+    problems.append("firstboot: the tour did not follow the setup wizard")
 first = work / "firstboot" / "dump" / "home.json"
 if not first.exists() or json.loads(first.read_text())["screen"] != "home":
-    problems.append("firstboot: the home screen did not follow the setup wizard")
+    problems.append("firstboot: the home screen did not follow the tour")
 for problem in problems:
     print(f"tv-headless: {problem}", file=sys.stderr)
 sys.exit(1 if problems else 0)
 EOF
-echo "tv-headless: all screens open at 1920x1080 and 1280x720 (XMB and rows), first boot opens setup ($PYTHON); screenshots in $SHOTS"
+echo "tv-headless: all screens open at 1920x1080 and 1280x720 (XMB and rows), first boot opens setup then the tour ($PYTHON); screenshots in $SHOTS"

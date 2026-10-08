@@ -44,6 +44,7 @@ import couchliteos_errors as errors
 import couchliteos_netmenu as netmenu
 import couchliteos_confirm as confirmation
 import couchliteos_whatsnew as whatsnew
+import couchliteos_help as tvhelp
 import couchliteos_controls as controls
 import couchliteos_input as inputprefs
 import couchliteos_padcheck as padcheck
@@ -98,6 +99,7 @@ SETTINGS_MENU = (
     "SETUP WIZARD",
     "GENERATE SUPPORT FILE",
     "SYSTEM DIAGNOSTICS",
+    "HELP",
     "BACK",
 )
 UPDATE_SUFFIX = "  -  UPDATE AVAILABLE"  # on the SETTINGS row while a newer release is known
@@ -1888,6 +1890,7 @@ class Settings:
             "SETUP WIZARD": lambda: self.launcher.setup_wizard(force=True),
             "GENERATE SUPPORT FILE": self.generate_support_file,
             "SYSTEM DIAGNOSTICS": lambda: self.launch("system-diagnostics"),
+            "HELP": lambda: tvhelp.run_classic(self.screen, lambda: read_key(self.screen)),
         }
         action = actions.get(SETTINGS_MENU[self.selected])
         if action is None:
@@ -3542,13 +3545,13 @@ def connect_tv_control(launcher: Launcher) -> None:
 
 def first_start(launcher: Launcher) -> None:
     """`--screen setup`: what Launcher.run does before its menu (setup, resumed when it restarted
-    for a new picture size during it, then the CONTROLS screen once). What's New is the TV's own."""
+    for a new picture size during it). What's New is the TV's own, and so is the CONTROLS screen:
+    the TV's tour (couchliteos_help) shows the buttons once after setup."""
     if (RUN / "reopen-setup").exists():  # restarted for a new picture size during setup
         (RUN / "reopen-setup").unlink(missing_ok=True)
         launcher.setup_wizard(resume=True)
     else:
         launcher.setup_wizard()
-    controls.show_once(launcher.screen)
 
 
 # `couchliteos-launcher --screen NAME`: one screen in a foot window of its own, then exit. The TV

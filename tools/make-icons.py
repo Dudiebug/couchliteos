@@ -140,6 +140,10 @@ BODY: dict[str, str] = {
     "lifebuoy": f'<path stroke="none" fill-rule="evenodd" d="{circle_path(12, 12, 9.2)}{circle_path(12, 12, 4.4)}"/>'
                 '<path fill="none" stroke="{ink}" stroke-width="2.6" stroke-linecap="butt"'
                 ' d="M8.9 8.9 5.5 5.5M15.1 15.1l3.4 3.4M15.1 8.9l3.4-3.4M8.9 15.1l-3.4 3.4"/>',
+    "question": '<path stroke="none" d="' + circle_path(12, 12, 9.2) + '"/>'
+                '<path fill="none" stroke="{ink}" stroke-width="2.3"'
+                ' d="M9.2 9.3a2.9 2.9 0 1 1 4 2.7c-.8.4-1.2 1-1.2 1.8v.5"/>'
+                f'<path stroke="none" fill="{{ink}}" d="{circle_path(12, 17.4, 1.3)}"/>',
     "plus-circle": '<path stroke="none" fill-rule="evenodd" d="' + circle_path(12, 12, 9.2)
                    + 'M10.9 7.3h2.2v3.6h3.6v2.2h-3.6v3.6h-2.2v-3.6H7.3v-2.2h3.6z"/>',
     "stack": '<path stroke="none" d="M12 2.8l9.2 4.7-9.2 4.7-9.2-4.7z"/>'

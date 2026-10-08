@@ -47,8 +47,10 @@ import couchliteos_controllers as controllers
 import couchliteos_controls as controls
 import couchliteos_display as display
 import couchliteos_errors as errors
+import couchliteos_help as tvhelp
 import couchliteos_home as home
 import couchliteos_icons as icons
+import couchliteos_input as inputprefs
 import couchliteos_month as month
 import couchliteos_motion as motion
 import couchliteos_music as music
@@ -77,6 +79,9 @@ try:
     from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
     import couchliteos_gtk_boot as gtk_boot
+    import couchliteos_gtk_help as gtk_help
+    import couchliteos_gtk_loading as gtk_loading
+    import couchliteos_gtk_ring as gtk_ring
     import couchliteos_gtk_xmb as gtk_xmb
 except (ImportError, ValueError) as _error:  # no PyGObject or no GTK 4 typelib
     Gtk = None
@@ -156,7 +161,7 @@ class Screens:
         self.child_pid: int | None = None  # the classic screen running on top (open_screen)
         self.child_name = ""
         self.starting = True  # the steps before the home screen still run (continue_start)
-        self.start_steps = ["whatsnew", "setup", "update", "autostream"]
+        self.start_steps = ["whatsnew", "setup", "update", "tutorial", "autostream"]
         self.settings = tvscreens.SettingsModel(tvscreens.value_sources(
             updates=self.updates, controllers=self.controllers, running=self.running_applications,
             applications=lambda: len(visible_applications().applications),
@@ -169,7 +174,7 @@ class Screens:
 
     def screen_keys(self) -> dict:
         return {"settings": self.settings_key, "power": self.power_key, "whatsnew": self.whatsnew_key,
-                "update": self.update_key}
+                "update": self.update_key, "tutorial": self.tutorial_key, "help": self.help_key}
 
     # ------------------------------------------------------------------ building
 
@@ -299,6 +304,9 @@ class Screens:
             elif target == "updates":
                 self.status = tvscreens.toggle_updates(self.updates)
                 self.settings.refresh()
+            elif target == "help":
+                self.open_help("settings")
+                return
             else:
                 self.close_screen()
                 return
@@ -521,12 +529,13 @@ class Screens:
     def continue_start(self) -> None:
         """The steps before the home screen, one at a time; a step that opens a screen ends this call
         and the screen's end calls it again: What's New (upgrades), the setup wizard, an update that
-        runs (the TV interface restarted mid-way), then the auto-stream."""
+        runs (the TV interface restarted mid-way), the tour once after setup, then the auto-stream."""
         while self.start_steps:
             step = self.start_steps.pop(0)
             if step == "whatsnew":
                 pending = whatsnew.due()
                 if pending is not None:
+                    tvhelp.mark_tour_seen()  # an upgrade: What's New is this start's one notice
                     self.open_whatsnew(*pending)
                     return
             elif step == "setup":
@@ -536,10 +545,104 @@ class Screens:
                 if tvscreens.update_running(self.run_dir):
                     self.watch_update("")
                     return
+            elif step == "tutorial":
+                if tvhelp.tour_due():
+                    tvhelp.mark_tour_seen()  # before it is drawn: a crash cannot bring it back
+                    self.open_tutorial()
+                    return
             elif step == "autostream":
                 self.starting = False
                 self.autostream()
         self.starting = False
+
+
+class HelpScreens:
+    """The tour after setup (and from HELP > THE TOUR) and Settings > HELP. The models are
+    couchliteos_help's, the pages couchliteos_gtk_help's. Part of Tv."""
+
+    def init_help(self) -> None:
+        self.tour = tvhelp.Tour(tvhelp.tour_cards(self.cross))
+        self.tour_return = "home"
+        self.help_model = tvhelp.HelpModel(tvhelp.topics(self.cross))
+        self.help_return = "home"
+
+    def build_help(self) -> None:
+        self.tour_page = gtk_help.TourPage(icons.bundled)
+        self.help_page = gtk_help.HelpPage()
+        self.stack.add_named(self.tour_page, "tutorial")
+        self.stack.add_named(self.help_page, "help")
+
+    def relayout_help(self) -> None:
+        self.tour_page.relayout(self.layout)
+        self.help_page.relayout(self.layout, tvscreens.list_slots(self.layout))
+        if self.mode == "tutorial":
+            self.render_tour(0)
+        elif self.mode == "help":
+            self.render_help()
+
+    def show_fading(self, name: str) -> None:
+        """show(), cross-fading unless MOTION is OFF: the tour comes and goes softly."""
+        ms = round(motion.scaled(motion.FADE_MS, self.motion_level) * 1000)
+        self.stack.set_transition_duration(ms)
+        self.stack.set_visible_child_full(name, Gtk.StackTransitionType.CROSSFADE if ms else Gtk.StackTransitionType.NONE)
+        self.show(name)
+
+    # ------------------------------------------------------------------ the tour
+
+    def open_tutorial(self, back_to: str = "home") -> None:
+        self.tour = tvhelp.Tour(tvhelp.tour_cards(self.cross))
+        self.tour_return = back_to
+        self.render_tour(0)
+        self.show_fading("tutorial")
+
+    def render_tour(self, direction: int) -> None:
+        """The card in the connected pad's buttons; `direction` is where it slides in from."""
+        view = self.tour.view(self.family, inputprefs.load_settings())
+        self.tour_page.show_card(view, direction, self.motion_level)
+
+    def tutorial_key(self, name: str) -> None:
+        result = self.tour.key(name)
+        if result in (tvhelp.NEXT, tvhelp.PREVIOUS):
+            self.render_tour(1 if result == tvhelp.NEXT else -1)
+        elif result == tvhelp.DONE:
+            self.close_tutorial()
+
+    def close_tutorial(self) -> None:
+        """Back where the tour was opened: HELP, or home (and on with the start)."""
+        if self.tour_return == "help":
+            self.render_help()
+            self.show_fading("help")
+            return
+        self.show_fading("home")
+        self.render_home()
+        if self.starting:
+            self.continue_start()
+
+    # ------------------------------------------------------------------ HELP
+
+    def open_help(self, back_to: str = "home") -> None:
+        self.help_model = tvhelp.HelpModel(tvhelp.topics(self.cross))
+        self.help_return = back_to
+        self.render_help()
+        self.help_page.scroll_to_top()
+        self.show("help")
+
+    def render_help(self) -> None:
+        self.help_page.render(self.help_model, self.family)
+
+    def help_key(self, name: str) -> None:
+        result = self.help_model.key(name)
+        if result in (tvhelp.SCROLL_UP, tvhelp.SCROLL_DOWN):
+            self.help_page.scroll(-1 if result == tvhelp.SCROLL_UP else 1, self.motion_level)
+        elif result == tvhelp.TOUR:
+            self.open_tutorial("help")
+        elif result == tvhelp.CLOSE and self.help_return == "settings":
+            self.render_settings()
+            self.show("settings")
+        elif result == tvhelp.CLOSE:
+            self.close_screen()
+        else:
+            self.render_help()
 
 
 class Look:
@@ -592,7 +695,8 @@ class Look:
         self.theme_stamp = self.theme_stamp_now()
         colours = self.colours = current_theme()
         self.css.load_from_data((tvlayout.stylesheet(colours, self.layout)
-                                 + tvscreens.stylesheet(colours, self.layout)).encode(), -1)
+                                 + tvscreens.stylesheet(colours, self.layout)
+                                 + tvhelp.stylesheet(colours, self.layout)).encode(), -1)
         self.quick_css.load_from_data(quick.stylesheet(colours, self.layout).encode(), -1)
         self.render_backdrop()
         if self.cross and hasattr(self, "wave"):
@@ -690,7 +794,9 @@ class Script:
 
     def script_step(self) -> bool:
         """One step: a Gdk key name, `wait:<ms>`, `dump:<name>`, `theme:<name>`, `accent:<name>`
-        and `background:<style>` (saved as Settings saves them), `open:whatsnew`, `open:update` (writes a downloading status) or `quit`. The next step is timed before this one
+        and `background:<style>` (saved as Settings saves them), `open:whatsnew`, `open:update` (writes a
+        downloading status), `open:tutorial`, `open:help`, `open:loading` (the STARTING screen, until the
+        next key) or `quit`. The next step is timed before this one
         runs, so a step that waits for an answer (a question) is answered by the next one."""
         if not self.script:
             return False
@@ -716,6 +822,12 @@ class Script:
                 (self.run_dir / softwareupdate.STATUS).write_text(
                     json.dumps({"phase": "downloading", "percent": 42, "version": "9.9.9"}), encoding="utf-8")
                 self.watch_update("9.9.9")
+            elif step == "open:tutorial":
+                self.open_tutorial()
+            elif step == "open:help":
+                self.open_help()
+            elif step == "open:loading":
+                self.script_loading()
             elif step == "quit":
                 self.application.quit()
             else:
@@ -727,6 +839,21 @@ class Script:
             self.script_failed = True
             print(f"couchliteos-tv: script step {step!r} failed: {error!r}", file=sys.stderr)
         return False
+
+    def script_loading(self) -> None:
+        """open:loading: the STARTING screen, drawn as an app's start draws it, until a key (or a
+        minute, so a script without one still ends)."""
+        self.busy_depth += 1
+        self.busy_pressed = False
+        end = time.monotonic() + 60
+        try:
+            while not self.busy_pressed and time.monotonic() < end:
+                self.draw_launching("MOONLIGHT", "")
+                self.pump(0.1)
+        finally:
+            self.busy_depth -= 1
+            self.busy_pressed = False
+            self.show("home")
 
     def dump_layout(self, name: str) -> None:
         """<dump dir>/<name>.json: the screen, its size and theme, and every label on screen with its
@@ -794,7 +921,7 @@ def whatsnew_versions() -> tuple[str, str]:
     return versions[0], versions[1] if len(versions) > 1 else ""
 
 
-class Tv(Screens, Look, Script, session.Session):
+class Tv(Screens, HelpScreens, Look, Script, session.Session):
     cross = False  # the XMB home (init_xmb), else the rows
     music = music.Music(enabled=lambda: False, track=lambda: None)  # silent until init_xmb
     def __init__(self, application: "Gtk.Application") -> None:
@@ -833,6 +960,7 @@ class Tv(Screens, Look, Script, session.Session):
         self.init_screens()
         self.init_quick()
         self.init_xmb()
+        self.init_help()  # after init_xmb: the cards name the XMB's categories, or the rows
 
     # ------------------------------------------------------------------ building
 
@@ -927,6 +1055,10 @@ class Tv(Screens, Look, Script, session.Session):
                 box.append(widget)
             self.stack.add_named(box, name)
             self.pages[name] = (box, title, body, hint)
+        # The busy screen's loading ring, over its title (it was a text spinner after it).
+        self.loading_ring = gtk_ring.LoadingRing(lambda: self.colours.colours["accent"], self.motion_level)
+        self.loading_ring.set_halign(Gtk.Align.CENTER)
+        self.pages["busy"][0].prepend(self.loading_ring)
 
         # ACTIVE APPLICATIONS
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -940,6 +1072,7 @@ class Tv(Screens, Look, Script, session.Session):
         self.active_page = box
         self.stack.add_named(box, "active")
         self.build_screens()
+        self.build_help()
 
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.on_key)
@@ -981,7 +1114,10 @@ class Tv(Screens, Look, Script, session.Session):
         for _title, tiles in self.row_boxes:
             tiles.set_spacing(layout.gap)
             tiles.set_size_request(-1, -1)
+        self.loading_ring.set_size_request(layout.px(120), layout.px(120))
+        self.loading_ring.set_margin_bottom(layout.px(24))
         self.relayout_screens()
+        self.relayout_help()
         self.render_home()
 
     # ------------------------------------------------------------------ drawing
@@ -1109,8 +1245,9 @@ class Tv(Screens, Look, Script, session.Session):
             if not context.iteration(False):
                 time.sleep(0.01)
 
-    def draw_launching(self, label_text: str, frame: str) -> None:
-        self.show_text("busy", f"STARTING {label_text}  {frame}", "PLEASE WAIT",
+    def draw_launching(self, label_text: str, _frame: str) -> None:
+        """The busy screen; its loading ring moves on its own (the text spinner `frame` is the classic one's)."""
+        self.show_text("busy", f"STARTING {label_text}", "PLEASE WAIT",
                        "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE")
 
     def launch_wait_begin(self) -> None:
@@ -1194,7 +1331,7 @@ class Tv(Screens, Look, Script, session.Session):
                 result = stream.wake_and_wait(
                     host, force=True, sleep=self.pump,
                     tick=lambda elapsed: self.wait_tick(
-                        f"WAKING {host.label}...  {session.SPINNER[int(elapsed * 4) % len(session.SPINNER)]}",
+                        f"WAKING {host.label}...",
                         f"{int(elapsed)} OF {int(stream.WAKE_TIMEOUT)} SECONDS"),
                 )
             except OSError as error:
@@ -1245,7 +1382,7 @@ class Tv(Screens, Look, Script, session.Session):
                 result = stream.wake_and_wait(
                     host, sleep=self.pump,
                     tick=lambda elapsed: self.wait_tick(
-                        f"WAKING {host.label}...  {session.SPINNER[int(elapsed * 4) % len(session.SPINNER)]}",
+                        f"WAKING {host.label}...",
                         f"{int(elapsed)} OF {int(stream.WAKE_TIMEOUT)} SECONDS"),
                 )
             finally:
@@ -2136,6 +2273,8 @@ class Tv(Screens, Look, Script, session.Session):
                 self.after_launch()
             elif target == "active":
                 self.open_active()
+            elif target == "help":
+                self.open_help()
         elif action[0] == "updates":
             self.status = tvscreens.toggle_updates(self.updates)
             self.refresh_xmb_settings()

@@ -1490,6 +1490,27 @@ rg -q '^    import couchliteos_gtk_xmb as gtk_xmb$' launcher/couchliteos-tv.py
 refute rg -q '^import couchliteos_gtk_xmb' launcher/couchliteos-tv.py
 refute rg -q '^\s*(import|from) curses\b|GLShader' launcher/couchliteos_gtk_xmb.py
 rg -q 'Gtk.GLArea' launcher/couchliteos_gtk_xmb.py
+# The tour, HELP and the busy screen's loading ring: GTK-free models (the classic launcher has the
+# same HELP), drawn by modules imported only once GTK is.
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_help.py" "\$CHROOT/usr/libexec/couchliteos_help.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_gtk_help.py" "\$CHROOT/usr/libexec/couchliteos_gtk_help.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_loading.py" "\$CHROOT/usr/libexec/couchliteos_loading.py"$' build/configure.sh
+rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_gtk_loading.py" "\$CHROOT/usr/libexec/couchliteos_gtk_loading.py"$' build/configure.sh
+rg -q 'test_help.py' launcher/Makefile
+rg -q 'test_loading.py' launcher/Makefile
+rg -q 'test_ring.py' launcher/Makefile
+rg -q 'test_frontapp.py' launcher/Makefile
+for module in couchliteos_ring couchliteos_gtk_ring couchliteos_frontapp; do
+  rg -q "^install -D -m 0644 \"\\$ROOT/launcher/$module.py\" \"\\$CHROOT/usr/libexec/$module.py\"$" build/configure.sh
+done
+refute rg -q '^\s*(import|from) gi' launcher/couchliteos_ring.py launcher/couchliteos_frontapp.py
+refute rg -q '^\s*(import|from) gi\b' launcher/couchliteos_help.py launcher/couchliteos_loading.py
+refute rg -q '^(import|from) curses\b' launcher/couchliteos_help.py launcher/couchliteos_loading.py
+rg -q '^    import couchliteos_gtk_help as gtk_help$' launcher/couchliteos-tv.py
+rg -q '^    import couchliteos_gtk_loading as gtk_loading$' launcher/couchliteos-tv.py
+refute rg -q '^import couchliteos_gtk_(help|loading)' launcher/couchliteos-tv.py
+refute rg -q '^\s*(import|from) curses\b' launcher/couchliteos_gtk_help.py launcher/couchliteos_gtk_loading.py
+rg -q '^import couchliteos_help as tvhelp$' launcher/couchliteos-launcher.py
 # The built-in SteamGridDB key comes from the build machine, is never in git and never printed.
 rg -q '^steamgriddb\.key$' .gitignore
 [[ -z $(git ls-files '*steamgriddb.key' '*secrets*') ]]
