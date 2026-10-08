@@ -68,16 +68,18 @@ def transition(direction: int, level: str) -> tuple[Gtk.StackTransitionType, int
 # ---------------------------------------------------------------------- the tour
 
 
-class CardBox(Gtk.Box):
-    """One card: the icon on the left; the title, the lines and the buttons beside it."""
+class CardBox(Gtk.Overlay):
+    """One card: the icon on the left; the title, the lines and the buttons beside it. The icon
+    lies over the column's left margin: a horizontal Gtk.Box gave its wrapping labels more width
+    than the card had (they asked for it at the box's height), past the screen at 720p."""
 
     def __init__(self) -> None:
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        super().__init__()
         self.icon = Gtk.Picture()
         self.icon.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.icon.set_halign(Gtk.Align.START)
         self.icon.set_valign(Gtk.Align.CENTER)
         self.icon.add_css_class("tv-card-icon")
-        self.append(self.icon)
         column = self.column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         column.set_hexpand(True)
         column.set_valign(Gtk.Align.CENTER)
@@ -86,10 +88,12 @@ class CardBox(Gtk.Box):
         self.chips = Gtk.Grid()
         for widget in (self.title, self.lines, self.chips):
             column.append(widget)
-        self.append(column)
+        self.set_child(column)
+        self.add_overlay(self.icon)
 
     def relayout(self, px: Callable[[float], int], margin_x: int) -> None:
-        self.set_spacing(px(56))
+        self.column.set_margin_start(px(ICON_PX) + px(56))
+        self.column.set_size_request(-1, px(ICON_PX))  # the icon is not measured: the card is at least as tall
         self.set_margin_start(margin_x)
         self.set_margin_end(margin_x)
         self.icon.set_size_request(px(ICON_PX), px(ICON_PX))
@@ -143,6 +147,7 @@ class TourPage(Gtk.Box):
             frame.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
             frame.set_propagate_natural_height(True)  # as tall as the card wants, when it fits
             frame.set_child(slot)
+            frame.get_child().set_hscroll_policy(Gtk.ScrollablePolicy.MINIMUM)  # the viewport: the card at the band's width
             self.frames.append(frame)
             self.slides.add_child(frame)
         self.front = 0
