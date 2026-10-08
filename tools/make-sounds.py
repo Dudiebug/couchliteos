@@ -93,38 +93,139 @@ def mix(length: float, *parts: tuple[float, array.array, float]) -> array.array:
 
 
 D6, FS6, A6, E6, A5, D5, B5 = 86, 90, 93, 88, 81, 74, 83
+NOISE = random.Random(3)  # the same "air" every run
+
+
+def air(seconds: float, low: float, high: float, decay: float, attack: float = 0.002,
+        q: float = 4.0, wobble: float = 0.0, rate: float = 7.0) -> array.array:
+    """Breathy noise through a band-pass sweeping from `low` to `high` Hz; `wobble` swings the
+    band up and down `rate` times a second, the watery swish."""
+    count = round(seconds * RATE)
+    out = array.array("d", bytes(8 * count))
+    x1 = x2 = y1 = y2 = 0.0
+    for i in range(count):
+        t = i / RATE
+        centre = low * (high / low) ** min(1.0, t / seconds) * (1 + wobble * math.sin(TAU * rate * t))
+        w = TAU * min(centre, RATE * 0.45) / RATE
+        alpha = math.sin(w) / (2 * q)
+        a0 = 1 + alpha
+        x = NOISE.uniform(-1.0, 1.0)
+        y = (alpha * x - alpha * x2 - (-2 * math.cos(w)) * y1 - (1 - alpha) * y2) / a0
+        x2, x1, y2, y1 = x1, x, y1, y
+        out[i] = y * min(1.0, t / attack) * math.exp(-t / decay)
+    return out
+
+
+def bubble(start: float, end: float, seconds: float, decay: float, glide: float = 0.03,
+           vibrato: float = 0.012, attack: float = 0.004) -> array.array:
+    """A water drop: a round tone gliding from `start` to `end` Hz (up for a drop, down for a
+    sinking one), a chorus voice a few cents away and a little vibrato, so it shimmers."""
+    count = round(seconds * RATE)
+    out = array.array("d", bytes(8 * count))
+    phase = phase2 = 0.0
+    for i in range(count):
+        t = i / RATE
+        freq = end + (start - end) * math.exp(-t / glide)
+        freq *= 1 + vibrato * math.sin(TAU * 9 * t) * min(1.0, t / 0.04)
+        phase += TAU * freq / RATE
+        phase2 += TAU * freq * 1.0087 / RATE  # +15 cents: the chorus
+        env = min(1.0, t / attack) * math.exp(-t / decay)
+        out[i] = env * (math.sin(phase) + 0.55 * math.sin(phase2) + 0.08 * math.sin(2 * phase))
+    return out
+
+
+def drop(start: float, end: float, seconds: float, decay: float, attack: float = 0.003) -> array.array:
+    """A dull falling thud (the edge bump)."""
+    count = round(seconds * RATE)
+    out = array.array("d", bytes(8 * count))
+    phase = 0.0
+    for i in range(count):
+        t = i / RATE
+        freq = end + (start - end) * math.exp(-t / 0.018)
+        phase += TAU * freq / RATE
+        out[i] = min(1.0, t / attack) * math.exp(-t / decay) * (math.sin(phase) + 0.12 * math.sin(2 * phase))
+    return out
+
+
+def thock(pitch: float = 340.0, seconds: float = 0.08, decay: float = 0.018) -> array.array:
+    """A deep, muted click, like a well-damped key bottoming out: a woody body that drops a little
+    in pitch, a second mode above it that dies fast, and a soft felt transient: under every key sound."""
+    count = round(seconds * RATE)
+    out = array.array("d", bytes(8 * count))
+    felt = air(seconds, 1800, 1200, 0.0025, attack=0.0005, q=0.8)
+    phase = phase2 = 0.0
+    for i in range(count):
+        t = i / RATE
+        freq = pitch * (1 + 0.25 * math.exp(-t / 0.006))
+        phase += TAU * freq / RATE
+        phase2 += TAU * freq * 2.31 / RATE
+        attack = min(1.0, t / 0.0008)
+        out[i] = attack * (math.exp(-t / decay) * math.sin(phase)
+                           + 0.35 * math.exp(-t / (decay * 0.4)) * math.sin(phase2)) + 0.5 * felt[i]
+    return out
+
+
+def echo(samples: array.array, taps=((0.031, 0.32), (0.047, 0.22), (0.071, 0.14), (0.113, 0.08))) -> array.array:
+    """A short, wet room on a sound (inside its own length): the ripple after the drop."""
+    out = array.array("d", samples)
+    for delay, gain in taps:
+        offset = round(delay * RATE)
+        for i in range(offset, len(out)):
+            out[i] += samples[i - offset] * gain
+    return out
 
 
 def ui_sounds() -> dict[str, tuple[array.array, float]]:
-    """name -> (samples, peak). Quiet by design: pw-play plays them at half volume as well."""
+    """name -> (samples, peak). In the spirit of a games console's menu: soft watery drops that
+    never tire, rippling swishes between categories and pages, a dull bump at an edge. Quiet by
+    design: pw-play plays them at half volume as well."""
     return {
-        "move": (bell(hz(D6 + 12), 0.06, 0.018, ratio=2.0, index=0.4), 0.32),
-        "category": (glide(520, 880, 0.12, 0.05), 0.30),
-        "edge": (glide(190, 150, 0.12, 0.04), 0.40),
-        "select": (mix(0.28, (0, bell(hz(B5), 0.28, 0.08), 1.0), (0.07, bell(hz(FS6), 0.21, 0.07), 0.9)), 0.50),
-        "back": (mix(0.28, (0, bell(hz(FS6), 0.28, 0.07), 0.8), (0.07, bell(hz(B5), 0.21, 0.07), 0.9)), 0.42),
-        "open": (mix(0.5, (0, bell(hz(D6), 0.45, 0.12), 0.8), (0.045, bell(hz(FS6), 0.4, 0.12), 0.8),
-                     (0.09, bell(hz(A6), 0.4, 0.14), 0.9)), 0.45),
-        "close": (mix(0.5, (0, bell(hz(A6), 0.45, 0.1), 0.7), (0.045, bell(hz(FS6), 0.4, 0.1), 0.8),
-                      (0.09, bell(hz(D6), 0.4, 0.12), 0.9)), 0.40),
-        "notify": (mix(0.9, (0, bell(hz(A5), 0.8, 0.25), 1.0), (0.15, bell(hz(E6), 0.75, 0.25), 0.9)), 0.50),
-        "startup": (startup(), 0.60),
+        "move": (echo(mix(0.16, (0, thock(), 1.0), (0.004, bubble(1250, 1900, 0.15, 0.02, glide=0.012), 0.22)),
+                      taps=((0.031, 0.18), (0.047, 0.12), (0.071, 0.07))), 0.34),
+        "category": (echo(mix(0.26, (0, thock(290, 0.1, 0.022), 1.0),
+                              (0.008, air(0.25, 900, 3600, 0.07, attack=0.02, q=5.0, wobble=0.25, rate=11), 0.55),
+                              (0.01, bubble(900, 1400, 0.2, 0.035, glide=0.02), 0.25))), 0.34),
+        "edge": (mix(0.14, (0, drop(170, 115, 0.14, 0.04), 1.0), (0, bubble(420, 300, 0.1, 0.025), 0.2)), 0.45),
+        "select": (echo(mix(0.28, (0, thock(380), 0.9), (0.01, bubble(900, 1350, 0.2, 0.05, glide=0.02), 0.7),
+                            (0.06, bubble(1350, 2000, 0.2, 0.055, glide=0.02), 0.8),
+                            (0, air(0.12, 2000, 6000, 0.03, q=3.0, wobble=0.2), 0.2))), 0.50),
+        "back": (echo(mix(0.28, (0, thock(280), 0.9), (0.01, bubble(1500, 1000, 0.2, 0.05, glide=0.025), 0.6),
+                          (0.06, bubble(1000, 680, 0.2, 0.055, glide=0.025), 0.9),
+                          (0, air(0.12, 4000, 1400, 0.03, q=3.0, wobble=0.2), 0.2))), 0.42),
+        "open": (echo(mix(0.55, (0, air(0.55, 500, 5000, 0.16, attack=0.08, q=4.0, wobble=0.3, rate=8), 1.0),
+                          (0.05, bubble(800, 1600, 0.4, 0.09, glide=0.05), 0.35))), 0.38),
+        "close": (echo(mix(0.55, (0, air(0.55, 5000, 500, 0.14, attack=0.03, q=4.0, wobble=0.3, rate=8), 1.0),
+                           (0.0, bubble(1400, 700, 0.4, 0.08, glide=0.05), 0.3))), 0.34),
+        "notify": (echo(mix(0.9, (0, bubble(hz(A5) * 0.94, hz(A5), 0.8, 0.22, glide=0.02), 1.0),
+                            (0.12, bubble(hz(E6) * 0.94, hz(E6), 0.75, 0.22, glide=0.02), 0.8))), 0.45),
+        "startup": (startup(), 0.65),
     }
 
 
 def startup() -> array.array:
-    """The start-up chime: a Dmaj9 swell with a rising sparkle."""
-    seconds = 3.2
+    """The start-up swell: a wide, string-like D major chord that rises out of nothing and opens
+    up (more harmonics as it grows), a bright shimmer on top, then lets go. Original; only the
+    gesture is the console's."""
+    seconds = 3.4
     count = round(seconds * RATE)
     out = array.array("d", bytes(8 * count))
-    for note in (50, 57, 61, 64, 66):
-        freq = hz(note)
-        for i in range(count):
-            t = i / RATE
-            env = min(1.0, t / 0.9) * math.exp(-max(0.0, t - 0.9) / 0.9)
-            out[i] += 0.16 * env * (math.sin(TAU * freq * t) + 0.3 * math.sin(TAU * 2.003 * freq * t))
-    sparkle = [(0.25 + 0.12 * k, bell(hz(note), 1.6, 0.45), 0.35) for k, note in enumerate((74, 78, 81, 85, 88))]
-    return mix(seconds, (0, out, 1.0), *sparkle)
+    peak_at = 1.7
+    for note in (38, 50, 57, 62, 66, 69, 74):
+        for cents in (-7, 0, 7):
+            freq = hz(note) * 2 ** (cents / 1200)
+            gain = (0.05 if note < 45 else 0.035) / (1 + 0.2 * abs(cents) / 7)
+            for i in range(count):
+                t = i / RATE
+                rise = min(1.0, t / peak_at)
+                env = rise * rise * (1.0 if t <= peak_at else math.exp(-(t - peak_at) / 0.55))
+                bright = 0.15 + 0.85 * rise
+                phase = TAU * freq * t
+                out[i] += gain * env * (math.sin(phase) + bright * 0.5 * math.sin(2 * phase)
+                                        + bright * bright * 0.3 * math.sin(3 * phase)
+                                        + bright ** 3 * 0.18 * math.sin(4 * phase))
+    shimmer = air(seconds, 4000, 9000, 1.2, attack=1.3, q=6.0)
+    return mix(seconds, (0, out, 1.0), (0, shimmer, 0.25),
+               (peak_at - 0.05, bell(hz(D6 + 12), 1.5, 0.5, ratio=2.0, index=0.4), 0.12))
 
 
 # ---------------------------------------------------------------------- music
@@ -224,8 +325,8 @@ def music() -> tuple[array.array, array.array]:
     pads = {chord: pad(chord, hold, 3.0, table) for chord in PROGRESSION}
     basses = {chord: bass(chord[0], hold, 1.2) for chord in PROGRESSION}
     bells: dict[int, array.array] = {}
-    plain = (0, 3, 6, 8, 11, 14)  # eighth notes of the two bars that ring, first time round
-    busy = (0, 2, 4, 7, 8, 10, 12, 15)  # and the second time
+    plain = (0, 6, 11)  # eighth notes of the two bars that ring, first time round: sparse, airy
+    busy = (0, 4, 7, 10, 14)  # and a little more the second time
     for slot in range(LOOP_BARS // CHORD_BARS):
         chord = PROGRESSION[slot % len(PROGRESSION)]
         start = round(slot * hold * RATE)
@@ -241,12 +342,12 @@ def music() -> tuple[array.array, array.array]:
             note = tones[k % len(tones)] + (12 if second and k % 4 == 3 else 0)
             if note not in bells:
                 bells[note] = bell(hz(note), 2.2, 0.55, ratio=3.5, index=0.9, attack=0.006)
-            velocity = 0.07 + 0.04 * rng.random()
+            velocity = 0.045 + 0.03 * rng.random()
             pan = 0.25 if k % 2 else 0.75
             at = start + round(eighth * BEAT / 2 * RATE)
             add(bells_l, bells[note], at, velocity * (1 - pan))
             add(bells_r, bells[note], at, velocity * pan)
-    ping_pong(bells_l, bells_r, 0.75 * BEAT, 0.42, 0.55)
+    ping_pong(bells_l, bells_r, 0.75 * BEAT, 0.5, 0.7)
     for i in range(length):
         left[i] = math.tanh(left[i] + bells_l[i])
         right[i] = math.tanh(right[i] + bells_r[i])
