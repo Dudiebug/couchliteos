@@ -754,6 +754,7 @@ def whatsnew_versions() -> tuple[str, str]:
 
 
 class Tv(Screens, Look, Script, session.Session):
+    cross = False  # the XMB home (init_xmb), else the rows
     def __init__(self, application: "Gtk.Application") -> None:
         self.application = application
         self.window: Gtk.ApplicationWindow | None = None

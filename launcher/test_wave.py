@@ -135,8 +135,8 @@ class StillTest(unittest.TestCase):
         self.assertEqual(len(data), width * height * 3)
         self.assertGreater(sum(self.pixel(data, width, 0, 0)), sum(self.pixel(data, width, width - 1, height - 1)))
         middle = round(wave.ribbon_y(32.5 / width, wave.STILL_TIME, 0) * height - 0.5)
-        far = 2 if middle > height / 2 else height - 3
-        self.assertGreater(sum(self.pixel(data, width, 32, middle)), sum(self.pixel(data, width, 32, far)) + 60)
+        bare = wave.still_frame(width, height, wave.Palette(self.COLOURS.top, self.COLOURS.bottom, self.COLOURS.ribbon, 0.0))
+        self.assertGreater(sum(self.pixel(data, width, 32, middle)), sum(self.pixel(bare, width, 32, middle)) + 60)
 
     def test_flat_is_the_gradient_alone(self):
         flat = wave.Palette((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (1.0, 1.0, 1.0), 0.0)
