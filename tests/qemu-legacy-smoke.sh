@@ -85,7 +85,14 @@ monitor=$work/monitor.sock
 
 # 1. Install the old ISO.
 install -D -m 0644 /dev/null "$INSTALL_LOG"
-python3 -m http.server 8000 --bind 0.0.0.0 --directory "$ROOT/tests" > "$work/preseed-http.log" 2>&1 &
+# The old ISO's own preseed may not answer the account questions (0.2.0 asks them), so its test
+# preseed answers them as today's ISO does (config/live-build/includes.installer/preseed.cfg).
+mkdir "$work/http"
+{ cat "$ROOT/tests/installer-preseed.cfg"
+  printf '%s\n' 'd-i passwd/make-user boolean false' 'd-i passwd/root-login boolean true' \
+    'd-i passwd/root-password-crypted password *'
+} > "$work/http/installer-preseed.cfg"
+python3 -m http.server 8000 --bind 0.0.0.0 --directory "$work/http" > "$work/preseed-http.log" 2>&1 &
 server_pid=$!
 timeout $((25 * SCALE))m qemu-system-x86_64 "${common[@]}" \
   -boot order=d -drive "file=$OLD_ISO,media=cdrom,readonly=on" \

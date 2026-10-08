@@ -465,6 +465,7 @@ rg -q '^d-i passwd/make-user boolean false$' config/live-build/includes.installe
 rg -q '^d-i passwd/root-login boolean true$' config/live-build/includes.installer/preseed.cfg
 rg -q '^d-i passwd/root-password-crypted password \*$' config/live-build/includes.installer/preseed.cfg
 refute rg -q '^d-i passwd/' tests/installer-preseed.cfg
+rg -q "'d-i passwd/make-user boolean false'" tests/qemu-legacy-smoke.sh
 rg -q '^d-i preseed/late_command string in-target .*useradd .*--groups sudo .*installer-test' tests/installer-preseed.cfg
 rg -q '32G' tests/qemu-install-smoke.sh
 rg -q 'blank_disk=true' tests/qemu-install-smoke.sh
