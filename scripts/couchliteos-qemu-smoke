@@ -295,9 +295,10 @@ sys.path.insert(0, "/usr/libexec")
 import couchliteos_update as update
 loader = importlib.machinery.SourceFileLoader("couchliteos_updater", "/usr/libexec/couchliteos-updater")
 updater = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = updater  # dataclasses look their module up by name
 loader.exec_module(updater)
 assert update.installed_version(), "no version file"
-updater.refuse_live(updater.Env())
+updater.refuse_live_boot(updater.Env())
 updater.refuse_layout(updater.Env())
 '
     echo COUCHLITEOS_SMOKE_DISK_UPDATE_READY
