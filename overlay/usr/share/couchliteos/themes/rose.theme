@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: deep plum, pink accent.
+[theme]
+name = ROSE
+background = #1e0b1a
+surface = #33152b
+text = #fff0f7
+muted = #d6a0bd
+accent = #f472b6
+focus = #8e2a63
+warning = #fbbf24
+error = #ff9b8a

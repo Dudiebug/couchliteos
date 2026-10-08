@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: deep sea blue, cyan accent.
+[theme]
+name = OCEAN
+background = #04192b
+surface = #0a2a42
+text = #e8f6ff
+muted = #8db4cc
+accent = #1fb6e0
+focus = #0b5d86
+warning = #fbbf24
+error = #ff8a80

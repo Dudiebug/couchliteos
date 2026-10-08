@@ -9,9 +9,12 @@ import tempfile
 import unittest
 from unittest import mock
 
+import couchliteos_background as background
 import couchliteos_foot as foot
+import couchliteos_month as month
 import couchliteos_osk as osk
 import couchliteos_theme as theme
+import couchliteos_wave as wave
 from test_controls import FakeScreen, load_launcher
 
 BUILTIN = pathlib.Path(__file__).resolve().parents[1] / "overlay/usr/share/couchliteos/themes"
@@ -91,13 +94,31 @@ class BuiltinTest(unittest.TestCase):
     def setUp(self):
         self.themes, self.problems = theme.available(BUILTIN, pathlib.Path("/nonexistent"))
 
-    def test_the_five_built_ins_load(self):
+    LABELS = {
+        "midnight": "MIDNIGHT", "slate": "SLATE", "daylight": "DAYLIGHT", "high-contrast": "HIGH CONTRAST",
+        "terminal": "TERMINAL", "ocean": "OCEAN", "crimson": "CRIMSON", "emerald": "EMERALD",
+        "amethyst": "AMETHYST", "sunset": "SUNSET", "rose": "ROSE", "gold": "GOLD", "graphite": "GRAPHITE",
+        "arctic": "ARCTIC",
+    }
+    LIGHT = {"daylight", "arctic"}
+
+    def test_the_built_ins_load(self):
         self.assertEqual(self.problems, [])
-        self.assertEqual(set(self.themes), {"midnight", "slate", "daylight", "high-contrast", "terminal"})
-        self.assertEqual(
-            {item.label for item in self.themes.values()},
-            {"MIDNIGHT", "SLATE", "DAYLIGHT", "HIGH CONTRAST", "TERMINAL"})
+        self.assertEqual({name: item.label for name, item in self.themes.items()}, self.LABELS)
         self.assertIn(theme.DEFAULT, self.themes)
+
+    def test_two_light_themes(self):
+        light = {name for name, item in self.themes.items()
+                 if theme._luminance(item.colours["background"]) > 0.4}
+        self.assertEqual(light, self.LIGHT)
+
+    def test_no_two_built_ins_look_alike(self):
+        # Each built-in has its own accent, and only HIGH CONTRAST and TERMINAL share a background
+        # (black): none is another with a new name.
+        accents = [item.colours["accent"] for item in self.themes.values()]
+        self.assertEqual(len(set(accents)), len(accents))
+        backgrounds = [item.colours["background"] for item in self.themes.values()]
+        self.assertEqual(len(set(backgrounds)), len(backgrounds) - 1)
 
     def test_every_built_in_is_readable(self):
         for name, item in self.themes.items():
@@ -106,6 +127,23 @@ class BuiltinTest(unittest.TestCase):
                 self.assertGreaterEqual(theme.contrast(colours["text"], colours["background"]), 4.5)
                 self.assertGreaterEqual(theme.contrast(theme.on_focus(item), colours["focus"]), 4.5)
                 self.assertGreaterEqual(theme.contrast(colours["muted"], colours["background"]), 4.5)
+                # Tiles, panels and the quick menu are drawn on the surface colour.
+                self.assertGreaterEqual(theme.contrast(colours["text"], colours["surface"]), 4.5)
+                self.assertGreaterEqual(theme.contrast(colours["muted"], colours["surface"]), 4.5)
+                self.assertGreaterEqual(theme.contrast(colours["warning"], colours["background"]), 4.5)
+                self.assertGreaterEqual(theme.contrast(colours["error"], colours["background"]), 4.5)
+                # The focused tile's edge: WCAG's 3 to 1 for parts of the picture that are not text.
+                self.assertGreaterEqual(theme.contrast(colours["accent"], colours["surface"]), 3.0)
+
+    def test_the_wave_stays_readable_with_each_themes_own_accent(self):
+        # test_wave.py checks every ACCENTS preset, test_month.py every month's colour.
+        for name, item in self.themes.items():
+            text = item.colours["text"]
+            for hour in range(24):
+                colours = wave.palette(item, hour)
+                for part in ("top", "bottom"):
+                    self.assertGreaterEqual(theme.contrast(text, colours.hex(part)), theme.MIN_CONTRAST,
+                                            (name, hour, part))
 
     def test_text_is_drawn_in_the_text_colour_on_focus_except_high_contrast_and_terminal(self):
         for name, item in self.themes.items():
@@ -250,7 +288,7 @@ class InterfaceScreenTest(unittest.TestCase):
                 exited = stop.code in (0, None)
         return root, frames, exited
 
-    DOWN_TO_INTERFACE = [curses.KEY_DOWN] * 4
+    DOWN_TO_INTERFACE = [curses.KEY_DOWN] * 5
 
     def test_the_interface_row_is_above_back(self):
         _root, frames, _exited = self.run_screen([27], None)
@@ -364,12 +402,12 @@ class AppearanceScreenTest(TempDir):
         self.assertEqual(menu.index("APPEARANCE"), menu.index("DISPLAY") + 1)
 
     def test_switching_theme_writes_the_osc_string(self):
-        # THEME, A; the list is daylight, high-contrast, midnight, slate (on midnight): down once, A; B.
+        # THEME, A; the list is in file name order, on midnight, with ocean next: down once, A; B.
         write, osk_file = self.run_screen([10, curses.KEY_DOWN, 10, 27])
-        self.assertEqual(theme.load_choice(self.config), ("slate", ""))
-        slate = theme.load(BUILTIN / "slate.theme")
-        write.assert_called_once_with(1, theme.osc(slate).encode("ascii"))
-        self.assertEqual(theme.read_osc(osk_file), theme.osc(slate))
+        self.assertEqual(theme.load_choice(self.config), ("ocean", ""))
+        ocean = theme.load(BUILTIN / "ocean.theme")
+        write.assert_called_once_with(1, theme.osc(ocean).encode("ascii"))
+        self.assertEqual(theme.read_osc(osk_file), theme.osc(ocean))
 
     def test_switching_accent_writes_the_osc_string(self):
         # ACCENT row, A, THEME DEFAULT -> BLUE -> AMBER, A; B.
@@ -377,14 +415,31 @@ class AppearanceScreenTest(TempDir):
         self.assertEqual(theme.load_choice(self.config), ("midnight", "amber"))
         write.assert_called_once_with(1, theme.osc(theme.with_accent(theme.FALLBACK, "amber")).encode("ascii"))
 
+    def test_by_month_is_the_last_accent(self):
+        # ACCENT row, A, up from THEME DEFAULT wraps to BY MONTH, A; B.
+        with mock.patch.object(month, "colour", return_value="dc3b3b"):
+            write, _osk_file = self.run_screen([curses.KEY_DOWN, 10, curses.KEY_UP, 10, 27])
+        self.assertEqual(theme.load_choice(self.config), ("midnight", "month"))
+        self.assertEqual(theme.accent_label("month"), "BY MONTH")
+        write.assert_called_once()
+        self.assertIn("rgb:dc/3b/3b", write.call_args.args[1].decode("ascii"))
+
+    def test_background_row_saves_the_style(self):
+        # BACKGROUND row, A, WAVE AND SPARKLES -> WAVE -> PLAIN, A; B. The colours stay as they are.
+        write, _osk_file = self.run_screen([curses.KEY_DOWN, curses.KEY_DOWN, 10,
+                                            curses.KEY_DOWN, curses.KEY_DOWN, 10, 27])
+        write.assert_not_called()
+        self.assertEqual(background.load(self.config), background.PLAIN)
+        self.assertEqual(theme.load_choice(self.config), ("midnight", ""))
+
     def test_sounds_row_turns_the_tv_sounds_off_and_on(self):
         import couchliteos_quick as quick
 
-        write, _osk_file = self.run_screen([curses.KEY_DOWN, curses.KEY_DOWN, 10, 27])
+        write, _osk_file = self.run_screen([curses.KEY_DOWN] * 3 + [10, 27])
         write.assert_not_called()
         self.assertFalse(quick.sounds_enabled(self.config))
         self.assertEqual(theme.load_choice(self.config), ("midnight", ""))
-        self.run_screen([curses.KEY_DOWN, curses.KEY_DOWN, 10, 27])
+        self.run_screen([curses.KEY_DOWN] * 3 + [10, 27])
         self.assertTrue(quick.sounds_enabled(self.config))
 
     def test_backing_out_changes_nothing(self):

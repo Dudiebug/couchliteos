@@ -23,6 +23,8 @@ import re
 import stat
 import tempfile
 
+import couchliteos_month as month
+
 BUILTIN_DIR = pathlib.Path("/usr/share/couchliteos/themes")
 CONFIG = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos")) / "config.ini"
 SECTION = "appearance"
@@ -35,7 +37,8 @@ MAX_FILE = 4096
 MIN_CONTRAST = 4.5  # WCAG AA for normal text
 COLOUR = re.compile(r"#?([0-9a-fA-F]{6})")
 THEME_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
-# Accent presets (Settings > APPEARANCE > ACCENT); "" keeps the theme's own accent.
+# Accent presets (Settings > APPEARANCE > ACCENT); "" keeps the theme's own accent, and
+# month.NAME (BY MONTH) is the colour of the month (couchliteos_month).
 ACCENTS = (
     ("blue", "3b82f6"), ("amber", "f59e0b"), ("green", "22c55e"), ("red", "ef4444"),
     ("purple", "a855f7"), ("pink", "ec4899"), ("teal", "14b8a6"), ("orange", "f97316"),
@@ -127,8 +130,9 @@ def available(builtin: pathlib.Path | None = None, user: pathlib.Path | None = N
 
 
 def with_accent(theme: Theme, accent: str) -> Theme:
-    """The theme with an ACCENTS preset in place of its own accent; unknown or "" keeps it."""
-    colour = dict(ACCENTS).get(accent)
+    """The theme with an ACCENTS preset, or today's colour of the month, in place of its own
+    accent; unknown or "" keeps it."""
+    colour = month.colour() if accent == month.NAME else dict(ACCENTS).get(accent)
     if colour is None:
         return theme
     return dataclasses.replace(theme, colours={**theme.colours, "accent": colour})
@@ -198,7 +202,13 @@ def load_choice(path: pathlib.Path | None = None) -> tuple[str, str]:
         return DEFAULT, ""
     name = parser.get(SECTION, "theme", fallback="").strip().lower()
     accent = parser.get(SECTION, "accent", fallback="").strip().lower()
-    return (name if THEME_NAME.fullmatch(name) else DEFAULT), (accent if accent in dict(ACCENTS) else "")
+    known = accent in dict(ACCENTS) or accent == month.NAME
+    return (name if THEME_NAME.fullmatch(name) else DEFAULT), (accent if known else "")
+
+
+def accent_label(accent: str) -> str:
+    """The saved accent as Settings shows it."""
+    return month.LABEL if accent == month.NAME else accent.upper() or "THEME DEFAULT"
 
 
 def _write_atomically(path: pathlib.Path, text: str, mode: int) -> None:

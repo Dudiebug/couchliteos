@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: deep red, red accent.
+[theme]
+name = CRIMSON
+background = #1a070b
+surface = #2e0e15
+text = #fdf0f1
+muted = #cfa2a8
+accent = #e8384f
+focus = #8b1a2b
+warning = #fbbf24
+error = #ff9e9e

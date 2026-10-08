@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: burnt orange dusk, orange accent.
+[theme]
+name = SUNSET
+background = #200c06
+surface = #351a0e
+text = #fff3ea
+muted = #d6ad94
+accent = #ff6b2c
+focus = #8a3510
+warning = #fcd34d
+error = #ff9b9b

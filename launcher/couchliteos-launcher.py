@@ -26,6 +26,7 @@ import couchliteos_bluetooth as bluetooth
 import couchliteos_listview as listview
 import couchliteos_apps as apps
 import couchliteos_artwork as artwork
+import couchliteos_background as background
 import couchliteos_browser as browser
 import couchliteos_browsersetup as browsersetup
 import couchliteos_power as power
@@ -51,6 +52,7 @@ import couchliteos_screenfit as screenfit
 import couchliteos_pointer as pointer
 import couchliteos_phone as phone
 import couchliteos_theme as themes
+import couchliteos_month as month
 import couchliteos_quick as quick
 import couchliteos_recent as recent
 import couchliteos_session as session
@@ -1956,19 +1958,23 @@ class Settings:
                     notice = self.change_screen_setting("text", chosen, rows, selected)
 
     def run_appearance(self) -> None:
-        """THEME and ACCENT; a change recolours the launcher and the keyboard at once. SOUNDS turns the
-        TV interface's navigation sounds on or off. ARTWORK: cover lookup for games. INTERFACE: TV or
-        CLASSIC (this launcher); a change restarts the launcher service into it."""
+        """THEME and ACCENT (a preset, or BY MONTH: the PS3's colour of the month); a change recolours
+        the launcher and the keyboard at once. BACKGROUND: what the TV interface draws behind its
+        home screen (WAVE AND SPARKLES, WAVE or PLAIN). SOUNDS turns the TV interface's navigation
+        sounds on or off. ARTWORK: cover lookup for games. INTERFACE: TV or CLASSIC (this launcher);
+        a change restarts the launcher service into it."""
         selected = 0
         notice = ""
         while True:
             available, problems = themes.available()
             name, accent = themes.load_choice()
             chosen = available.get(name) or available.get(themes.DEFAULT) or themes.FALLBACK
+            backdrop = background.load()
             sounds = quick.sounds_enabled()
             interface = themes.load_interface()
-            rows = [f"THEME  {chosen.label}", f"ACCENT  {accent.upper() or 'THEME DEFAULT'}",
-                    f"SOUNDS  {'ON' if sounds else 'OFF'}", "ARTWORK", f"INTERFACE  {interface.upper()}", "BACK"]
+            rows = [f"THEME  {chosen.label}", f"ACCENT  {themes.accent_label(accent)}",
+                    f"BACKGROUND  {background.label(backdrop)}", f"SOUNDS  {'ON' if sounds else 'OFF'}",
+                    "ARTWORK", f"INTERFACE  {interface.upper()}", "BACK"]
             status = self.status
             # A bad user theme is listed nowhere else: say so until something is chosen.
             self.status = notice or (f"SKIPPED {problems[0]}".upper()[:76] if problems else status)
@@ -1984,20 +1990,28 @@ class Settings:
                 value = self.choose("THEME", [(theme.label, theme.name) for theme in available.values()], chosen.name)
                 if isinstance(value, str):
                     notice = self.change_theme(value, accent)
+            elif selected == 1:
+                choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS),
+                           (month.LABEL, month.NAME)]
+                value = self.choose("ACCENT", choices, accent)
+                if isinstance(value, str):
+                    notice = self.change_theme(chosen.name, value)
             elif selected == 2:
+                value = self.choose("BACKGROUND", [(label, style) for style, label in background.CHOICES], backdrop)
+                if isinstance(value, str):
+                    try:
+                        background.save(value)
+                    except (OSError, ValueError) as error:
+                        notice = f"NOT SAVED: {error}".upper()[:76]
+            elif selected == 3:
                 try:
                     quick.save_sounds(not sounds)
                 except OSError as error:
                     notice = f"NOT SAVED: {error}".upper()
-            elif selected == 3:
-                self.run_artwork()
             elif selected == 4:
-                notice = self.switch_interface(interface)
+                self.run_artwork()
             else:
-                choices = [("THEME DEFAULT", ""), *((label.upper(), label) for label, _colour in themes.ACCENTS)]
-                value = self.choose("ACCENT", choices, accent)
-                if isinstance(value, str):
-                    notice = self.change_theme(chosen.name, value)
+                notice = self.switch_interface(interface)
 
     def switch_interface(self, current: str) -> str:
         """INTERFACE: save TV or CLASSIC and end this launcher (or this screen over the TV interface,

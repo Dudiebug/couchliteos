@@ -1,0 +1,11 @@
+# CouchLiteOS built-in theme: deep green, green accent.
+[theme]
+name = EMERALD
+background = #03170f
+surface = #0a2a1d
+text = #eafcf3
+muted = #8ec5a9
+accent = #17b978
+focus = #0d6644
+warning = #fbbf24
+error = #f87171
