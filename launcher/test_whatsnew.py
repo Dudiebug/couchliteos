@@ -1,4 +1,4 @@
-import testenv  # noqa: F401  (first: scratch run and state directories)
+import testenv  # first: scratch run and state directories
 import curses
 import importlib.util
 import os
@@ -430,7 +430,7 @@ class LauncherHookTest(unittest.TestCase):
         # Before the wizard: afterwards a new user who just finished setup would look like an upgrader.
         calls = []
         with mock.patch.object(self.module, "network_summary", return_value="OFFLINE"):
-            launcher = self.module.Launcher(LauncherScreen())
+            launcher = testenv.no_polling(self.module.Launcher(LauncherScreen()))
         launcher.prepare_session = mock.Mock()
         launcher.setup_wizard = mock.Mock(side_effect=lambda: calls.append("wizard"))
         launcher.autostream = mock.Mock(side_effect=lambda: calls.append("autostream"))

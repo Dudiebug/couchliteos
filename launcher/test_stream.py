@@ -1,4 +1,4 @@
-import testenv  # noqa: F401  (first: scratch run and state directories)
+import testenv  # first: scratch run and state directories
 import contextlib
 import dataclasses
 import functools
@@ -1553,7 +1553,7 @@ class AutostreamTest(LauncherTestCase):
                 self.assertFalse(launcher.autostream())
 
     def test_run_calls_autostream_after_the_setup_wizard(self):
-        launcher = self.launcher()
+        launcher = testenv.no_polling(self.launcher())
         calls = []
         launcher.prepare_session = mock.Mock()
         launcher.setup_wizard = mock.Mock(side_effect=lambda: calls.append("setup"))

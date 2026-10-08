@@ -16,3 +16,11 @@ if "COUCHLITEOS_RUN_DIR" not in os.environ or "COUCHLITEOS_STATE_DIR" not in os.
     for _name, _sub in (("COUCHLITEOS_RUN_DIR", "run"), ("COUCHLITEOS_STATE_DIR", "state")):
         (_root / _sub).mkdir()
         os.environ.setdefault(_name, str(_root / _sub))
+
+
+def no_polling(launcher):
+    """Launcher.run() starts polling threads; left running they reach every later test's mocks
+    (the mic monitor's pw-dump calls counted in test_mic). Tests that call run() turn them off."""
+    for monitor in (launcher.controllers, launcher.battery, launcher.mic, launcher.pcstatus, launcher.updates):
+        monitor.start = lambda: None
+    return launcher

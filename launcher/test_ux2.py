@@ -1,6 +1,6 @@
 """Couch-usability tests: status messages, cursor identity, scrolling, hints, RDP connect."""
 
-import testenv  # noqa: F401  (first: scratch run and state directories)
+import testenv  # first: scratch run and state directories
 import importlib.util
 import pathlib
 import tempfile
@@ -84,7 +84,7 @@ class MainScreenStatusTest(unittest.TestCase):
         with mock.patch.object(self.module, "network_summary", side_effect=lambda: next(summaries)), mock.patch.object(
             self.module.time, "monotonic", clock
         ):
-            launcher = self.module.Launcher(Screen(keys, clock=clock))
+            launcher = testenv.no_polling(self.module.Launcher(Screen(keys, clock=clock)))
         launcher.prepare_session = mock.Mock()
         launcher.setup_wizard = mock.Mock()
         launcher.activate = lambda: on_activate(launcher)
