@@ -2,6 +2,8 @@ import testenv  # noqa: F401  (first: scratch run and state directories)
 import os
 import pathlib
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from xml.etree import ElementTree
@@ -166,6 +168,11 @@ class ItemTest(IconsTestCase):
         self.assertTrue(lookup.for_item("globe", firefox)[1])
 
 
+# Shapes plus the silver, gloss and shadow of tools/make-icons.py; no text, images or scripts.
+SVG_TAGS = {"svg", "g", "path", "circle", "ellipse", "rect", "defs", "linearGradient", "stop", "clipPath",
+            "filter", "feGaussianBlur"}
+
+
 class BundleTest(unittest.TestCase):
     """The icons this project draws itself (overlay/usr/share/couchliteos/icons)."""
 
@@ -175,7 +182,13 @@ class BundleTest(unittest.TestCase):
         names |= set(re.findall(r'return "([a-z0-9-]+)"', source.split("def icon_of", 1)[1].split("\ndef ", 1)[0]))
         for table in (xmb.ICONS, xmb.APP_ICONS, xmb.ENTRY_ICONS, xmb.POWER_ICONS):
             names |= set(table.values())
+        names |= set(xmb.WEB_SERVICES.values())
         return names | {icons.FALLBACK}
+
+    def test_drawn_by_the_generator(self):
+        tool = pathlib.Path(__file__).resolve().parent.parent / "tools" / "make-icons.py"
+        result = subprocess.run([sys.executable, str(tool), "--check"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_every_icon_the_xmb_uses_is_there(self):
         for name in sorted(self.used_names()):
@@ -186,13 +199,16 @@ class BundleTest(unittest.TestCase):
         for path in sorted(icons.REPO_ICONS.iterdir()):
             self.assertEqual(path.suffix, ".svg", path.name)
             text = path.read_text()
-            self.assertLess(len(text), 4096, path.name)
+            self.assertLess(len(text), 8192, path.name)
             root = ElementTree.fromstring(text)
             self.assertEqual(root.tag, "{http://www.w3.org/2000/svg}svg", path.name)
             self.assertEqual(root.get("viewBox"), "0 0 24 24", path.name)
             for element in root.iter():
-                self.assertIn(element.tag.split("}")[1], {"svg", "path", "circle", "rect", "g"}, path.name)
+                self.assertIn(element.tag.split("}")[1], SVG_TAGS, path.name)
                 self.assertFalse([key for key in element.keys() if "href" in key or key.startswith("on")], path.name)
+                for value in element.attrib.values():
+                    for target in re.findall(r"url\(([^)]*)\)", value):
+                        self.assertRegex(target, r"^#[a-z]+$", path.name)
             self.assertNotIn("://", text.replace('xmlns="http://www.w3.org/2000/svg"', ""), path.name)
 
     def test_nothing_unused(self):

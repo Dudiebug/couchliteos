@@ -65,6 +65,66 @@ ENTRY_ICONS = {
     "SYSTEM DIAGNOSTICS": "stethoscope",
 }
 POWER_ICONS = {"suspend": "moon", "reboot": "arrows-clockwise", "poweroff": "power"}
+# Known websites by what they are, for the icon shown until the site's own icon is fetched (one of
+# ours, tools/make-icons.py; never anyone's logo) and for the category. Matched on the address's
+# host or a parent domain ("www.netflix.com" is netflix.com).
+_SERVICES = {
+    "film": {
+        "netflix.com", "primevideo.com", "disneyplus.com",
+        "max.com", "hbomax.com", "hulu.com", "paramountplus.com",
+        "peacocktv.com", "tv.apple.com", "crunchyroll.com",
+        "plex.tv", "mubi.com", "criterionchannel.com", "starz.com",
+        "britbox.com", "nowtv.com", "hotstar.com", "viki.com",
+        "stan.com.au", "canalplus.com", "amcplus.com", "shudder.com",
+    },
+    "play-circle": {
+        "youtube.com", "vimeo.com", "dailymotion.com",
+        "nebula.tv", "curiositystream.com", "rumble.com",
+    },
+    "television": {
+        "tv.youtube.com", "pluto.tv", "tubitv.com", "sling.com",
+        "philo.com", "therokuchannel.roku.com", "bbc.co.uk",
+        "itv.com", "channel4.com", "zattoo.com", "freevee.com",
+    },
+    "broadcast": {"twitch.tv", "kick.com"},
+    "music-note": {
+        "spotify.com", "music.youtube.com", "soundcloud.com",
+        "tidal.com", "deezer.com", "music.apple.com",
+        "music.amazon.com", "pandora.com", "bandcamp.com",
+    },
+    "microphone": {"podcasts.apple.com", "pocketcasts.com"},
+    "trophy": {
+        "espn.com", "dazn.com", "fubo.tv", "nba.com", "nfl.com",
+        "mlb.com", "nhl.com", "f1tv.formula1.com",
+    },
+    "cloud-game": {
+        "xbox.com", "play.geforcenow.com", "luna.amazon.com",
+        "boosteroid.com",
+    },
+    "newspaper": {
+        "cnn.com", "nytimes.com", "theguardian.com",
+        "news.google.com", "reuters.com", "apnews.com",
+    },
+    "image": {"photos.google.com", "flickr.com", "icloud.com"},
+    "chat": {
+        "discord.com", "web.whatsapp.com", "messenger.com",
+        "web.telegram.org", "reddit.com",
+    },
+    "envelope": {
+        "mail.google.com", "outlook.live.com", "outlook.office.com",
+        "mail.proton.me",
+    },
+    "bag": {"amazon.com", "ebay.com"},
+    "video-camera": {"zoom.us", "meet.google.com", "teams.microsoft.com"},
+    "document": {
+        "docs.google.com", "drive.google.com", "office.com",
+        "notion.so",
+    },
+}
+WEB_SERVICES = {domain: icon for icon, domains in _SERVICES.items() for domain in domains}
+# Where a web application goes by its icon: watching and listening are TV & VIDEO.
+WEB_GAMES = {"cloud-game"}
+WEB_VIDEO = {"film", "play-circle", "television", "broadcast", "music-note", "microphone", "trophy"}
 NO_VIDEO = "ADD A STREAMING SERVICE"
 WEB_URL_RE = re.compile(r"https?://[^\s'\"]+")
 
@@ -100,6 +160,19 @@ def web_url(app: apps.Application) -> str:
     return match.group(0) if match else ""
 
 
+def web_service(url: str) -> str | None:
+    """Our icon for a known website, by the address's host or its parent domains."""
+    match = re.match(r"https?://([^/:?#]+)", url or "", re.IGNORECASE)
+    if not match:
+        return None
+    labels = match.group(1).lower().rstrip(".").split(".")
+    for start in range(len(labels) - 1):
+        found = WEB_SERVICES.get(".".join(labels[start:]))
+        if found:
+            return found
+    return None
+
+
 def category_of(app: apps.Application) -> str:
     if app.category in (VIDEO, GAMES, APPS, NETWORK):
         return app.category
@@ -108,7 +181,10 @@ def category_of(app: apps.Application) -> str:
     if app.kind == "rdp":
         return NETWORK
     if web_url(app):
-        return VIDEO
+        service = web_service(web_url(app))
+        if service in WEB_GAMES:
+            return GAMES
+        return VIDEO if service is None or service in WEB_VIDEO else APPS
     return APPS
 
 
@@ -120,7 +196,7 @@ def icon_of(app: apps.Application) -> str:
     if app.kind == "rdp":
         return "desktop"
     if web_url(app):
-        return "play-circle"
+        return web_service(web_url(app)) or "play-circle"
     return "app-window"
 
 
@@ -163,9 +239,10 @@ class XmbModel:
                     continue
             except OSError:
                 continue
+            url = web_url(app)
             placed[category_of(app)].append(Item(
                 f"app:{app.id}", app.name.upper(), ("app", app.id), icon=icon_of(app), app=app.id,
-                url=web_url(app), detail="WEB" if web_url(app) else "",
+                url=url, detail="WEB" if url else "",
             ))
         return placed
 

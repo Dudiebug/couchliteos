@@ -137,6 +137,29 @@ class CategoriesTest(XmbTestCase):
         self.assertEqual(xmb.web_url(app("x", request="start-x")), "")
         self.assertEqual(xmb.web_url(APPS[4]), "")
 
+    def test_known_websites_by_host_or_parent_domain(self):
+        self.assertEqual(xmb.web_service("https://www.netflix.com/browse"), "film")
+        self.assertEqual(xmb.web_service("https://music.youtube.com/"), "music-note")
+        self.assertEqual(xmb.web_service("https://www.youtube.com/tv"), "play-circle")
+        self.assertEqual(xmb.web_service("HTTPS://TV.YOUTUBE.COM:443/"), "television")
+        self.assertIsNone(xmb.web_service("https://netflix.com.example.org/"))
+        self.assertIsNone(xmb.web_service("https://com/"))
+        self.assertIsNone(xmb.web_service("not a link"))
+
+    def test_websites_go_where_they_belong_with_our_icon(self):
+        def web(app_id, url):
+            return app(app_id, kind="command", command="/usr/bin/firefox-esr", arguments=f"--kiosk {url}")
+        model = self.model(applications=APPS + (
+            web("geforce-now", "https://play.geforcenow.com/"), web("gmail", "https://mail.google.com/"),
+            web("somewhere", "https://example.org/"),
+        ))
+        self.assertIn("GEFORCE-NOW", self.labels(model, xmb.GAMES))
+        self.assertIn("GMAIL", self.labels(model, xmb.APPS))
+        self.assertIn("SOMEWHERE", self.labels(model, xmb.VIDEO))
+        icons = {item.label: item.icon for category in model.categories for item in category.items}
+        self.assertEqual((icons["NETFLIX"], icons["GEFORCE-NOW"], icons["GMAIL"], icons["SOMEWHERE"]),
+                         ("film", "cloud-game", "envelope", "play-circle"))
+
 
 class FocusTest(XmbTestCase):
     def test_nothing_wraps(self):
