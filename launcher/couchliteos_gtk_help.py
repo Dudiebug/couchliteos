@@ -134,8 +134,16 @@ class TourPage(Gtk.Box):
         self.slides = Gtk.Stack()
         self.slides.set_vexpand(True)
         self.slots = (CardBox(), CardBox())
+        # Each card in a viewport that never scrolls: a card's wrapping labels can ask for a minimum
+        # height far over the screen's (GTK measures them at odd widths), which grew the window
+        # past the screen; the viewport asks for none and the card is laid out at the band's size.
+        self.frames = []
         for slot in self.slots:
-            self.slides.add_child(slot)
+            frame = Gtk.ScrolledWindow()
+            frame.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.EXTERNAL)
+            frame.set_child(slot)
+            self.frames.append(frame)
+            self.slides.add_child(frame)
         self.front = 0
         band.append(self.slides)
         self.append(band)
@@ -185,7 +193,7 @@ class TourPage(Gtk.Box):
         back.fill(view, self.texture(view.icon))
         self.slides.set_transition_type(kind)
         self.slides.set_transition_duration(ms)
-        self.slides.set_visible_child(back)
+        self.slides.set_visible_child(self.frames[1 - self.front])
         self.front = 1 - self.front
         _clear(self.dots)
         for index in range(view.count):
