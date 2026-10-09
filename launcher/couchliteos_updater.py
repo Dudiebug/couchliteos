@@ -1001,13 +1001,41 @@ def _safe_rel(rel: str) -> bool:
     return bool(rel) and not rel.startswith("/") and ".." not in pathlib.PurePosixPath(rel).parts
 
 
-def stale_etc_files(target_etc: pathlib.Path, image_etc: pathlib.Path, manifest: set[str] | None) -> list[str]:
+def manifest_from_an_install(manifest: set[str]) -> bool:
+    """True for a manifest that lists GRUB's own /etc files: no image has them (the installer adds
+    GRUB), so it was taken from an installed system. 0.3.0-beta.2 to beta.4 wrote one at every
+    restore, and the next update then deleted the boot menu scripts (only the restore entry was left)."""
+    return any(rel == "default/grub" or (rel.startswith("grub.d/") and "couchliteos" not in rel)
+               for rel in manifest)
+
+
+def _from_box_package(rel: str, target_etc: pathlib.Path, protected: frozenset[str]) -> bool:
+    """A file of a package only the box has (GRUB, the console setup...), or a link to one."""
+    path = f"/etc/{rel}"
+    if path in protected:
+        return True
+    try:
+        dest = os.readlink(target_etc / rel)
+    except OSError:
+        return False
+    dest = posixpath.normpath(posixpath.join(posixpath.dirname(path), dest))
+    # Merged /usr: dpkg lists /usr/lib/... or /lib/... and a link may name either.
+    aliases = {dest, dest.removeprefix("/usr")} | ({"/usr" + dest} if dest.startswith("/lib/") else set())
+    return bool(aliases & protected)
+
+
+def stale_etc_files(target_etc: pathlib.Path, image_etc: pathlib.Path, manifest: set[str] | None,
+                    protected: Iterable[str] = ()) -> list[str]:
     """Files an earlier update put in /etc that the new image no longer has.
 
     Without a manifest (the first update) only what the image certainly owns is considered: the
     /etc/couchliteos directory and our own couchliteos-* units, never what the installer or the
-    owner enabled next to them.
+    owner enabled next to them. A manifest taken from an installed system counts as none.
+    Files of the packages only the box has (`protected`), and links to them, always stay.
     """
+    protected = frozenset(protected)
+    if manifest is not None and manifest_from_an_install(manifest):
+        manifest = None
     if manifest is None:
         candidates = [
             rel for rel in _files_below(target_etc)
@@ -1019,6 +1047,7 @@ def stale_etc_files(target_etc: pathlib.Path, image_etc: pathlib.Path, manifest:
     return sorted(
         rel for rel in candidates
         if _safe_rel(rel) and not os.path.lexists(image_etc / rel) and not etc_kept(rel)
+        and not _from_box_package(rel, target_etc, protected)
     )
 
 
@@ -1216,7 +1245,7 @@ def apply_root(
             if sh(env, argv, log).returncode not in RSYNC_OK:
                 raise UpdateFailed(f"INSTALL FAILED WHILE COPYING FILES ({name.upper()}). {MSG_INSTALL[15:]}")
             if name == "etc":
-                _tidy_etc(target, image, log)
+                _tidy_etc(target, image, log, protected, restore)
                 if legacy:
                     remove_legacy_units(target, log)
     finally:
@@ -1262,14 +1291,22 @@ def _read(path: pathlib.Path) -> str:
         return ""
 
 
-def _tidy_etc(target: pathlib.Path, image: pathlib.Path, log: Callable[[str], None]) -> None:
-    """Delete /etc files the new image dropped, then remember the image's /etc for next time."""
+def _tidy_etc(target: pathlib.Path, image: pathlib.Path, log: Callable[[str], None],
+              protected: Iterable[str] = (), restore: bool = False) -> None:
+    """Delete /etc files the new image dropped, then remember the image's /etc for next time.
+
+    A restore's image is the saved system, installer files and all, not an image: it leaves the
+    manifest as it was (the next update would otherwise take GRUB's files for the image's)."""
     manifest_path = target / MANIFEST_REL
-    stale = stale_etc_files(target / "etc", image / "etc", read_manifest(manifest_path))
+    manifest = read_manifest(manifest_path)
+    if manifest is not None and manifest_from_an_install(manifest):
+        log("the /etc manifest lists GRUB's own files (written by a restore): only our own files count")
+    stale = stale_etc_files(target / "etc", image / "etc", manifest, protected)
     for rel in stale:
         log(f"removing stale /etc/{rel}")
     remove_stale(target / "etc", stale)
-    write_manifest(manifest_path, etc_manifest(image / "etc"))
+    if not restore:
+        write_manifest(manifest_path, etc_manifest(image / "etc"))
 
 
 def _boot_menu(target: pathlib.Path, env: Env, log: Callable[[str], None], step,

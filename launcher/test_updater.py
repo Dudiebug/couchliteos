@@ -654,6 +654,36 @@ class EtcTest(TmpCase):
             "systemd/system/multi-user.target.wants/couchliteos-old.service",
         ])
 
+    def test_a_manifest_taken_from_an_installed_system_counts_as_none(self):
+        # 0.3.0-beta.2 to beta.4 wrote one at every restore: the next update deleted GRUB's
+        # scripts and the box started into a menu with only the restore entry.
+        for rel in ("grub.d/00_header", "grub.d/10_linux", "grub.d/01_couchliteos_bootcheck", "securetty",
+                    "modprobe.d/local.conf", "systemd/system/couchliteos-old.service", "couchliteos/old.conf"):
+            put(self.target, rel)
+        manifest = {"grub.d/00_header", "grub.d/10_linux", "grub.d/01_couchliteos_bootcheck", "securetty",
+                    "modprobe.d/local.conf", "systemd/system/couchliteos-old.service", "couchliteos/old.conf",
+                    "default/grub"}
+        self.assertTrue(updater.manifest_from_an_install(manifest))
+        self.assertFalse(updater.manifest_from_an_install({"grub.d/01_couchliteos_bootcheck", "foo.conf"}))
+        self.assertEqual(updater.stale_etc_files(self.target, self.image, manifest), [
+            "couchliteos/old.conf", "systemd/system/couchliteos-old.service"])
+
+    def test_files_of_packages_only_the_box_has_and_links_to_them_stay(self):
+        put(self.target, "grub-extra.conf")
+        put(self.target, "init.d/console-setup.sh")
+        link(self.target, "rc2.d/S01console-setup.sh", "../init.d/console-setup.sh")
+        link(self.target, "systemd/system/multi-user.target.wants/grub-common.service",
+             "/lib/systemd/system/grub-common.service")
+        link(self.target, "systemd/system/multi-user.target.wants/gone.service", "/lib/systemd/system/gone.service")
+        put(self.target, "old.conf")
+        manifest = {"grub-extra.conf", "init.d/console-setup.sh", "rc2.d/S01console-setup.sh",
+                    "systemd/system/multi-user.target.wants/grub-common.service",
+                    "systemd/system/multi-user.target.wants/gone.service", "old.conf"}
+        protected = ["/etc/grub-extra.conf", "/etc/init.d/console-setup.sh",
+                     "/usr/lib/systemd/system/grub-common.service"]
+        self.assertEqual(updater.stale_etc_files(self.target, self.image, manifest, protected), [
+            "old.conf", "systemd/system/multi-user.target.wants/gone.service"])
+
     def test_remove_stale_deletes_files_and_prunes_directories_it_emptied(self):
         put(self.target, "a/b/old.conf")
         put(self.target, "a/keep.conf")
@@ -1950,6 +1980,14 @@ class ApplyRootTest(TmpCase):
         self.assertIn("foo.conf", manifest)
         self.assertIn("systemd/system/couchliteos-a.service", manifest)
 
+    def test_an_extra_packages_etc_files_survive_a_manifest_that_names_them(self):
+        info = self.target / "var/lib/dpkg/info/grub-efi-amd64.list"
+        info.write_text(info.read_text() + "/etc\n/etc/grub-efi.conf\n")
+        put(self.target, "etc/grub-efi.conf", "box")
+        updater.write_manifest(self.target / "var/lib/couchliteos-update/etc-manifest", ["grub-efi.conf"])
+        self.apply()
+        self.assertEqual(self.read("etc/grub-efi.conf"), "box")
+
     def test_stale_etc_files_from_the_previous_manifest_are_removed(self):
         put(self.target, "etc/gone.conf", "old")
         put(self.target, "etc/mine.conf", "mine")
@@ -2294,6 +2332,17 @@ class ApplyRootRestoreTest(TmpCase):
         self.assertEqual(secret.read_text(), "root:x\n")
         self.assertFalse((self.target / "var/lib/couchliteos/whatsnew-seen").is_symlink())
         self.assertEqual(self.read("var/lib/couchliteos/whatsnew-seen"), "0.2.0\n")
+
+    def test_a_restore_leaves_the_etc_manifest_as_it_was(self):
+        # The saved system's /etc holds the installer's files too (GRUB's): taken as the image's,
+        # the next update would delete them.
+        put(self.image, "etc/grub.d/10_linux")
+        manifest = self.target / "var/lib/couchliteos-update/etc-manifest"
+        updater.write_manifest(manifest, ["foo.conf", "newer-only.conf"])
+        put(self.target, "etc/newer-only.conf")
+        self.restore()
+        self.assertEqual(updater.read_manifest(manifest), {"foo.conf", "newer-only.conf"})
+        self.assertIsNone(self.read("etc/newer-only.conf"), "what only the newer image had still goes")
 
     def test_the_log_says_restore(self):
         self.restore()

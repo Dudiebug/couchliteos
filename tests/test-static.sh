@@ -122,7 +122,7 @@ rg -q '^ExecStartPre=-\+/usr/bin/timeout 10 /usr/bin/plymouth quit --retain-spla
 [[ $(rg -n '^ExecStart' services/couchliteos-launcher.service | head -n 1) == *'plymouth quit'* ]]
 rg -q '^After=couchliteos-launcher.service$' overlay/etc/systemd/system/plymouth-quit.service.d/couchliteos.conf
 rg -q '^ExecStartPre=-/usr/bin/timeout 10 /usr/bin/plymouth quit$' services/couchliteos-restore.service
-[[ "$(< VERSION)" == 0.3.0-beta.4 ]]
+[[ "$(< VERSION)" == 0.3.0-beta.5 ]]
 refute rg -q 'NONE PAIRED' launcher --glob '*.py'
 cmp -s VERSION overlay/etc/couchliteos-version
 rg -Fq 'path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso' .github/workflows/build.yml
