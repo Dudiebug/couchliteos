@@ -84,6 +84,18 @@ class BlackAndRevealTest(LoadingTestCase):
         still = self.at(screen, loading.CONTENT_MS / 2)
         self.assertEqual((still.black, still.content, still.moving), (1.0, 0.0, False))
 
+    def test_plain_black_is_the_same_frame_later_so_the_view_stops_drawing(self):
+        # The view stops its tick when a frame that does not move equals the last one drawn: the
+        # ring's and the picture's time must not leak into a black that shows neither.
+        screen = self.loading()
+        screen.start()
+        self.at(screen, 2000)
+        screen.black()
+        held = self.at(screen, loading.CONTENT_MS + 10)
+        self.assertFalse(held.moving)
+        self.assertEqual(self.at(screen, 370), held)
+        self.assertEqual(self.at(screen, 5000), held)
+
     def test_black_without_a_start_is_plain_black_at_once(self):
         screen = self.loading()
         screen.black()

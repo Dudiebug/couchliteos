@@ -22,7 +22,12 @@ each layer: a few dozen sums a pixel, nothing an old GPU notices.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import math
+import os
+import pathlib
+import tempfile
+import zlib
 
 import couchliteos_motion as motion
 import couchliteos_theme as theme
@@ -439,6 +444,7 @@ class Clock:
         return self.last is None or now - self.last >= 1 / FPS - 0.002
 
 
+CORE_CUT = 200.0  # exp(-200) ~ 1e-87: far under the last bit of any haze on the screen (> 1e-4)
 STILL_SIZE = (320, 180)  # the still frame is made this small and stretched: the wave is all soft edges
 
 
@@ -456,28 +462,122 @@ def still_frame(width: int, height: int, colours: Palette, time: float = STILL_T
     if colours.sparkle > 0:  # each dot at least a pixel wide, or the small frame would lose most of them
         sharp = sparkle_field(width, height, time, 0.8 / height, SHARP)
         soft = sparkle_field(width, height, time, 0.8 / height, SOFT)
+    # The same sums as before in the same order (so the same bytes), with what cannot change a
+    # pixel left out: a ribbon's core where it is far below the haze's last bit, and a mix by 0.
+    top, ribbon_colour = colours.top, colours.ribbon
+    span = tuple(b - a for a, b in zip(colours.top, colours.bottom))
+    squares = tuple(w ** 2 for w in WIDTHS)
+    alpha, sparkle_amount = colours.alpha, colours.sparkle
+    exp = math.exp
     out = bytearray(width * height * 3)
     at = 0
     for py in range(height):
         y = (py + 0.5) / height
         for x, ribbons in columns:
-            t = min(1.0, max(0.0, y * 0.85 + x * 0.15))
+            t = y * 0.85 + x * 0.15
+            t = 0.0 if t <= 0.0 else 1.0 if t >= 1.0 else t
             t = t * t * (3 - 2 * t)  # smoothstep
-            glow = 0.0
-            if colours.alpha > 0:
-                for ribbon, middle in enumerate(ribbons):
+            amount = 0.0
+            if alpha > 0:
+                glow = 0.0
+                for strength, square, middle in zip(RIBBON_ALPHA, squares, ribbons):
                     d = abs(y - middle)
-                    glow += RIBBON_ALPHA[ribbon] * (math.exp(-(d * d) / (WIDTHS[ribbon] ** 2)) + math.exp(-d / HAZE) * 0.35)
-                lo, hi = min(ribbons[0], ribbons[1]), max(ribbons[0], ribbons[1])
+                    far = (d * d) / square
+                    haze = exp(-d / HAZE) * 0.35
+                    # exp(-CORE_CUT) is under half the haze's last bit here: adding it changes nothing.
+                    glow += strength * ((exp(-far) + haze) if far < CORE_CUT else haze)
+                lo, hi = (ribbons[0], ribbons[1]) if ribbons[0] <= ribbons[1] else (ribbons[1], ribbons[0])
                 if lo - SHEET_EDGE < y < hi + SHEET_EDGE:  # sheet() is 0 outside: skip the sums
                     glow += sheet(y, lo, hi)
-            amount = min(1.0, max(0.0, glow * colours.alpha))
-            shine = min(1.0, max(0.0, sharp.get(at // 3, 0.0) * colours.sparkle))
-            haze = min(1.0, max(0.0, soft.get(at // 3, 0.0) * colours.sparkle))
-            for channel in range(3):
-                base = colours.top[channel] + (colours.bottom[channel] - colours.top[channel]) * t
-                base += (colours.ribbon[channel] - base) * amount
-                base += (colours.ribbon[channel] - base) * haze
-                out[at + channel] = round(255 * (base + (white[channel] - base) * shine))
+                amount = glow * alpha
+                amount = 0.0 if amount <= 0.0 else 1.0 if amount >= 1.0 else amount
+            shine = haze = 0.0
+            if sparkle_amount > 0:
+                shine = sharp.get(at // 3, 0.0) * sparkle_amount
+                shine = 0.0 if shine <= 0.0 else 1.0 if shine >= 1.0 else shine
+                haze = soft.get(at // 3, 0.0) * sparkle_amount
+                haze = 0.0 if haze <= 0.0 else 1.0 if haze >= 1.0 else haze
+            for channel in (0, 1, 2):
+                base = top[channel] + span[channel] * t
+                if amount:
+                    base += (ribbon_colour[channel] - base) * amount
+                if haze:
+                    base += (ribbon_colour[channel] - base) * haze
+                if shine:
+                    base += (white[channel] - base) * shine
+                out[at + channel] = round(255 * base)
             at += 3
     return bytes(out)
+
+
+STILL_VERSION = 1  # raise when still_frame() draws differently (the shader text is in the key too)
+STILL_CACHE = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or pathlib.Path.home() / ".cache") / "couchliteos/wave"
+
+
+def still_key(width: int, height: int, colours: Palette, time: float = STILL_TIME) -> str:
+    """What a still frame is made of, as a file name: its size, its colours, its moment, and the
+    wave itself (FRAGMENT's text holds every constant still_frame() uses)."""
+    made_of = repr((STILL_VERSION, width, height, dataclasses.astuple(colours), time, fragment()))
+    return hashlib.sha256(made_of.encode()).hexdigest()[:32]
+
+
+class StillCache:
+    """Still frames on disk, compressed: a theme, accent and quarter hour seen before is read back
+    rather than worked out again (a fraction of a second of an old CPU each). At most LIMIT files;
+    the ones least recently used go first. A cache that cannot be read or written only costs time."""
+
+    LIMIT = 256  # a few tens of KB each
+
+    def __init__(self, directory: pathlib.Path = STILL_CACHE, limit: int = LIMIT) -> None:
+        self.directory = directory
+        self.limit = limit
+
+    def frame(self, width: int, height: int, colours: Palette, time: float = STILL_TIME) -> bytes:
+        path = self.directory / f"{still_key(width, height, colours, time)}.rgb.z"
+        try:
+            data = zlib.decompress(path.read_bytes())
+            if len(data) == width * height * 3:
+                os.utime(path)
+                return data
+        except (OSError, zlib.error):
+            pass
+        data = still_frame(width, height, colours, time)
+        self.store(path, data)
+        return data
+
+    def store(self, path: pathlib.Path, data: bytes) -> None:
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(prefix=".still.", dir=self.directory)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(zlib.compress(data, 6))
+                os.replace(temporary, path)
+            except BaseException:
+                pathlib.Path(temporary).unlink(missing_ok=True)
+                raise
+            self.prune()
+        except OSError:
+            pass
+
+    def prune(self) -> None:
+        files = []
+        for item in self.directory.glob("*.rgb.z"):
+            try:
+                files.append((item.stat().st_mtime_ns, item))
+            except OSError:
+                continue
+        files.sort()
+        for _mtime, item in files[:max(0, len(files) - self.limit)]:
+            item.unlink(missing_ok=True)
+
+
+def render_divisor(width: int, height: int, most: int = 1920 * 1080) -> float:
+    """How much smaller than the screen the GL wave is drawn (then stretched back): 1 up to a
+    1080p screen's pixels, beyond that just enough to stay at that many (1440p: 1.33, 4K: 2).
+    The wave is soft light; above 1080p a stretched frame looks the same and costs a half to
+    a quarter of the GPU (or CPU) time."""
+    pixels = width * height
+    if pixels <= most * 1.25 or most <= 0:  # 1920x1200 too
+        return 1.0
+    return math.sqrt(pixels / most)

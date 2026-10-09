@@ -559,6 +559,12 @@ class RunDirectoryTrustTest(unittest.TestCase):
         self.assertEqual((bundle / "session/interface.txt").read_text(),
                          "classic\nfallback after exit 3, then exit 3 with cairo\n")
 
+    def test_the_renderer_file_is_in_the_bundle(self):
+        (self.run_dir / "renderer").write_text("ngl\nno GPU Vulkan driver for nouveau: OpenGL on nouveau\n")
+        bundle = pathlib.Path(self.tmp.name) / "bundle"
+        self.collect_into(bundle)
+        self.assertEqual((bundle / "session/renderer.txt").read_text().splitlines()[0], "ngl")
+
     def test_status_fifo_does_not_block_the_exporter(self):
         (self.run_dir / "x-ready").write_text("")
         os.mkfifo(self.run_dir / "x-status")

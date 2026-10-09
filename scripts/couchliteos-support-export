@@ -460,6 +460,8 @@ def collect(bundle: pathlib.Path) -> None:
     add_file(bundle, "firefox/eme-policy.json", pathlib.Path("/etc/firefox/policies/policies.json"))
     # Which front end is on screen (tv or classic) and why: couchliteos-session writes it.
     add_file(bundle, "session/interface.txt", RUN / "interface")
+    # Which GTK renderer the TV interface asked for and why: couchliteos-tv writes it.
+    add_file(bundle, "session/renderer.txt", RUN / "renderer")
     managed = []
     for ready in sorted(RUN.glob("*-ready")):
         app_id = ready.name.removesuffix("-ready")

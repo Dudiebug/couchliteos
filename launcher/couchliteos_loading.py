@@ -118,7 +118,9 @@ class Loading:
             return Frame(round(black, 4), round(content, 4), self.dots(now), self.swell(now), True)
         if self.phase == BLACK:
             content = round(self.content_from * (1 - _part(t, motion.scaled(CONTENT_MS, level))), 4)
-            return Frame(1.0, content, self.dots(now), self.swell(now), content > 0)
+            if content <= 0:  # plain black: the same Frame every time, so the view stops its tick
+                return Frame(1.0, 0.0)
+            return Frame(1.0, content, self.dots(now), self.swell(now), True)
         if self.phase == REVEALING:
             span = motion.scaled(REVEAL_MS, level)
             done = _part(t, span, motion.ease_in_out_cubic)

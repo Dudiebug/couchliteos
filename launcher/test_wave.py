@@ -2,6 +2,7 @@ import testenv  # noqa: F401  (first: scratch run and state directories)
 import math
 import pathlib
 import re
+import tempfile
 import unittest
 
 import couchliteos_motion as motion
@@ -281,6 +282,107 @@ class StillTest(unittest.TestCase):
     def test_flat_is_the_gradient_alone(self):
         flat = wave.Palette((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (1.0, 1.0, 1.0), 0.0)
         self.assertEqual(set(wave.still_frame(8, 8, flat)), {128})
+
+
+def reference_still_frame(width, height, colours, time=wave.STILL_TIME):
+    """still_frame() as first written: every sum on every pixel (the quick one must match it)."""
+    columns = []
+    for px in range(width):
+        x = (px + 0.5) / width
+        columns.append((x, [wave.ribbon_y(x, time, ribbon) for ribbon in range(len(wave.WIDTHS))]))
+    white = wave._mix(colours.ribbon, (1.0, 1.0, 1.0), wave.SPARKLE_WHITE)
+    sharp, soft = {}, {}
+    if colours.sparkle > 0:
+        sharp = wave.sparkle_field(width, height, time, 0.8 / height, wave.SHARP)
+        soft = wave.sparkle_field(width, height, time, 0.8 / height, wave.SOFT)
+    out = bytearray(width * height * 3)
+    at = 0
+    for py in range(height):
+        y = (py + 0.5) / height
+        for x, ribbons in columns:
+            t = min(1.0, max(0.0, y * 0.85 + x * 0.15))
+            t = t * t * (3 - 2 * t)
+            glow = 0.0
+            if colours.alpha > 0:
+                for ribbon, middle in enumerate(ribbons):
+                    d = abs(y - middle)
+                    glow += wave.RIBBON_ALPHA[ribbon] * (math.exp(-(d * d) / (wave.WIDTHS[ribbon] ** 2))
+                                                         + math.exp(-d / wave.HAZE) * 0.35)
+                lo, hi = min(ribbons[0], ribbons[1]), max(ribbons[0], ribbons[1])
+                if lo - wave.SHEET_EDGE < y < hi + wave.SHEET_EDGE:
+                    glow += wave.sheet(y, lo, hi)
+            amount = min(1.0, max(0.0, glow * colours.alpha))
+            shine = min(1.0, max(0.0, sharp.get(at // 3, 0.0) * colours.sparkle))
+            haze = min(1.0, max(0.0, soft.get(at // 3, 0.0) * colours.sparkle))
+            for channel in range(3):
+                base = colours.top[channel] + (colours.bottom[channel] - colours.top[channel]) * t
+                base += (colours.ribbon[channel] - base) * amount
+                base += (colours.ribbon[channel] - base) * haze
+                out[at + channel] = round(255 * (base + (white[channel] - base) * shine))
+            at += 3
+    return bytes(out)
+
+
+class QuickStillTest(unittest.TestCase):
+    def test_the_quick_still_frame_is_every_sum_worked_out(self):
+        looks = list(every_look())[::7]
+        for look in looks:
+            for hour in (3, 15):
+                colours = wave.palette(look, hour)
+                for palette in (colours, wave.Palette(colours.top, colours.top, colours.ribbon, 0.0)):
+                    self.assertEqual(wave.still_frame(96, 54, palette), reference_still_frame(96, 54, palette),
+                                     (look.name, hour, palette))
+
+
+class StillCacheTest(unittest.TestCase):
+    COLOURS = wave.Palette((0.2, 0.3, 0.6), (0.0, 0.0, 0.1), (1.0, 1.0, 1.0), 0.3, 0.9)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = pathlib.Path(temporary.name) / "wave"
+
+    def test_a_frame_is_worked_out_once_then_read_back(self):
+        cache = wave.StillCache(self.directory)
+        first = cache.frame(32, 18, self.COLOURS)
+        self.assertEqual(first, wave.still_frame(32, 18, self.COLOURS))
+        files = list(self.directory.glob("*.rgb.z"))
+        self.assertEqual(len(files), 1)
+        files[0].write_bytes(__import__("zlib").compress(b"" * (32 * 18 * 3)))
+        self.assertEqual(cache.frame(32, 18, self.COLOURS), b"" * (32 * 18 * 3))  # from the file
+
+    def test_other_colours_sizes_or_a_damaged_file_are_worked_out(self):
+        cache = wave.StillCache(self.directory)
+        cache.frame(32, 18, self.COLOURS)
+        other = wave.Palette(self.COLOURS.top, self.COLOURS.bottom, self.COLOURS.ribbon, 0.3)
+        self.assertNotEqual(wave.still_key(32, 18, other), wave.still_key(32, 18, self.COLOURS))
+        self.assertNotEqual(wave.still_key(16, 9, self.COLOURS), wave.still_key(32, 18, self.COLOURS))
+        for item in self.directory.glob("*.rgb.z"):
+            item.write_bytes(b"not zlib")
+        self.assertEqual(cache.frame(32, 18, self.COLOURS), wave.still_frame(32, 18, self.COLOURS))
+
+    def test_at_most_limit_files_stay(self):
+        cache = wave.StillCache(self.directory, limit=2)
+        for alpha in (0.1, 0.2, 0.3):
+            cache.frame(8, 8, wave.Palette((0.5, 0.5, 0.5), (0.2, 0.2, 0.2), (1.0, 1.0, 1.0), alpha))
+        self.assertEqual(len(list(self.directory.glob("*.rgb.z"))), 2)
+
+    def test_an_unwritable_cache_still_gives_the_frame(self):
+        blocker = self.directory.parent / "file"
+        blocker.write_text("")
+        cache = wave.StillCache(blocker / "wave")
+        self.assertEqual(cache.frame(8, 8, self.COLOURS), wave.still_frame(8, 8, self.COLOURS))
+
+
+class RenderSizeTest(unittest.TestCase):
+    def test_up_to_1080p_full_size_beyond_it_about_1080p_of_pixels(self):
+        for size in ((1280, 720), (1920, 1080), (1920, 1200), (1366, 768)):
+            self.assertEqual(wave.render_divisor(*size), 1.0, size)
+        self.assertAlmostEqual(wave.render_divisor(3840, 2160), 2.0)
+        self.assertAlmostEqual(wave.render_divisor(2560, 1440), 4 / 3)
+        for size in ((2560, 1440), (3840, 2160), (5120, 2880)):
+            divisor = wave.render_divisor(*size)
+            self.assertLessEqual(size[0] / divisor * size[1] / divisor, 1920 * 1080 * 1.001, size)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,9 @@ controller, a TV remote and a keyboard all work. Guide / Home arrives as home.re
 
 Exit status INIT_FAILED (3) means GTK could not start (no gi, no display, no renderer):
 couchliteos-session then tries once more with GSK_RENDERER=cairo, then starts the classic
-launcher. `launcher-ready` is written after the home screen's first frame is drawn.
+launcher. Without a GSK_RENDERER, couchliteos_renderer picks OpenGL (ngl) on a card with no
+real Vulkan driver, so GTK does not draw everything on the CPU with llvmpipe.
+`launcher-ready` is written after the home screen's first frame is drawn.
 
 Before anything else is built the window shows the boot picture Plymouth showed
 (couchliteos_gtk_boot); the home screen is built behind it once it is on screen, and it fades
@@ -58,6 +60,7 @@ import couchliteos_music as music
 import couchliteos_pcstatus as pcstatus
 import couchliteos_power as power
 import couchliteos_quick as quick
+import couchliteos_renderer as renderer
 import couchliteos_session as session
 import couchliteos_siteicon as siteicon
 import couchliteos_softwareupdate as softwareupdate
@@ -1052,6 +1055,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         if self.cross:
             self.xmb_view = gtk_xmb.XmbView(self.xmb, self.xmb_picture, icons.bundled, self.xmb_status,
                                             self.motion_level)
+            self.xmb_view.on_slow = self.motion_slow
             home_overlay = Gtk.Overlay()
             home_overlay.set_child(page)
             home_overlay.add_overlay(self.xmb_view)
@@ -2193,15 +2197,20 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         if not plan:
             return
         wave = getattr(self, "wave", None) if self.cross else None
+        view = getattr(self, "xmb_view", None) if self.cross else None
         if plan.rest:
             if wave is not None:
                 wave.rest()
+            if view is not None:
+                view.rest()
             self.battery.awake.clear()
             self.music_rest()
         if plan.wake:
             self.battery.awake.set()
             if wave is not None:
                 wave.wake()
+            if view is not None:
+                view.animate()  # a move left unfinished at the rest goes on
         if plan.sound:
             self.ui_sound(plan.sound)
         if self.loading_view is not None:
@@ -2209,6 +2218,15 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
                 self.loading_view.black()
             if plan.reveal:
                 self.loading_view.reveal()
+
+    def motion_slow(self, fps: float) -> None:
+        """The XMB's animated frames come too slowly for MOTION FULL (a busy or software
+        renderer): REDUCED until the next start, as the cairo renderer has it."""
+        if self.motion_level != motion.FULL:
+            return
+        self.motion_level = motion.REDUCED
+        self.xmb_view.set_level(motion.REDUCED)
+        display.log(f"tv motion: {fps} frames a second, REDUCED instead of FULL", session.LOG)
 
     def music_rest(self) -> bool:
         """End the music player once its fade-out is over (again when it is not yet)."""
@@ -2477,6 +2495,8 @@ def main(argv: list[str] | None = None) -> int:
     if Gtk is None:
         print(f"couchliteos-tv: GTK 4 is not available: {GI_ERROR}", file=sys.stderr)
         return INIT_FAILED
+    # Before the display opens: OpenGL rather than a CPU-drawn Vulkan (llvmpipe) on old cards.
+    renderer.prepare(os.environ, session.RUN)
     if not Gtk.init_check() or Gdk.Display.get_default() is None:
         print("couchliteos-tv: GTK could not open the display", file=sys.stderr)
         return INIT_FAILED

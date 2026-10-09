@@ -8,11 +8,17 @@ The wave (make_wave): a Gtk.GLArea running couchliteos_wave's shader at up to wa
 still frame, which is all there is with the software renderer, MOTION OFF, or when the GL wave
 failed before: RUN/wave-starting is written before the first GL frame and removed after it, so
 a driver that dies drawing it leaves the mark and the next start draws the still frame. The
-GL calls go through libepoxy (GTK's own GL loader) with ctypes: no extra package.
+GL calls go through libepoxy (GTK's own GL loader) with ctypes: no extra package. Above 1080p
+the GL wave is drawn at about 1080p's pixels and stretched (_Stretched, wave.render_divisor).
+The still frame is worked out once per palette (wave.StillCache, on disk); a new one is worked
+out on a thread, and the old one stays until it is there.
 
 The cross (XmbView): one widget that draws everything itself in do_snapshot, so nothing is
 rebuilt when the focus moves; positions come from Animator values, the tick callback runs
 only while something moves. Sizes are fractions of the screen, after the PS3 at 1920x1080.
+Text layouts are kept (xmb.Kept), the status line is read once a second and picture files are
+looked at every few seconds (xmb.Fresh), not every frame. Its animated frames feed a
+motion.FrameMeter: when they come too slowly, `on_slow` is called once (MOTION FULL to REDUCED).
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import ctypes
 import dataclasses
 import math
 import pathlib
+import threading
 import time
 from collections.abc import Callable
 
@@ -30,8 +37,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Graphene", "1.0")
+gi.require_version("Gsk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import Gdk, GdkPixbuf, GLib, Graphene, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Graphene, Gsk, Gtk, Pango  # noqa: E402
 
 import couchliteos_motion as motion  # noqa: E402
 import couchliteos_wave as wave  # noqa: E402
@@ -63,6 +71,8 @@ COVER_HEIGHT = 1.15  # a game's cover, as a portrait, against the icon size
 DIM_ITEM = 0.7  # an item away from the focus
 DIM_CATEGORY = 0.5
 WHITE = (1.0, 1.0, 1.0)
+STATUS_SECONDS = 1.0  # the clock line is read again at most this often (it walks /sys)
+PICTURE_SECONDS = 5.0  # a picture file is looked at again (changed? gone?) at most this often
 
 ICON, TILE, COVER = "icon", "tile", "cover"
 
@@ -143,10 +153,49 @@ class _GL:
         return program
 
 
-def still_texture(colours: wave.Palette, size: tuple[int, int] = wave.STILL_SIZE) -> Gdk.Texture:
+STILLS = wave.StillCache()
+
+
+def still_bytes(colours: wave.Palette, size: tuple[int, int] = wave.STILL_SIZE) -> bytes:
+    return STILLS.frame(size[0], size[1], colours)
+
+
+def still_texture(colours: wave.Palette, size: tuple[int, int] = wave.STILL_SIZE,
+                  data: bytes | None = None) -> Gdk.Texture:
     width, height = size
-    data = wave.still_frame(width, height, colours)
+    data = still_bytes(colours, size) if data is None else data
     return Gdk.MemoryTexture.new(width, height, Gdk.MemoryFormat.R8G8B8, GLib.Bytes.new(data), width * 3)
+
+
+class _Stretched(Gtk.Widget):
+    """Holds the GL wave. Above about 1080p of pixels it is allocated smaller, at
+    wave.render_divisor() of the screen, and scaled back up by its transform: GSK stretches the
+    GL area's picture smoothly, and the shader runs on a half to a quarter of the pixels."""
+
+    __gtype_name__ = "CouchliteStretchedWave"
+
+    def __init__(self, child: Gtk.Widget) -> None:
+        super().__init__()
+        self.child = child
+        self.set_can_target(False)
+        child.set_parent(self)
+
+    def do_measure(self, _orientation, _for_size):
+        return 0, 0, -1, -1
+
+    def do_size_allocate(self, width: int, height: int, baseline: int) -> None:
+        scale = self.get_scale_factor()
+        divisor = wave.render_divisor(width * scale, height * scale)
+        if divisor <= 1:
+            self.child.allocate(width, height, baseline, None)
+            return
+        inner_width, inner_height = max(1, round(width / divisor)), max(1, round(height / divisor))
+        stretch = Gsk.Transform.new().scale(width / inner_width, height / inner_height)
+        self.child.allocate(inner_width, inner_height, -1, stretch)
+
+    def release(self) -> None:
+        """After it is taken out of the Wave: let go of the GL wave (unrealized by now)."""
+        self.child.unparent()
 
 
 class GLWave(Gtk.GLArea):
@@ -288,11 +337,17 @@ class Wave(Gtk.Overlay):
         self.still.set_can_target(False)
         self.set_child(self.still)
         self.gl: GLWave | None = None
+        self.holder: _Stretched | None = None
+        self.still_wanted: tuple | None = None  # the still frame being worked out on a thread
         if how == wave.GL if animate is None else animate:
-            self.gl = GLWave(colours, run_dir, self.gl_failed)
-            self.gl.set_visible(False)  # start(): not in the first frame
-            self.add_overlay(self.gl)
-        self.set_colours(colours)
+            self.add_gl()
+        self.set_colours(colours, wait=True)  # the first frame has it (from the cache, mostly)
+
+    def add_gl(self) -> None:
+        self.gl = GLWave(self.colours, self.run_dir, self.gl_failed)
+        self.gl.set_visible(False)  # start(): not in the first frame
+        self.holder = _Stretched(self.gl)
+        self.add_overlay(self.holder)
 
     def gl_failed(self, why: str) -> None:
         self.how = wave.STATIC
@@ -314,14 +369,37 @@ class Wave(Gtk.Overlay):
             self.gl.set_visible(shown)
             self.gl.set_running(shown and self.running)
 
-    def set_colours(self, colours: wave.Palette) -> None:
+    def set_colours(self, colours: wave.Palette, wait: bool = False) -> None:
+        """The still frame for `colours` (at once with `wait`, else from a thread, the old one
+        shown until then) and the GL wave's colours."""
         self.colours = colours
         if self.how == wave.FLAT:
             colours = wave.Palette(colours.top, colours.top, colours.ribbon, 0.0)
         self.palette = colours  # as drawn (tv-headless.sh reads it)
-        self.still.set_paintable(still_texture(colours))
+        if wait:
+            self.still_wanted = None
+            self.still.set_paintable(still_texture(colours))
+        elif self.still_wanted != (colours, wave.STILL_SIZE):
+            self.still_wanted = wanted = (colours, wave.STILL_SIZE)
+            threading.Thread(target=self.work_out_still, args=(wanted,), daemon=True,
+                             name="still-wave").start()
         if self.gl is not None:
             self.gl.set_colours(colours)
+
+    def work_out_still(self, wanted: tuple) -> None:
+        """On a thread: only bytes here; the texture is made on GTK's thread."""
+        try:
+            data = still_bytes(*wanted)
+        except Exception as error:  # noqa: BLE001 - the old still frame stays
+            GLib.idle_add(self.log, f"tv wave: no still frame: {error}")
+            return
+        GLib.idle_add(self.show_still, wanted, data)
+
+    def show_still(self, wanted: tuple, data: bytes) -> bool:
+        if wanted == self.still_wanted:  # not overtaken by newer colours
+            self.still_wanted = None
+            self.still.set_paintable(still_texture(*wanted, data=data))
+        return False
 
     def start(self) -> None:
         """Show the GL wave (after the first frame) and let it run."""
@@ -344,8 +422,9 @@ class Wave(Gtk.Overlay):
             return
         self.gl.set_running(False)
         self.frames_before += self.gl.frames
-        self.remove_overlay(self.gl)  # unrealized: on_unrealize frees the program and the buffers
-        self.gl = None
+        self.remove_overlay(self.holder)  # unrealized: on_unrealize frees the program and the buffers
+        self.holder.release()
+        self.gl = self.holder = None
         self.resting = True
 
     def wake(self) -> None:
@@ -355,9 +434,7 @@ class Wave(Gtk.Overlay):
         self.resting = False
         if self.how != wave.GL:  # it failed meanwhile
             return
-        self.gl = GLWave(self.colours, self.run_dir, self.gl_failed)
-        self.gl.set_visible(False)
-        self.add_overlay(self.gl)
+        self.add_gl()
         if self.started:
             self.start()
 
@@ -422,6 +499,11 @@ class XmbView(Gtk.Widget):
         self.status = status
         self.animator = motion.Animator(time.monotonic, level)
         self.textures: dict[tuple, Gdk.Texture | None] = {}
+        self.stamps = xmb.Fresh(PICTURE_SECONDS)  # path -> its mtime (None: no file)
+        self.layouts = xmb.Kept(256)
+        self.status_line = xmb.Fresh(STATUS_SECONDS)
+        self.meter = motion.FrameMeter()
+        self.on_slow: Callable[[float], None] | None = None  # once, when the animated frames are slow
         self.glow = _glow_texture()
         self.tick_id = 0
         self.message = ""  # the last result, at the bottom (Tv.status)
@@ -447,10 +529,15 @@ class XmbView(Gtk.Widget):
             self.tick_id = self.add_tick_callback(self.on_tick)
         self.queue_draw()
 
-    def on_tick(self, _widget, _clock) -> bool:
+    def on_tick(self, _widget, frame_clock) -> bool:
         moving = self.animator.step()
         self.queue_draw()
+        self.meter.frame(frame_clock.get_frame_time() / 1_000_000)
+        if self.on_slow is not None and self.animator.level == motion.FULL and self.meter.slow():
+            slow, self.on_slow = self.on_slow, None
+            slow(self.meter.fps())
         if not moving:
+            self.meter.pause()  # the wait for the next key is not a slow frame
             self.tick_id = 0
             return False
         return True
@@ -460,10 +547,16 @@ class XmbView(Gtk.Widget):
 
     # -------------------------------------------------------------- pictures
 
-    def texture(self, path: pathlib.Path, px: int) -> Gdk.Texture | None:
+    @staticmethod
+    def stamp(path: pathlib.Path) -> int | None:
         try:
-            stamp = path.stat().st_mtime_ns
+            return path.stat().st_mtime_ns
         except OSError:
+            return None
+
+    def texture(self, path: pathlib.Path, px: int) -> Gdk.Texture | None:
+        stamp = self.stamps.get(str(path), lambda: self.stamp(path))
+        if stamp is None:
             return None
         key = (str(path), stamp, px)
         if key not in self.textures:
@@ -478,6 +571,7 @@ class XmbView(Gtk.Widget):
 
     def forget_pictures(self) -> None:
         self.textures.clear()
+        self.stamps.clear()
         self.queue_draw()
 
     def rest(self) -> None:
@@ -485,11 +579,20 @@ class XmbView(Gtk.Widget):
         if self.tick_id:
             self.remove_tick_callback(self.tick_id)
             self.tick_id = 0
+        self.meter.pause()
         self.textures.clear()
+        self.stamps.clear()
+        self.layouts.clear()
 
     # -------------------------------------------------------------- text
 
     def layout(self, text: str, px: float, bold: bool = False, width: float = 0) -> Pango.Layout:
+        """The laid-out text; the same one again for the same text, size, weight and width (a
+        kept layout is only read: GTK copies its glyphs into each frame)."""
+        size, room = round(max(1.0, px) * Pango.SCALE), round(width * Pango.SCALE) if width > 0 else 0
+        return self.layouts.get((text, size, bold, room), lambda: self.new_layout(text, px, bold, width))
+
+    def new_layout(self, text: str, px: float, bold: bool, width: float) -> Pango.Layout:
         layout = self.create_pango_layout(text)
         font = Pango.FontDescription.from_string(f"{FONT} {'Bold' if bold else 'Medium'}")
         font.set_absolute_size(max(1.0, px) * Pango.SCALE)
@@ -551,15 +654,15 @@ class XmbView(Gtk.Widget):
 
     def do_snapshot(self, snapshot: Gtk.Snapshot) -> None:
         width, height = self.get_width(), self.get_height()
+        self.drawn_labels = []
         if width <= 0 or height <= 0 or not self.model.categories:
             return
-        self.drawn_labels = []
         column = self.animator.get("column", float(self.model.column))
         row_y = height * ROW_Y
         max_px = round(height * FOCUS_ITEM_ICON)
         left = width * COLUMN_X
         # The clock and the status, top right, as the console has them.
-        clock, line = self.status()
+        clock, line = self.status_line.get("status", self.status)
         y = height * EDGE_Y
         right = width * (1 - EDGE_X)
         clock_layout = self.layout(clock, height * CLOCK_TEXT, bold=True)

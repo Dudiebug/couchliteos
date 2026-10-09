@@ -229,5 +229,45 @@ class FocusTest(XmbTestCase):
         self.assertEqual((action[0], action[2]), ("stream", "Desktop"))
 
 
+class CacheTest(unittest.TestCase):
+    def test_kept_makes_a_value_once_and_drops_the_least_recently_used(self):
+        kept, made = xmb.Kept(2), []
+
+        def make(key):
+            return lambda: made.append(key) or key.upper()
+
+        self.assertEqual(kept.get("a", make("a")), "A")
+        self.assertEqual(kept.get("a", make("a")), "A")
+        kept.get("b", make("b"))
+        kept.get("a", make("a"))  # a is now the most recent
+        kept.get("c", make("c"))  # b goes
+        kept.get("a", make("a"))
+        kept.get("b", make("b"))
+        self.assertEqual(made, ["a", "b", "c", "b"])
+        self.assertLessEqual(len(kept.items), 2)
+        kept.clear()
+        kept.get("a", make("a"))
+        self.assertEqual(made[-1], "a")
+
+    def test_fresh_makes_again_only_after_its_seconds(self):
+        now = [10.0]
+        fresh, made = xmb.Fresh(1.5, clock=lambda: now[0]), []
+        make = lambda: made.append(now[0]) or len(made)  # noqa: E731
+        self.assertEqual(fresh.get("status", make), 1)
+        now[0] = 11.0
+        self.assertEqual(fresh.get("status", make), 1)
+        self.assertEqual(fresh.get("other", make), 2)  # a new key: made at once
+        now[0] = 11.6
+        self.assertEqual(fresh.get("status", make), 3)
+        fresh.clear()
+        self.assertEqual(fresh.get("status", make), 4)
+
+    def test_fresh_stays_small(self):
+        fresh = xmb.Fresh(5, clock=lambda: 0.0, size=3)
+        for key in range(10):
+            fresh.get(key, lambda: 0)
+        self.assertLessEqual(len(fresh.items), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

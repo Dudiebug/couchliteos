@@ -21,12 +21,16 @@ An application goes where its manifest's `category` says, else by what it is (AP
 then a browser or web application is TV & VIDEO, a Remote Desktop connection is NETWORK).
 Each category remembers its own item; `reload` keeps the focused item focused when it still
 exists. Nothing wraps: a move against an edge returns EDGE (the front end's bump sound).
+
+Kept and Fresh at the end are the small caches couchliteos_gtk_xmb draws from, so a frame does
+not lay out the same text again or look at the same files again.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import re
+import time
 from collections.abc import Callable, Mapping
 
 import couchliteos_apps as apps
@@ -393,3 +397,51 @@ class XmbModel:
         self.categories[ORDER.index(SETTINGS)] = Category(SETTINGS, LABELS[SETTINGS], ICONS[SETTINGS], self._settings())
         if before is not None:
             self.focus_key(before.key, category=self.category.key)
+
+
+class Kept:
+    """At most `size` values by key, the least recently used dropped first: the XMB's text
+    layouts, made once for a (text, size, weight, width) and drawn every frame after."""
+
+    def __init__(self, size: int = 256) -> None:
+        self.size = size
+        self.items: dict = {}
+
+    def get(self, key, make: Callable[[], object]):
+        try:
+            value = self.items.pop(key)
+        except KeyError:
+            value = make()
+        self.items[key] = value
+        if len(self.items) > self.size:
+            del self.items[next(iter(self.items))]
+        return value
+
+    def clear(self) -> None:
+        self.items.clear()
+
+
+class Fresh:
+    """make() at most once every `seconds` for a key, the value kept in between: the clock and
+    status line (they walk /sys) and whether a picture file changed, looked at every few seconds
+    instead of every frame. A key not seen before is made at once."""
+
+    def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic, size: int = 512) -> None:
+        self.seconds = seconds
+        self.clock = clock
+        self.size = size
+        self.items: dict = {}
+
+    def get(self, key, make: Callable[[], object]):
+        now = self.clock()
+        kept = self.items.get(key)
+        if kept is not None and now - kept[0] < self.seconds:
+            return kept[1]
+        value = make()
+        if kept is None and len(self.items) >= self.size:
+            self.items.clear()
+        self.items[key] = (now, value)
+        return value
+
+    def clear(self) -> None:
+        self.items.clear()
