@@ -28,7 +28,7 @@ RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE
 # An upgrade shows every release newer than the one last seen, newest first.
 RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("0.3.0", (
-        "A NEW PS3-STYLE LOOK ON EVERY SCREEN. A TOUR: SETTINGS > HELP",
+        "A NEW TV HOME SCREEN AND MENUS, PS3 STYLE. TOUR: SETTINGS > HELP",
         "PREFER THE OLD LOOK? SETTINGS > APPEARANCE > INTERFACE > CLASSIC",
         "AND THE OLD COLOURS: SETTINGS > APPEARANCE > THEME > TERMINAL",
         "QUICK MENU: TAP GUIDE / PS, OR PRESS HOME ON A KEYBOARD",
