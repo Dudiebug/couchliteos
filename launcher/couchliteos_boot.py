@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import pathlib
+import time
 
 import couchliteos_motion as motion
 
@@ -39,6 +40,11 @@ DOT_STAGGER = 0.2  # each dot's pulse this much after the one on its left
 DOT_LOW = 0.15
 FADE_MS = 450  # the loading screen fading into the home screen (MOTION FULL)
 FPS = 50  # Plymouth's script plugin refreshes this often; its script counts frames
+# Plymouth's time 0 is its first frame (the script counts frames from there). It cannot write that
+# down anywhere, so this is when it starts drawing on a typical boot, in seconds since the kernel
+# started (CLOCK_BOOTTIME): couchliteos-tv's boot picture takes its time from the same point, so
+# the ribbons go on where Plymouth left them instead of starting again.
+SPLASH_START = 2.0
 FILES = ("logo.png", "halo.png", *RIBBONS, "dot.png")
 TAU = 2 * math.pi
 
@@ -84,6 +90,30 @@ def dot(t: float, index: int) -> float:
     """Dot `index`'s opacity: a short, bright pulse travelling left to right."""
     pulse = 0.5 + 0.5 * math.cos(TAU * (t - index * DOT_STAGGER) / DOT_SECONDS)
     return DOT_LOW + (1 - DOT_LOW) * pulse ** 3
+
+
+def splash_seconds(boottime: float | None = None) -> float:
+    """Seconds into Plymouth's motion now (time 0 at SPLASH_START); 0 when the boot clock cannot
+    be read (then the picture starts at its own first frame, as before). `boottime` is for tests."""
+    if boottime is None:
+        boottime = boot_clock()
+    if boottime is None:
+        return 0.0
+    return max(0.0, boottime - SPLASH_START)
+
+
+def boot_clock() -> float | None:
+    """Seconds since the kernel started (suspend included), None where there is no such clock."""
+    clock = getattr(time, "CLOCK_BOOTTIME", None)
+    if clock is not None:
+        try:
+            return time.clock_gettime(clock)
+        except OSError:
+            pass
+    try:
+        return float(pathlib.Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def centred(name: str, size: tuple[int, int], scale: float, cx: float, cy: float, opacity: float = 1.0) -> Sprite:

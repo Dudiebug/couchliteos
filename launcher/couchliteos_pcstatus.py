@@ -2,7 +2,8 @@
 
 It is empty when no gaming PC is paired: not everyone streams from one.
 
-The launcher only ever reads a string (Monitor.line). The network probe
+The launcher only ever reads a string (Monitor.line; Monitor.short is the TV home screen's
+short form, "GAMING-PC: ASLEEP", in its status corner). The network probe
 (stream.probe: a TCP connect to Sunshine, never ping, never Wake-on-LAN) runs in a
 daemon thread every INTERVAL seconds, and never while an application or stream is
 running. Any error leaves the line empty, so the screen looks as it always did.
@@ -28,6 +29,8 @@ ENDINGS = {
     "down": "ASLEEP - STARTING MOONLIGHT WAKES IT",
 }
 NOT_FOUND = "NOT FOUND - IS IT TURNED ON?"  # "down", and Moonlight cannot wake it either
+SHORT = {"up": "ONLINE", "awake": "NO SUNSHINE", "down": "ASLEEP"}  # the TV home screen's corner
+SHORT_NOT_FOUND = "NOT FOUND"
 
 
 def app_active(run: pathlib.Path = RUN) -> bool:
@@ -74,6 +77,19 @@ def status_text(
     return f"GAMING PC: {label(host.name)} {ending}" if ending else ""
 
 
+def short_text(
+    hosts: list[stream.Host], host: stream.Host | None | int, result: str | None,
+    link_up: bool, wake_block: str = "",
+) -> str:
+    """status_text's short form for the TV home screen: "<PC>: ONLINE", "<PC>: ASLEEP"."""
+    if not link_up or not hosts or host is None:
+        return ""
+    if isinstance(host, int):
+        return f"GAMING PCS: {host} PAIRED"
+    state = SHORT_NOT_FOUND if result == "down" and wake_block else SHORT.get(result or "")
+    return f"{label(host.name)}: {state}" if state else ""
+
+
 class Monitor:
     """Keeps the latest status line, refreshed off the UI thread."""
 
@@ -93,34 +109,40 @@ class Monitor:
         self.app_active = app_active
         self.interval = interval
         self._text = ""
+        self._short = ""
         self._stop = threading.Event()
         self.awake = threading.Event()  # cleared while the TV interface rests: no polling then
         self.awake.set()
 
-    def _compute(self) -> str:
+    def _compute(self) -> tuple[str, str]:
+        """(the line, its short form)."""
         if not self.link():
-            return ""
+            return "", ""
         hosts = self.load()  # re-read every cycle: the stick moves between PCs
         chosen = pick_host(hosts, self.settings())
         if not isinstance(chosen, stream.Host):
-            return status_text(hosts, chosen, None, True)
-        return status_text(hosts, chosen, self.probe(chosen), True, stream.wake_block(chosen))
+            return status_text(hosts, chosen, None, True), short_text(hosts, chosen, None, True)
+        result, block = self.probe(chosen), stream.wake_block(chosen)
+        return status_text(hosts, chosen, result, True, block), short_text(hosts, chosen, result, True, block)
 
     def refresh(self) -> bool:
         """One cycle. False when it did nothing because an app is running (last text kept)."""
         try:
             if self.app_active():
                 return False
-            text = self._compute()
+            text, short = self._compute()
             if self.app_active():  # a stream started while we probed: that result is moot
                 return False
-            self._text = text
+            self._text, self._short = text, short
         except Exception:  # any failure means no line; it must never reach the launcher
-            self._text = ""
+            self._text = self._short = ""
         return True
 
     def line(self) -> str:
         return self._text
+
+    def short(self) -> str:
+        return self._short
 
     def start(self) -> None:
         def loop() -> None:

@@ -91,6 +91,30 @@ class StatusTextTest(unittest.TestCase):
         self.assertLessEqual(len(text([host()] * 9999, None)), 76)
 
 
+class ShortTextTest(unittest.TestCase):
+    """The TV home screen's corner: the PC and one word."""
+
+    def short(self, hosts, result, link=True, settings=stream.StreamSettings()):
+        chosen = pcstatus.pick_host(hosts, settings)
+        block = stream.wake_block(chosen) if isinstance(chosen, stream.Host) else ""
+        return pcstatus.short_text(hosts, chosen, result, link, block)
+
+    def test_the_pc_and_its_state(self):
+        self.assertEqual(self.short([host()], "up"), "DESKTOP-7Q2: ONLINE")
+        self.assertEqual(self.short([host()], "down"), "DESKTOP-7Q2: ASLEEP")
+        self.assertEqual(self.short([host(mac=b"")], "down"), "DESKTOP-7Q2: NOT FOUND")
+        self.assertEqual(self.short([host()], "awake"), "DESKTOP-7Q2: NO SUNSHINE")
+
+    def test_nothing_without_a_pc_a_result_or_the_network(self):
+        self.assertEqual(self.short([], None), "")
+        self.assertEqual(self.short([host()], None), "")
+        self.assertEqual(self.short([host()], "unknown"), "")
+        self.assertEqual(self.short([host()], "up", link=False), "")
+
+    def test_several_pcs_without_a_default_are_counted(self):
+        self.assertEqual(self.short([host("ONE"), host("TWO", local="192.168.1.21")], None), "GAMING PCS: 2 PAIRED")
+
+
 class MonitorTest(unittest.TestCase):
     def monitor(self, hosts=None, result="up", link=True, active=False, settings=None, **extra):
         self.probe = mock.Mock(return_value=result)
@@ -114,6 +138,30 @@ class MonitorTest(unittest.TestCase):
         monitor.refresh()
         self.assertEqual(monitor.line(), "GAMING PC: DESKTOP-7Q2 READY")
         self.probe.assert_called_once()
+
+    def test_refresh_keeps_the_short_form_too(self):
+        monitor = self.monitor(result="down")
+        self.assertEqual(monitor.short(), "")
+        monitor.refresh()
+        self.assertEqual(monitor.short(), "DESKTOP-7Q2: ASLEEP")
+        self.probe.side_effect = OSError("boom")
+        monitor.refresh()
+        self.assertEqual((monitor.line(), monitor.short()), ("", ""))
+
+    def test_no_probe_while_it_rests(self):
+        monitor = self.monitor(interval=0.01)
+        monitor.awake.clear()  # the TV interface rests behind a game
+        monitor.start()
+        self.addCleanup(monitor.stop)
+        self.addCleanup(monitor.awake.set)
+        threading.Event().wait(0.1)
+        self.probe.assert_not_called()
+        monitor.awake.set()
+        for _ in range(100):
+            if self.probe.called:
+                break
+            threading.Event().wait(0.02)
+        self.probe.assert_called()
 
     def test_monitor_swallows_probe_and_load_errors(self):
         monitor = self.monitor()

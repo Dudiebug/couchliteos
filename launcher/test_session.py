@@ -169,6 +169,14 @@ class LaunchTest(SessionTestCase):
         self.assertIn("TERMINAL IS STILL RUNNING", s.failures[0][1])
         self.assertFalse((self.run / "launch-app.request").exists())
 
+    def test_home_while_it_starts_leaves_it_starting(self):
+        s = self.session()
+        s.launch_left = mock.Mock(side_effect=lambda app: s.waits >= 2)
+        self.assertFalse(s.launch_app(TERMINAL))
+        self.assertEqual(s.status, "TERMINAL IS STILL STARTING")
+        self.assertEqual(s.failures, [])
+        self.assertEqual(s.waits, 2)  # no waiting out the start time
+
     def test_hooks_can_stop_a_start(self):
         s = self.session()
         s.wake_before_moonlight = mock.Mock(return_value=False)

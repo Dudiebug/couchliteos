@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 import couchliteos_boot as boot
 import couchliteos_motion as motion
@@ -54,6 +55,29 @@ class TimingTest(unittest.TestCase):
         self.assertAlmostEqual(boot.fade_seconds(motion.FULL), boot.FADE_MS / 1000)
         self.assertLess(boot.fade_seconds(motion.REDUCED), boot.fade_seconds(motion.FULL))
         self.assertEqual(boot.fade_seconds(motion.OFF), 0)
+
+    def test_the_tv_takes_its_time_from_plymouths_start_on_the_boot_clock(self):
+        # Plymouth counts frames from about SPLASH_START: the TV's picture is at the same point.
+        self.assertAlmostEqual(boot.splash_seconds(boot.SPLASH_START + 7.5), 7.5)
+        self.assertEqual(boot.splash_seconds(boot.SPLASH_START - 1), 0.0)  # never before time 0
+        with mock.patch.object(boot, "boot_clock", return_value=None):
+            self.assertEqual(boot.splash_seconds(), 0.0)  # no clock: from its own first frame, as before
+        with mock.patch.object(boot, "boot_clock", return_value=boot.SPLASH_START + 3):
+            self.assertAlmostEqual(boot.splash_seconds(), 3.0)
+
+    def test_the_boot_clock_is_clock_boottime_else_proc_uptime(self):
+        with mock.patch.object(boot.time, "CLOCK_BOOTTIME", 7, create=True), \
+                mock.patch.object(boot.time, "clock_gettime", return_value=12.5, create=True) as clock:
+            self.assertEqual(boot.boot_clock(), 12.5)
+            clock.assert_called_once_with(7)
+        with mock.patch.object(boot.time, "CLOCK_BOOTTIME", 7, create=True), \
+                mock.patch.object(boot.time, "clock_gettime", side_effect=OSError, create=True), \
+                mock.patch.object(boot.pathlib.Path, "read_text", return_value="34.25 120.00\n"):
+            self.assertEqual(boot.boot_clock(), 34.25)
+        with mock.patch.object(boot.time, "CLOCK_BOOTTIME", 7, create=True), \
+                mock.patch.object(boot.time, "clock_gettime", side_effect=OSError, create=True), \
+                mock.patch.object(boot.pathlib.Path, "read_text", side_effect=OSError):
+            self.assertIsNone(boot.boot_clock())
 
     def test_colours(self):
         self.assertEqual(boot.rgb("ff0000"), (1.0, 0.0, 0.0))

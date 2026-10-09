@@ -137,7 +137,8 @@ class ScreensTest(unittest.TestCase):
         tv.settings = module.tvscreens.SettingsModel()
         tv.updates = mock.Mock(enabled=True, online=lambda: True)
         for name in ("render_settings", "open_screen", "open_active", "close_screen", "launch_by_id", "show",
-                     "render_current", "after_screen", "watch_update", "open_whatsnew", "autostream"):
+                     "render_current", "after_screen", "watch_update", "open_whatsnew", "autostream",
+                     "refresh_settings"):
             setattr(tv, name, mock.Mock())
         return module, tv
 
@@ -464,6 +465,133 @@ class HelpTest(unittest.TestCase):
         self.assertEqual(tv.draw_launching.call_count, 3)
         self.assertEqual((tv.busy_depth, tv.busy_pressed), (0, False))
         tv.show.assert_called_once_with("home")
+
+
+class LeaveStartTest(unittest.TestCase):
+    """Home while an app starts: back to the home screen, as the starting screen says."""
+
+    def setUp(self):
+        self.module = load_tv()
+        self.run = pathlib.Path(tempfile.mkdtemp(dir=os.environ["COUCHLITEOS_RUN_DIR"]))
+        patcher = mock.patch.object(self.module.session.Session, "run_dir", self.run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tv = object.__new__(self.module.Tv)
+        self.tv.status = ""
+        self.tv.set_launcher_focus = mock.Mock()
+        self.app = apps.Application(id="moonlight", name="MOONLIGHT", kind="request", status_id="moonlight",
+                                    request="start-moonlight")
+
+    def test_a_home_press_while_it_starts_leaves_it(self):
+        tv = self.tv
+        self.assertFalse(tv.launch_left(self.app))
+        tv.busy_home = True
+        self.assertTrue(tv.launch_left(self.app))
+        self.assertFalse(tv.busy_home)
+        self.assertTrue(tv.came_back)
+        self.assertEqual(tv.key_home_at, tv.came_back_at)  # gamepad-nav's request for it opens nothing
+        self.assertIs(tv.left_start[0], self.app)
+        tv.set_launcher_focus.assert_called_once_with(True)
+        self.assertFalse(tv.launch_left(self.app))
+        (self.run / "home.request").write_text("home\n")  # the Guide button
+        self.assertTrue(tv.launch_left(self.app))
+        self.assertFalse((self.run / "home.request").exists())
+
+    def test_leaving_the_start_puts_the_tv_back_awake(self):
+        tv = self.tv
+        tv._front, tv.front_plan, tv.show = mock.Mock(), mock.Mock(), mock.Mock()
+        tv.busy_depth, tv.came_back = 1, True
+        tv.launch_wait_end()
+        tv.show.assert_called_once_with("home")
+        tv.front_plan.assert_called_once_with(tv.front.returning.return_value)
+        self.assertFalse(tv.came_back)
+
+    def test_the_app_left_starting_waits_behind_the_home_screen(self):
+        tv = self.tv
+        tv.left_start = (self.app, self.module.time.monotonic() + 18)
+        with mock.patch.object(self.module.session, "focus_launcher") as focus:
+            tv.left_start_tick()
+            focus.assert_not_called()
+            (self.run / "launcher-focus").touch()
+            (self.run / "moonlight-ready").touch()
+            tv.left_start_tick()
+            focus.assert_called_once_with()
+        self.assertEqual(tv.status, "MOONLIGHT IS READY: FIND IT IN ACTIVE APPLICATIONS")
+        self.assertIsNone(tv.left_start)
+
+    def test_an_app_left_starting_that_failed_says_so_at_the_end(self):
+        tv = self.tv
+        (self.run / "moonlight-status").write_text("failed: no such file\n")
+        tv.left_start = (self.app, self.module.time.monotonic() - 1)
+        tv.left_start_tick()
+        self.assertEqual(tv.status, "MOONLIGHT FAILED TO START")
+        self.assertIsNone(tv.left_start)
+
+
+class StartOrderTest(unittest.TestCase):
+    """The start: what runs after what, with the drawing and the threads left out."""
+
+    def tv(self):
+        module = load_tv()
+        tv = object.__new__(module.Tv)
+        tv.status, tv.mode, tv.cross, tv.starting = "", "home", False, True
+        for name in ("show", "render_home", "render_settings", "refresh_settings", "read_can_sleep", "ui_sound",
+                     "music_holds", "hide_loading", "continue_start", "render_bar", "start_script"):
+            setattr(tv, name, mock.Mock())
+        tv.music = mock.Mock()
+        return module, tv
+
+    def test_an_update_finished_during_the_start_leaves_the_tour_on_top(self):
+        module, tv = self.tv()
+        tv.idle, tv.progress, tv.progress_return = mock.Mock(), mock.Mock(), "home"
+        tv.progress.poll.return_value = mock.Mock(finished="UPDATED")
+        order = []
+        tv.show.side_effect = order.append
+        tv.continue_start.side_effect = lambda: tv.show("tutorial")
+        tv.update_tick()
+        self.assertEqual(order, ["home", "tutorial"])
+        self.assertEqual(tv.status, "UPDATED")
+
+    def test_start_steps_that_fail_still_bring_home_the_fade_and_the_music(self):
+        module, tv = self.tv()
+        tv.continue_start.side_effect = RuntimeError("broken step")
+        with mock.patch.object(module.display, "log") as log:
+            tv.after_first_frame()
+        self.assertIn("broken step", log.call_args.args[0])
+        self.assertFalse(tv.starting)
+        tv.show.assert_called_once_with("home")
+        tv.music.start.assert_called_once_with()
+        tv.hide_loading.assert_called_once_with()
+
+    def test_the_auto_stream_waits_for_the_boot_picture_and_the_display_mode(self):
+        module, tv = self.tv()
+        tv.booting, tv.autostream = True, mock.Mock()
+        tv.when_booted(tv.autostream)
+        tv.autostream.assert_not_called()
+        tv.start_script.side_effect = lambda: tv.autostream.assert_called_once_with()  # before the test steps
+        tv.mode_restored(True)
+        tv.start_script.assert_called_once_with()
+        self.assertFalse(tv.booting)
+        tv.when_booted(tv.render_home)  # once booted: at once
+        tv.render_home.assert_called_once_with()
+
+    def test_a_skipped_display_mode_is_said_once_it_is_known(self):
+        module, tv = self.tv()
+        tv.mode_restored(None)
+        self.assertIn("SAVED DISPLAY MODE SKIPPED", tv.status)
+        tv.render_bar.assert_called_once_with()
+
+    def test_the_loading_screen_gets_the_started_tiles_picture(self):
+        module, tv = self.tv()
+        tv.cross, tv.motion_level = True, module.motion.FULL
+        tv._front, tv.loading_view, tv.show_text = mock.Mock(starting=True), mock.Mock(shown=False), mock.Mock()
+        tv.xmb_picture = mock.Mock(return_value="cover")
+        tv.draw_launching("MOONLIGHT", "|")
+        self.assertIsNone(tv.loading_view.start.call_args.args[2])  # nothing focused: no picture
+        tv.launch_item = item = mock.Mock(icon="moonlight")
+        tv.draw_launching("MOONLIGHT", "|")
+        tv.xmb_picture.assert_called_once_with(item)
+        self.assertEqual(tv.loading_view.start.call_args.args[2], "cover")
 
 
 class BatteryTest(unittest.TestCase):
