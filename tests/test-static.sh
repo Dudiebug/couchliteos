@@ -1560,6 +1560,12 @@ python3 -m py_compile tools/make-sounds.py launcher/couchliteos_music.py launche
 rg -q '^install -D -m 0755 "\$ROOT/launcher/couchliteos-music.py" "\$CHROOT/usr/libexec/couchliteos-music"$' build/configure.sh
 rg -q '^install -D -m 0644 "\$ROOT/launcher/couchliteos_music.py" "\$CHROOT/usr/libexec/couchliteos_music.py"$' build/configure.sh
 rg -q 'test_music.py' launcher/Makefile
+# The player names its audio output: the ISO has no autoaudiosink (plugins-good), so playbin cannot pick one
+rg -q '"pipewiresink"' launcher/couchliteos-music.py
+rg -Fq 'player.set_property("audio-sink", sink)' launcher/couchliteos-music.py
+refute rg -q 'stderr=subprocess.DEVNULL,' launcher/couchliteos_music.py
+rg -Fq 'self.music.check()' launcher/couchliteos-tv.py
+rg -Fq 'self.music_after(plan.music_after)' launcher/couchliteos-tv.py
 for package in gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-pipewire; do
   rg -q "^$package\$" config/live-build/package-lists/couchliteos.list.chroot
 done

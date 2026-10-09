@@ -17,8 +17,10 @@ interface down), driven over its stdin by one line per change:
 
 While nothing of the TV interface can be heard or seen (a game in front, the blank screen, sleep)
 rest() ends the player process once it has faded out; the next one seeks to where it stopped, so
-the music resumes there with its fade-in. A player that dies is started again at most RESTARTS
-times; after that there is no music, never an error on screen.
+the music resumes there with its fade-in. A player that dies (seen when a level is sent, or by
+check() on the TV's 1 s tick) is started again at most RESTARTS times in a row; one that plays for
+HEALTHY seconds starts the count over. After that there is no music, never an error on screen:
+the player's stderr and why the music stopped go to LOG (music.log, in the support file).
 """
 
 from __future__ import annotations
@@ -53,6 +55,9 @@ DUCK_HOLD = 0.35  # s at the ducked level before coming back
 DUCK_OUT = 0.5  # s
 DUCKED_SOUNDS = {"select", "back", "open", "close", "notify", "startup", "launch", "return", "error"}  # not move
 RESTARTS = 3
+HEALTHY = 60.0  # s of playing that forgive the earlier deaths
+LOG = pathlib.Path(os.environ.get("COUCHLITEOS_LOG_DIR") or "/var/log/couchliteos") / "music.log"
+LOG_MAX = 256 * 1024  # bytes; a longer log starts over
 
 # Why the music is silent (Music.hold / Music.release).
 APP, BLANK, SLEEP, SCREEN = "app", "blank", "sleep", "screen"
@@ -86,6 +91,32 @@ def save_music(on: bool, volume: int, path: pathlib.Path | None = None) -> None:
     theme.save_values({"music": "on" if on else "off", "music_volume": str(min(VOLUMES, key=lambda v: abs(v - volume)))}, path)
 
 
+def _log_file(path: pathlib.Path):
+    """`path` opened to append (started over past LOG_MAX), or None when it cannot be."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            over = path.stat().st_size > LOG_MAX
+        except OSError:
+            over = False
+        return path.open("w" if over else "a", encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def log(message: str, path: pathlib.Path | None = None) -> None:
+    """One dated line in LOG; never raises."""
+    stream = _log_file(LOG if path is None else path)
+    if stream is None:
+        return
+    printable = "".join(char if char.isprintable() else "?" for char in message)
+    try:
+        with stream:
+            stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {printable}\n")
+    except OSError:
+        pass
+
+
 def track(user_dir: pathlib.Path | None = None, builtin: pathlib.Path | None = None) -> pathlib.Path | None:
     """The user's own track (the first by name in USER_DIR), else the built-in loop, else None."""
     user_dir = USER_DIR if user_dir is None else user_dir
@@ -102,16 +133,27 @@ def track(user_dir: pathlib.Path | None = None, builtin: pathlib.Path | None = N
 
 
 class PlayerProcess:
-    """couchliteos-music in its own process; send() returns False once it is gone."""
+    """couchliteos-music in its own process; send() returns False once it is gone. Its stderr
+    (why GStreamer stopped) is appended to `log_path` (LOG)."""
 
-    def __init__(self, command: list[str] | None = None) -> None:
+    def __init__(self, command: list[str] | None = None, log_path: pathlib.Path | None = None) -> None:
         if command is None:
             player = PLAYER if PLAYER.exists() else REPO_PLAYER
             command = [str(player)] if os.access(player, os.X_OK) else [sys.executable, str(player)]
-        self.process = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            text=True, bufsize=1, close_fds=True,
-        )
+        errors = _log_file(LOG if log_path is None else log_path)
+        try:
+            self.process = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL if errors is None else errors,
+                text=True, bufsize=1, close_fds=True,
+            )
+        finally:
+            if errors is not None:
+                errors.close()  # the player has its own copy
+
+    def exit_code(self) -> int | None:
+        """None while it runs."""
+        return self.process.poll()
 
     def send(self, line: str) -> bool:
         if self.process.poll() is not None or self.process.stdin is None:
@@ -152,13 +194,14 @@ class Music:
     def __init__(
         self, *, enabled: Callable[[], bool] = music_enabled, volume: Callable[[], int] = music_volume,
         track: Callable[[], pathlib.Path | None] = track, player: Callable[[], object] = PlayerProcess,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.monotonic, log: Callable[[str], None] = log,
     ) -> None:
         self.enabled_source = enabled
         self.volume_source = volume
         self.track_source = track
         self.player_factory = player
         self.clock = clock
+        self.log = log
         self.player: object | None = None
         self.track: pathlib.Path | None = None
         self.started = False
@@ -167,7 +210,7 @@ class Music:
         self.volume = DEFAULT_VOLUME
         self.ducked_until = float("-inf")
         self.level: float = 0.0  # the last level sent
-        self.restarts = 0
+        self.restarts = 0  # deaths since it last played HEALTHY s
         self.dead = False  # no player, no track, or it kept dying: silence
         self.played = 0.0  # s of the track played before playing_since: where a new player seeks to
         self.playing_since: float | None = None  # it has played since then (None: paused)
@@ -226,6 +269,23 @@ class Music:
         """After a duck: come back up."""
         self._update(DUCK_OUT)
 
+    def check(self) -> None:
+        """Once a second (the TV's tick): start a player that died again, by the same rules as one
+        found dead when a level is sent, and forgive the deaths before HEALTHY s of playing."""
+        if self.player is None or self.dead:
+            return
+        try:
+            code = self.player.exit_code()
+        except Exception:  # noqa: BLE001 - cannot tell: leave it
+            return
+        if code is None:
+            if (self.restarts and self.playing and self.playing_since is not None
+                    and self.clock() - self.playing_since >= HEALTHY):
+                self.restarts = 0
+            return
+        self._say(f"music player stopped (exit {code})")
+        self._died(self.target())
+
     def rest(self) -> float | None:
         """Nothing to hear (an application in front, the blank screen, sleep): once it is silent,
         end the player process; the music comes back where it stopped, in a new one. Returns the
@@ -270,13 +330,28 @@ class Music:
         if self.player.send(f"level {level:g} {seconds:g}"):
             self._sent(level, seconds)
             return
-        # It died: start it again (from silence, fading in) a few times, then give up.
+        self._died(level)
+
+    def _died(self, level: float) -> None:
+        """It died: start it again (from silence, fading in) a few times, then give up."""
         self.close()
         self.restarts += 1
         if self.restarts > RESTARTS:
-            self.dead = True
+            self._give_up(f"the music player stopped {self.restarts} times")
         elif level > 0 and self._spawn() and self.player.send(f"level {level:g} {FADE_IN:g}"):
             self._sent(level, FADE_IN)
+
+    def _give_up(self, why: str) -> None:
+        """Silence for good, said once in the log."""
+        if not self.dead:
+            self.dead = True
+            self._say(f"no music: {why}")
+
+    def _say(self, message: str) -> None:
+        try:
+            self.log(message)
+        except Exception:  # noqa: BLE001 - the log never stops the music
+            pass
 
     def _sent(self, level: float, seconds: float) -> None:
         """The player took `level`: keep count of where the track is. It plays while the level is
@@ -302,17 +377,19 @@ class Music:
             except Exception:  # noqa: BLE001
                 self.track = None
         if self.track is None:
-            self.dead = True
+            self._give_up("no track")
             return False
         try:
             self.player = self.player_factory()
-        except Exception:  # noqa: BLE001 - no player script, no python3: silence
-            self.player, self.dead = None, True
+        except Exception as error:  # noqa: BLE001 - no player script, no python3: silence
+            self.player = None
+            self._give_up(f"the music player cannot start: {error}")
             return False
         if not self.player.send(f"play {self.track}") or (
                 self.played >= 0.05 and not self.player.send(f"seek {self.played:.2f}")):
             self.close()
             self.restarts += 1
-            self.dead = self.restarts > RESTARTS
+            if self.restarts > RESTARTS:
+                self._give_up(f"the music player stopped {self.restarts} times")
             return False
         return True

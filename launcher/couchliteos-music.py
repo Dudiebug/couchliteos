@@ -6,8 +6,11 @@
     level <0..1> <seconds>   ramp the volume there; at 0 it pauses (and resumes from there)
     quit
 
-GStreamer playbin, looped gaplessly with about-to-finish. Exits 3 without GStreamer, 0 on quit
-or end of input (the TV interface went away), and never plays louder than 1.0.
+GStreamer playbin, looped gaplessly with about-to-finish, played through the first audio output
+of SINKS (the ISO has pipewiresink; playbin's own choice needs autoaudiosink, which it has not).
+Exits 3 without GStreamer, 4 without an audio output, 1 when GStreamer reports an error, 0 on quit
+or end of input (the TV interface went away), and never plays louder than 1.0. Why it stopped goes
+to stderr (couchliteos_music appends that to music.log).
 """
 
 from __future__ import annotations
@@ -15,9 +18,42 @@ from __future__ import annotations
 import pathlib
 import sys
 import threading
+from collections.abc import Callable
 
+PLAY_FAILED = 1
 INIT_FAILED = 3
+NO_SINK = 4
 STEP = 1 / 30  # s between volume steps of a ramp
+SINKS = ("pipewiresink", "autoaudiosink", "alsasink")  # the first that exists plays it
+STREAM_PROPERTIES = 'props, media.name="CouchLiteOS music", application.name="CouchLiteOS music", media.role=Music'
+
+
+def make_sink(make: Callable[[str], object]) -> tuple[str, object] | tuple[None, None]:
+    """The first of SINKS that `make` (Gst.ElementFactory.make with a name) can make: (name, element),
+    else (None, None)."""
+    for name in SINKS:
+        try:
+            element = make(name)
+        except Exception:  # noqa: BLE001 - a broken plugin is a missing one
+            element = None
+        if element is not None:
+            return name, element
+    return None, None
+
+
+def name_stream(sink: object, structure: Callable[[str], object]) -> bool:
+    """Name the PipeWire stream (the mixer shows "CouchLiteOS music", role Music) when the sink can
+    take stream-properties; `structure` is Gst.Structure.new_from_string. False when it could not."""
+    try:
+        if sink.find_property("stream-properties") is None:
+            return False
+        properties = structure(STREAM_PROPERTIES)
+        if properties is None:
+            return False
+        sink.set_property("stream-properties", properties)
+    except Exception:  # noqa: BLE001 - an unnamed stream still plays
+        return False
+    return True
 
 
 def main() -> int:
@@ -25,17 +61,26 @@ def main() -> int:
         import gi
         gi.require_version("Gst", "1.0")
         from gi.repository import GLib, Gst
-    except (ImportError, ValueError):
+    except (ImportError, ValueError) as error:
+        print(f"couchliteos-music: no GStreamer for Python: {error}", file=sys.stderr)
         return INIT_FAILED
     Gst.init(None)
     player = Gst.ElementFactory.make("playbin", "music")
     if player is None:
+        print("couchliteos-music: GStreamer has no playbin (gstreamer1.0-plugins-base)", file=sys.stderr)
         return INIT_FAILED
+    sink_name, sink = make_sink(lambda name: Gst.ElementFactory.make(name, "music-out"))
+    if sink is None:
+        print(f"couchliteos-music: no audio output: GStreamer has none of {', '.join(SINKS)}", file=sys.stderr)
+        return NO_SINK
+    if sink_name == "pipewiresink":
+        name_stream(sink, lambda text: Gst.Structure.new_from_string(text))
+    player.set_property("audio-sink", sink)
     player.set_property("volume", 0.0)
     flags = player.get_property("flags")
     player.set_property("flags", int(flags) & ~0x1 & ~0x4)  # no video, no subtitles
     loop = GLib.MainLoop()
-    state = {"uri": "", "level": 0.0, "ramp": None}
+    state = {"uri": "", "level": 0.0, "ramp": None, "failed": False}
 
     def again(_element):  # gapless loop: queue the same track before this one ends
         if state["uri"]:
@@ -47,6 +92,9 @@ def main() -> int:
 
     def on_message(_bus, message):
         if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            print(f"couchliteos-music: {sink_name}: {error.message} ({debug or 'no details'})", file=sys.stderr, flush=True)
+            state["failed"] = True
             loop.quit()
         elif message.type == Gst.MessageType.EOS and state["uri"]:  # a track that cannot loop gaplessly
             player.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH, 0)
@@ -117,7 +165,7 @@ def main() -> int:
     threading.Thread(target=read_input, daemon=True).start()
     loop.run()
     player.set_state(Gst.State.NULL)
-    return 0
+    return PLAY_FAILED if state["failed"] else 0
 
 
 if __name__ == "__main__":
