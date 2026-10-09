@@ -97,7 +97,10 @@ fi
 install -D -m 0644 /dev/null "$INSTALL_LOG"
 install -D -m 0644 /dev/null "$CONFIG_LOG"
 printf 'blank_disk=true\nvirtual_size=%s\n' "$virtual_size" >> "$CONFIG_LOG"
-python3 -m http.server 8000 --bind 0.0.0.0 --directory "$ROOT/tests" \
+# The release gauntlet runs this next to the legacy/install smoke: each gets its own port.
+PRESEED_PORT=${COUCHLITEOS_PRESEED_PORT:-8000}
+export COUCHLITEOS_PRESEED_PORT=$PRESEED_PORT
+python3 -m http.server "$PRESEED_PORT" --bind 0.0.0.0 --directory "$ROOT/tests" \
   > "$work/preseed-http.log" 2>&1 &
 server_pid=$!
 if ! python3 "$ROOT/tests/preseed_ready.py" "$ROOT/tests/installer-preseed.cfg"; then
@@ -125,7 +128,7 @@ pid=$!
 
 if ! python3 "$ROOT/tests/qemu_iso_boot.py" \
   "$install_monitor" "$MENU_SCREENSHOT" "$EDITOR_SCREENSHOT" "$INSTALLER_SCREENSHOT" \
-  ' auto=true priority=critical preseed/url=http://10.0.2.2:8000/installer-preseed.cfg console=ttyS0,115200n8 DEBIAN_FRONTEND=text'; then
+  ' auto=true priority=critical preseed/url=http://10.0.2.2:'"$PRESEED_PORT"'/installer-preseed.cfg console=ttyS0,115200n8 DEBIAN_FRONTEND=text'; then
   cat "$INSTALL_LOG"
   echo 'Could not drive the ISO installer entry.' >&2
   exit 1

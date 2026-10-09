@@ -92,7 +92,10 @@ mkdir "$work/http"
   printf '%s\n' 'd-i passwd/make-user boolean false' 'd-i passwd/root-login boolean true' \
     'd-i passwd/root-password-crypted password *'
 } > "$work/http/installer-preseed.cfg"
-python3 -m http.server 8000 --bind 0.0.0.0 --directory "$work/http" > "$work/preseed-http.log" 2>&1 &
+# The release gauntlet runs this next to the legacy/install smoke: each gets its own port.
+PRESEED_PORT=${COUCHLITEOS_PRESEED_PORT:-8000}
+export COUCHLITEOS_PRESEED_PORT=$PRESEED_PORT
+python3 -m http.server "$PRESEED_PORT" --bind 0.0.0.0 --directory "$work/http" > "$work/preseed-http.log" 2>&1 &
 server_pid=$!
 if ! python3 "$ROOT/tests/preseed_ready.py" "$work/http/installer-preseed.cfg"; then
   cat "$work/preseed-http.log" >&2
@@ -105,7 +108,7 @@ timeout $((25 * SCALE))m qemu-system-x86_64 "${common[@]}" \
 pid=$!
 if ! python3 "$ROOT/tests/qemu_iso_boot.py" "$monitor" \
   "$SCREENSHOT_DIR/menu.ppm" "$SCREENSHOT_DIR/editor.ppm" "$SCREENSHOT_DIR/installer.ppm" \
-  ' auto=true priority=critical preseed/url=http://10.0.2.2:8000/installer-preseed.cfg console=ttyS0,115200n8 DEBIAN_FRONTEND=text'; then
+  ' auto=true priority=critical preseed/url=http://10.0.2.2:'"$PRESEED_PORT"'/installer-preseed.cfg console=ttyS0,115200n8 DEBIAN_FRONTEND=text'; then
   cat "$INSTALL_LOG"
   echo 'Could not drive the old ISO installer entry (its menu may differ from this one).' >&2
   exit 1

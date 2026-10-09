@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Wait until http://127.0.0.1:8000/installer-preseed.cfg serves this run's preseed file.
+"""Wait until http://127.0.0.1:PORT/installer-preseed.cfg serves this run's preseed file
+(PORT: COUCHLITEOS_PRESEED_PORT, 8000 by default).
 
 A preseed server left behind by a killed run can keep port 8000: the new server then cannot
 bind, the installer gets the old server's answer (often 404) and waits at a prompt until the
 QEMU timeout. Checking the served bytes catches that in seconds.
 """
+import os
 import sys
 import time
 import urllib.request
 
-URL = "http://127.0.0.1:8000/installer-preseed.cfg"
+PORT = os.environ.get("COUCHLITEOS_PRESEED_PORT", "8000")
+URL = f"http://127.0.0.1:{PORT}/installer-preseed.cfg"
 
 
 def served() -> bytes | None:
@@ -27,7 +30,7 @@ def main(argv: list[str]) -> int:
         if served() == expected:
             return 0
         time.sleep(0.2)
-    print(f"{URL} does not serve {argv[1]}: is another preseed server still holding port 8000?",
+    print(f"{URL} does not serve {argv[1]}: is another preseed server still holding port {PORT}?",
           file=sys.stderr)
     return 1
 

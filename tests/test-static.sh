@@ -486,6 +486,11 @@ rg -q '^d-i preseed/late_command string in-target .*useradd .*--groups sudo .*in
 # A preseed server left by a killed run holds port 8000: the smokes check theirs answers first.
 rg -q 'tests/preseed_ready.py' tests/qemu-install-smoke.sh
 rg -q 'tests/preseed_ready.py' tests/qemu-legacy-smoke.sh
+# The gauntlet runs both smokes at once, so each takes its preseed port from the environment.
+rg -Fq 'PRESEED_PORT=${COUCHLITEOS_PRESEED_PORT:-8000}' tests/qemu-install-smoke.sh
+rg -Fq 'PRESEED_PORT=${COUCHLITEOS_PRESEED_PORT:-8000}' tests/qemu-legacy-smoke.sh
+refute rg -q '10\.0\.2\.2:8000' tests/qemu-install-smoke.sh tests/qemu-legacy-smoke.sh
+rg -q 'COUCHLITEOS_PRESEED_PORT' tests/preseed_ready.py
 rg -q '32G' tests/qemu-install-smoke.sh
 rg -q 'blank_disk=true' tests/qemu-install-smoke.sh
 rg -q 'COUCHLITEOS_SMOKE_INSTALLED_DISK_READY' scripts/couchliteos-qemu-smoke tests/qemu-install-smoke.sh
@@ -500,6 +505,9 @@ rg -q '^release-gauntlet:' Makefile
 rg -q 'python3 tools/mutants.py' tools/release-gauntlet.sh
 rg -q 'clear_bytecode' tools/mutants.py
 rg -q 'make qemu-install-smoke' tools/release-gauntlet.sh
+# Three lanes at once, each with its own preseed port and temporary directory.
+for port in 8010 8011 8012; do rg -q "lane [a-z]+ $port\$" tools/release-gauntlet.sh; done
+rg -q 'COUCHLITEOS_GAUNTLET_SERIAL' tools/release-gauntlet.sh
 rg -q 'NRestarts' scripts/couchliteos-qemu-smoke
 rg -q 'couchliteos-audio.service' scripts/couchliteos-qemu-smoke
 rg -q '^runuser -u couchliteos -- env XDG_RUNTIME_DIR=/run/couchliteos' scripts/couchliteos-qemu-smoke
