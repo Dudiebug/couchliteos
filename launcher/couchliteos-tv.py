@@ -1531,8 +1531,10 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             self.busy_depth += 1
             self.busy_pressed = False
             try:
+                # Each look at the PC (up to a second) runs in a thread while the window keeps drawing.
                 result = stream.wake_and_wait(
                     host, sleep=self.pump,
+                    probe_fn=lambda pc: stream.run_waiting(lambda: stream.probe(pc), self.pump),
                     tick=lambda elapsed: self.wait_tick(
                         f"WAKING {host.label}...",
                         f"{int(elapsed)} OF {int(stream.WAKE_TIMEOUT)} SECONDS"),

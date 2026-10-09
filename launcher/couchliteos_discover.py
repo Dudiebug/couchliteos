@@ -17,7 +17,7 @@ import socket
 import struct
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import NamedTuple
 
 MDNS_GROUP = "224.0.0.251"
@@ -214,7 +214,12 @@ def usable_address(text: str) -> bool:
 
 
 def parse_response(data: bytes, source: str = "") -> list[FoundPC]:
-    """The gaming PCs one mDNS response describes. Never raises.
+    """The gaming PCs one mDNS response describes. Never raises."""
+    return [pc for pc, _from_srv in _parse(data, source)]
+
+
+def _parse(data: bytes, source: str = "") -> list[tuple[FoundPC, bool]]:
+    """parse_response, each PC with whether its port came from an SRV record (False: a PTR alone).
 
     The SRV record gives the port and the name of the host, whose A record gives the address. A
     response without a usable A record falls back to `source`, the address it came from: a legacy
@@ -232,7 +237,7 @@ def parse_response(data: bytes, source: str = "") -> list[FoundPC]:
                 services.setdefault(_folded(record.name), record.data)  # type: ignore[arg-type]
         elif record.rtype == TYPE_A and usable_address(record.data):  # type: ignore[arg-type]
             addresses.setdefault(_folded(record.name), []).append(record.data)  # type: ignore[arg-type]
-    found: list[FoundPC] = []
+    found: list[tuple[FoundPC, bool]] = []
     for key, labels in instances.items():
         port, host = services.get(key, (DEFAULT_PORT, ()))
         port = port if 0 < port < 65536 else DEFAULT_PORT
@@ -243,7 +248,7 @@ def parse_response(data: bytes, source: str = "") -> list[FoundPC]:
             candidates = [item for item in candidates if not ipaddress.IPv4Address(item).is_link_local] or candidates
         candidates = candidates or ([source] if usable_address(source) else [])
         name = ".".join(labels[:-len(SERVICE)]).strip()
-        found.extend(FoundPC(name or address, address, port) for address in candidates)
+        found.extend((FoundPC(name or address, address, port), key in services) for address in candidates)
     return found
 
 
@@ -251,7 +256,7 @@ def _sort_key(pc: FoundPC) -> tuple[str, str, int, int]:
     return pc.name.casefold(), pc.name, int(ipaddress.IPv4Address(pc.address)), pc.port
 
 
-def tidy(found: set[FoundPC] | list[FoundPC]) -> list[FoundPC]:
+def tidy(found: Iterable[FoundPC]) -> list[FoundPC]:
     """Each PC once, sorted by name (then address)."""
     return sorted(set(found), key=_sort_key)
 
@@ -309,6 +314,7 @@ class Search:
         self.query = build_query(random.randrange(1, 0x10000))
         self.interfaces = addresses() or [""]  # "" = whatever interface the default route uses
         self.found: set[FoundPC] = set()
+        self.from_srv: set[FoundPC] = set()  # found with their SRV record: the real port
         self.finished = False
         try:
             self.sock = socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
@@ -365,10 +371,16 @@ class Search:
         except OSError:
             self.close()  # the socket is gone; what was collected so far is the result
             return
-        self.found.update(parse_response(data, str(sender[0])))
+        for pc, from_srv in _parse(data, str(sender[0])):
+            self.found.add(pc)
+            if from_srv:
+                self.from_srv.add(pc)
 
     def results(self) -> list[FoundPC]:
-        return tidy(self.found)
+        """A PC first heard of by a PTR alone (listed on the default port) is dropped once its SRV
+        record, in a later packet, has named it with its real port."""
+        named = {pc.name.casefold() for pc in self.from_srv}
+        return tidy(pc for pc in self.found if pc in self.from_srv or pc.name.casefold() not in named)
 
     def close(self) -> None:
         self.finished = True

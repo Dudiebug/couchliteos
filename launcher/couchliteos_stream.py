@@ -23,8 +23,9 @@ import string
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 
 DATA = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
@@ -33,6 +34,7 @@ CONFIG = DATA / "config.ini"
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 HARDWARE_ENV = pathlib.Path(os.environ.get("COUCHLITEOS_HARDWARE_ENV", "/run/couchliteos-hardware/hardware.env"))
 STREAM_REQUEST = RUN / "moonlight-stream.request"
+LOG = pathlib.Path(os.environ.get("COUCHLITEOS_LOG_DIR", "/var/log/couchliteos")) / "launcher.log"
 SECTION = "streaming"
 
 HTTP_PORT = 47989  # Sunshine / GameStream HTTP port; Moonlight's default
@@ -143,6 +145,8 @@ class Host:
     apps: tuple[str, ...] = ()
     # (app name, Sunshine's app id) for the box art Moonlight caches per id; not part of equality.
     app_ids: tuple[tuple[str, int], ...] = dataclasses.field(default=(), compare=False)
+    remote_port: int = HTTP_PORT
+    ipv6_port: int = HTTP_PORT
 
     def app_id(self, app: str) -> int | None:
         return next((number for name, number in self.app_ids if name == app), None)
@@ -161,11 +165,25 @@ class Host:
         return self.local or self.manual or self.name
 
     def lan_addresses(self) -> list[tuple[str, int]]:
-        found: list[tuple[str, int]] = []
-        for address, port in ((self.local, self.local_port), (self.manual, self.manual_port)):
-            if address and all(address != item[0] for item in found):
-                found.append((address, port))
-        return found
+        """The addresses Wake-on-LAN may aim at: the local and the manual one."""
+        return _addresses(((self.local, self.local_port), (self.manual, self.manual_port)))
+
+    def probe_addresses(self) -> list[tuple[str, int]]:
+        """Every address Moonlight knows for the PC, LAN first: local, manual, remote, IPv6.
+
+        A PC reached only by its remote or IPv6 address is still awake; only lan_addresses() is woken."""
+        return _addresses((
+            (self.local, self.local_port), (self.manual, self.manual_port),
+            (self.remote, self.remote_port), (self.ipv6.strip("[]"), self.ipv6_port),
+        ))
+
+
+def _addresses(pairs: tuple[tuple[str, int], ...]) -> list[tuple[str, int]]:
+    found: list[tuple[str, int]] = []
+    for address, port in pairs:
+        if address and all(address.casefold() != item[0].casefold() for item in found):
+            found.append((address, port))
+    return found
 
 
 def _port(value: str | None) -> int:
@@ -208,6 +226,8 @@ def _host(fields: dict[str, str]) -> Host:
         ipv6=text("ipv6address"),
         apps=tuple(apps),
         app_ids=tuple(app_ids),
+        remote_port=_port(fields.get("remoteport")),
+        ipv6_port=_port(fields.get("ipv6port")),
     )
 
 
@@ -528,31 +548,113 @@ def send_magic(host: Host) -> int:
     return send_wol(host.mac, wake_targets(host, subnet_broadcasts(output)))
 
 
+def probe_each(
+    host: Host,
+    *,
+    connect: Callable[..., socket.socket] = socket.create_connection,
+    timeout: float = PROBE_TIMEOUT,
+) -> list[tuple[str, int, str]]:
+    """(address, port, outcome) for every probe address, tried at once: about `timeout` in all.
+
+    The outcome is "up" (Sunshine answers), "refused" (the PC is on), "timeout" (no answer in time,
+    a host name that did not resolve in time included) or "unreachable". Each connect, name look-up
+    and all, runs in its own thread; one still running at the deadline is left behind as "timeout",
+    and the first "up" ends the wait for the rest."""
+    addresses = host.probe_addresses()
+    outcomes: list[str] = ["timeout"] * len(addresses)
+    finished = threading.Condition()
+    done = [0]
+
+    def attempt(index: int, address: str, port: int) -> None:
+        try:
+            connection = connect((address, port), timeout=timeout)
+        except ConnectionRefusedError:
+            outcome = "refused"
+        except (socket.timeout, TimeoutError):
+            outcome = "timeout"
+        except (OSError, ValueError, UnicodeError):  # no route, a name that does not resolve, a bad address
+            outcome = "unreachable"
+        else:
+            outcome = "up"
+            try:
+                connection.close()
+            except OSError:
+                pass
+        with finished:
+            outcomes[index] = outcome
+            done[0] += 1
+            finished.notify_all()
+
+    for index, (address, port) in enumerate(addresses):
+        threading.Thread(target=attempt, args=(index, address, port), name="pc-probe", daemon=True).start()
+    deadline = time.monotonic() + timeout + 0.1  # create_connection's own timeout ends first
+    with finished:
+        while done[0] < len(addresses) and "up" not in outcomes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            finished.wait(remaining)
+        snapshot = list(outcomes)
+    return [(address, port, outcome) for (address, port), outcome in zip(addresses, snapshot)]
+
+
+def probe_state(results: list[tuple[str, int, str]]) -> str:
+    """What probe_each found, in probe's words."""
+    outcomes = [outcome for _address, _port, outcome in results]
+    if not outcomes:
+        return "unknown"
+    if "up" in outcomes:
+        return "up"
+    return "awake" if "refused" in outcomes else "down"
+
+
+_last_logged: dict[str, str] = {}
+
+
+def log_probe(host: Host, results: list[tuple[str, int, str]], state: str, path: pathlib.Path | None = None) -> None:
+    """One line per probe in the launcher log, so a support file shows why a PC looked asleep.
+
+    Only when the line for that PC changed: the wake wait probes twice a second. Addresses and
+    outcomes only; nothing secret."""
+    each = ", ".join(f"{_endpoint(address, port)} {outcome}" for address, port, outcome in results) or "no address"
+    line = f"pc probe {host.label}: {each} -> {state}"
+    if _last_logged.get(host.label) == line:
+        return
+    _last_logged[host.label] = line
+    import couchliteos_display as display  # only for its log writer; it needs nothing from here
+
+    display.log(line, path or LOG)
+
+
+def _endpoint(address: str, port: int) -> str:
+    return f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+
+
 def probe(
     host: Host,
     *,
     connect: Callable[..., socket.socket] = socket.create_connection,
     timeout: float = PROBE_TIMEOUT,
+    log: Callable[[Host, list[tuple[str, int, str]], str], object] | None = log_probe,
+    seen: list[tuple[str, int, str]] | None = None,
 ) -> str:
-    """"up" (Sunshine answers), "awake" (the PC refuses the port), "down", or "unknown"."""
-    addresses = host.lan_addresses()
-    if not addresses:
-        return "unknown"
-    awake = False
-    for address, port in addresses:
-        try:
-            connection = connect((address, port), timeout=timeout)
-        except ConnectionRefusedError:
-            awake = True
-            continue
-        except OSError:
-            continue
-        try:
-            connection.close()
-        except OSError:
-            pass
-        return "up"
-    return "awake" if awake else "down"
+    """"up" (Sunshine answers on some address), "awake" (none answers, but the PC refuses the port
+    on one), "down", or "unknown" (no address known). Every address is tried at once; `seen`, when
+    given, receives probe_each's (address, port, outcome) list."""
+    results = probe_each(host, connect=connect, timeout=timeout)
+    state = probe_state(results)
+    if log is not None:
+        log(host, results, state)
+    if seen is not None:
+        seen.extend(results)
+    return state
+
+
+def measure_address(host: Host, seen: Sequence[tuple[str, int, str]] = ()) -> tuple[str, int] | None:
+    """The address to measure the path on: the first one that answered in `seen` (Sunshine, or a
+    refusal), else the first LAN address, else the first one known; None when none is known."""
+    answered = [(address, port) for address, port, outcome in seen if outcome in ("up", "refused")]
+    return (answered or host.lan_addresses() or host.probe_addresses() or [None])[0]
 
 
 # What a WAKE PC press led to (wake_and_wait's results, "nonetwork" and "home"), for .format(host.label).
@@ -584,21 +686,25 @@ def wake_and_wait(
     """Wake `host` if it is not answering and wait for it.
 
     Returns "up" (nothing to do), "awake" (the PC is on but Sunshine is not answering,
-    at once or when the wait ran out), "nomac", "noaddr" (no LAN address to watch; only
-    with force is a packet sent, then "sent"), "woke", "timeout", or "cancelled"
-    (`tick(elapsed)` returned true).
+    at once or when the wait ran out), "nomac", "noaddr" (no LAN address to wake and watch;
+    only with force is a packet sent, then "sent"), "woke", "timeout", or "cancelled"
+    (`tick(elapsed)` returned true). A PC that answered on any address, if only with a
+    refusal, is never sent another wake packet.
     """
     state = probe_fn(host)
     if state in ("up", "awake"):
         return state
     if not host.mac:
         return "nomac"
-    if state == "unknown" and not force:
-        return "noaddr"
-    send(host)
-    if state == "unknown":
+    if not host.lan_addresses():
+        # Wake-on-LAN only works on the LAN; Moonlight knows the route to a remote-only PC.
+        if not force:
+            return "noaddr"
+        send(host)
         return "sent"
+    send(host)
     start = last_send = clock()
+    answered = False
     while True:
         elapsed = clock() - start
         if tick is not None and tick(elapsed):
@@ -609,9 +715,31 @@ def wake_and_wait(
         state = probe_fn(host)
         if state == "up":
             return "woke"
-        if clock() - last_send >= RESEND_SECONDS:
+        answered = answered or state == "awake"
+        if not answered and clock() - last_send >= RESEND_SECONDS:
             send(host)
             last_send = clock()
+
+
+def run_waiting(work: Callable[[], object], wait: Callable[[float], object], step: float = 0.1) -> object:
+    """`work()` in a thread while `wait(step)` keeps a screen alive; its result, or its exception."""
+    outcome: list[tuple[bool, object]] = []
+    thread = threading.Thread(target=lambda: outcome.append(_attempt(work)), name="pc-probe-wait", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        wait(step)
+        thread.join(0)
+    ok, value = outcome[0]
+    if not ok:
+        raise value  # type: ignore[misc]
+    return value
+
+
+def _attempt(work: Callable[[], object]) -> tuple[bool, object]:
+    try:
+        return True, work()
+    except BaseException as error:  # handed back to run_waiting's caller
+        return False, error
 
 
 # ------------------------------------------------------------------ stream tuning

@@ -563,6 +563,31 @@ class SearchResultTest(unittest.TestCase):
         found, _sock = self.run_search([(0.1, packet, ("192.168.1.44", 5353))])
         self.assertEqual(found, [("PC", "192.168.1.44", 47989)])
 
+    def test_a_ptr_alone_then_the_srv_with_another_port_lists_the_pc_once_at_the_real_port(self):
+        instance = ("PC", *SERVICE)
+        ptr_only = Dns().ptr(ANSWER, SERVICE, instance).pack()
+        srv = Dns().srv(ANSWER, instance, ("pc", "local"), 48010).a(ADDITIONAL, ("pc", "local"), "192.168.1.44").pack()
+        for order in ((0.1, 0.5), (0.5, 0.1)):  # whichever packet comes first
+            with self.subTest(order=order):
+                found, _sock = self.run_search(
+                    [(order[0], ptr_only, ("192.168.1.44", 5353)), (order[1], srv, ("192.168.1.44", 5353))]
+                )
+                self.assertEqual(found, [("PC", "192.168.1.44", 48010)])
+
+    def test_an_srv_on_the_default_port_keeps_its_entry(self):
+        instance = ("PC", *SERVICE)
+        ptr_only = Dns().ptr(ANSWER, SERVICE, instance).pack()
+        srv = Dns().srv(ANSWER, instance, ("pc", "local")).a(ADDITIONAL, ("pc", "local"), "192.168.1.44").pack()
+        found, _sock = self.run_search([(0.1, ptr_only, ("192.168.1.44", 5353)), (0.5, srv, ("192.168.1.44", 5353))])
+        self.assertEqual(found, [("PC", "192.168.1.44", 47989)])
+
+    def test_a_ptr_alone_for_another_pc_is_kept(self):
+        ptr_only = Dns().ptr(ANSWER, SERVICE, ("OTHER", *SERVICE)).pack()
+        found, _sock = self.run_search(
+            [(0.1, ptr_only, ("192.168.1.45", 5353)), from_pc(0.5, "192.168.1.44", name="PC", port=48010)]
+        )
+        self.assertEqual(found, [("OTHER", "192.168.1.45", 47989), ("PC", "192.168.1.44", 48010)])
+
     def test_nothing_answering_is_an_empty_list_not_an_error(self):
         found, sock = self.run_search([])
         self.assertEqual(found, [])
