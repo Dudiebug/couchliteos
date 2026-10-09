@@ -1262,7 +1262,7 @@ class LauncherFlowTest(SysfsCase):
         self.assertEqual(commands.calls, [])
 
     def test_a_pc_without_an_address_runs_nothing(self):
-        page, _screen, commands = self.flow(hosts=(stream.Host(name="X", remote="1.2.3.4"),))
+        page, _screen, commands = self.flow(hosts=(stream.Host(name="X"),))  # a remote address counts now
         self.assertIn("NO ADDRESS", page.message.call_args.args[1])
         self.assertEqual(commands.calls, [])
 

@@ -162,10 +162,12 @@ class Screens:
     """SETTINGS, POWER, WHAT'S NEW, the SOFTWARE UPDATE progress, the classic screens opened on
     top, and the steps of the start. Part of Tv: the models are couchliteos_tvscreens'."""
 
+    child = None  # the classic screen drawn here (gtk_screen.ScreenChild); None also while one runs in foot
+
     def init_screens(self) -> None:
         self.child_pid: int | None = None  # the classic screen running on top (open_screen)
         self.child_name = ""
-        self.child: "gtk_screen.ScreenChild | None" = None  # the screen drawn here (None: in foot)
+        self.child = None
         self.child_drawn = False  # it sent a frame: a failure after that is the screen's, not the bridge's
         self.child_return = "home"  # the page under it
         self.starting = True  # the steps before the home screen still run (continue_start)

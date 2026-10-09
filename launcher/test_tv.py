@@ -162,6 +162,57 @@ class ScreensTest(unittest.TestCase):
         tv.settings_key("back")
         tv.close_screen.assert_called_once_with()
 
+    def test_keys_go_to_the_screen_drawn_here(self):
+        import curses
+
+        module, tv = self.tv()
+        tv.child_pid, tv.child = 42, mock.Mock()
+        tv.idle = mock.Mock(**{"key.return_value": False})
+        tv.ui_sound = mock.Mock()
+        with mock.patch.object(module, "Gdk", create=True) as gdk, \
+                mock.patch.object(module.session, "focus_launcher") as focus, \
+                mock.patch.object(module.display, "confirm_restore"):
+            gdk.ModifierType.CONTROL_MASK, gdk.ModifierType.ALT_MASK, gdk.ModifierType.SUPER_MASK = 4, 8, 64
+            gdk.keyval_name.return_value, gdk.keyval_to_unicode.return_value = "Down", 0
+            self.assertTrue(tv.on_key(None, 0, 0, 0))
+            gdk.keyval_name.return_value, gdk.keyval_to_unicode.return_value = "a", ord("a")
+            self.assertTrue(tv.on_key(None, 0, 0, 0))  # typing too (a Wi-Fi password)
+            self.assertFalse(tv.on_key(None, 0, 0, 4))  # Ctrl+A is not for the screen
+        self.assertEqual([call.args[0] for call in tv.child.send.call_args_list], [curses.KEY_DOWN, "a"])
+        focus.assert_not_called()
+
+    def test_a_screen_that_fails_before_drawing_opens_in_foot(self):
+        module, tv = self.tv()
+        tv.screen_closed = mock.Mock()
+        tv.open_screen.return_value = True
+        tv.child, tv.child_pid, tv.child_drawn, tv.mode, tv.child_return = mock.Mock(), 42, False, "classic", "settings"
+        with mock.patch.object(module.display, "log"):
+            tv.on_bridge_exit("display", "", 1)
+        tv.open_screen.assert_called_once_with("display", "", foot=True)
+        tv.show.assert_called_once_with("settings")
+        tv.screen_closed.assert_not_called()
+        self.assertIsNone(tv.child)
+        self.assertIsNone(tv.child_pid)
+
+    def test_a_screen_that_drew_and_closed_goes_back_to_its_page(self):
+        module, tv = self.tv()
+        tv.screen_closed = mock.Mock()
+        tv.child, tv.child_pid, tv.child_drawn, tv.mode, tv.child_return = mock.Mock(), 42, True, "classic", "settings"
+        tv.on_bridge_exit("display", "", 0)
+        tv.open_screen.assert_not_called()
+        tv.show.assert_called_once_with("settings")
+        tv.screen_closed.assert_called_once_with("display", 0)
+
+    def test_a_frame_is_drawn_on_the_classic_page(self):
+        module, tv = self.tv()
+        tv.child, tv.child_name, tv.classic_page = mock.Mock(), "display", mock.Mock()
+        frame = {"rows": 30, "cols": 100, "boxed": True, "ops": [[3, 46, "DISPLAY", 0]],
+                 "lists": [[10, 30, ["RESOLUTION  1920X1080", "BACK"], 0]]}
+        tv.on_screen_frame(frame)
+        view = tv.classic_page.show_view.call_args.args[0]
+        self.assertEqual(view.title, "DISPLAY")
+        tv.show.assert_called_once_with("classic")
+
     def test_a_key_while_a_classic_screen_is_open_puts_it_back_in_front(self):
         module, tv = self.tv()
         tv.child_pid = 42
