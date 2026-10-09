@@ -26,6 +26,11 @@ Environment=QT_QPA_PLATFORM=wayland
 EnvironmentFile=-/run/couchliteos-hardware/compositor.env
 StateDirectory=couchliteos
 LogsDirectory=couchliteos
+# The boot splash holds the screen (the DRM device) until it quits, and cage cannot take it
+# while it does; Debian's plymouth-quit.service is not ordered against this unit. Quit it here,
+# as root (+), keeping its last picture on the screen until the TV interface draws the same
+# one (couchliteos_gtk_boot). Nothing to quit after a restart or when Plymouth is not running (-).
+ExecStartPre=-+/usr/bin/plymouth quit --retain-splash
 ExecStartPre=/usr/bin/rm -f /run/couchliteos/launcher-ready /run/couchliteos/session.env
 # The log persists across boots: over 5 MiB it is cut to its last 5 MiB and kept as launcher.log.1.
 # (systemd expands $$ and %% itself, so the shell sees $ and %.)

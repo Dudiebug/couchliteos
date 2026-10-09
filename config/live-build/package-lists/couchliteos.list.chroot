@@ -30,6 +30,10 @@ vulkan-tools
 libva2
 vainfo
 
+# The boot splash (overlay/usr/share/plymouth/themes/couchliteos). The package alone: its
+# script plugin draws the theme, which needs no fonts (plymouth-label) or other themes.
+plymouth
+
 # Kiosk Wayland and applications
 cage
 seatd

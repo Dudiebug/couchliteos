@@ -116,6 +116,11 @@ else
   echo 'Build type: test (zstd squashfs; sudo make build RELEASE=1 for a release)'
 fi
 
+# The live boot line ends with the boot splash (overlay/etc/plymouth): quiet keeps kernel and
+# systemd text off the TV, splash starts Plymouth, and plymouth.ignore-serial-consoles stops
+# Plymouth from falling back to plain text on every screen because console=ttyS0 is there
+# (it would otherwise treat the serial port as the console and draw no picture). The serial
+# port still gets the console and the QEMU tests' markers.
 lb config noauto \
   --mode debian \
   --distribution trixie \
@@ -126,7 +131,7 @@ lb config noauto \
   --debian-installer-gui false \
   --uefi-secure-boot enable \
   --debootstrap-options '--include=ca-certificates' \
-  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8' \
+  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8 quiet splash plymouth.ignore-serial-consoles' \
   --bootappend-install 'ipv6.disable=1' \
   --iso-application 'CouchLiteOS streaming appliance' \
   --iso-publisher 'CouchLiteOS Project' \
@@ -188,8 +193,9 @@ built_iso=$(find . -maxdepth 1 -type f -name '*.hybrid.iso' -print -quit)
   exit 1
 }
 
-# The ISO's initrd: zstd after the uncompressed early-microcode archive(s), and without
-# nouveau or its firmware (overlay/etc/initramfs-tools: they load from the root filesystem).
+# The ISO's initrd: zstd after the uncompressed early-microcode archive(s), without
+# nouveau or its firmware (overlay/etc/initramfs-tools: they load from the root filesystem),
+# and with the boot splash.
 initrd_check() {
   python3 - "$1" <<'EOF'
 import re, subprocess, sys
@@ -227,7 +233,13 @@ if not any(re.search(r"/modules/", name) for name in names):
 slim = [name for name in names if re.search(r"/nouveau\.ko|/firmware/nvidia/", name)]
 if slim:
     sys.exit(f"{sys.argv[1]}: the initrd still has nouveau: {slim[0]}")
-print(f"initrd: zstd, no nouveau, {len(names)} entries")
+# The boot splash starts from the initrd: without plymouthd and the theme there, the first
+# picture is the TV interface, half a minute after power-on.
+splash = [r"(^|/)sbin/plymouthd$", r"plymouth/themes/couchliteos/couchliteos\.script$"]
+missing = [pattern for pattern in splash if not any(re.search(pattern, name) for name in names)]
+if missing:
+    sys.exit(f"{sys.argv[1]}: the initrd has no boot splash (nothing matches {missing[0]})")
+print(f"initrd: zstd, no nouveau, boot splash, {len(names)} entries")
 EOF
 }
 
