@@ -589,7 +589,7 @@ class Screens:
 
     def screen_key(self, keyval: int, state) -> bool:
         """A key for the screen drawn here, as its terminal would have had it."""
-        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK):
+        if state and state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK):
             return False
         code = Gdk.keyval_to_unicode(keyval)
         key = uibridge.key_for(Gdk.keyval_name(keyval) or "", chr(code) if code else "")
@@ -925,7 +925,7 @@ class Script:
         """One step: a Gdk key name, `wait:<ms>`, `dump:<name>`, `theme:<name>`, `accent:<name>`
         and `background:<style>` (saved as Settings saves them), `open:whatsnew`, `open:update` (writes a
         downloading status), `open:tutorial`, `open:help`, `open:loading` (the STARTING screen, until the
-        next key) or `quit`. The next step is timed before this one
+        next key), `screen:<name>` (a classic screen, drawn here) or `quit`. The next step is timed before this one
         runs, so a step that waits for an answer (a question) is answered by the next one."""
         if not self.script:
             return False
@@ -957,6 +957,9 @@ class Script:
                 self.open_help()
             elif step == "open:loading":
                 self.script_loading()
+            elif kind == "screen":
+                if not self.open_screen(value):
+                    raise RuntimeError("a classic screen is still open")
             elif step == "quit":
                 self.application.quit()
             else:

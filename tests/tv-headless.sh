@@ -109,7 +109,7 @@ run_tv() {
   [[ -z $firstboot ]] || rm -f -- "$base/state/setup-complete" "$base/state/tutorial-seen"
   local status=0
   COUCHLITEOS_RUN_DIR=$base/run COUCHLITEOS_STATE_DIR=$base/state HOME=$base/home \
-    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot PATH=$work/bin:$PATH \
+    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot PATH=$work/bin:$PATH     COUCHLITEOS_LAUNCHER=$ROOT/launcher/couchliteos-launcher.py COUCHLITEOS_TV_FOOT=${firstboot:+1} \
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
     TV_PYTHON=$PYTHON TV_ROOT=$ROOT TV_STATUS=$base/status TV_SIZE="$width $height" \
     TV_SCRIPT=$script TV_DUMP=$base/dump TV_SHOTS=$shots \
@@ -157,6 +157,21 @@ looks=',theme:midnight,background:plain,wait:1600,dump:bg-plain,background:calm,
 looks+=',background:wave,accent:month,wait:1600,dump:accent-month,accent:,wait:1600,dump:bg-wave'
 run_tv xmb1080 1920 1080 "$xmb$themes$looks,open:update,dump:update,quit" "$SHOTS/xmb"
 run_tv xmb720 1280 720 "$xmb,open:update,dump:update,quit"
+# Every classic Settings screen, drawn by the TV interface (couchliteos_uibridge): it opens,
+# shows a title and text, and B / Esc closes it (the next one could not open otherwise).
+CLASSIC=(display appearance audio bluetooth controllers network sleep applications remote-desktop streaming
+         tv-control software-update controls)
+classic='wait:2000'
+for screen in "${CLASSIC[@]}"; do
+  classic+=",screen:$screen,wait:2500,dump:classic-$screen,Escape,wait:1500"
+done
+run_tv classic1080 1920 1080 "$classic,quit" "$SHOTS/classic"
+run_tv classic720 1280 720 "$classic,quit"
+if [[ -e $work/classic1080/run/foot.log ]]; then
+  echo "tv-headless: a classic screen fell back to foot: $(cat "$work/classic1080/run/foot.log")" >&2
+  exit 1
+fi
+
 # First boot: the wizard opens on top as `couchliteos-launcher --screen setup` in foot; when it
 # closes, the tour; B on its first card skips it, then the home screen.
 run_tv firstboot 1280 720 'wait:4000,dump:tutorial,Escape,wait:1000,dump:home,quit' '' firstboot
@@ -166,10 +181,11 @@ if ! grep -q -- '--screen setup' "$work/firstboot/run/foot.log" 2>/dev/null; the
 fi
 [[ -e $work/firstboot/run/launcher-ready ]] || { echo 'tv-headless: first boot wrote no launcher-ready' >&2; exit 1; }
 
-"$PYTHON" - "$work" "$ROOT" "${THEMES[@]}" <<'EOF'
-import json, pathlib, sys
+CLASSIC_SCREENS="${CLASSIC[*]}" "$PYTHON" - "$work" "$ROOT" "${THEMES[@]}" <<'EOF'
+import json, os, pathlib, sys
 
 work, themes = pathlib.Path(sys.argv[1]), sys.argv[3:]
+CLASSIC = [f"classic-{name}" for name in os.environ["CLASSIC_SCREENS"].split()]
 sys.path.insert(0, sys.argv[2] + "/launcher")
 import couchliteos_theme as theme
 midnight = theme.load(pathlib.Path(sys.argv[2]) / "overlay/usr/share/couchliteos/themes/midnight.theme")
@@ -182,9 +198,10 @@ XMB = ["home", "quick", "art", "streamset", "xmb-games", "xmb-video", "xmb-setti
 LOOKS = ["bg-plain", "bg-calm", "accent-month", "bg-wave"]
 problems = []
 started = None  # how the XMB's wave ran at the start (GL where the GL wave runs here)
-for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (1920, 1080)), ("xmb720", (1280, 720))):
-    names = XMB if run.startswith("xmb") else list(SCREENS)
-    names = names + ([f"theme-{name}" for name in themes] if run.endswith("1080") else [])
+for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (1920, 1080)), ("xmb720", (1280, 720)),
+                  ("classic1080", (1920, 1080)), ("classic720", (1280, 720))):
+    names = XMB if run.startswith("xmb") else CLASSIC if run.startswith("classic") else list(SCREENS)
+    names = names + ([f"theme-{name}" for name in themes] if run in ("1080", "xmb1080") else [])
     names = names + (LOOKS if run == "xmb1080" else [])
     for name in names:
         path = work / run / "dump" / f"{name}.json"
@@ -195,7 +212,7 @@ for run, size in (("1080", (1920, 1080)), ("720", (1280, 720)), ("xmb1080", (192
         where = f"{run}/{name}"
         if (dump["width"], dump["height"]) != size:
             problems.append(f"{where}: window is {dump['width']}x{dump['height']}, not {size[0]}x{size[1]}")
-        expected = SCREENS.get(name, "home")
+        expected = "classic" if name.startswith("classic-") else SCREENS.get(name, "home")
         if dump["screen"] != expected or dump["quick"] != (name == "quick"):
             problems.append(f"{where}: showed {dump['screen']} (quick menu {dump['quick']})")
         if name.startswith("theme-") and dump["theme"] != name[6:]:
