@@ -106,6 +106,21 @@ rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- '--loadlin false' build/build.sh
 rg -q -- '--win32-loader false' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
+# The boot splash: the package, its theme as the default, and splash on both boot lines. The
+# live line has console=ttyS0, so Plymouth must be told to ignore it or it draws no picture.
+rg -q '^plymouth$' config/live-build/package-lists/couchliteos.list.chroot
+refute rg -q '^plymouth-(themes|label)' config/live-build/package-lists/couchliteos.list.chroot
+rg -q '^Theme=couchliteos$' overlay/etc/plymouth/plymouthd.conf
+test -f overlay/usr/share/plymouth/themes/couchliteos/couchliteos.script
+rg -q -- "--bootappend-live '.*console=ttyS0,115200n8 .*\bsplash\b" build/build.sh
+rg -q -- "--bootappend-live '.*\bquiet\b.*plymouth\.ignore-serial-consoles" build/build.sh
+rg -q '^GRUB_CMDLINE_LINUX_DEFAULT="quiet splash ' overlay/etc/default/grub.d/20-couchliteos.cfg
+# cage cannot take the screen while Plymouth holds it: the launcher quits it first, and
+# Debian's own plymouth-quit waits for the launcher instead of racing it.
+rg -q '^ExecStartPre=-\+/usr/bin/plymouth quit --retain-splash$' services/couchliteos-launcher.service
+[[ $(rg -n '^ExecStart' services/couchliteos-launcher.service | head -n 1) == *'plymouth quit'* ]]
+rg -q '^After=couchliteos-launcher.service$' overlay/etc/systemd/system/plymouth-quit.service.d/couchliteos.conf
+rg -q '^ExecStartPre=-/usr/bin/plymouth quit$' services/couchliteos-restore.service
 [[ "$(< VERSION)" == 0.3.0-beta.2 ]]
 refute rg -q 'NONE PAIRED' launcher --glob '*.py'
 cmp -s VERSION overlay/etc/couchliteos-version
@@ -1163,13 +1178,17 @@ def cpio(names):
 directory = pathlib.Path(sys.argv[1])
 early = cpio(["kernel/x86/microcode/GenuineIntel.bin"]) + b"\0" * 512
 modules = ["usr/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/i915/i915.ko.xz"]
+nosplash = list(modules)
+modules += ["usr/sbin/plymouthd", "usr/share/plymouth/themes/couchliteos/couchliteos.script"]
 nouveau = modules + ["usr/lib/modules/6.12.94+deb13-amd64/kernel/drivers/gpu/drm/nouveau/nouveau.ko.xz"]
 zstd = lambda data: subprocess.run(["zstd", "-q", "-c"], input=data, stdout=subprocess.PIPE, check=True).stdout
 (directory / "good").write_bytes(early + zstd(cpio(modules)))
 (directory / "nouveau").write_bytes(early + zstd(cpio(nouveau)))
+(directory / "nosplash").write_bytes(early + zstd(cpio(nosplash)))
 (directory / "gzip").write_bytes(early + b"\x1f\x8b\x08\x00" + b"\0" * 64)
 EOF
-  [[ $(initrd_check "$initrd_test/good") == 'initrd: zstd, no nouveau, 1 entries' ]]
+  [[ $(initrd_check "$initrd_test/good") == 'initrd: zstd, no nouveau, boot splash, 3 entries' ]]
+  (initrd_check "$initrd_test/nosplash" 2>&1 && exit 1 || true) | rg -q 'has no boot splash .*plymouthd'
   (initrd_check "$initrd_test/nouveau" 2>&1 && exit 1 || true) | rg -q 'still has nouveau: .*/nouveau\.ko\.xz'
   (initrd_check "$initrd_test/gzip" 2>&1 && exit 1 || true) | rg -q 'is not zstd \(starts 1f8b0800'
   rm -rf -- "$initrd_test"

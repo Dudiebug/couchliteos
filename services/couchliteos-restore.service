@@ -17,6 +17,9 @@ Before=couchliteos-bluetooth.service couchliteos-audio.service
 Type=oneshot
 User=root
 Group=root
+# Its progress text would be hidden behind the boot splash: quit the splash first (-: Plymouth
+# may not be running).
+ExecStartPre=-/usr/bin/plymouth quit
 # Mounts the saved image, puts its files back with the updater's own steps and restarts. On a
 # failure it says why on the screen for 30 s and the box starts as it is (one that stopped part
 # way is tried again at the next start, twice at most).

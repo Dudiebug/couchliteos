@@ -609,7 +609,9 @@ class EtcTest(TmpCase):
             self.assertTrue(updater.etc_kept(rel), rel)
         for rel in ("default/grub.d/20-couchliteos.cfg", "ssh/ssh_config", "couchliteos/nftables.template",
                     "NetworkManager/NetworkManager.conf", "grub.d/01_couchliteos_bootcheck",
-                    "systemd/system/couchliteos-launcher.service", "fstab.d/x"):
+                    "systemd/system/couchliteos-launcher.service", "fstab.d/x",
+                    # The boot splash reaches updated boxes: its theme choice and quit ordering.
+                    "plymouth/plymouthd.conf", "systemd/system/plymouth-quit.service.d/couchliteos.conf"):
             self.assertFalse(updater.etc_kept(rel), rel)
 
     def test_manifest_lists_the_images_etc_files_and_symlinks_not_directories(self):
