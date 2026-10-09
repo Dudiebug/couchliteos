@@ -103,13 +103,15 @@ EOF
 # size until the script's `quit`; its dumps land in $work/<name>/dump. With firstboot, setup is
 # not complete and the tour not seen.
 run_tv() {
-  local name=$1 width=$2 height=$3 script=$4 shots=${5:-} firstboot=${6:-}
+  local name=$1 width=$2 height=$3 script=$4 shots=${5:-} firstboot=${6:-} bridge=${7:-}
+  local foot=${firstboot:+1}
+  [[ -z $bridge ]] || foot=
   local base=$work/$name
   fixture "$base"
   [[ -z $firstboot ]] || rm -f -- "$base/state/setup-complete" "$base/state/tutorial-seen"
   local status=0
   COUCHLITEOS_RUN_DIR=$base/run COUCHLITEOS_STATE_DIR=$base/state HOME=$base/home \
-    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot PATH=$work/bin:$PATH     COUCHLITEOS_LAUNCHER=$ROOT/launcher/couchliteos-launcher.py COUCHLITEOS_TV_FOOT=${firstboot:+1} \
+    XDG_RUNTIME_DIR=$base/xdg XDG_CONFIG_HOME=$base/home/.config COUCHLITEOS_FOOT=$work/foot PATH=$work/bin:$PATH     COUCHLITEOS_LAUNCHER=$ROOT/launcher/couchliteos-launcher.py COUCHLITEOS_TV_FOOT=$foot \
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
     TV_PYTHON=$PYTHON TV_ROOT=$ROOT TV_STATUS=$base/status TV_SIZE="$width $height" \
     TV_SCRIPT=$script TV_DUMP=$base/dump TV_SHOTS=$shots \
@@ -181,6 +183,12 @@ if ! grep -q -- '--screen setup' "$work/firstboot/run/foot.log" 2>/dev/null; the
   exit 1
 fi
 [[ -e $work/firstboot/run/launcher-ready ]] || { echo 'tv-headless: first boot wrote no launcher-ready' >&2; exit 1; }
+# The setup wizard itself on a first boot, drawn by the TV interface (not foot).
+run_tv setup 1920 1080 'wait:6000,dump:setup,quit' "$SHOTS/setup" firstboot bridge
+if [[ -e $work/setup/run/foot.log ]] || ! grep -q '"screen": *"classic"' "$work/setup/dump/setup.json" 2>/dev/null; then
+  echo "tv-headless: the setup wizard was not drawn by the TV (foot: $(cat "$work/setup/run/foot.log" 2>/dev/null || echo none))" >&2
+  exit 1
+fi
 
 CLASSIC_SCREENS="${CLASSIC[*]}" "$PYTHON" - "$work" "$ROOT" "${THEMES[@]}" <<'EOF'
 import json, os, pathlib, sys
