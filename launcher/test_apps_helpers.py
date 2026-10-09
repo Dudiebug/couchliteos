@@ -1,6 +1,7 @@
 """couchliteos_apps: environment parsing, id generation, state overrides and summaries."""
 
 import testenv  # noqa: F401  (first: scratch run and state directories)
+import os
 import pathlib
 import tempfile
 import time
@@ -191,6 +192,10 @@ class CachedApplicationsTest(unittest.TestCase):
         self.user = root / "user"
         self.state = root / "state.ini"
         (self.system / "10-alpha.ini").write_text(request_manifest("alpha", "ALPHA", 10))
+        # Written an hour ago: a change in the test lands in a later timestamp tick, as it does
+        # on a box (the clock below says it settled; a coarse filesystem clock would not see it).
+        old = time.time() - 3600
+        os.utime(self.system, (old, old))
         self.addCleanup(apps._LOADED.clear)
         self.now = time.time() + 60  # every change has settled
 
@@ -231,7 +236,8 @@ class CachedApplicationsTest(unittest.TestCase):
         self.assertEqual(self.load().applications[0].name, "RENAMED")
 
     def test_a_change_that_has_not_settled_is_parsed_every_time(self):
-        self.now = time.time()  # the files were written just now
+        os.utime(self.system)  # the files were written just now
+        self.now = time.time()
         self.load()
         with mock.patch.object(apps, "load_applications", wraps=apps.load_applications) as load:
             self.load()
