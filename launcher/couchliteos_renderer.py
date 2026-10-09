@@ -9,8 +9,10 @@ by the CPU while the same card's OpenGL driver is fast. There the TV asks for GS
 i915 always takes OpenGL: the Mesa Vulkan driver for it (anv) starts at Broadwell, the one for
 older chips (hasvk) is incomplete, and both ICD files are installed on every PC, so their
 presence tells nothing about this one. OpenGL is hardware on every i915 chip, and it was
-GTK's own default renderer until 4.14. nouveau takes OpenGL even with NVK installed (it does
-not drive the older cards).
+GTK's own default renderer until 4.14.
+
+nouveau keeps GTK's own choice, as in 0.3.0-beta.2: with OpenGL the iMac Late 2013 (Kepler,
+nouveau) showed only a green screen after the boot splash in 0.3.0-beta.3.
 
 A GSK_RENDERER that is already set (couchliteos-session's cairo retry, a test) is never changed.
 The choice and why are written to $RUN_DIR/renderer for the support export.
@@ -31,7 +33,9 @@ VULKAN_ICDS = {
     "nvidia": ("nvidia_icd",),
 }
 # Drivers with a hardware OpenGL driver in Mesa (or NVIDIA's own): OpenGL there is worth asking for.
-GL_DRIVERS = frozenset({"amdgpu", "radeon", "nouveau", "i915", "xe", "nvidia"})
+GL_DRIVERS = frozenset({"amdgpu", "radeon", "i915", "xe", "nvidia"})
+# Drivers where GTK keeps its own choice whatever else is there: OpenGL drew a green screen.
+KEEP_GTK = frozenset({"nouveau"})
 
 
 def drm_drivers(root: pathlib.Path = DRM) -> tuple[str, ...]:
@@ -71,6 +75,9 @@ def choose(drivers: tuple[str, ...], icds: frozenset[str]) -> tuple[str | None, 
     """(GSK_RENDERER to set or None for GTK's own choice, why)."""
     if not drivers:
         return None, "no graphics card found"
+    kept = [driver for driver in drivers if driver in KEEP_GTK]
+    if kept:
+        return None, f"{kept[0]}: GTK's own choice (OpenGL showed a green screen there)"
     for driver in drivers:
         if any(icd in icds for icd in VULKAN_ICDS.get(driver, ())):
             return None, f"{driver} has a Vulkan driver"

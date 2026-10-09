@@ -21,7 +21,7 @@ controller, a TV remote and a keyboard all work. Guide / Home arrives as home.re
 Exit status INIT_FAILED (3) means GTK could not start (no gi, no display, no renderer):
 couchliteos-session then tries once more with GSK_RENDERER=cairo, then starts the classic
 launcher. Without a GSK_RENDERER, couchliteos_renderer picks OpenGL (ngl) on a card with no
-real Vulkan driver, so GTK does not draw everything on the CPU with llvmpipe.
+real Vulkan driver, so GTK does not draw everything on the CPU with llvmpipe (not on nouveau).
 `launcher-ready` is written after the home screen's first frame is drawn.
 
 Before anything else is built the window shows the boot picture Plymouth showed

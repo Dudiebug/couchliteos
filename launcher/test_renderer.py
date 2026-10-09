@@ -10,9 +10,10 @@ DEBIAN_ICDS = frozenset({"intel_icd", "intel_hasvk_icd", "radeon_icd", "nouveau_
 
 
 class ChooseTest(unittest.TestCase):
-    def test_nouveau_takes_opengl_even_with_the_nvk_file_installed(self):
-        # The iMac 2013 (GT 755M): the only Vulkan device is llvmpipe.
-        self.assertEqual(renderer.choose(("nouveau",), DEBIAN_ICDS)[0], "ngl")
+    def test_nouveau_keeps_gtks_choice(self):
+        # The iMac 2013 (GT 755M): OpenGL there showed only a green screen (0.3.0-beta.3).
+        self.assertIsNone(renderer.choose(("nouveau",), DEBIAN_ICDS)[0])
+        self.assertIsNone(renderer.choose(("i915", "nouveau"), DEBIAN_ICDS)[0])
 
     def test_i915_and_old_radeon_take_opengl(self):
         for driver in ("i915", "radeon"):
@@ -64,14 +65,23 @@ class SysfsTest(unittest.TestCase):
                          frozenset({"radeon_icd", "nvidia_icd"}))
 
     def test_prepare_sets_opengl_and_records_why(self):
-        self.card("card0", "nouveau")
+        self.card("card0", "i915")
         (self.icd / "lvp_icd.x86_64.json").write_text("{}")
         environ = {}
         self.assertEqual(renderer.prepare(environ, self.run, self.drm, (self.icd,)), "ngl")
         self.assertEqual(environ, {"GSK_RENDERER": "ngl"})
         lines = (self.run / "renderer").read_text().splitlines()
         self.assertEqual(lines[0], "ngl")
-        self.assertIn("nouveau", lines[1])
+        self.assertIn("i915", lines[1])
+
+    def test_prepare_leaves_nouveau_to_gtk(self):
+        self.card("card0", "nouveau")
+        environ = {}
+        self.assertEqual(renderer.prepare(environ, self.run, self.drm, (self.icd,)), "")
+        self.assertEqual(environ, {})
+        lines = (self.run / "renderer").read_text().splitlines()
+        self.assertEqual(lines[0], "default")
+        self.assertIn("green screen", lines[1])
 
     def test_prepare_never_changes_a_renderer_set_before(self):
         self.card("card0", "nouveau")
