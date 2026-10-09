@@ -927,6 +927,7 @@ def whatsnew_versions() -> tuple[str, str]:
 class Tv(Screens, HelpScreens, Look, Script, session.Session):
     cross = False  # the XMB home (init_xmb), else the rows
     music = music.Music(enabled=lambda: False, track=lambda: None)  # silent until init_xmb
+    music_wait: int | None = None  # the timeout that ends the music's wait after the return sound
     loading_view: "gtk_loading.LoadingView | None" = None  # the loading screen while something starts
     _front: frontapp.Front | None = None
 
@@ -1621,6 +1622,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
 
     def tick_once(self) -> None:
         self.music_holds()
+        self.music.check()  # a player that died is started again (or given up, in music.log)
         self.front_tick()
         if self.busy_depth:
             self.idle.keep_awake()
@@ -1655,7 +1657,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
                 self.music.hold("sleep")
                 self.request("suspend")  # couchliteos-suspend.path removes it before suspending
             except OSError:
-                pass
+                self.music.release("sleep")  # no sleep after all: the music comes back
         running = self.apps_running()
         now = time.monotonic()
         if (self.was_running and not running) or now - self.last_reload >= RELOAD_SECONDS:
@@ -2204,11 +2206,26 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
                 wave.wake()
         if plan.sound:
             self.ui_sound(plan.sound)
+        if plan.music_after > 0:
+            self.music_after(plan.music_after)
         if self.loading_view is not None:
             if plan.black:
                 self.loading_view.black()
             if plan.reveal:
                 self.loading_view.reveal()
+
+    def music_after(self, seconds: float) -> None:
+        """Back from an application: the music waits `seconds` after the return sound, then fades in."""
+        if self.music_wait is not None:
+            GLib.source_remove(self.music_wait)
+        self.music.hold("return")
+
+        def release() -> bool:
+            self.music_wait = None
+            self.music.release("return")
+            return False
+
+        self.music_wait = GLib.timeout_add(round(seconds * 1000), release)
 
     def music_rest(self) -> bool:
         """End the music player once its fade-out is over (again when it is not yet)."""
