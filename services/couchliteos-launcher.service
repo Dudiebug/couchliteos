@@ -30,7 +30,8 @@ LogsDirectory=couchliteos
 # while it does; Debian's plymouth-quit.service is not ordered against this unit. Quit it here,
 # as root (+), keeping its last picture on the screen until the TV interface draws the same
 # one (couchliteos_gtk_boot). Nothing to quit after a restart or when Plymouth is not running (-).
-ExecStartPre=-+/usr/bin/plymouth quit --retain-splash
+# Never more than 10 s: a Plymouth that hangs must not keep the launcher from starting.
+ExecStartPre=-+/usr/bin/timeout 10 /usr/bin/plymouth quit --retain-splash
 ExecStartPre=/usr/bin/rm -f /run/couchliteos/launcher-ready /run/couchliteos/session.env
 # The log persists across boots: over 5 MiB it is cut to its last 5 MiB and kept as launcher.log.1.
 # (systemd expands $$ and %% itself, so the shell sees $ and %.)

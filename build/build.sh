@@ -116,11 +116,9 @@ else
   echo 'Build type: test (zstd squashfs; sudo make build RELEASE=1 for a release)'
 fi
 
-# The live boot line ends with the boot splash (overlay/etc/plymouth): quiet keeps kernel and
-# systemd text off the TV, splash starts Plymouth, and plymouth.ignore-serial-consoles stops
-# Plymouth from falling back to plain text on every screen because console=ttyS0 is there
-# (it would otherwise treat the serial port as the console and draw no picture). The serial
-# port still gets the console and the QEMU tests' markers.
+# No boot splash on the boot line (no splash): on the iMac Late 2013 (nouveau) Plymouth froze
+# the screen green and the launcher never started (0.3.0-beta.3). Plymouth and its theme stay
+# installed, unused, until the splash is safe there.
 lb config noauto \
   --mode debian \
   --distribution trixie \
@@ -131,7 +129,7 @@ lb config noauto \
   --debian-installer-gui false \
   --uefi-secure-boot enable \
   --debootstrap-options '--include=ca-certificates' \
-  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8 quiet splash plymouth.ignore-serial-consoles' \
+  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8' \
   --bootappend-install 'ipv6.disable=1' \
   --iso-application 'CouchLiteOS streaming appliance' \
   --iso-publisher 'CouchLiteOS Project' \

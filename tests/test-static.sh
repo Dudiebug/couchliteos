@@ -106,21 +106,22 @@ rg -q -- '--uefi-secure-boot enable' build/build.sh
 rg -q -- '--loadlin false' build/build.sh
 rg -q -- '--win32-loader false' build/build.sh
 rg -q -- "--bootappend-live '.*ipv6.disable=1" build/build.sh
-# The boot splash: the package, its theme as the default, and splash on both boot lines. The
-# live line has console=ttyS0, so Plymouth must be told to ignore it or it draws no picture.
+# The boot splash: the package and its theme stay, but neither boot line starts it (splash):
+# it froze the iMac Late 2013 (nouveau) on a green screen in 0.3.0-beta.3.
 rg -q '^plymouth$' config/live-build/package-lists/couchliteos.list.chroot
 refute rg -q '^plymouth-(themes|label)' config/live-build/package-lists/couchliteos.list.chroot
 rg -q '^Theme=couchliteos$' overlay/etc/plymouth/plymouthd.conf
 test -f overlay/usr/share/plymouth/themes/couchliteos/couchliteos.script
-rg -q -- "--bootappend-live '.*console=ttyS0,115200n8 .*\bsplash\b" build/build.sh
-rg -q -- "--bootappend-live '.*\bquiet\b.*plymouth\.ignore-serial-consoles" build/build.sh
-rg -q '^GRUB_CMDLINE_LINUX_DEFAULT="quiet splash ' overlay/etc/default/grub.d/20-couchliteos.cfg
+refute rg -q -- "--bootappend-live '.*\bsplash\b" build/build.sh
+refute rg -q '^GRUB_CMDLINE_LINUX_DEFAULT=.*\bsplash\b' overlay/etc/default/grub.d/20-couchliteos.cfg
+rg -q '^GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 ' overlay/etc/default/grub.d/20-couchliteos.cfg
 # cage cannot take the screen while Plymouth holds it: the launcher quits it first, and
 # Debian's own plymouth-quit waits for the launcher instead of racing it.
-rg -q '^ExecStartPre=-\+/usr/bin/plymouth quit --retain-splash$' services/couchliteos-launcher.service
+# A hanging Plymouth must not keep the launcher (or a restore) from starting: 10 s at most.
+rg -q '^ExecStartPre=-\+/usr/bin/timeout 10 /usr/bin/plymouth quit --retain-splash$' services/couchliteos-launcher.service
 [[ $(rg -n '^ExecStart' services/couchliteos-launcher.service | head -n 1) == *'plymouth quit'* ]]
 rg -q '^After=couchliteos-launcher.service$' overlay/etc/systemd/system/plymouth-quit.service.d/couchliteos.conf
-rg -q '^ExecStartPre=-/usr/bin/plymouth quit$' services/couchliteos-restore.service
+rg -q '^ExecStartPre=-/usr/bin/timeout 10 /usr/bin/plymouth quit$' services/couchliteos-restore.service
 [[ "$(< VERSION)" == 0.3.0-beta.4 ]]
 refute rg -q 'NONE PAIRED' launcher --glob '*.py'
 cmp -s VERSION overlay/etc/couchliteos-version

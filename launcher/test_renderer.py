@@ -11,7 +11,7 @@ DEBIAN_ICDS = frozenset({"intel_icd", "intel_hasvk_icd", "radeon_icd", "nouveau_
 
 class ChooseTest(unittest.TestCase):
     def test_nouveau_keeps_gtks_choice(self):
-        # The iMac 2013 (GT 755M): OpenGL there showed only a green screen (0.3.0-beta.3).
+        # The iMac 2013 (GT 755M): kept as in 0.3.0-beta.2, the last version seen working there.
         self.assertIsNone(renderer.choose(("nouveau",), DEBIAN_ICDS)[0])
         self.assertIsNone(renderer.choose(("i915", "nouveau"), DEBIAN_ICDS)[0])
 
@@ -81,7 +81,7 @@ class SysfsTest(unittest.TestCase):
         self.assertEqual(environ, {})
         lines = (self.run / "renderer").read_text().splitlines()
         self.assertEqual(lines[0], "default")
-        self.assertIn("green screen", lines[1])
+        self.assertIn("nouveau", lines[1])
 
     def test_prepare_never_changes_a_renderer_set_before(self):
         self.card("card0", "nouveau")
