@@ -133,22 +133,26 @@ qemu-system-x86_64 "${common[@]}" -boot order=c \
   -netdev user,id=net0 -device e1000,netdev=net0 \
   -serial stdio -monitor "unix:$monitor,server=on,wait=off" >> "$BOOT_LOG" 2>&1 &
 pid=$!
+# An old system that drops to emergency mode will not set itself up or power off: stop waiting.
+emergency=
 for _ in $(seq 1 $((FIRST_BOOT * SCALE))); do
   kill -0 "$pid" 2>/dev/null || { cat "$BOOT_LOG"; echo 'The old system stopped during its first start.' >&2; exit 1; }
+  if grep -q 'You are in emergency mode' "$BOOT_LOG"; then emergency=1; break; fi
   sleep 1
 done
-python3 - "$ROOT" "$monitor" "$SCREENSHOT_DIR/old-system.ppm" <<'PY'
+[[ -z $emergency ]] || echo "qemu-legacy-smoke: warning: the old system ($(basename "$OLD_ISO")) started in emergency mode; its first-start setup did not run." >&2
+python3 - "$ROOT" "$monitor" "$SCREENSHOT_DIR/old-system.ppm" "$emergency" <<'PY'
 import sys
 import time
 
-root, monitor_path, screenshot = sys.argv[1:]
+root, monitor_path, screenshot, emergency = sys.argv[1:]
 sys.path.insert(0, root)
 from tests.qemu_iso_boot import connect_monitor
 
 with connect_monitor(monitor_path) as monitor:
     monitor.sendall(f"screendump {screenshot}\n".encode("ascii"))
     time.sleep(1)
-    monitor.sendall(b"system_powerdown\n")
+    monitor.sendall(b"quit\n" if emergency else b"system_powerdown\n")
     time.sleep(1)
 PY
 for _ in $(seq 1 $((120 * SCALE))); do

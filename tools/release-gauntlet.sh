@@ -24,7 +24,7 @@ git diff --check
 
 # The stages do not depend on each other, so they run in three lanes at once: the source checks,
 # the live boot then the install, and the stick (persistence) then the update of an older
-# install. Each lane has its own temporary directory on disk (an install writes several GB; /tmp
+# install. Each QEMU lane has its own temporary directory on disk (an install writes several GB; /tmp
 # may be a small RAM disk) and its own preseed port. Peak memory: two 4 GB guests.
 # COUCHLITEOS_GAUNTLET_SERIAL=1 runs the stages one after another, as before.
 LOGS=${COUCHLITEOS_GAUNTLET_LOGS:-$ROOT/build/gauntlet}
@@ -45,9 +45,12 @@ stage() {  # stage NAME COMMAND...: run it into $LOGS/NAME.log and say how long 
   return "$status"
 }
 
-lane() {  # lane NAME PORT: a temporary directory and preseed port of its own
+lane() {  # lane NAME PORT [disk]: a preseed port of its own, and with disk a temporary directory
+  export COUCHLITEOS_PRESEED_PORT=$2
+  [[ ${3:-} == disk ]] || return 0
+  # Not for the unit tests: some print paths in an 80-column terminal and expect them whole.
   mkdir -p "$LOGS/tmp-$1"
-  export TMPDIR=$LOGS/tmp-$1 COUCHLITEOS_PRESEED_PORT=$2
+  export TMPDIR=$LOGS/tmp-$1
 }
 
 legacy() {
@@ -64,11 +67,11 @@ checks_lane() {
   stage make-test make test && stage mutants python3 tools/mutants.py
 }
 live_lane() {
-  lane live 8011
+  lane live 8011 disk
   stage qemu-smoke make qemu-smoke ISO="$ISO" && stage qemu-install-smoke make qemu-install-smoke ISO="$ISO"
 }
 stick_lane() {
-  lane stick 8012
+  lane stick 8012 disk
   stage qemu-persistence-smoke make qemu-persistence-smoke ISO="$ISO" && stage qemu-legacy-smoke legacy
 }
 
