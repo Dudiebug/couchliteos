@@ -497,7 +497,7 @@ def unavailable(hosts: list[stream.Host], host: stream.Host | None, link_up: boo
         return PAIR_FIRST
     if not link_up:
         return NO_NETWORK
-    if host is not None and not host.lan_addresses():
+    if host is not None and not host.probe_addresses():
         return NO_ADDRESS
     return ""
 
@@ -506,18 +506,24 @@ def unavailable(hosts: list[stream.Host], host: stream.Host | None, link_up: boo
 
 
 def run_check(host: stream.Host, cancel: threading.Event | None = None) -> Result | None:
-    """Measure the path to `host` (which has a LAN address); None when `cancel` was set.
+    """Measure the path to `host` (which has an address); None when `cancel` was set.
 
+    Sunshine is probed first, on every address Moonlight knows at once (about a second), and the
+    path is measured to the first address that answered (else the first LAN address).
     Takes about 5 seconds: the pings, plus the link look-up, which is quick (about 10 for a PC that
     ignores ping: the silent pings, then the port)."""
-    address, port = host.lan_addresses()[0]
+    seen: list[tuple[str, int, str]] = []
+    probed = stream.probe(host, seen=seen)
+    address, port = stream.measure_address(host, seen)
     pc = pcstatus.label(host.name)
     can_wake = bool(host.mac)
     try:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled
         link = find_link(address, cancel)
         ping(address, cancel, count=1)  # warm-up: the first answer is slow (ARP, Wi-Fi power save); not measured
         latency = ping(address, cancel)
-        sunshine = "unknown" if latency.status == UNKNOWN_HOST else stream.probe(host)  # at most 1 s per address
+        sunshine = "unknown" if latency.status == UNKNOWN_HOST else probed
         if latency.status not in (PING_OK, UNKNOWN_HOST) and sunshine in ("up", "awake"):
             # The PC is on but ignores ping (Windows does by default): measure Sunshine's port instead.
             latency = tcp_latency(address, port, cancel)

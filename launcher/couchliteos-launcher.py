@@ -984,6 +984,8 @@ class Launcher(session.Session):
             return self.pressed(key)
 
         went_home: list[bool] = []
+        # The first look at the PC can take a second: the screen says so before it starts.
+        self.draw_wait(f"LOOKING FOR {host.label}...", "", hint)
         self.screen.timeout(100)
         try:
             result = stream.wake_and_wait(host, force=force, tick=tick)
@@ -3413,11 +3415,12 @@ class StreamingSettings(RemoteDesktopSettings):
             )
             return
         host = stream.default_host(stream.load_hosts(), stream.load_settings())
-        addresses = host.lan_addresses() if host else []
         self.draw(title, ["MEASURING THE NETWORK...", "THIS TAKES ABOUT TEN SECONDS"], None)
         # Check the PC first: a sleeping one loses every ping, which is not the network's fault.
-        asleep = bool(addresses) and stream.probe(host) == "down"
-        network = stream.measure_network(addresses[0][0] if addresses else None, pc_asleep=asleep)
+        seen: list[tuple[str, int, str]] = []
+        asleep = host is not None and stream.probe(host, seen=seen) == "down"
+        target = stream.measure_address(host, seen) if host is not None else None  # the address that answered
+        network = stream.measure_network(target[0] if target else None, pc_asleep=asleep)
         plan = stream.plan_settings(mode.width, mode.height, mode.refresh_mhz, network, stream.video_decode())
         try:
             stream.apply_plan(plan, run_dir=RUN)

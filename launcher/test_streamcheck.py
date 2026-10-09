@@ -635,8 +635,12 @@ class UnavailableTest(unittest.TestCase):
         self.assertIn("NO NETWORK", sc.unavailable([HOST], HOST, False))
 
     def test_a_pc_without_an_address(self):
-        message = sc.unavailable([stream.Host(name="X", remote="1.2.3.4")], stream.Host(name="X", remote="1.2.3.4"), True)
+        message = sc.unavailable([stream.Host(name="X")], stream.Host(name="X"), True)
         self.assertIn("NO ADDRESS", message)
+
+    def test_a_remote_or_ipv6_address_is_enough(self):
+        for host in (stream.Host(name="X", remote="1.2.3.4"), stream.Host(name="X", ipv6="2001:db8::5")):
+            self.assertEqual(sc.unavailable([host], host, True), "")
 
     def test_a_manual_address_is_enough_and_so_is_a_pc_still_to_be_chosen(self):
         manual = stream.Host(name="X", manual="gaming-pc.local")
@@ -759,7 +763,7 @@ class RunCheckTest(SysfsCase):
             self.mocks["ping"].call_args_list,
             [mock.call("192.168.1.50", None, count=1), mock.call("192.168.1.50", None)],
         )
-        self.mocks["probe"].assert_called_once_with(HOST)  # a PC that answers ping may still have no Sunshine
+        self.mocks["probe"].assert_called_once_with(HOST, seen=[])  # a PC that answers ping may still have no Sunshine
         self.mocks["tcp"].assert_not_called()
 
     def test_a_good_ping_while_sunshine_is_not_answering_is_not_called_ready_to_play(self):
@@ -772,7 +776,7 @@ class RunCheckTest(SysfsCase):
                 self.assertEqual(result.headline, sc.NO_SUNSHINE)
                 self.assertIn("NETWORK LOOKS FINE", sc.NO_SUNSHINE)
                 self.assertIn("SUNSHINE IS NOT ANSWERING", sc.NO_SUNSHINE)
-                self.mocks["probe"].assert_called_once_with(HOST)
+                self.mocks["probe"].assert_called_once_with(HOST, seen=[])
                 self.mocks["tcp"].assert_not_called()
 
     def test_a_bad_ping_keeps_its_verdict_and_tips_while_sunshine_is_not_answering(self):
@@ -798,6 +802,37 @@ class RunCheckTest(SysfsCase):
             self.mocks["ping"].call_args_list, [mock.call("10.0.0.7", None, count=1), mock.call("10.0.0.7", None)]
         )
         self.mocks["tcp"].assert_called_once_with("10.0.0.7", 47990, None)
+
+    def test_the_path_is_measured_to_the_address_that_answered(self):
+        host = stream.Host(name="Pc", mac=b"\x01" * 6, local="192.168.1.50", remote="203.0.113.9", remote_port=47990)
+
+        def probe(_host, seen):
+            seen.extend([("192.168.1.50", 47989, "timeout"), ("203.0.113.9", 47990, "up")])
+            return "up"
+
+        with mock.patch.object(sc, "find_link", return_value=WIRED) as find_link, mock.patch.object(
+            sc, "ping", return_value=sc.Latency(status=sc.NO_REPLY)
+        ) as ping, mock.patch.object(sc.stream, "probe", side_effect=probe), mock.patch.object(
+            sc, "tcp_latency", return_value=latency(method="port")
+        ) as tcp:
+            result = sc.run_check(host)
+        find_link.assert_called_once_with("203.0.113.9", None)
+        self.assertEqual(ping.call_args_list, [mock.call("203.0.113.9", None, count=1), mock.call("203.0.113.9", None)])
+        tcp.assert_called_once_with("203.0.113.9", 47990, None)
+        self.assertEqual(result.state, sc.MEASURED)
+
+    def test_a_silent_pc_is_measured_on_its_lan_address(self):
+        host = stream.Host(name="Pc", local="192.168.1.50", remote="203.0.113.9")
+
+        def probe(_host, seen):
+            seen.extend([("192.168.1.50", 47989, "timeout"), ("203.0.113.9", 47989, "timeout")])
+            return "down"
+
+        with mock.patch.object(sc, "find_link", return_value=WIRED), mock.patch.object(
+            sc, "ping", return_value=sc.Latency(status=sc.NO_REPLY)
+        ) as ping, mock.patch.object(sc.stream, "probe", side_effect=probe):
+            sc.run_check(host)
+        self.assertEqual(ping.call_args_list[-1], mock.call("192.168.1.50", None))
 
     def test_a_pc_that_ignores_ping_is_measured_through_its_sunshine_port(self):
         for status in (sc.NO_REPLY, sc.MISSING, sc.TIMED_OUT, sc.DENIED, sc.FAILED, sc.NO_ROUTE):
@@ -839,10 +874,11 @@ class RunCheckTest(SysfsCase):
         self.assertEqual((result.state, result.word), (sc.NOT_FOUND, "NOT FOUND"))
         self.assertEqual(result.headline, "THE GAMING PC CANNOT BE FOUND")
         self.assertEqual(result.tips, (sc.TIP_NOT_FOUND, sc.TIP_WAKE))
-        self.mocks["probe"].assert_not_called()
 
     def test_cancelling_during_a_command_gives_no_result(self):
-        with mock.patch.object(sc, "find_link", side_effect=sc.Cancelled):
+        with mock.patch.object(sc, "find_link", side_effect=sc.Cancelled), mock.patch.object(
+            sc.stream, "probe", return_value="down"
+        ):
             self.assertIsNone(sc.run_check(HOST, threading.Event()))
 
     def test_cancelling_after_the_last_command_gives_no_result(self):
@@ -870,7 +906,9 @@ class RunCheckTest(SysfsCase):
         self.assertEqual((result.state, result.verdict, result.latency.jitter_ms), (sc.MEASURED, sc.GOOD, 0.789))
 
     def test_cancelling_the_warm_up_gives_no_result(self):
-        with mock.patch.object(sc, "run_command", Commands(ping=sc.Cancelled())):
+        with mock.patch.object(sc, "run_command", Commands(ping=sc.Cancelled())), mock.patch.object(
+            sc.stream, "probe", return_value="down"
+        ):
             self.assertIsNone(sc.run_check(HOST, threading.Event()))
 
 

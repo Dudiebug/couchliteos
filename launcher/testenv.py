@@ -13,7 +13,7 @@ import tempfile
 if "COUCHLITEOS_RUN_DIR" not in os.environ or "COUCHLITEOS_STATE_DIR" not in os.environ:
     _root = pathlib.Path(tempfile.mkdtemp(prefix="couchliteos-tests-"))
     atexit.register(shutil.rmtree, _root, True)
-    for _name, _sub in (("COUCHLITEOS_RUN_DIR", "run"), ("COUCHLITEOS_STATE_DIR", "state")):
+    for _name, _sub in (("COUCHLITEOS_RUN_DIR", "run"), ("COUCHLITEOS_STATE_DIR", "state"), ("COUCHLITEOS_LOG_DIR", "log")):
         (_root / _sub).mkdir()
         os.environ.setdefault(_name, str(_root / _sub))
 

@@ -159,6 +159,8 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(first.mac_text, "1C:1B:0D:8D:BF:E9")
         self.assertEqual((first.local, first.local_port), ("192.168.1.50", 47989))
         self.assertEqual(first.remote, "203.0.113.9")
+        self.assertEqual((first.remote_port, first.ipv6_port), (47989, 47984))
+        self.assertEqual(first.probe_addresses(), [("192.168.1.50", 47989), ("203.0.113.9", 47989)])
         self.assertEqual(first.uuid, "6F1A2E0B-1D2C-4E5F-9A8B-7C6D5E4F3A2B")
         self.assertEqual(first.apps, ("Desktop", "Steam Big Picture"))
         self.assertEqual(first.target, "192.168.1.50")
@@ -308,10 +310,132 @@ class WakeOnLanTest(unittest.TestCase):
 class ProbeTest(unittest.TestCase):
     HOST = stream.Host(name="PC", mac=b"\x01" * 6, local="192.168.1.50", manual="pc.lan")
 
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.log = pathlib.Path(directory.name) / "launcher.log"
+        patch = mock.patch.object(stream, "LOG", self.log)
+        patch.start()
+        self.addCleanup(patch.stop)
+        stream._last_logged.clear()
+
+    @staticmethod
+    def answers(outcomes, delay=0.0):
+        """A connect that answers per address: "up", "refused", "timeout" (after `delay`), "hang", "unreachable"."""
+        def connect(address, timeout):
+            outcome = outcomes[address[0]]
+            if outcome == "up":
+                return mock.MagicMock()
+            if outcome == "refused":
+                raise ConnectionRefusedError()
+            if outcome == "timeout":
+                time.sleep(min(delay, timeout))
+                raise socket.timeout()
+            if outcome == "hang":  # a name look-up that never returns: no timeout of its own
+                time.sleep(3)
+                raise socket.gaierror()
+            raise OSError(113, "No route to host")
+        return connect
+
     def test_connect_to_sunshine_http_port(self):
         connect = mock.MagicMock()
         self.assertEqual(stream.probe(self.HOST, connect=connect), "up")
-        connect.assert_called_once_with(("192.168.1.50", 47989), timeout=1.0)
+        connect.assert_any_call(("192.168.1.50", 47989), timeout=1.0)
+
+    def test_every_known_address_is_probed_with_its_own_port(self):
+        host = stream.Host(
+            name="PC", local="192.168.1.50", local_port=47990, manual="pc.lan", manual_port=47991,
+            remote="203.0.113.9", remote_port=47992, ipv6="[2001:db8::5]", ipv6_port=47993,
+        )
+        self.assertEqual(host.probe_addresses(), [
+            ("192.168.1.50", 47990), ("pc.lan", 47991), ("203.0.113.9", 47992), ("2001:db8::5", 47993),
+        ])
+        self.assertEqual(host.lan_addresses(), [("192.168.1.50", 47990), ("pc.lan", 47991)])  # Wake-on-LAN targets
+        seen = []
+        stream.probe(host, connect=lambda address, timeout: seen.append(address) or mock.MagicMock())
+        self.assertEqual(sorted(seen), sorted(host.probe_addresses()))
+
+    def test_the_same_address_twice_is_probed_once(self):
+        host = stream.Host(name="PC", local="192.168.1.50", remote="192.168.1.50", manual="PC.LAN", ipv6="pc.lan")
+        self.assertEqual(host.probe_addresses(), [("192.168.1.50", 47989), ("PC.LAN", 47989)])
+
+    def test_the_probe_matrix(self):
+        host = stream.Host(name="PC", local="192.168.1.50", manual="pc.lan", remote="203.0.113.9", ipv6="2001:db8::5")
+        cases = [
+            ({}, "refused", "awake"),  # every address refuses: on, Sunshine not running
+            ({}, "timeout", "down"),
+            ({}, "unreachable", "down"),
+            ({"203.0.113.9": "up"}, "timeout", "up"),  # reachable only by its remote address
+            ({"2001:db8::5": "up"}, "timeout", "up"),  # only by IPv6
+            ({"pc.lan": "refused"}, "timeout", "awake"),
+            ({"192.168.1.50": "refused", "2001:db8::5": "up"}, "unreachable", "up"),
+            ({"pc.lan": "hang"}, "timeout", "down"),
+        ]
+        for special, rest, expected in cases:
+            with self.subTest(special=special, rest=rest):
+                outcomes = {address: special.get(address, rest) for address, _port in host.probe_addresses()}
+                self.assertEqual(stream.probe(host, connect=self.answers(outcomes), timeout=0.2), expected)
+
+    def test_addresses_are_tried_at_once_so_the_whole_probe_takes_about_one_timeout(self):
+        host = stream.Host(name="PC", local="192.168.1.50", manual="pc.lan", remote="203.0.113.9", ipv6="2001:db8::5")
+        outcomes = dict.fromkeys(["192.168.1.50", "pc.lan", "203.0.113.9", "2001:db8::5"], "timeout")
+        start = time.monotonic()
+        self.assertEqual(stream.probe(host, connect=self.answers(outcomes, delay=0.3), timeout=0.3), "down")
+        self.assertLess(time.monotonic() - start, 0.9)
+
+    def test_a_name_look_up_that_hangs_is_given_up_on_at_the_timeout(self):
+        start = time.monotonic()
+        results = stream.probe_each(
+            self.HOST, connect=self.answers({"192.168.1.50": "timeout", "pc.lan": "hang"}), timeout=0.2
+        )
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertEqual(results, [("192.168.1.50", 47989, "timeout"), ("pc.lan", 47989, "timeout")])
+
+    def test_one_address_that_answers_ends_the_wait_for_the_others(self):
+        start = time.monotonic()
+        state = stream.probe(self.HOST, connect=self.answers({"192.168.1.50": "up", "pc.lan": "hang"}), timeout=2.0)
+        self.assertEqual(state, "up")
+        self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_a_real_ipv6_connect(self):
+        try:
+            server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            server.bind(("::1", 0))
+        except OSError:
+            self.skipTest("no IPv6 loopback")
+        self.addCleanup(server.close)
+        server.listen(1)
+        host = stream.Host(name="PC", ipv6="::1", ipv6_port=server.getsockname()[1])
+        self.assertEqual(stream.probe(host), "up")
+
+    def test_each_probe_is_logged_once_per_change_with_every_address(self):
+        host = stream.Host(name="PC", mac=b"\x01" * 6, local="192.168.1.50", ipv6="2001:db8::5")
+        down = self.answers({"192.168.1.50": "timeout", "2001:db8::5": "unreachable"})
+        stream.probe(host, connect=down, timeout=0.05)
+        stream.probe(host, connect=down, timeout=0.05)
+        stream.probe(host, connect=self.answers({"192.168.1.50": "up", "2001:db8::5": "unreachable"}), timeout=0.05)
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].endswith("pc probe PC: 192.168.1.50:47989 timeout, [2001:db8::5]:47989 unreachable -> down"))
+        self.assertTrue(lines[1].endswith("pc probe PC: 192.168.1.50:47989 up, [2001:db8::5]:47989 unreachable -> up"))
+        self.assertNotIn("01:01", "".join(lines))  # the MAC is not needed to tell why a PC looked asleep
+
+    def test_the_address_to_measure(self):
+        host = stream.Host(name="PC", local="192.168.1.50", remote="203.0.113.9", ipv6="2001:db8::5", ipv6_port=47984)
+        self.assertEqual(stream.measure_address(host, [
+            ("192.168.1.50", 47989, "timeout"), ("203.0.113.9", 47989, "timeout"), ("2001:db8::5", 47984, "up"),
+        ]), ("2001:db8::5", 47984))
+        self.assertEqual(stream.measure_address(host, [
+            ("192.168.1.50", 47989, "timeout"), ("203.0.113.9", 47989, "refused"), ("2001:db8::5", 47984, "up"),
+        ]), ("203.0.113.9", 47989))  # the first that answered at all
+        self.assertEqual(stream.measure_address(host, []), ("192.168.1.50", 47989))  # nothing answered: the LAN
+        self.assertEqual(stream.measure_address(stream.Host(name="PC", remote="203.0.113.9")), ("203.0.113.9", 47989))
+        self.assertIsNone(stream.measure_address(stream.Host(name="PC")))
+
+    def test_probe_hands_back_what_it_saw(self):
+        seen = []
+        stream.probe(self.HOST, connect=self.answers({"192.168.1.50": "refused", "pc.lan": "unreachable"}), seen=seen)
+        self.assertEqual(seen, [("192.168.1.50", 47989, "refused"), ("pc.lan", 47989, "unreachable")])
 
     def test_refused_means_awake_but_timeout_means_down(self):
         refuse = mock.Mock(side_effect=ConnectionRefusedError())
@@ -330,9 +454,27 @@ class ProbeTest(unittest.TestCase):
 
         self.assertEqual(stream.probe(self.HOST, connect=connect), "up")
 
-    def test_no_lan_address_is_unknown(self):
-        host = stream.Host(name="PC", remote="203.0.113.9")
-        self.assertEqual(stream.probe(host, connect=mock.Mock()), "unknown")
+    def test_no_address_at_all_is_unknown(self):
+        connect = mock.Mock()
+        self.assertEqual(stream.probe(stream.Host(name="PC"), connect=connect), "unknown")
+        connect.assert_not_called()
+
+    def test_a_pc_known_only_by_its_remote_address_is_probed_there(self):
+        connect = mock.MagicMock()
+        host = stream.Host(name="PC", remote="203.0.113.9", remote_port=47990)
+        self.assertEqual(stream.probe(host, connect=connect), "up")
+        connect.assert_called_once_with(("203.0.113.9", 47990), timeout=1.0)
+
+
+class RunWaitingTest(unittest.TestCase):
+    def test_the_screen_keeps_drawing_until_the_work_is_done(self):
+        waits = []
+        self.assertEqual(stream.run_waiting(lambda: time.sleep(0.25) or "up", waits.append, 0.05), "up")
+        self.assertGreaterEqual(len(waits), 2)
+
+    def test_an_error_reaches_the_caller(self):
+        with self.assertRaises(OSError):
+            stream.run_waiting(mock.Mock(side_effect=OSError("boom")), lambda _seconds: time.sleep(0.01))
 
 
 class Clock:
@@ -386,10 +528,32 @@ class WakeAndWaitTest(unittest.TestCase):
         self.assertEqual(sent, [])
 
     def test_unknown_address_is_skipped_unless_forced(self):
-        result, sent, _clock = self.run_wake(["unknown"])
+        host = stream.Host(name="GAMING-PC", mac=self.HOST.mac)
+        result, sent, _clock = self.run_wake(["unknown"], host)
         self.assertEqual((result, sent), ("noaddr", []))
-        result, sent, _clock = self.run_wake(["unknown"], force=True)
+        result, sent, _clock = self.run_wake(["unknown"], host, force=True)
         self.assertEqual(result, "sent")
+        self.assertEqual(len(sent), 1)
+
+    def test_a_pc_without_a_lan_address_is_not_woken_moonlight_knows_the_route(self):
+        host = stream.Host(name="GAMING-PC", mac=self.HOST.mac, remote="203.0.113.9", ipv6="2001:db8::5")
+        result, sent, clock = self.run_wake(["down"], host)
+        self.assertEqual((result, sent), ("noaddr", []))
+        self.assertEqual(clock.now, 100.0)  # and no 90 second wait
+
+    def test_a_pc_that_answers_only_on_its_remote_address_is_not_woken(self):
+        host = dataclasses.replace(self.HOST, remote="203.0.113.9")
+        connect = ProbeTest.answers({"192.168.1.50": "timeout", "203.0.113.9": "up"})
+        sent = []
+        result = stream.wake_and_wait(
+            host, probe_fn=functools.partial(stream.probe, connect=connect, timeout=0.05, log=None), send=sent.append,
+        )
+        self.assertEqual((result, sent), ("up", []))
+
+    def test_no_more_wake_packets_once_the_pc_answered(self):
+        # It refused the port once (on, Sunshine still starting): resending would only wake it again.
+        result, sent, _clock = self.run_wake(["down", "awake", "down", "down"])
+        self.assertEqual(result, "timeout")
         self.assertEqual(len(sent), 1)
 
     def test_wakes_then_reports_when_host_answers(self):
