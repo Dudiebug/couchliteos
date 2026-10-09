@@ -185,6 +185,20 @@ class LaunchTest(SessionTestCase):
         self.assertFalse(s.launch_by_id("missing"))
         self.assertEqual(s.status, "MISSING IS NOT AVAILABLE: CHECK SETTINGS > APPLICATIONS")
 
+    def test_moonlight_by_itself_opens_its_list_of_pcs(self):
+        seen = []
+
+        def ready(s):
+            seen.append((self.run / session.MOONLIGHT_BROWSE).exists())
+            (self.run / "moonlight-ready").touch()
+
+        self.assertTrue(self.session(on_wait=ready).launch_app(MOONLIGHT))
+        self.assertEqual(seen[0], True)  # couchliteos-run-app takes it
+
+    def test_moonlight_that_never_starts_leaves_no_browse_request(self):
+        self.assertFalse(self.session().launch_app(MOONLIGHT))
+        self.assertFalse((self.run / session.MOONLIGHT_BROWSE).exists())
+
 
 class StreamTest(SessionTestCase):
     HOST = stream.Host(name="Gaming-PC", uuid="UUID-1", local="192.168.1.50", apps=("Desktop",))
@@ -196,10 +210,12 @@ class StreamTest(SessionTestCase):
             seen.append((self.run / stream.STREAM_REQUEST.name).read_text())
             (self.run / "moonlight-ready").touch()
 
+        (self.run / session.MOONLIGHT_BROWSE).touch()  # left over from an earlier start
         s = self.session(on_wait=ready)
         with mock.patch.object(session.recent, "record") as record:
             self.assertTrue(s.start_stream(self.HOST, "Desktop", by_hand=True))
         self.assertEqual(seen[0], "192.168.1.50\nDesktop\n")
+        self.assertFalse((self.run / session.MOONLIGHT_BROWSE).exists())  # a stream, not the list of PCs
         record.assert_called_once_with("UUID-1", "Desktop")
         self.assertFalse((self.run / stream.STREAM_REQUEST.name).exists())
         self.assertIsNone(s.pending_stream)
@@ -266,6 +282,20 @@ class FocusTest(SessionTestCase):
         with self.wlrctl({"app_id:google-chrome"}):
             self.assertTrue(self.session().focus_app(chrome))
 
+    def test_flathub_apps_are_matched_by_their_flatpak_id_not_by_flatpak(self):
+        kodi = apps.flatpak_application("tv.kodi.Kodi", "Kodi", set())
+        tried = []
+
+        def run(command, **_kwargs):
+            tried.append(command[-1])
+            return mock.Mock(returncode=0 if command[-1] == "app_id:tv.kodi.Kodi" else 1, stdout="")
+
+        with mock.patch.object(session.subprocess, "run", side_effect=run):
+            self.assertTrue(self.session().focus_app(kodi))
+        self.assertNotIn("app_id:flatpak", tried)
+        with self.wlrctl({"app_id:kodi"}):  # a program that names its window itself
+            self.assertTrue(self.session().focus_app(kodi))
+
     def test_no_wlrctl_is_no_window(self):
         with mock.patch.object(session.subprocess, "run", side_effect=FileNotFoundError("wlrctl")) as run:
             self.assertFalse(self.session().focus_app(MOONLIGHT))
@@ -289,6 +319,17 @@ class RunningTest(SessionTestCase):
         self.assertTrue(s.any_app_running())
         s.close_app(TERMINAL)
         self.assertTrue((self.run / "close-terminal").exists())
+
+    def test_the_every_second_check_parses_the_manifests_only_after_a_change(self):
+        apps._LOADED.clear()
+        self.addCleanup(apps._LOADED.clear)
+        with mock.patch.object(apps, "SETTLED", -1):
+            first = session.application_result()
+            with mock.patch.object(session.apps, "load_applications") as load:
+                second = session.application_result()
+                session.application_result()
+        load.assert_not_called()
+        self.assertEqual(first, second)
 
     def test_read_app_status_takes_the_first_line_and_ignores_a_huge_file(self):
         (self.run / "x-status").write_text("failed: one\ntwo\n")

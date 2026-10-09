@@ -12,8 +12,8 @@ No drawing here. A front end (the GTK home screen) shows `rows`, sends the arrow
 
 Rows, top to bottom:
     GAMES   every paired PC's apps in one list, most recently played first
-    APPS    enabled, visible applications whose program is installed (not Moonlight: its
-            games are in GAMES and pairing is HOSTS)
+    APPS    enabled, visible applications whose program is installed; Moonlight opens its own
+            list of PCs (its games are in GAMES too, and pairing is HOSTS)
     SYSTEM  SETTINGS, HOSTS, POWER
 
 The focus is (row, column). Up and down skip empty rows and each row remembers its own
@@ -37,13 +37,18 @@ GAMES, APPS, SYSTEM = "games", "apps", "system"
 ROW_TITLES = {GAMES: "GAMES", APPS: "APPS", SYSTEM: "SYSTEM"}
 SYSTEM_TILES = (("SETTINGS", ("settings",)), ("HOSTS", ("hosts",)), ("POWER", ("power",)))
 NO_GAMES = "ADD A GAMING PC"  # the GAMES row is never blank: with no PC paired it offers pairing
-STREAMED_APP = "moonlight"  # its games are tiles of their own; pairing is HOSTS
+STREAMED_APP = "moonlight"  # its games are tiles of their own; its tile opens its list of PCs
 # Programs started through a request file (couchliteos-run-app): the tile shows only when it is there.
 REQUEST_BINARIES = {
     "start-moonlight": "opt/couchliteos/apps/moonlight/usr/bin/moonlight",
     "start-chiaki": "opt/couchliteos/apps/chiaki-ng/usr/bin/chiaki",
     "start-firefox": "usr/bin/firefox-esr",
 }
+
+# Where Flatpak installs an application: the system's (couchliteos-app-update updates those) and
+# the user's own, as couchliteos_icons reads their exports. One directory per Flatpak id.
+FLATPAK_SYSTEM_APPS = pathlib.Path("var/lib/flatpak/app")  # under `root`
+FLATPAK_USER_APPS = pathlib.Path(os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share") / "flatpak/app"
 
 Action = tuple
 
@@ -82,6 +87,8 @@ def installed(app: apps.Application, root: pathlib.Path = pathlib.Path("/")) -> 
     module's own rule, the one the classic launcher uses; the rest by what they start."""
     if app.binary:
         return apps.installed(app, root)
+    if app.flatpak:  # its command is flatpak itself, there whether or not the app is installed
+        return any((base / app.flatpak).is_dir() for base in (root / FLATPAK_SYSTEM_APPS, FLATPAK_USER_APPS))
     if app.kind == "command":
         return os.access(root / app.command.lstrip("/"), os.X_OK)
     if app.kind == "request" and app.request in REQUEST_BINARIES:
@@ -163,7 +170,7 @@ class HomeModel:
         self.errors = tuple(result.errors)
         tiles: list[Tile] = []
         for app in result.applications:
-            if not (app.enabled and app.visible) or app.id == STREAMED_APP:
+            if not (app.enabled and app.visible):
                 continue
             try:
                 if not self.installed(app):

@@ -107,12 +107,13 @@ class RowsTest(HomeTestCase):
         )
         self.assertEqual(self.labels(model, 0), [home.NO_GAMES])
 
-    def test_apps_are_the_installed_ones_without_moonlight(self):
+    def test_apps_are_the_installed_ones_moonlight_included(self):
         model = self.model()
-        self.assertEqual(self.labels(model, 1), ["CHIAKI-NG", "FIREFOX", "TERMINAL", "WORK-PC"])
+        self.assertEqual(self.labels(model, 1), ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "TERMINAL", "WORK-PC"])
+        self.assertEqual(model.rows[1].tiles[0].action, ("app", "moonlight"))
 
     def test_an_app_that_is_not_installed_is_hidden(self):
-        model = self.model(missing={"firefox", "chiaki-ng"})
+        model = self.model(missing={"firefox", "chiaki-ng", "moonlight"})
         self.assertEqual(self.labels(model, 1), ["TERMINAL", "WORK-PC"])
 
     def test_disabled_or_invisible_apps_are_hidden(self):
@@ -182,6 +183,20 @@ class InstalledTest(unittest.TestCase):
             self.assertTrue(home.installed(item, self.root))
             self.assertEqual(home.installed(item, self.root), apps.installed(item, self.root))
 
+    def test_a_flathub_app_needs_its_flatpak_installed_not_only_flatpak(self):
+        kodi = apps.flatpak_application("tv.kodi.Kodi", "Kodi", set())
+        user = self.root / "home/.local/share/flatpak/app"
+        self.binary("usr/bin/flatpak")
+        with mock.patch.object(home, "FLATPAK_USER_APPS", user):
+            self.assertFalse(home.installed(kodi, self.root))
+            (self.root / "var/lib/flatpak/app/tv.kodi.Kodi").mkdir(parents=True)
+            self.assertTrue(home.installed(kodi, self.root))
+            (self.root / "var/lib/flatpak/app/tv.kodi.Kodi").rmdir()
+            (user / "tv.kodi.Kodi").mkdir(parents=True)  # flatpak install --user
+            self.assertTrue(home.installed(kodi, self.root))
+            (self.root / "var/lib/flatpak/app/org.other.App").mkdir()
+            self.assertFalse(home.installed(apps.flatpak_application("org.example.App", "App", set()), self.root))
+
     def test_remote_desktop_and_unknown_requests_always_show(self):
         self.assertTrue(home.installed(app("work-pc", kind="rdp", connection="work-pc"), self.root))
         self.assertTrue(home.installed(app("other", request="start-other"), self.root))
@@ -235,19 +250,19 @@ class FocusTest(HomeTestCase):
         model.move(0, -1)
         self.assertEqual(model.focused().label, "HADES")
         model.move(0, 1)
-        self.assertEqual(model.focused().label, "FIREFOX")
+        self.assertEqual(model.focused().label, "CHIAKI-NG")
 
     def test_a_column_past_the_end_of_a_shorter_row_is_clamped(self):
         model = self.model()
         model.move(0, 1)
-        for _ in range(3):
+        for _ in range(4):
             model.move(1, 0)
         self.assertEqual(model.focused().label, "WORK-PC")
         model.move(0, 1)  # SYSTEM has 3 tiles and its own column
         self.assertEqual(model.focus, (2, 0))
 
     def test_an_empty_apps_row_is_skipped(self):
-        model = self.model(applications=(APPS[0],))  # only Moonlight, which is never an app tile
+        model = self.model(applications=(APPS[0],), missing={"moonlight"})  # Moonlight is not installed
         self.assertEqual(model.rows[1].tiles, ())
         self.assertTrue(model.move(0, 1))
         self.assertEqual(model.focus[0], 2)
@@ -281,7 +296,7 @@ class ActionsTest(HomeTestCase):
     def test_an_app_starts_by_id(self):
         model = self.model()
         model.move(0, 1)
-        self.assertEqual(model.activate(), ("app", "chiaki-ng"))
+        self.assertEqual(model.activate(), ("app", "moonlight"))
 
     def test_the_system_row(self):
         model = self.model()
@@ -344,16 +359,17 @@ class ReloadTest(HomeTestCase):
     def test_the_focused_tile_stays_focused_when_tiles_move(self):
         model = self.model()
         model.move(0, 1)
+        model.move(1, 0)
         model.move(1, 0)  # FIREFOX
         self.world["apps"] = (app("new", kind="rdp", connection="new"),) + APPS
         model.reload()
         self.assertEqual(model.focused().label, "FIREFOX")
-        self.assertEqual(model.focus, (1, 2))
+        self.assertEqual(model.focus, (1, 3))
 
     def test_a_removed_tile_leaves_the_focus_in_its_row(self):
         model = self.model()
         model.move(0, 1)
-        for _ in range(3):
+        for _ in range(4):
             model.move(1, 0)  # WORK-PC, the last app
         self.world["apps"] = APPS[:4]
         model.reload()

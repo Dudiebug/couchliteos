@@ -195,6 +195,27 @@ class ApplicationsTest(unittest.TestCase):
             apps.delete_user_application("terminal", system_dir=SYSTEM, user_dir=self.user)
 
 
+class AtomicWriteTest(unittest.TestCase):
+    def test_a_failed_chown_closes_the_file_and_leaves_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "state.ini"
+            opened = []
+            real_mkstemp = tempfile.mkstemp
+
+            def mkstemp(*args, **kwargs):
+                descriptor, name = real_mkstemp(*args, **kwargs)
+                opened.append(descriptor)
+                return descriptor, name
+
+            with mock.patch.object(apps.tempfile, "mkstemp", side_effect=mkstemp), \
+                    mock.patch.object(apps.os, "fchown", side_effect=PermissionError("not root")):
+                with self.assertRaises(PermissionError):
+                    apps.atomic_write(path, "[x]\n")
+            with self.assertRaises(OSError):
+                os.fstat(opened[0])  # closed
+            self.assertEqual(list(pathlib.Path(directory).iterdir()), [])
+
+
 class ScratchDirectoriesTest(unittest.TestCase):
     """testenv.py keeps the tests off the box's own /run/couchliteos and /var/lib/couchliteos."""
 
