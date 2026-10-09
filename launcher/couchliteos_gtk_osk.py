@@ -148,6 +148,12 @@ class KeyboardWindow:
             self.finish(osk.GTK_UNAVAILABLE)
         return True
 
+    def press(self, name: str, char: str = "") -> bool:
+        """A key by Gdk name, as tests/tv-headless.sh sends them (COUCHLITEOS_OSK_KEYS)."""
+        keyval = Gdk.keyval_from_name(name)
+        self.on_key(None, keyval, 0, Gdk.ModifierType(0))
+        return GLib.SOURCE_REMOVE
+
     def on_close(self, _window) -> bool:
         self.finish(self.status)
         return False
@@ -173,6 +179,9 @@ def run() -> int:
     except Exception as error:
         print(f"couchliteos-osk: GTK keyboard failed: {error!r}", file=sys.stderr)
         return osk.GTK_UNAVAILABLE
+    keys = [key for key in os.environ.get("COUCHLITEOS_OSK_KEYS", "").split(",") if key]
+    for index, key in enumerate(keys):  # the last one late enough for a screenshot before it
+        GLib.timeout_add(4000 if index == len(keys) - 1 else 1000 + 150 * index, window.press, key)
     loop.run()
     window.window.destroy()
     return window.status
