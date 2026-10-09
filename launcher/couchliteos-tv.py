@@ -1207,9 +1207,6 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
         page.append(spacer)
-        self.home_pc = label("", "tv-status", xalign=0.5)  # the paired gaming PC: ONLINE, ASLEEP
-        self.home_pc.set_visible(False)
-        page.append(self.home_pc)
         self.home_status = label("", "tv-status", xalign=0.5)
         page.append(self.home_status)
         self.home_prompt = label(tvlayout.HOME_HINT, "tv-prompt", xalign=0.5)
@@ -1363,10 +1360,9 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.bar_battery.set_visible(bool(status.battery))
         self.bar_update.set_label(f"UPDATE {status.update}" if status.update else "")
         self.bar_update.set_visible(bool(status.update))
-        pc = self.pc_line()
-        self.home_pc.set_label(pc)
-        self.home_pc.set_visible(bool(pc))
-        self.home_status.set_label(self.home_line())
+        # One status line: the rows layout sizes the rows for it, a second line would push the
+        # window past the screen. The last result first, else the paired gaming PC's state.
+        self.home_status.set_label(self.home_line() or self.pc_line())
         self.home_prompt.set_label(quick.prompt(self.family, quick.HOME_PROMPT))
         if self.cross:
             self.xmb_view.message = self.home_line()
