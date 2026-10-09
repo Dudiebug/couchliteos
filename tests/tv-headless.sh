@@ -257,12 +257,12 @@ for problem in problems:
 sys.exit(1 if problems else 0)
 EOF
 # The on-screen keyboard in GTK: it shows, types "2a" with controller keys (A on 2, a USB "a",
-# Up to TYPE, A) and writes the payload; a screenshot is taken while it is up.
+# Up and Right to TYPE, A) and writes the payload; a screenshot is taken while it is up.
 osk=$work/osk
 mkdir -p "$osk/run" "$osk/xdg" "$osk/state"
 chmod 700 "$osk/xdg"
 status=0
-COUCHLITEOS_RUN_DIR=$osk/run COUCHLITEOS_STATE_DIR=$osk/state HOME=$osk XDG_RUNTIME_DIR=$osk/xdg   WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 COUCHLITEOS_OSK_KEYS=Right,Return,a,Up,Return   OSK_PYTHON=$PYTHON OSK_ROOT=$ROOT OSK_SHOT=$SHOTS/osk.png OSK_STATUS=$osk/status   timeout -k 10 60 cage -- sh -c '
+COUCHLITEOS_RUN_DIR=$osk/run COUCHLITEOS_STATE_DIR=$osk/state HOME=$osk XDG_RUNTIME_DIR=$osk/xdg   WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 COUCHLITEOS_OSK_KEYS=Right,Return,a,Up,Right,Return   OSK_PYTHON=$PYTHON OSK_ROOT=$ROOT OSK_SHOT=$SHOTS/osk.png OSK_STATUS=$osk/status   timeout -k 10 60 cage -- sh -c '
     "$OSK_PYTHON" "$OSK_ROOT/tests/wl-output-size.py" 1920 1080 || { echo size > "$OSK_STATUS"; exit 1; }
     (sleep 3; grim "$OSK_SHOT") &
     "$OSK_PYTHON" "$OSK_ROOT/launcher/couchliteos_osk.py" --gtk
