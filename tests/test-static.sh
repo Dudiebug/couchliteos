@@ -1412,7 +1412,7 @@ rg -q '^            import couchliteos_gtk_osk as gtk_osk$' launcher/couchliteos
 refute rg -q '^(import|from) gi\b' launcher/couchliteos_osk.py
 rg -q 'GLib.set_prgname\(osk.APP_ID\)' launcher/couchliteos_gtk_osk.py
 for module in couchliteos_osk couchliteos_gtk_osk; do
-  rg -q "^install -D -m 0644 \"\\$ROOT/launcher/$module.py\" \"\\$CHROOT/usr/libexec/$module.py\"$" build/configure.sh
+  rg -q "^install -D -m 0644 \"\\\$ROOT/launcher/$module.py\" \"\\\$CHROOT/usr/libexec/$module.py\"\$" build/configure.sh
 done
 rg -q 'couchliteos_gtk_osk.py' launcher/Makefile
 # Cage docks that app-id along the bottom 40% (not full-screen), and applies the MOUSE SPEED setting.
