@@ -163,7 +163,8 @@ CLASSIC=(display appearance audio bluetooth controllers network sleep applicatio
          tv-control software-update controls)
 classic='wait:2000'
 for screen in "${CLASSIC[@]}"; do
-  classic+=",screen:$screen,wait:2500,dump:classic-$screen,Escape,wait:1500"
+  # Esc again: a screen may show an error page first here (no PipeWire, no network manager).
+  classic+=",screen:$screen,wait:2500,dump:classic-$screen,Escape,wait:1200,Escape,wait:1200,Escape,wait:1200"
 done
 run_tv classic1080 1920 1080 "$classic,quit" "$SHOTS/classic"
 run_tv classic720 1280 720 "$classic,quit"

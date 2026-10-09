@@ -151,6 +151,9 @@ class ParseTest(unittest.TestCase):
     def test_split_row(self):
         self.assertEqual(bridge.split_row("SOFTWARE UPDATE  -  0.3.1 AVAILABLE"), bridge.Row("SOFTWARE UPDATE", "0.3.1 AVAILABLE"))
         self.assertEqual(bridge.split_row("PAIR A NEW DEVICE"), bridge.Row("PAIR A NEW DEVICE"))
+        self.assertEqual(bridge.split_row("UPDATE CHANNEL: BETA"), bridge.Row("UPDATE CHANNEL", "BETA"))
+        self.assertEqual(bridge.split_row("NOTE: THIS IS A LONG SENTENCE THAT GOES ON."),
+                         bridge.Row("NOTE: THIS IS A LONG SENTENCE THAT GOES ON."))
 
     def test_visible_keeps_the_focus_in_the_middle(self):
         self.assertEqual(bridge.visible(5, 4, 8), range(5))

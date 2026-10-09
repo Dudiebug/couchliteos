@@ -278,6 +278,10 @@ def split_row(text: str) -> Row:
         value = parts[1].strip()
         value = value[2:].strip() if value.startswith("- ") else value
         return Row(parts[0], GAP.sub("  ", value))
+    # "SAVE BEFORE UPDATE: ON": a setting and its short value (not a sentence with a colon in it).
+    label, colon, value = text.rpartition(": ")
+    if colon and label and value and len(value) <= 24 and ":" not in label and not value.endswith("."):
+        return Row(label, value)
     return Row(text)
 
 
