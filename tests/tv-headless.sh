@@ -146,12 +146,12 @@ rm -f -- "$SHOTS"/*.png "$SHOTS"/xmb/*.png
 home_layout=rows
 run_tv 1080 1920 1080 "$screens$themes,open:update,dump:update,quit" "$SHOTS"
 run_tv 720 1280 720 "$screens,open:update,dump:update,quit"
-# The XMB: every category (GAMES first; left to POWER, right to NETWORK), the quick menu, change
+# The XMB: every category (GAMES first; left to POWER, right to APPS), the quick menu, change
 # artwork and stream settings over it, every theme behind the wave.
 home_layout=cross
 xmb='F1,dump:home,Home,dump:quick,Escape,F9,dump:art,Escape,F10,dump:streamset,Escape,Down,Down,dump:xmb-games'
 xmb+=',Left,dump:xmb-video,Left,dump:xmb-settings,Down,dump:xmb-settings-down,Left,dump:xmb-power'
-xmb+=',Right,Right,Right,Right,dump:xmb-apps,Right,dump:xmb-network,Right,Escape,Escape'$help
+xmb+=',Right,Right,Right,Right,dump:xmb-apps,Right,Escape,Escape'$help
 # What is behind the XMB, switched live as Settings > APPEARANCE saves it (the 1 s tick applies it).
 looks=',theme:midnight,background:plain,wait:1600,dump:bg-plain,background:calm,wait:1600,dump:bg-calm'
 looks+=',background:wave,accent:month,wait:1600,dump:accent-month,accent:,wait:1600,dump:bg-wave'
@@ -178,7 +178,7 @@ SCREENS = {"home": "home", "quick": "home", "art": "art", "streamset": "streamse
            "whatsnew": "whatsnew", "tutorial": "tutorial", "tutorial-last": "tutorial", "help": "help",
            "help-reading": "help", "loading": "busy", "update": "update"}
 XMB = ["home", "quick", "art", "streamset", "xmb-games", "xmb-video", "xmb-settings", "xmb-settings-down", "xmb-power",
-       "xmb-apps", "xmb-network", "tutorial", "tutorial-last", "help", "help-reading", "loading", "update"]
+       "xmb-apps", "tutorial", "tutorial-last", "help", "help-reading", "loading", "update"]
 LOOKS = ["bg-plain", "bg-calm", "accent-month", "bg-wave"]
 problems = []
 started = None  # how the XMB's wave ran at the start (GL where the GL wave runs here)

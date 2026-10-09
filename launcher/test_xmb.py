@@ -23,6 +23,8 @@ APPS = (
     app("terminal", kind="command", command="/bin/bash"),
     app("tailscale", request="start-tailscale"),
     app("work-pc", kind="rdp", connection="work-pc"),
+    app("system-diagnostics", kind="command", command="/usr/bin/couchliteos-diagnostics", terminal=True),
+    app("network-setup", kind="command", command="/usr/bin/nmtui", terminal=True),
 )
 
 
@@ -53,7 +55,7 @@ class CategoriesTest(XmbTestCase):
     def test_categories_left_to_right_and_a_boot_lands_on_games(self):
         model = self.model()
         self.assertEqual([c.label for c in model.categories],
-                         ["POWER", "SETTINGS", "TV & VIDEO", "GAMES", "APPS", "NETWORK"])
+                         ["POWER", "SETTINGS", "TV & VIDEO", "GAMES", "APPS"])
         self.assertEqual(model.category.key, xmb.GAMES)
         self.assertEqual(model.row, 0)
 
@@ -83,31 +85,63 @@ class CategoriesTest(XmbTestCase):
         self.assertEqual(self.labels(model, xmb.VIDEO), [xmb.NO_VIDEO])
         self.assertEqual(self.items(model, xmb.VIDEO)[0].action, ("entry", tvscreens.SCREEN, "applications"))
 
-    def test_moonlight_is_not_an_item_and_missing_apps_are_hidden(self):
-        model = self.model(missing=("terminal",))
+    def test_apps_has_moonlight_and_saved_remote_desktop_connections(self):
+        model = self.model()
+        self.assertEqual(self.labels(model, xmb.APPS), ["MOONLIGHT", "TERMINAL", "WORK-PC"])
+        moonlight, _terminal, work = self.items(model, xmb.APPS)
+        self.assertEqual((moonlight.action, moonlight.app, moonlight.icon), (("app", "moonlight"), "moonlight", "desktop-tower"))
+        self.assertEqual(moonlight.detail, xmb.MOONLIGHT_DETAIL)
+        self.assertEqual((work.action, work.icon, work.detail), (("app", "work-pc"), "desktop", "REMOTE DESKTOP"))
+        self.assertIn("GAMING PCS", self.labels(model, xmb.GAMES))  # pairing stays in GAMES
+
+    def test_missing_apps_are_hidden(self):
+        model = self.model(missing=("terminal", "moonlight", "work-pc"))
         everything = [item.app for category in model.categories for item in category.items]
         self.assertNotIn("moonlight", everything)
         self.assertNotIn("terminal", everything)
         self.assertEqual(self.labels(model, xmb.APPS), ["ADD AN APPLICATION"])
 
-    def test_network_has_its_state_tailscale_and_remote_desktop_connections(self):
-        model = self.model()
-        self.assertEqual(self.labels(model, xmb.NETWORK),
-                         ["INTERNET", "WI-FI AND WIRED", "TAILSCALE", "WORK-PC", "REMOTE DESKTOP"])
-        self.assertEqual(self.items(model, xmb.NETWORK)[0].detail, "ONLINE")
-        self.assertEqual(self.items(model, xmb.NETWORK)[3].icon, "desktop")
+    def test_the_network_tailscale_remote_desktop_and_diagnostics_are_in_settings_only(self):
+        model = self.model(values={"NETWORK": "ONLINE"})
+        settings = {item.label: item for item in self.items(model, xmb.SETTINGS)}
+        self.assertEqual(settings["NETWORK"].detail, "ONLINE")
+        self.assertEqual(settings["NETWORK"].action, ("entry", tvscreens.SCREEN, "network"))
+        self.assertEqual(settings["TAILSCALE"].action, ("entry", tvscreens.APP, "tailscale"))
+        self.assertEqual(settings["TAILSCALE"].icon, "shield")
+        self.assertEqual(settings["REMOTE DESKTOP"].action, ("entry", tvscreens.SCREEN, "remote-desktop"))
+        self.assertEqual(settings["SYSTEM DIAGNOSTICS"].action, ("entry", tvscreens.APP, "system-diagnostics"))
+        apps_here = {item.app for key in (xmb.VIDEO, xmb.GAMES, xmb.APPS) for item in self.items(model, key)}
+        self.assertFalse(apps_here & {"tailscale", "system-diagnostics", "network-setup"})
+
+    def test_every_item_is_in_one_place_on_the_cross(self):
+        def web(app_id, url):
+            return app(app_id, kind="command", command="/usr/bin/firefox-esr", arguments=f"--kiosk {url}")
+        for applications in (APPS, (), APPS + (web("gmail", "https://mail.google.com/"),
+                                               app("ssh", kind="command", command="/usr/bin/ssh", category="network"))):
+            model = self.model(applications=applications)
+            keys = [item.key for category in model.categories for item in category.items]
+            labels = [item.label for category in model.categories for item in category.items]
+            ids = [item.app for category in model.categories for item in category.items if item.app]
+            with self.subTest(applications=len(applications)):
+                self.assertEqual(len(keys), len(set(keys)), keys)
+                self.assertEqual(len(labels), len(set(labels)), labels)
+                self.assertEqual(len(ids), len(set(ids)), ids)
 
     def test_a_manifest_category_and_icon_win(self):
-        moved = app("terminal", kind="command", command="/bin/bash", category="network", icon="terminal")
+        moved = app("terminal", kind="command", command="/bin/bash", category="video", icon="terminal")
         model = self.model(applications=[moved])
-        item = self.items(model, xmb.NETWORK)[2]
+        item = self.items(model, xmb.VIDEO)[0]
         self.assertEqual((item.label, item.icon), ("TERMINAL", "terminal"))
+
+    def test_the_old_network_category_is_apps_now(self):
+        moved = app("ssh", kind="command", command="/usr/bin/ssh", category="network")
+        self.assertEqual(self.labels(self.model(applications=[moved]), xmb.APPS), ["SSH"])
 
     def test_settings_show_values_and_skip_what_lives_elsewhere(self):
         model = self.model(values={"DISPLAY": "1920 X 1080 AT 60 HZ"})
         labels = self.labels(model, xmb.SETTINGS)
         self.assertNotIn("BACK", labels)
-        self.assertNotIn("TAILSCALE", labels)
+        self.assertIn("TAILSCALE", labels)
         self.assertNotIn("ACTIVE APPLICATIONS", labels)
         items = {item.label: item for item in self.items(model, xmb.SETTINGS)}
         self.assertEqual(items["DISPLAY"].detail, "1920 X 1080 AT 60 HZ")
@@ -169,9 +203,9 @@ class FocusTest(XmbTestCase):
         self.assertEqual(model.category.key, xmb.POWER)
         self.assertEqual(model.move_h(-1), xmb.EDGE)
         self.assertEqual(model.move_v(-1), xmb.EDGE)
-        for _ in range(5):
+        for _ in range(4):
             model.move_h(1)
-        self.assertEqual(model.category.key, xmb.NETWORK)
+        self.assertEqual(model.category.key, xmb.APPS)
         self.assertEqual(model.move_h(1), xmb.EDGE)
 
     def test_each_category_remembers_its_item(self):

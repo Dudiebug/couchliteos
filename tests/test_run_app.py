@@ -15,11 +15,22 @@ SCRIPT = ROOT / "scripts" / "couchliteos-run-app"
 class MoonlightStreamExitTest(unittest.TestCase):
     """couchliteos-run-app against a fake Moonlight: what the unit's Restart=on-failure sees."""
 
-    def run_app(self, exit_code, request=None):
+    def run_app(self, exit_code, request=None, browse=False, profile=False):
         with tempfile.TemporaryDirectory() as directory:
             base = pathlib.Path(directory)
             run = base / "run"
             run.mkdir()
+            tools = base / "bin"
+            tools.mkdir()
+            if profile:
+                # A paired PC with a profile app: a plain start streams it.
+                (base / "data").mkdir()
+                (base / "data" / "config.ini").write_text("[host:gaming-pc]\napp = Desktop\n")
+                address = tools / "couchliteos-host-address"
+                address.write_text("#!/bin/sh\necho pc.lan\n")
+                address.chmod(0o755)
+            if browse:
+                (run / "moonlight-browse.request").touch()
             binary = base / "apps" / "moonlight" / "usr" / "bin" / "moonlight"
             binary.parent.mkdir(parents=True)
             binary.write_text(f"#!/bin/sh\necho \"$@\" > '{base}/argv'\nexit {exit_code}\n")
@@ -35,6 +46,7 @@ class MoonlightStreamExitTest(unittest.TestCase):
                 "COUCHLITEOS_APPS_DIR": str(base / "apps"),
                 "COUCHLITEOS_LIBEXEC_DIR": str(ROOT / "launcher"),
                 "COUCHLITEOS_HARDWARE_ENV": str(base / "no-hardware.env"),
+                "PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}",
             }
             result = subprocess.run(
                 ["bash", str(SCRIPT), "moonlight"], env=environment, capture_output=True, text=True, timeout=60
@@ -42,6 +54,7 @@ class MoonlightStreamExitTest(unittest.TestCase):
             argv = (base / "argv").read_text().strip() if (base / "argv").exists() else None
             status = (run / "moonlight-status").read_text().strip()
             consumed = not (run / "moonlight-stream.request").exists()
+            self.browse_left = (run / "moonlight-browse.request").exists()
         return result.returncode, status, argv, consumed
 
     def test_a_failed_auto_stream_does_not_make_systemd_restart_moonlight(self):
@@ -62,6 +75,19 @@ class MoonlightStreamExitTest(unittest.TestCase):
         self.assertEqual(argv, "")
         self.assertEqual(status, "failed: exited before the application became ready (status 1)")
         self.assertEqual(code, 1)
+
+    def test_a_plain_start_streams_the_profile_app(self):
+        _code, _status, argv, _consumed = self.run_app(0, profile=True)
+        self.assertEqual(argv, "stream pc.lan Desktop")
+
+    def test_moonlight_from_apps_opens_its_list_of_pcs_instead_of_the_profile_stream(self):
+        _code, _status, argv, _consumed = self.run_app(0, browse=True, profile=True)
+        self.assertEqual(argv, "")
+        self.assertFalse(self.browse_left)
+
+    def test_a_game_streams_even_after_a_left_over_browse_request(self):
+        _code, _status, argv, _consumed = self.run_app(0, "pc.lan\nHades\n", browse=True)
+        self.assertEqual(argv, "stream pc.lan Hades")
 
     def test_a_bad_request_is_ignored_and_the_crash_is_still_retried(self):
         code, _status, argv, consumed = self.run_app(1, "--evil\nDesktop\n")

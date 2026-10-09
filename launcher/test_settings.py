@@ -76,6 +76,30 @@ class SectionTest(unittest.TestCase):
         self.path.write_bytes(b"[ui\n\xff\xfe garbage")
         self.assertEqual(settings.read_section("ui", self.path), {})
 
+    def test_a_line_that_is_not_a_setting_is_skipped_and_the_rest_still_read(self):
+        self.path.write_text("stray\n[ui]\ninterface = tv\noops no equals\n  indented after the bad line\n"
+                             "home = rows\n= no key\n[audio]\nsink = hdmi\n")
+        self.assertEqual(settings.read_section("ui", self.path), {"interface": "tv", "home": "rows"})
+        self.assertEqual(settings.read_section("audio", self.path), {"sink": "hdmi"})
+        self.assertEqual(settings.sections("", self.path), ["ui", "audio"])
+
+    def test_a_value_that_goes_on_over_indented_lines_is_still_read(self):
+        self.path.write_text("[ui]\nnote = one\n  two\nhome = rows\n")
+        self.assertEqual(settings.read_section("ui", self.path), {"note": "one\ntwo", "home": "rows"})
+
+    def test_update_never_drops_keys_because_of_a_bad_line(self):
+        self.path.write_text("[theme]\nname = slate\nbroken line\naccent = amber\n\n[audio]\noops\nsink = hdmi\n")
+        result = settings.update_section("theme", {"name": "midnight"}, self.path)
+        self.assertEqual(result, {"name": "midnight", "accent": "amber"})
+        self.assertEqual(settings.read_section("theme", self.path), result)
+        self.assertIn("[audio]\noops\nsink = hdmi\n", self.path.read_text())  # another section is left as it was
+
+    def test_update_does_not_write_over_a_file_it_cannot_read(self):
+        self.path.write_bytes(b"[theme]\nname = slate\xff\naccent = amber\n")
+        with self.assertRaises(OSError):
+            settings.update_section("theme", {"name": "midnight"}, self.path)
+        self.assertEqual(self.path.read_bytes(), b"[theme]\nname = slate\xff\naccent = amber\n")
+
     def test_sections_with_colons_round_trip_and_list_by_prefix(self):
         settings.write_section("stream:default", {"preset": "balanced"}, self.path)
         settings.write_section("stream:pc-1:doom-1a2b", {"app": "DOOM: Eternal", "preset": "performance"}, self.path)

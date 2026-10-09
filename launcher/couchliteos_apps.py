@@ -11,6 +11,7 @@ import pwd
 import grp
 import re
 import tempfile
+import time
 import urllib.parse
 
 
@@ -279,6 +280,47 @@ def load_applications(
     return LoadResult(tuple(applications), tuple(errors))
 
 
+# cached_applications: (system_dir, user_dir, state_file) -> (their stamps, the result).
+_LOADED: dict[tuple[pathlib.Path, ...], tuple[tuple, LoadResult]] = {}
+# A change this recent is not trusted to show in the next one's stamp (a filesystem with coarse
+# timestamps): until it is older, every call parses again.
+SETTLED = 2.0
+
+
+def _stamp(path: pathlib.Path) -> tuple[int, int, int, int] | None:
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return status.st_mtime_ns, status.st_ctime_ns, status.st_size, status.st_ino
+
+
+def cached_applications(
+    system_dir: pathlib.Path = SYSTEM_DIR,
+    user_dir: pathlib.Path = USER_DIR,
+    state_file: pathlib.Path = STATE_FILE,
+    *,
+    clock=time.time,
+) -> LoadResult:
+    """load_applications, parsed again only when a manifest directory or the state file changed.
+
+    The home screen asks every second and on every key: then it costs three stats. Manifests and
+    the state file are written by replacing them (atomic_write), which changes the directory's
+    modification time and the state file's own."""
+    key = (system_dir, user_dir, state_file)
+    stamps = tuple(_stamp(path) for path in key)
+    cached = _LOADED.get(key)
+    if cached is not None and cached[0] == stamps:
+        return cached[1]
+    result = load_applications(system_dir, user_dir, state_file)
+    newest = max((stamp[0] for stamp in stamps if stamp is not None), default=0) / 1e9
+    if clock() - newest >= SETTLED:
+        _LOADED[key] = (stamps, result)
+    else:
+        _LOADED.pop(key, None)
+    return result
+
+
 def installed(app: Application, root: pathlib.Path = pathlib.Path("/")) -> bool:
     """False when the app names a `binary` that is not there (Firefox or Chrome before it is installed)."""
     return not app.binary or (root / app.binary.lstrip("/")).exists()
@@ -303,10 +345,11 @@ def atomic_write(path: pathlib.Path, content: str, mode: int = 0o640) -> None:
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        uid, gid = _owner()
-        os.fchmod(descriptor, mode)
-        os.fchown(descriptor, uid, gid)
+        # fdopen first: it owns the descriptor, so a failing fchmod or fchown still closes it.
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            uid, gid = _owner()
+            os.fchmod(stream.fileno(), mode)
+            os.fchown(stream.fileno(), uid, gid)
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())

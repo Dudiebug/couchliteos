@@ -210,6 +210,14 @@ PY
     "$DATA_DIR/home/.config/couchliteos-decode-seed" "$hint_state" \
     "${resolution%x*}" "${resolution#*x}" "${moonlight_settings[2]:-60}" \
     "${moonlight_settings[3]:-auto}" "${moonlight_settings[4]:-auto}" || true
+  # MOONLIGHT opened from the home screen's APPS: Moonlight's own list of PCs, never a stream to
+  # the profile's PC. One-shot, like the stream request below.
+  if [[ -e "$RUN_DIR/moonlight-browse.request" ]]; then
+    rm -f -- "$RUN_DIR/moonlight-browse.request"
+    host=
+    profile_app=
+    echo "Opening Moonlight's list of PCs"
+  fi
   if [[ -n "$host" ]]; then
     echo "Selected Sunshine address: $host ($(couchliteos-host-address 2>/dev/null || true))"
   fi

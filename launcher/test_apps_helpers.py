@@ -3,7 +3,9 @@
 import testenv  # noqa: F401  (first: scratch run and state directories)
 import pathlib
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 import couchliteos_apps as apps
 
@@ -175,6 +177,73 @@ class SummaryTest(unittest.TestCase):
 
     def test_empty_summary(self):
         self.assertEqual(apps.sanitized_summary(apps.LoadResult((), ())), "")
+
+
+class CachedApplicationsTest(unittest.TestCase):
+    """The home screen asks every second and on every key: parsing only after a change."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = pathlib.Path(directory.name)
+        self.system = root / "system"
+        self.system.mkdir()
+        self.user = root / "user"
+        self.state = root / "state.ini"
+        (self.system / "10-alpha.ini").write_text(request_manifest("alpha", "ALPHA", 10))
+        self.addCleanup(apps._LOADED.clear)
+        self.now = time.time() + 60  # every change has settled
+
+    def load(self):
+        return apps.cached_applications(self.system, self.user, self.state, clock=lambda: self.now)
+
+    def ids(self):
+        return [app.id for app in self.load().applications]
+
+    def test_nothing_changed_is_not_parsed_again(self):
+        first = self.load()
+        with mock.patch.object(apps, "load_applications") as load:
+            self.assertIs(self.load(), first)
+            self.assertIs(self.load(), first)
+        load.assert_not_called()
+
+    def test_a_new_manifest_a_user_app_or_a_state_change_is_read(self):
+        self.assertEqual(self.ids(), ["alpha"])
+        (self.system / "20-beta.ini").write_text(request_manifest("beta", "BETA", 20))
+        self.assertEqual(self.ids(), ["alpha", "beta"])
+        before = self.load()
+        self.user.mkdir()
+        self.assertIsNot(self.load(), before)
+        before = self.load()
+        (self.user / "gamma.ini").write_text("[app]\nid = gamma\n")  # read again (and refused)
+        self.assertIsNot(self.load(), before)
+        self.assertIs(self.load(), self.load())
+        self.state.write_text("[alpha]\norder = 90\n")
+        self.assertEqual(self.ids(), ["beta", "alpha"])
+        self.state.unlink()
+        self.assertEqual(self.ids(), ["alpha", "beta"])
+
+    def test_a_replaced_manifest_is_read(self):
+        self.assertEqual(self.load().applications[0].name, "ALPHA")
+        temporary = self.system / ".10-alpha.ini.tmp"
+        temporary.write_text(request_manifest("alpha", "RENAMED", 10))
+        temporary.replace(self.system / "10-alpha.ini")  # as atomic_write does
+        self.assertEqual(self.load().applications[0].name, "RENAMED")
+
+    def test_a_change_that_has_not_settled_is_parsed_every_time(self):
+        self.now = time.time()  # the files were written just now
+        self.load()
+        with mock.patch.object(apps, "load_applications", wraps=apps.load_applications) as load:
+            self.load()
+            self.load()
+        self.assertEqual(load.call_count, 2)
+
+    def test_directories_are_cached_separately(self):
+        other = self.system.parent / "other"
+        other.mkdir()
+        self.assertEqual(self.ids(), ["alpha"])
+        result = apps.cached_applications(other, self.user, self.state, clock=lambda: self.now)
+        self.assertEqual(result.applications, ())
 
 
 class EnvironmentSpacingTest(unittest.TestCase):

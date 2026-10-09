@@ -19,8 +19,9 @@ tests point those at scratch files), so those reach the code here through `run_d
 
 Root work is asked for with request files in RUN: `start-<app>` (couchliteos-run-app),
 `launch-app.request` (couchliteos-configured-app), the Remote Desktop session request,
-the stream request, `close-<app>`, and `suspend` / `reboot` / `poweroff`. An app shows it
-is up with `<status_id>-ready` and reports `<status_id>-status` ("failed: ...", "exited: ...").
+the stream request (or MOONLIGHT_BROWSE: Moonlight's own list of PCs), `close-<app>`, and
+`suspend` / `reboot` / `poweroff`. An app shows it is up with `<status_id>-ready` and reports
+`<status_id>-status` ("failed: ...", "exited: ...").
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 STATE = pathlib.Path(os.environ.get("COUCHLITEOS_STATE_DIR", "/var/lib/couchliteos"))
 SETUP_MARKER = STATE / "setup-complete"  # couchliteos_setup.MARKER (that module needs curses)
 HOME_REQUEST_NAME = "home.request"
+MOONLIGHT_BROWSE = "moonlight-browse.request"  # couchliteos-run-app: open Moonlight's list of PCs
 LAUNCHER_FOCUS_NAME = "launcher-focus"  # gamepad-nav forwards keys while the launcher has focus
 SOURCE_MANIFESTS = pathlib.Path(__file__).resolve().parents[1] / "config/apps.d"
 LOG = pathlib.Path("/var/log/couchliteos/launcher.log")
@@ -61,7 +63,7 @@ POINTER_MODES = pointer.Modes()
 
 def application_result() -> apps.LoadResult:
     system_dir = apps.SYSTEM_DIR if apps.SYSTEM_DIR.exists() else SOURCE_MANIFESTS
-    result = apps.load_applications(system_dir=system_dir)
+    result = apps.cached_applications(system_dir=system_dir)  # every second and every key: no parsing
     # Firefox and Chrome have no tile until they are installed (ADD A WEB BROWSER).
     return apps.LoadResult(tuple(app for app in result.applications if apps.installed(app)), result.errors)
 
@@ -141,9 +143,13 @@ def focus_app(
         matches = (f"title:{app.name}",)
         if app.kind == "command" and not app.terminal:
             # Windows of user-added apps (Chrome kiosk pages, Steam, ...) are not
-            # titled with the stored name, but their app_id follows the binary.
+            # titled with the stored name, but their app_id follows the binary. A Flathub
+            # app's binary is flatpak itself: its window's app_id is the Flatpak id, or for some
+            # (Kodi: tv.kodi.Kodi) the program's own name, its last part.
             binary = pathlib.PurePath(app.command).name
-            ids = dict.fromkeys((binary.removesuffix("-stable"), binary))
+            names = ((app.flatpak, app.flatpak.rsplit(".", 1)[-1].lower()) if app.flatpak
+                     else (binary.removesuffix("-stable"), binary))
+            ids = dict.fromkeys(names)
             matches = tuple(f"app_id:{item}" for item in ids) + matches
     if app.kind == "rdp":
         matches = (f"app_id:{rdp.WAYLAND_APP_ID}", f"title:{app.name}")
@@ -423,6 +429,16 @@ class Session:
             return False
         if app.id == "moonlight":
             self.apply_stream_settings(self.pending_game if auto else None)
+            # Opened by itself (APPS, pairing): Moonlight's own list of PCs, not a stream to the
+            # profile's PC (couchliteos-run-app takes the request).
+            browse = run / MOONLIGHT_BROWSE
+            try:
+                if auto:
+                    browse.unlink(missing_ok=True)
+                else:
+                    browse.touch()
+            except OSError:
+                pass  # then a plain start behaves as before
         if auto and self.pending_stream is not None:
             # Written again after the wake wait (it can outlast REQUEST_MAX_AGE) and before each
             # TRY AGAIN: the Moonlight start consumes the request.
@@ -484,6 +500,8 @@ class Session:
             (run / rdp.HANDOFF.name).unlink(missing_ok=True)
         elif app.kind == "request":
             (run / app.request).unlink(missing_ok=True)
+            if app.id == "moonlight":
+                (run / MOONLIGHT_BROWSE).unlink(missing_ok=True)
         elif app.kind == "command":
             # Never leave a request behind to start the app unasked later.
             (run / "launch-app.request").unlink(missing_ok=True)

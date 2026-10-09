@@ -14,6 +14,7 @@ import tempfile
 CONFIG = pathlib.Path("/var/lib/couchliteos/config.ini")
 
 _HEADER = re.compile(r"\s*\[([^]]+)]\s*\r?\n?")
+_SETTING = re.compile(r"\s*[^=:\s][^=:]*[=:]")  # a key, then "=" or ":"
 
 
 def _valid_key(key: str) -> bool:
@@ -24,23 +25,59 @@ def _valid_value(value: str) -> bool:
     return value.isprintable() and value == value.strip()
 
 
-def read_section(section: str, path: pathlib.Path = CONFIG) -> dict:
-    """Return the section's keys and values; an unreadable file or missing section is {}."""
+def _readable(text: str) -> str:
+    """The text without the lines configparser refuses (a line with no "=", a setting before any
+    section), so one bad hand-edited line does not hide every other setting in the file."""
+    kept: list[str] = []
+    in_section = continues = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            kept.append(line)
+        elif _HEADER.fullmatch(line):
+            kept.append(line)
+            in_section, continues = True, False
+        elif line[:1].isspace() and continues:  # an indented line goes on with the value above
+            kept.append(line)
+        elif in_section and _SETTING.match(line):
+            kept.append(line)
+            continues = True
+        else:
+            continues = False  # dropped; an indented line after it would join the wrong value
+    return "\n".join(kept) + "\n"
+
+
+def _parse(path: pathlib.Path) -> configparser.ConfigParser:
+    """The file's settings, bad lines left out. A missing file has none; OSError, UnicodeError or
+    configparser.Error when it cannot be read."""
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     try:
-        parser.read(path, encoding="utf-8")
-    except (OSError, UnicodeError, configparser.Error):
-        return {}
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return parser
+    parser.read_string(_readable(text), source=str(path))
+    return parser
+
+
+def _section(parser: configparser.ConfigParser, section: str) -> dict:
     if not parser.has_section(section):
         return {}
     return {key: value.strip() for key, value in parser.items(section, raw=True)}
 
 
+def read_section(section: str, path: pathlib.Path = CONFIG) -> dict:
+    """Return the section's keys and values; an unreadable file or missing section is {}.
+    A line that is not a setting is skipped, the rest still read."""
+    try:
+        return _section(_parse(path), section)
+    except (OSError, UnicodeError, configparser.Error):
+        return {}
+
+
 def sections(prefix: str, path: pathlib.Path = CONFIG) -> list[str]:
     """Names of the sections that start with prefix, in file order (for [stream:<host>:<app>])."""
-    parser = configparser.ConfigParser(interpolation=None, strict=False)
     try:
-        parser.read(path, encoding="utf-8")
+        parser = _parse(path)
     except (OSError, UnicodeError, configparser.Error):
         return []
     return [name for name in parser.sections() if name.startswith(prefix)]
@@ -150,9 +187,13 @@ def update_section(section: str, changes: dict, path: pathlib.Path = CONFIG) -> 
     """Merge changes into the section and write it; returns the new section.
 
     Existing entries write_section would refuse (hand-edited: a tab, a space in the key) are
-    dropped, or one of them would block every later save of the section."""
-    values = {key: value for key, value in read_section(section, path).items()
-              if _valid_key(key) and _valid_value(value)}
+    dropped, or one of them would block every later save of the section. A file that cannot be
+    read is never written over (OSError): that would lose the section's other settings."""
+    try:
+        current = _section(_parse(path), section)
+    except (UnicodeError, configparser.Error) as error:
+        raise OSError(f"{path.name} cannot be read: {error}") from error
+    values = {key: value for key, value in current.items() if _valid_key(key) and _valid_value(value)}
     values.update({key: str(value) for key, value in changes.items()})
     write_section(section, values, path)
     return values
