@@ -66,6 +66,7 @@ import couchliteos_theme as theme
 import couchliteos_tile as tile
 import couchliteos_tvlayout as tvlayout
 import couchliteos_tvscreens as tvscreens
+import couchliteos_uibridge as uibridge
 import couchliteos_update as update
 import couchliteos_wave as wave
 import couchliteos_whatsnew as whatsnew
@@ -83,6 +84,7 @@ try:
     import couchliteos_gtk_help as gtk_help
     import couchliteos_gtk_loading as gtk_loading
     import couchliteos_gtk_ring as gtk_ring
+    import couchliteos_gtk_screen as gtk_screen
     import couchliteos_gtk_xmb as gtk_xmb
 except (ImportError, ValueError) as _error:  # no PyGObject or no GTK 4 typelib
     Gtk = None
@@ -163,6 +165,9 @@ class Screens:
     def init_screens(self) -> None:
         self.child_pid: int | None = None  # the classic screen running on top (open_screen)
         self.child_name = ""
+        self.child: "gtk_screen.ScreenChild | None" = None  # the screen drawn here (None: in foot)
+        self.child_drawn = False  # it sent a frame: a failure after that is the screen's, not the bridge's
+        self.child_return = "home"  # the page under it
         self.starting = True  # the steps before the home screen still run (continue_start)
         self.start_steps = ["whatsnew", "setup", "update", "tutorial", "autostream"]
         self.settings = tvscreens.SettingsModel(tvscreens.value_sources(
@@ -220,15 +225,23 @@ class Screens:
         power_page = box
         self.stack.add_named(box, "power")
 
-        # WHAT'S NEW: the title, one line per feature, how to go on.
+        # WHAT'S NEW: the title, a page of feature cards in two columns (what, and where to find
+        # it), the page number, how to go on.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_valign(Gtk.Align.CENTER)
         self.whatsnew_title = label("", "tv-title", xalign=0.5, wrap=True)
         box.append(self.whatsnew_title)
-        self.whatsnew_lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.whatsnew_lines = Gtk.Grid()
+        self.whatsnew_lines.set_column_homogeneous(True)
         self.whatsnew_lines.set_halign(Gtk.Align.CENTER)
         box.append(self.whatsnew_lines)
-        box.append(label(tvscreens.WHATS_NEW_HINT, "tv-prompt", xalign=0.5, wrap=True))
+        self.whatsnew_page_label = label("", "tv-prompt", xalign=0.5, ellipsize=False)
+        box.append(self.whatsnew_page_label)
+        self.whatsnew_hint = label(tvscreens.WHATS_NEW_HINT, "tv-prompt", xalign=0.5, wrap=True)
+        box.append(self.whatsnew_hint)
+        self.whatsnew_cards: list = []
+        self.whatsnew_pages: list = [[]]
+        self.whatsnew_at = 0
         whatsnew_page = box
         self.stack.add_named(box, "whatsnew")
 
@@ -245,7 +258,10 @@ class Screens:
             box.append(widget)
         update_page = box
         self.stack.add_named(box, "update")
-        self.screen_pages = [page, power_page, whatsnew_page, update_page]
+        # The classic screens, drawn here from what they send (couchliteos_gtk_screen).
+        self.classic_page = gtk_screen.ScreenPage()
+        self.stack.add_named(self.classic_page, "classic")
+        self.screen_pages = [page, power_page, whatsnew_page, update_page, self.classic_page]
 
     def relayout_screens(self) -> None:
         layout = self.layout
@@ -253,9 +269,14 @@ class Screens:
         self.settings_list.set_size_request(round((layout.width - 2 * layout.margin_x) * 0.36), -1)
         self.settings_pane.set_spacing(layout.px(20))
         self.update_bar.set_size_request(round(layout.width * 0.5), layout.px(24))
-        for box in (self.power_list, self.whatsnew_lines):
-            box.set_spacing(layout.px(8))
+        self.power_list.set_spacing(layout.px(8))
+        self.whatsnew_lines.set_row_spacing(layout.px(16))
+        self.whatsnew_lines.set_column_spacing(layout.px(20))
+        self.whatsnew_lines.set_size_request(min(round(layout.width * 0.86), layout.width - 2 * layout.margin_x), -1)
+        if self.whatsnew_cards:
+            self.paginate_whatsnew()
         self.power_list.set_size_request(round(layout.width * 0.4), -1)
+        self.classic_page.relayout(layout, tvscreens.list_slots(layout))
         if self.mode == "settings":
             self.render_settings()
 
@@ -370,13 +391,56 @@ class Screens:
     def open_whatsnew(self, version: str, seen: str) -> None:
         title, lines = tvscreens.whats_new(version, seen)
         self.whatsnew_title.set_label(title)
-        clear(self.whatsnew_lines)
-        for line in lines:
-            self.whatsnew_lines.append(label(line, "tv-line", wrap=True))
+        self.whatsnew_cards = tvscreens.whats_new_cards(lines)
+        self.whatsnew_at = 0
+        self.paginate_whatsnew()
         self.show("whatsnew")
 
+    def paginate_whatsnew(self) -> None:
+        first = self.whatsnew_pages[self.whatsnew_at][0] if self.whatsnew_pages[self.whatsnew_at] else None
+        self.whatsnew_pages = tvscreens.whats_new_pages(self.whatsnew_cards, tvscreens.whats_new_slots(self.layout))
+        # The same first card stays in view when the picture size changes the page size.
+        self.whatsnew_at = next((index for index, page in enumerate(self.whatsnew_pages) if first in page), 0)
+        self.render_whatsnew()
+
+    def render_whatsnew(self) -> None:
+        grid = self.whatsnew_lines
+        clear(grid)
+        row = column = 0
+        for card in self.whatsnew_pages[self.whatsnew_at]:
+            if card.heading:
+                row += column
+                column = 0
+                grid.attach(label(card.title, "tv-row-title", xalign=0.5, ellipsize=False), 0, row, 2, 1)
+                row += 1
+                continue
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box.add_css_class("tv-card")
+            box.set_spacing(self.layout.px(6))
+            box.append(label(card.title, "tv-card-title", wrap=True))
+            if card.where:
+                box.append(label(card.where, "tv-card-where", wrap=True))
+            grid.attach(box, column, row, 1, 1)
+            column += 1
+            if column == 2:
+                row, column = row + 1, 0
+        count = len(self.whatsnew_pages)
+        self.whatsnew_page_label.set_label(f"PAGE {self.whatsnew_at + 1} OF {count}" if count > 1 else "")
+        self.whatsnew_page_label.set_visible(count > 1)
+        last = self.whatsnew_at == count - 1
+        self.whatsnew_hint.set_label(tvscreens.WHATS_NEW_HINT if count == 1 else
+                                     tvscreens.WHATS_NEW_LAST if last else tvscreens.WHATS_NEW_NEXT)
+
     def whatsnew_key(self, name: str) -> None:
-        if name in ("activate", "back", "home"):
+        last = len(self.whatsnew_pages) - 1
+        if name in ("right", "down") and self.whatsnew_at < last or name == "activate" and self.whatsnew_at < last:
+            self.whatsnew_at += 1
+            self.render_whatsnew()
+        elif name in ("left", "up") and self.whatsnew_at > 0:
+            self.whatsnew_at -= 1
+            self.render_whatsnew()
+        elif name in ("activate", "back", "home"):
+            self.whatsnew_cards = []
             self.show("home")
             self.continue_start()
 
@@ -430,10 +494,24 @@ class Screens:
 
     # ------------------------------------------------------------------ classic screens on top
 
-    def open_screen(self, name: str, app: str = "") -> bool:
-        """Run a classic screen (`couchliteos-launcher --screen`) in a foot window on top of this one."""
+    def open_screen(self, name: str, app: str = "", foot: bool = False) -> bool:
+        """Run a classic screen (`couchliteos-launcher --screen`) drawn by this window
+        (couchliteos_uibridge), or in a foot window on top when `foot` (the bridge failed it)."""
         if self.child_pid is not None:
             return False
+        if not foot and not tvscreens.bridge_disabled():
+            try:
+                child = gtk_screen.ScreenChild(tvscreens.bridge_command(name, app), self.on_screen_frame,
+                                               lambda code, name=name, app=app: self.on_bridge_exit(name, app, code))
+            except OSError as error:
+                display.log(f"tv: cannot open --screen {name} here: {error}; foot instead", session.LOG)
+            else:
+                self.child, self.child_drawn = child, False
+                self.child_pid, self.child_name = child.pid, name
+                if self.mode != "classic":
+                    self.child_return = self.mode if self.mode in ("settings", "power", "home") else "home"
+                self.set_launcher_focus(True)
+                return True
         try:
             pid, *_streams = GLib.spawn_async(
                 tvscreens.child_command(name, app),
@@ -449,6 +527,33 @@ class Screens:
         GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, self.on_child_exit)
         return True
 
+    def on_screen_frame(self, frame: dict) -> None:
+        """What the screen drawn here sent: its title, lists, text and hint in this window's look."""
+        if self.child is None:
+            return
+        try:
+            view = uibridge.parse(frame)
+        except Exception as error:  # noqa: BLE001 - a frame it cannot read keeps the last one
+            display.log(f"tv: --screen {self.child_name}: unreadable frame: {error}", session.LOG)
+            return
+        self.child_drawn = True
+        self.classic_page.show_view(view)
+        if self.mode != "classic":
+            self.show("classic")
+
+    def on_bridge_exit(self, name: str, app: str, code: int) -> None:
+        drawn, self.child = self.child_drawn, None
+        self.child_pid, self.child_name = None, ""
+        if self.mode == "classic":
+            self.show(self.child_return)
+        if code and not drawn:
+            # It failed before drawing anything: the bridge's fault, not the screen's. The classic
+            # screen in foot is the safety net.
+            display.log(f"tv: --screen {name} failed here ({code}): foot instead", session.LOG)
+            if self.open_screen(name, app, foot=True):
+                return
+        self.screen_closed(name, code)
+
     def on_child_exit(self, pid: int, wait_status: int) -> None:
         GLib.spawn_close_pid(pid)
         name, self.child_pid, self.child_name = self.child_name, None, ""
@@ -456,6 +561,9 @@ class Screens:
             code = os.waitstatus_to_exitcode(wait_status)
         except ValueError:
             code = 1
+        self.screen_closed(name, code)
+
+    def screen_closed(self, name: str, code: int) -> None:
         if code:
             display.log(f"tv: --screen {name} exited with {code}", session.LOG)
             self.status = f"{name.upper().replace('-', ' ')} CLOSED WITH AN ERROR ({code})"
@@ -476,6 +584,18 @@ class Screens:
             self.watch_update(version)
         elif self.starting:
             self.continue_start()
+
+    def screen_key(self, keyval: int, state) -> bool:
+        """A key for the screen drawn here, as its terminal would have had it."""
+        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK):
+            return False
+        code = Gdk.keyval_to_unicode(keyval)
+        key = uibridge.key_for(Gdk.keyval_name(keyval) or "", chr(code) if code else "")
+        if key is None:
+            return False
+        self.ui_sound(quick.SOUND_KEYS.get(tvlayout.action(Gdk.keyval_name(keyval)) or "", ""))
+        self.child.send(key)
+        return True
 
     def child_left_an_app(self) -> bool:
         """The closed classic screen started something that now has the screen and the controller
@@ -523,7 +643,10 @@ class Screens:
                 stamp = None
             if stamp is not None and stamp != getattr(self, "child_home_seen", None):
                 self.child_home_seen = stamp
-                session.focus_launcher(tvscreens.CHILD_TITLE)
+                if self.child is None:
+                    session.focus_launcher(tvscreens.CHILD_TITLE)
+                elif not self.child_left_an_app():
+                    session.focus_launcher()  # the screen is this window: in front again
         else:
             quick.take_request(self.home_request)  # an update cannot be left: the press is dropped
 
@@ -699,7 +822,8 @@ class Look:
         colours = self.colours = current_theme()
         self.css.load_from_data((tvlayout.stylesheet(colours, self.layout)
                                  + tvscreens.stylesheet(colours, self.layout)
-                                 + tvhelp.stylesheet(colours, self.layout)).encode(), -1)
+                                 + tvhelp.stylesheet(colours, self.layout)
+                                 + gtk_screen.stylesheet(colours, self.layout)).encode(), -1)
         self.quick_css.load_from_data(quick.stylesheet(colours, self.layout).encode(), -1)
         self.render_backdrop()
         if self.cross and hasattr(self, "wave"):
@@ -1442,12 +1566,14 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
 
     # ------------------------------------------------------------------ keys
 
-    def on_key(self, _controller, keyval: int, _keycode: int, _state) -> bool:
+    def on_key(self, _controller, keyval: int, _keycode: int, state) -> bool:
         name = tvlayout.action(Gdk.keyval_name(keyval))
         display.confirm_restore()
         if self.idle.key():
             self.blank.set_visible(False)
             return True  # the key that wakes the screen does nothing else
+        if self.child is not None:
+            return self.screen_key(keyval, state)  # every key, typing too: the screen drawn here reads them
         if name is None:
             return False
         if self.child_pid is not None:

@@ -38,6 +38,10 @@ def draw_rows(
     When rows are hidden a "MORE" marker is drawn in the row above `top` and/or in
     the last row of the area, so the caller must keep the row above `top` free.
     """
+    report = getattr(type(screen), "report_list", None)
+    if report is not None:  # the TV interface draws this screen (couchliteos_uibridge): it gets the whole list
+        report(screen, rows, selected, top, left)
+        return
     height, _width = screen.getmaxyx()
     room = min(bottom, height - 1) - top  # never draw on the border
     if room < 1:

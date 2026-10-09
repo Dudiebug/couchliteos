@@ -99,6 +99,8 @@ install -D -m 0644 "$ROOT/launcher/couchliteos_loading.py" "$CHROOT/usr/libexec/
 install -D -m 0644 "$ROOT/launcher/couchliteos_gtk_loading.py" "$CHROOT/usr/libexec/couchliteos_gtk_loading.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_ring.py" "$CHROOT/usr/libexec/couchliteos_ring.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_gtk_ring.py" "$CHROOT/usr/libexec/couchliteos_gtk_ring.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_uibridge.py" "$CHROOT/usr/libexec/couchliteos_uibridge.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_gtk_screen.py" "$CHROOT/usr/libexec/couchliteos_gtk_screen.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_frontapp.py" "$CHROOT/usr/libexec/couchliteos_frontapp.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_music.py" "$CHROOT/usr/libexec/couchliteos_music.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_tvscreens.py" "$CHROOT/usr/libexec/couchliteos_tvscreens.py"

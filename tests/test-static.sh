@@ -1511,6 +1511,16 @@ rg -q '^    import couchliteos_gtk_loading as gtk_loading$' launcher/couchliteos
 refute rg -q '^import couchliteos_gtk_(help|loading)' launcher/couchliteos-tv.py
 refute rg -q '^\s*(import|from) curses\b' launcher/couchliteos_gtk_help.py launcher/couchliteos_gtk_loading.py
 rg -q '^import couchliteos_help as tvhelp$' launcher/couchliteos-launcher.py
+# Every classic screen is drawn by the TV interface (couchliteos_uibridge); foot only as the safety net.
+for module in couchliteos_uibridge couchliteos_gtk_screen; do
+  rg -q -F "install -D -m 0644 \"\$ROOT/launcher/$module.py\" \"\$CHROOT/usr/libexec/$module.py\"" build/configure.sh
+done
+rg -q 'test_uibridge.py' launcher/Makefile
+refute rg -q '^\s*(import|from) gi\b' launcher/couchliteos_uibridge.py
+rg -q '^    import couchliteos_gtk_screen as gtk_screen$' launcher/couchliteos-tv.py
+rg -q 'tvscreens.bridge_command\(name, app\)' launcher/couchliteos-tv.py
+rg -q 'arguments.bridge' launcher/couchliteos-launcher.py
+rg -q 'report = getattr\(type\(screen\), "report_list", None\)' launcher/couchliteos_listview.py
 # The built-in SteamGridDB key comes from the build machine, is never in git and never printed.
 rg -q '^steamgriddb\.key$' .gitignore
 [[ -z $(git ls-files '*steamgriddb.key' '*secrets*') ]]

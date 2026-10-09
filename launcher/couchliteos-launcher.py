@@ -3610,12 +3610,18 @@ def parse_arguments(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="CouchLiteOS classic launcher")
     parser.add_argument("--screen", choices=sorted(SCREENS), help="run this one screen and exit (the TV interface)")
     parser.add_argument("--app", default="", help="the application --screen connect starts")
+    parser.add_argument("--bridge", action="store_true",
+                        help="draw --screen through the TV interface's pipes (couchliteos_uibridge), not a terminal")
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     arguments = parse_arguments()
-    if arguments.screen:
+    if arguments.screen and arguments.bridge:
+        import couchliteos_uibridge as uibridge
+
+        sys.exit(uibridge.run(run_screen, arguments.screen, arguments.app))
+    elif arguments.screen:
         curses.wrapper(run_screen, arguments.screen, arguments.app)
     else:
         curses.wrapper(main)

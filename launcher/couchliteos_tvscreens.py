@@ -101,8 +101,18 @@ CONTINUE_HINT = "A / CROSS OR ENTER CONTINUES"
 CHILD_FAILED = "COULD NOT OPEN {}: {}"
 
 
+def bridge_command(name: str, app: str = "") -> list[str]:
+    """One classic screen drawn by the TV interface (couchliteos_uibridge): no terminal."""
+    return [LAUNCHER, "--screen", name, "--bridge", *(["--app", app] if app else [])]
+
+
+def bridge_disabled(environ=os.environ) -> bool:
+    """COUCHLITEOS_TV_FOOT=1 puts every classic screen back in a foot window (a fault in the bridge)."""
+    return environ.get("COUCHLITEOS_TV_FOOT", "") == "1"
+
+
 def child_command(name: str, app: str = "") -> list[str]:
-    """The foot window that runs one classic screen."""
+    """The foot window that runs one classic screen: the safety net when the TV cannot draw it."""
     return [FOOT, "--fullscreen", "--title", CHILD_TITLE, LAUNCHER, "--screen", name,
             *(["--app", app] if app else [])]
 
@@ -433,6 +443,52 @@ def whats_new(version: str, seen: str = "") -> tuple[str, list[str]]:
     return f"WHAT'S NEW IN {version.upper()}", lines
 
 
+@dataclasses.dataclass(frozen=True)
+class Card:
+    """One What's New feature as a card: what it is, where to find it; or a release's heading."""
+
+    title: str
+    where: str = ""
+    heading: bool = False
+
+
+WHATS_NEW_NEXT = "A / CROSS OR RIGHT: NEXT PAGE  ·  B / CIRCLE OR ESC: CONTINUE"
+WHATS_NEW_LAST = "A / CROSS OR ENTER CONTINUES  ·  LEFT: PREVIOUS PAGE"
+
+
+def whats_new_cards(lines: list[str]) -> list[Card]:
+    """whats_new()'s lines as cards: "WHAT: WHERE" splits at its last colon."""
+    cards = []
+    for line in lines:
+        if line.startswith("NEW IN ") and line.endswith(":"):
+            cards.append(Card(line[:-1], heading=True))
+            continue
+        text = line.removeprefix("·  ")
+        what, colon, where = text.rpartition(": ")
+        cards.append(Card(what, where) if colon and what else Card(text))
+    return cards
+
+
+def whats_new_pages(cards: list[Card], per_page: int) -> list[list[Card]]:
+    """Cards in pages of at most `per_page`; a heading never ends a page, and a heading starts one
+    only when the page would otherwise hold more than one release's tail."""
+    per_page = max(2, per_page)
+    pages: list[list[Card]] = [[]]
+    for card in cards:
+        page = pages[-1]
+        if len(page) >= per_page or (card.heading and len(page) >= per_page - 1):
+            pages.append([])
+            page = pages[-1]
+        page.append(card)
+    return [page for page in pages if page] or [[]]
+
+
+def whats_new_slots(layout: tvlayout.Layout) -> int:
+    """How many cards fit on a What's New page: two columns, rows between the title and the hint."""
+    usable = layout.height - 2 * layout.margin_y - layout.px(300)
+    return max(2, min(10, 2 * max(1, usable // layout.px(150))))
+
+
 # ---------------------------------------------------------------------- look
 
 
@@ -453,6 +509,9 @@ def stylesheet(colours: theme.Theme, layout: tvlayout.Layout) -> str:
 .tv-pane .tv-help {{ font-size: {f['body']}px; color: {c['muted']}; }}
 .tv-list .tv-item {{ font-size: {f['body']}px; }}
 .tv-line {{ font-size: {f['body']}px; color: {c['text']}; }}
+.tv-card {{ background-color: {c['surface']}; border-radius: {radius}px; padding: {layout.px(18)}px {layout.px(24)}px; }}
+.tv-card .tv-card-title {{ font-size: {f['body']}px; font-weight: bold; color: {c['text']}; }}
+.tv-card .tv-card-where {{ font-size: {f['prompt']}px; color: {c['accent']}; }}
 progressbar trough {{ min-height: {layout.px(24)}px; background-color: {c['surface']}; border: none; border-radius: {radius}px; }}
 progressbar progress {{ min-height: {layout.px(24)}px; background-color: {c['accent']}; border-radius: {radius}px; }}
 """

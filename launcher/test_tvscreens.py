@@ -351,5 +351,29 @@ class WhatsNewTest(unittest.TestCase):
         return base / "VERSION", base / "seen", base / "setup-complete"
 
 
+class WhatsNewCardsTest(unittest.TestCase):
+    def test_a_feature_splits_into_what_and_where(self):
+        cards = tvscreens.whats_new_cards(["NEW IN 0.3.0:", "·  PAIR HEADPHONES: SETTINGS > BLUETOOTH", "·  FASTER"])
+        self.assertEqual(cards, [tvscreens.Card("NEW IN 0.3.0", heading=True),
+                                 tvscreens.Card("PAIR HEADPHONES", "SETTINGS > BLUETOOTH"),
+                                 tvscreens.Card("FASTER")])
+
+    def test_pages_hold_at_most_per_page_and_never_end_on_a_heading(self):
+        cards = [tvscreens.Card(f"F{n}") for n in range(5)] + [tvscreens.Card("NEW IN X", heading=True),
+                                                                 tvscreens.Card("G")]
+        pages = tvscreens.whats_new_pages(cards, 6)
+        self.assertEqual([len(page) for page in pages], [5, 2])
+        self.assertTrue(pages[1][0].heading)
+        self.assertTrue(all(len(page) <= 6 for page in tvscreens.whats_new_pages(cards * 4, 6)))
+
+    def test_every_release_fits_in_pages(self):
+        version = whatsnew.RELEASES[0][0]
+        _title, lines = tvscreens.whats_new(version, "")
+        cards = tvscreens.whats_new_cards(lines)
+        pages = tvscreens.whats_new_pages(cards, 6)
+        self.assertEqual(sum(len(page) for page in pages), len(cards))
+        self.assertFalse(any(page[-1].heading for page in pages))
+
+
 if __name__ == "__main__":
     unittest.main()
