@@ -34,7 +34,7 @@ class InstalledGrubMenuTest(unittest.TestCase):
             ["sh", "-c", '. "$1"; printf "%s|%s|%s" "$GRUB_TIMEOUT_STYLE" "$GRUB_TIMEOUT" "$GRUB_CMDLINE_LINUX_DEFAULT"', "sh", str(cfg)],
             capture_output=True, text=True, check=True,
         )
-        self.assertEqual(result.stdout, "hidden|1|quiet splash loglevel=3 ipv6.disable=1")
+        self.assertEqual(result.stdout, "hidden|1|quiet loglevel=3 ipv6.disable=1")
 
     def test_live_iso_menu_is_not_changed_by_the_installed_grub_settings(self):
         hook = (ROOT / "config/live-build/hooks/live/0100-autoboot.hook.binary").read_text()
