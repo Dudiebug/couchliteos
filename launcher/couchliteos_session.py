@@ -9,6 +9,7 @@ a front end subclasses `Session` and supplies the screen parts:
     launch_wait_begin() / launch_wait() / launch_wait_end()
                                     around the start wait; launch_wait runs about every 0.1 s
                                     (read keys, keep the screen alive)
+    launch_left(app)                True ends the wait early: Home was pressed, the app starts on
     show_launch_failure(label, message, app=None, retry=True) -> "retry" | anything else
     prepare_remote_desktop(app)     certificate and password before a Remote Desktop session
     wake_before_moonlight(app, auto)  wake a sleeping gaming PC; False stops the start
@@ -279,6 +280,11 @@ class Session:
     def launch_wait_end(self) -> None:
         pass
 
+    def launch_left(self, app: apps.Application) -> bool:
+        """True when the person asked to come back home while `app` starts (the starting screen
+        says the Home key does): the wait ends there and the app goes on starting by itself."""
+        return False
+
     def show_launch_failure(
         self, label: str, message: str, app: apps.Application | None = None, *, retry: bool = True
     ) -> str:
@@ -469,6 +475,9 @@ class Session:
                 if ready.exists():
                     self.status = f"{label} STARTED"
                     return True
+                if self.launch_left(app):
+                    self.status = f"{label} IS STILL STARTING"
+                    return False
 
                 app_state = self.read_app_status(app_id)
                 now = time.monotonic()

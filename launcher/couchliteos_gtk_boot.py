@@ -68,7 +68,7 @@ class LoadingScreen(Gtk.Widget):
         self.gradient = gradient_texture()
         self.textures = load_pictures(folder)
         self.sizes = {name: (texture.get_width(), texture.get_height()) for name, texture in self.textures.items()}
-        self.started: float | None = None  # the first frame: time 0 of the motion
+        self.started: float | None = None  # time 0 of the motion, set at the first frame
         self.drawn_at = 0.0
         self.fading: motion.FrameFade | None = None
         self.done: Callable[[], None] | None = None
@@ -111,7 +111,9 @@ class LoadingScreen(Gtk.Widget):
             return
         now = self.drawn_at = time.monotonic()
         if self.started is None:
-            self.started = now
+            # Time 0 is Plymouth's (couchliteos_boot.splash_seconds): the motion goes on from
+            # where the splash had it, it does not start again.
+            self.started = now - boot.splash_seconds()
         snapshot.append_texture(self.gradient, _rect(0, 0, width, height))
         for sprite in boot.frame(width, height, self.sizes, now - self.started, self.animate):
             if sprite.opacity <= 0:

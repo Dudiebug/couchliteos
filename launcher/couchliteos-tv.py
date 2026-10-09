@@ -289,10 +289,10 @@ class Screens:
 
     def open_settings(self) -> None:
         self.settings.focus = 0
-        self.settings.refresh()
         self.status = ""
-        self.render_settings()
+        self.render_settings()  # the values last read; refresh_settings draws the new ones
         self.show("settings")
+        self.refresh_settings()
 
     def render_settings(self) -> None:
         if not hasattr(self, "layout"):
@@ -332,7 +332,7 @@ class Screens:
                 return
             elif target == "updates":
                 self.status = tvscreens.toggle_updates(self.updates)
-                self.settings.refresh()
+                self.refresh_settings()
             elif target == "help":
                 self.open_help("settings")
                 return
@@ -484,16 +484,16 @@ class Screens:
         view = self.progress.poll()
         if view.finished:
             self.progress = None
-            if self.starting:
-                self.continue_start()
             self.status = view.finished
             if self.progress_return == "settings":
-                self.settings.refresh()
                 self.render_settings()
                 self.show("settings")
+                self.refresh_settings()
             else:
                 self.show("home")
                 self.render_home()
+            if self.starting:
+                self.continue_start()  # last: the screen it opens (the tour) stays on top
             return
         self.render_update(view)
 
@@ -620,7 +620,7 @@ class Screens:
         self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()))
         self.size = (0, 0)  # the theme or the picture size may be new: CSS and sizes again
         self.relayout(self.screen_size())
-        self.settings.refresh()
+        self.refresh_settings()
         self.render_current()
 
     def render_current(self) -> None:
@@ -683,7 +683,7 @@ class Screens:
                     return
             elif step == "autostream":
                 self.starting = False
-                self.autostream()
+                self.when_booted(self.autostream)  # its countdown never runs under the boot picture
         self.starting = False
 
 
@@ -1062,6 +1062,13 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
     music_wait: int | None = None  # the timeout that ends the music's wait after the return sound
     loading_view: "gtk_loading.LoadingView | None" = None  # the loading screen while something starts
     _front: frontapp.Front | None = None
+    busy_home = False  # Home was pressed while a start or a wait ran its own loop
+    came_back = False  # ... and the start was left for the home screen (launch_left)
+    came_back_at = float("-inf")
+    left_start: "tuple[apps.Application, float] | None" = None  # the app left starting, until when it is watched
+    launch_item = None  # the tile being started (its picture goes on the loading screen)
+    booting = False  # the boot picture is up (until it has faded and the saved display mode is back)
+    after_boot: list = []  # what waits for that: the auto-stream (when_booted)
 
     @property
     def front(self) -> frontapp.Front:
@@ -1095,7 +1102,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.model = home.HomeModel(
             applications=visible_applications, controllers=self.controllers, updates=self.updates, battery=self.battery,
         )
-        self.can_sleep = power.can_suspend()
+        self.can_sleep = False  # until read_can_sleep has logind's answer (after the first frame)
         self.can_wake = bool(power.wake_sources())
         self.idle = tvlayout.IdleWatch(
             power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()),
@@ -1119,6 +1126,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         window.set_child(self.root)
         self.loading = gtk_boot.LoadingScreen(self.motion_level)
         self.root.add_overlay(self.loading)
+        self.booting = True
         window.connect("map", lambda _window: self.when_painted(window, self.loading_drawn))
         GLib.timeout_add(LOADING_WAIT_MS, self.build_home)
         window.fullscreen()
@@ -1129,14 +1137,34 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         return self.build_home()
 
     def build_home(self) -> bool:
+        """The home screen under the boot picture, one part per idle turn (build_parts): the boot
+        picture's frames come between them, so it keeps moving while the home screen is made."""
         if not self.home_built:
             self.home_built = True
-            self.build()
-            GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
-            GLib.timeout_add(TOAST_TICK_MS, self.render_toast)
+            parts = self.build_parts()
+
+            def part() -> bool:
+                try:
+                    if next(parts, None) is not None:
+                        return True  # the next part on a later idle turn
+                except Exception as error:  # noqa: BLE001 - logged; the boot picture stays, as before
+                    display.log(f"tv: building the home screen failed: {error!r}", session.LOG)
+                    print(f"couchliteos-tv: building the home screen failed: {error!r}", file=sys.stderr)
+                    return False
+                GLib.timeout_add_seconds(TICK_SECONDS, self.tick)
+                GLib.timeout_add(TOAST_TICK_MS, self.render_toast)
+                return False
+
+            GLib.idle_add(part)
         return False
 
     def build(self) -> None:
+        """The whole home screen at once."""
+        for _part in self.build_parts():
+            pass
+
+    def build_parts(self):
+        """Build the home screen and its pages, yielding between parts (build_home)."""
         window = self.window
         overlay = Gtk.Overlay()
         self.root.set_child(overlay)
@@ -1154,6 +1182,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.blank.set_hexpand(True)
         self.blank.set_vexpand(True)
         overlay.add_overlay(self.blank)
+        yield True
 
         # HOME
         page = self.home_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1178,6 +1207,9 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         spacer = Gtk.Box()
         spacer.set_vexpand(True)
         page.append(spacer)
+        self.home_pc = label("", "tv-status", xalign=0.5)  # the paired gaming PC: ONLINE, ASLEEP
+        self.home_pc.set_visible(False)
+        page.append(self.home_pc)
         self.home_status = label("", "tv-status", xalign=0.5)
         page.append(self.home_status)
         self.home_prompt = label(tvlayout.HOME_HINT, "tv-prompt", xalign=0.5)
@@ -1193,6 +1225,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             self.stack.add_named(home_overlay, "home")
         else:
             self.stack.add_named(page, "home")
+        yield True
 
         # STARTING / WAITING and messages share one simple layout: title, body, hint.
         self.pages: dict[str, tuple[Gtk.Box, Gtk.Label, Gtk.Label, Gtk.Label]] = {}
@@ -1224,6 +1257,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.stack.add_named(box, "active")
         self.build_screens()
         self.build_help()
+        yield True
 
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.on_key)
@@ -1329,6 +1363,9 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         self.bar_battery.set_visible(bool(status.battery))
         self.bar_update.set_label(f"UPDATE {status.update}" if status.update else "")
         self.bar_update.set_visible(bool(status.update))
+        pc = self.pc_line()
+        self.home_pc.set_label(pc)
+        self.home_pc.set_visible(bool(pc))
         self.home_status.set_label(self.home_line())
         self.home_prompt.set_label(quick.prompt(self.family, quick.HOME_PROMPT))
         if self.cross:
@@ -1343,6 +1380,14 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         try:
             return update.disk_notice(self.updates.current)
         except Exception:  # noqa: BLE001 - a notice must never take the home screen down
+            return ""
+
+    def pc_line(self) -> str:
+        """The paired gaming PC and its state ("GAMING-PC: ASLEEP"), always on the home screen;
+        nothing when no PC is paired (couchliteos_pcstatus, refreshed off the main loop)."""
+        try:
+            return self.pcstatus.short()
+        except Exception:  # noqa: BLE001 - a status line must never take the home screen down
             return ""
 
     def show(self, name: str) -> None:
@@ -1402,23 +1447,77 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         view = self.loading_view
         if view is not None and self.front.starting and not view.shown:
             view.set_level(self.motion_level)
-            view.start(label_text, "", None, "PRESS THE HOME KEY TO COME BACK HERE")
+            view.start(label_text, "", self.launch_picture(), "PRESS THE HOME KEY TO COME BACK HERE")
         self.show_text("busy", f"STARTING {label_text}", "PLEASE WAIT",
                        "HOLD SELECT+START (VIEW+MENU) OR PRESS THE HOME KEY TO COME BACK HERE")
 
+    def launch_picture(self) -> "gtk_xmb.Picture | None":
+        """The loading screen's picture: the started tile's cover or icon, else None (none drawn)."""
+        item = self.launch_item
+        if item is None:
+            return None
+        try:
+            if self.cross:
+                picture = self.xmb_picture(item)
+                if picture is None and item.icon:
+                    picture = gtk_xmb.Picture(icons.bundled(item.icon))
+                return picture
+            cover = self.cover(item)
+            return gtk_xmb.Picture(cover, gtk_xmb.COVER) if cover is not None else None
+        except Exception as error:  # noqa: BLE001 - a start without its picture still starts
+            display.log(f"tv loading picture: {error!r}", session.LOG)
+            return None
+
     def launch_wait_begin(self) -> None:
         self.busy_depth += 1
+        self.busy_home = False  # only a press made while it starts leaves it
         if not self.front.starting:
             self.front_plan(self.front.start())
 
     def launch_wait(self) -> None:
         self.pump(0.1)
 
+    def launch_left(self, app: apps.Application) -> bool:
+        """Home (the key, a Guide tap or the held shortcut) while `app` starts: back to the home
+        screen, as the starting screen promises. The app starts on by itself; left_start_tick keeps
+        the home screen in front when it is up."""
+        pressed, self.busy_home = self.busy_home, False
+        if not (pressed or self.take_home_request()):
+            return False
+        self.came_back, self.came_back_at = True, time.monotonic()
+        self.key_home_at = self.came_back_at  # gamepad-nav's request for the same press opens nothing
+        self.left_start = (app, time.monotonic() + session.START_TIMEOUT)
+        self.set_launcher_focus(True)  # the controller stays on the home screen
+        return True
+
     def launch_wait_end(self) -> None:
         self.front.start_done()
         self.busy_depth -= 1
         if self.busy_depth == 0:
             self.show("home")
+        if self.came_back:
+            self.came_back = False
+            self.front_plan(self.front.returning())  # the loading screen goes, the TV is awake
+
+    def left_start_tick(self) -> None:
+        """An app left starting (launch_left): once it is up, the home screen is put back in front of
+        it (it waits in ACTIVE APPLICATIONS); the watch ends when it quits or the start time is over."""
+        if self.left_start is None:
+            return
+        app, until = self.left_start
+        if (self.run_dir / f"{app.status_id}-ready").exists():
+            self.left_start = None
+            if (self.run_dir / session.LAUNCHER_FOCUS_NAME).exists():  # nobody went to it meanwhile
+                session.focus_launcher()
+                self.status = f"{app.name} IS READY: FIND IT IN ACTIVE APPLICATIONS"
+            return
+        state = self.read_app_status(app.status_id)
+        if state.startswith("exited:"):
+            self.left_start = None
+        elif time.monotonic() > until:
+            self.left_start = None
+            if state.startswith("failed:"):
+                self.status = f"{app.name} FAILED TO START"
 
     def ask(self, title: str, body: str, hint: str) -> str:
         """Show a message and wait for A / Enter ("yes") or B / Esc ("no")."""
@@ -1593,7 +1692,10 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             return True
         if self.busy_depth and self.mode != "message":
             self.busy_pressed = True
+            self.busy_home = self.busy_home or name == "home"
             return True
+        if name == "home" and time.monotonic() - self.came_back_at < KEY_HOME_SECONDS:
+            return True  # the same Home press already brought the start back here (its request came first)
         if not (self.cross and self.mode == "home" and not self.quick_open):
             self.ui_sound(quick.SOUND_KEYS.get(name, ""))  # the XMB plays its own: a category, an edge
         if self.mode not in ("message", "update") and (name == "home" or self.quick_open):
@@ -1636,7 +1738,11 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             if model.back():
                 self.render_home()
         elif name == "activate":
-            self.run_action(model.activate())
+            self.launch_item = model.focused()  # its picture on the loading screen
+            try:
+                self.run_action(model.activate())
+            finally:
+                self.launch_item = None
         elif name == "home":
             self.open_active()
         elif name == "hold-y":
@@ -1764,6 +1870,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         if self.busy_depth:
             self.idle.keep_awake()
             return
+        self.left_start_tick()
         if self.child_pid is not None or self.mode == "update":
             self.screens_tick()
             return
@@ -2339,9 +2446,11 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             if view is not None:
                 view.rest()
             self.battery.awake.clear()
+            self.pcstatus.awake.clear()  # no look at the gaming PC while nobody sees the answer
             self.music_rest()
         if plan.wake:
             self.battery.awake.set()
+            self.pcstatus.awake.set()
             if wave is not None:
                 wave.wake()
             if view is not None:
@@ -2443,9 +2552,10 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         return self.xmb.focused() if self.cross else self.model.focused()
 
     def xmb_status(self) -> tuple[str, str]:
-        """The clock, and under it the network, the battery and a newer release, as the bar has them."""
+        """The clock, and under it the network, the gaming PC, the battery and a newer release, as
+        the rows' bar and status lines have them."""
         status = self.model.status()
-        line = "   ".join(part for part in (status.network, status.battery,
+        line = "   ".join(part for part in (status.network, self.pc_line(), status.battery,
                                             f"UPDATE {status.update}" if status.update else "") if part)
         return status.clock, line
 
@@ -2485,17 +2595,24 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             self.xmb.reload(reread_home=False)
             self.xmb.focus_last_played()
 
-    def refresh_xmb_settings(self) -> None:
-        """The SETTINGS column's value lines, read off the main loop (some ask other programs)."""
+    def refresh_settings(self) -> None:
+        """The settings' values (the XMB's SETTINGS column, the SETTINGS screen), read off the main
+        loop: some ask other programs (wlr-randr, logind). What is on screen keeps the values last
+        read until they are in."""
         def read() -> None:
-            self.settings.refresh()
-            GLib.idle_add(self.xmb_settings_ready)
+            try:
+                self.settings.refresh()
+            finally:
+                GLib.idle_add(self.settings_ready)
 
-        threading.Thread(target=read, daemon=True).start()
+        threading.Thread(target=read, name="settings-values", daemon=True).start()
 
-    def xmb_settings_ready(self) -> bool:
-        self.xmb.settings_values(self.settings.values)
-        self.xmb_view.queue_draw()
+    def settings_ready(self) -> bool:
+        if self.cross and hasattr(self, "xmb_view"):
+            self.xmb.settings_values(self.settings.values)
+            self.xmb_view.queue_draw()
+        if self.mode == "settings":
+            self.render_settings()
         return False
 
     def xmb_key(self, name: str) -> None:
@@ -2511,7 +2628,11 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
                 self.ui_sound("back")
         elif name == "activate":
             self.ui_sound("select")
-            self.run_xmb_action(model.activate())
+            self.launch_item = model.focused()  # its picture on the loading screen
+            try:
+                self.run_xmb_action(model.activate())
+            finally:
+                self.launch_item = None
         else:
             self.home_key(name)  # Home, hold Y, hold X, the shortcut buttons
         if self.mode == "home":
@@ -2533,7 +2654,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
                 self.open_help()
         elif action[0] == "updates":
             self.status = tvscreens.toggle_updates(self.updates)
-            self.refresh_xmb_settings()
+            self.refresh_settings()
             self.render_bar()
         elif action[0] == "power":
             self.xmb_power(action[1])
@@ -2593,35 +2714,90 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         return False
 
     def after_first_frame(self) -> bool:
-        if display.restore_saved_mode() is None:
-            self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
-            self.render_bar()
-        self.continue_start()
+        try:
+            self.continue_start()
+        except Exception as error:  # noqa: BLE001 - the home screen, its fade and the music still come
+            self.starting = False
+            display.log(f"tv start steps failed: {error!r}", session.LOG)
+            self.show("home")
         if self.cross and hasattr(self, "wave"):
             self.wave.start()  # after the first frame: a GL driver that fails here leaves launcher-ready
-            self.refresh_xmb_settings()
+        self.refresh_settings()
+        self.read_can_sleep()
         self.ui_sound("startup")
         self.music_holds()
         self.music.start()
         self.hide_loading()
         return False
 
+    def read_can_sleep(self) -> None:
+        """Whether this PC can sleep (power.can_suspend asks logind: it can take seconds), off the
+        main loop. Until it answers the box counts as one that cannot (no sleep timeout)."""
+        def read() -> None:
+            try:
+                answer = power.can_suspend()
+            except Exception:  # noqa: BLE001 - no answer: it stays a box that does not sleep
+                answer = False
+            GLib.idle_add(self.can_sleep_read, answer)
+
+        threading.Thread(target=read, name="can-suspend", daemon=True).start()
+
+    def can_sleep_read(self, answer: bool) -> bool:
+        self.can_sleep = answer
+        self.idle.apply(power.effective_settings(power.load_settings(), self.can_sleep, self.can_wake, self.battery.on_battery()))
+        return False
+
     def hide_loading(self) -> None:
-        """Fade the boot picture away over the home screen; test steps start once it is gone."""
+        """Fade the boot picture away over the home screen; boot_gone carries on once it is gone."""
         loading, self.loading = self.loading, None
         if loading is None:
-            self.start_script()
+            self.boot_gone()
             return
 
         def gone() -> None:
             self.root.remove_overlay(loading)
-            self.start_script()
+            self.boot_gone()
 
         def fade() -> bool:
             loading.fade_out(gone)
             return False
 
         self.when_painted(self.window, fade)  # the home screen's first, slowest frame is drawn under it
+
+    def boot_gone(self) -> None:
+        """The boot picture has faded away: now the saved display mode (its wlr-randr calls off the
+        main loop; a new mode under the boot picture made it jump and held its fade back), then what
+        waited for both (the auto-stream's countdown), then the test steps."""
+        def restore() -> None:
+            try:
+                result = display.restore_saved_mode()
+            except Exception as error:  # noqa: BLE001 - the mode the compositor chose stays
+                display.log(f"tv: saved display mode not restored: {error!r}", session.LOG)
+                result = False
+            GLib.idle_add(self.mode_restored, result)
+
+        threading.Thread(target=restore, name="restore-mode", daemon=True).start()
+
+    def mode_restored(self, result: bool | None) -> bool:
+        if result is None:
+            self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
+            self.render_bar()
+        self.booting = False
+        waiting, self.after_boot = self.after_boot, []
+        for then in waiting:
+            try:
+                then()
+            except Exception as error:  # noqa: BLE001 - the test steps still run
+                display.log(f"tv: after the start: {error!r}", session.LOG)
+        self.start_script()
+        return False
+
+    def when_booted(self, then) -> None:
+        """Call `then` now, or once the boot picture is gone and the display mode restored."""
+        if self.booting:
+            self.after_boot = [*self.after_boot, then]
+        else:
+            then()
 
     def activate(self, _application) -> None:
         if self.window is not None:
