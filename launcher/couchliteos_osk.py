@@ -383,6 +383,63 @@ def draw(screen: curses.window, keyboard: Keyboard) -> None:
     screen.refresh()
 
 
+# The GTK keyboard (couchliteos_gtk_osk) gets X keys from gamepad-nav: arrows, Enter (A),
+# Escape (B) and Delete (Y), the same keys the terminal keyboard reads.
+GTK_KEYS = {
+    "Up": curses.KEY_UP, "Down": curses.KEY_DOWN, "Left": curses.KEY_LEFT, "Right": curses.KEY_RIGHT,
+    "Return": 10, "KP_Enter": 10, "Escape": 27, "BackSpace": 127, "Delete": 127,
+}
+# Exit status of --gtk when GTK could not start or failed: the session opens the terminal keyboard.
+GTK_UNAVAILABLE = 3
+FALLBACK_COLOURS = {"background": "0b1020", "surface": "161d33", "text": "f1f5f9", "muted": "94a3b8",
+                    "accent": "3b82f6", "focus": "1d4ed8"}
+
+
+def handle(keyboard: Keyboard, name: str, char: str = "") -> str | None:
+    """One key for the GTK keyboard (Gdk key name, its character): "cancel", "type", "enter",
+    or None to keep going."""
+    code = GTK_KEYS.get(name)
+    if code is None:
+        if len(char) == 1 and char.isprintable():
+            keyboard.append(char)  # a USB keyboard types straight in
+        return None
+    if code == 27:
+        return "cancel"
+    if code == 127:
+        keyboard.text = keyboard.text[:-1]
+        return None
+    keyboard.move(code)
+    if code == 10:
+        return keyboard.select()
+    return None
+
+
+def shown_text(keyboard: Keyboard) -> str:
+    return ("*" * len(keyboard.text) if keyboard.masked else keyboard.text) or "_"
+
+
+def stylesheet(colours: dict[str, str], height: int) -> str:
+    """GTK CSS for the keyboard panel `height` pixels high, in the TV interface's theme colours."""
+    c = {**FALLBACK_COLOURS, **{key: value for key, value in colours.items() if value}}
+    key = max(14, round(height / 15))
+    small = max(12, round(key * 0.7))
+    pad = max(4, round(key * 0.3))
+    return f"""
+window.osk-window {{ background-color: #{c['background']}; color: #{c['text']}; }}
+.osk-panel {{ padding: {pad}px {pad * 3}px; border-top: {max(2, pad // 2)}px solid #{c['accent']}; }}
+.osk-title {{ font-size: {small}px; font-weight: bold; color: #{c['muted']}; letter-spacing: 2px; }}
+.osk-text {{ font-size: {key}px; font-weight: bold; background-color: #{c['surface']}; border-radius: {pad}px;
+  padding: {pad // 2}px {pad * 2}px; }}
+.osk-key {{ font-size: {key}px; background-color: #{c['surface']}; border-radius: {pad}px;
+  padding: {pad // 3}px {pad}px; min-width: {round(key * 1.3)}px;
+  transition: background-color 90ms ease-out, color 90ms ease-out; }}
+.osk-key.osk-action {{ font-size: {small}px; min-width: {key * 3}px; }}
+.osk-key.osk-focused {{ background-color: #{c['accent']}; color: #{c['background']}; font-weight: bold; }}
+.osk-key.osk-on {{ border: 2px solid #{c['accent']}; }}
+.osk-hint {{ font-size: {small}px; color: #{c['muted']}; }}
+"""
+
+
 def consume_mask_request(path: pathlib.Path = MASK_REQUEST) -> bool:
     try:
         requested = path.is_file() and not path.is_symlink()
@@ -436,13 +493,21 @@ def ui(screen: curses.window) -> None:
 
 
 def main(argv: list[str]) -> int:
-    """No argument: the keyboard. --target: print the focused window (JSON) for --inject.
+    """No argument: the keyboard in a terminal. --gtk: the keyboard in GTK 4 (exits
+    GTK_UNAVAILABLE when it cannot be shown). --target: print the focused window (JSON) for --inject.
     --inject [TARGET]: type the keyboard's text, into TARGET when it is given and known."""
     if argv == ["--target"]:
         target = active_toplevel()
         if target is not None:
             print(json.dumps(target, separators=(",", ":")))
         return 0
+    if argv == ["--gtk"]:
+        try:
+            import couchliteos_gtk_osk as gtk_osk
+        except Exception as error:  # no GTK here: the session opens the terminal keyboard
+            print(f"couchliteos-osk: GTK keyboard unavailable: {error}", file=sys.stderr)
+            return GTK_UNAVAILABLE
+        return gtk_osk.run()
     if argv[:1] == ["--inject"] and len(argv) <= 2:
         return inject(target=parse_target(argv[1]) if len(argv) == 2 and argv[1] else None)
     return curses.wrapper(ui) or 0

@@ -483,5 +483,45 @@ class MaskRequestTest(unittest.TestCase):
             self.assertFalse(marker.exists())
 
 
+class GtkKeysTest(unittest.TestCase):
+    def test_gamepad_keys_move_select_delete_and_cancel(self):
+        keyboard = osk.Keyboard()
+        self.assertIsNone(osk.handle(keyboard, "Right"))
+        self.assertIsNone(osk.handle(keyboard, "Return"))
+        self.assertEqual(keyboard.text, "2")
+        self.assertIsNone(osk.handle(keyboard, "Delete"))  # Y / Square
+        self.assertEqual(keyboard.text, "")
+        self.assertEqual(osk.handle(keyboard, "Escape"), "cancel")  # B / Circle
+
+    def test_a_usb_keyboard_types_straight_in(self):
+        keyboard = osk.Keyboard()
+        for name, char in (("H", "H"), ("i", "i"), ("space", " "), ("Shift_L", "")):
+            self.assertIsNone(osk.handle(keyboard, name, char))
+        self.assertEqual(keyboard.text, "Hi ")
+
+    def test_type_and_enter_come_back_from_their_keys(self):
+        keyboard = osk.Keyboard()
+        keyboard.row, keyboard.column = len(keyboard.rows) - 1, len(keyboard.rows[-1]) - 1
+        self.assertEqual(osk.handle(keyboard, "Return"), "enter")
+        keyboard.column -= 1
+        self.assertEqual(osk.handle(keyboard, "KP_Enter"), "type")
+
+    def test_masked_text_shows_stars(self):
+        keyboard = osk.Keyboard()
+        keyboard.text, keyboard.masked = "pass", True
+        self.assertEqual(osk.shown_text(keyboard), "****")
+        self.assertEqual(osk.shown_text(osk.Keyboard()), "_")
+
+    def test_stylesheet_uses_the_theme_and_scales(self):
+        css = osk.stylesheet({"accent": "ff0000"}, 432)
+        self.assertIn("#ff0000", css)
+        self.assertIn("font-size: 29px", css)
+        self.assertIn("#0b1020", css)  # missing colours fall back
+
+    def test_gtk_mode_without_gtk_asks_for_the_terminal_keyboard(self):
+        with mock.patch.dict(sys.modules, {"couchliteos_gtk_osk": None}), mock.patch("sys.stderr", io.StringIO()):
+            self.assertEqual(osk.main(["--gtk"]), osk.GTK_UNAVAILABLE)
+
+
 if __name__ == "__main__":
     unittest.main()

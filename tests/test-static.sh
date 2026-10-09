@@ -1404,6 +1404,17 @@ refute rg -q -- '--fullscreen' scripts/couchliteos-osk-session
 # Typed text goes to the window the keyboard was opened for, not whatever is in front when it closes.
 rg -qF 'target=$(/usr/libexec/couchliteos-osk --target) || target=' scripts/couchliteos-osk-session
 rg -qF 'exec /usr/libexec/couchliteos-osk --inject "$target"' scripts/couchliteos-osk-session
+# The keyboard in GTK (0.3.0 beta 3), the terminal keyboard only when GTK cannot start (exit 3).
+rg -qF '/usr/libexec/couchliteos-osk --gtk || status=$?' scripts/couchliteos-osk-session
+rg -qF 'if [ "$status" -eq 3 ]; then' scripts/couchliteos-osk-session
+rg -q '^GTK_UNAVAILABLE = 3$' launcher/couchliteos_osk.py
+rg -q '^            import couchliteos_gtk_osk as gtk_osk$' launcher/couchliteos_osk.py
+refute rg -q '^(import|from) gi\b' launcher/couchliteos_osk.py
+rg -q 'GLib.set_prgname\(osk.APP_ID\)' launcher/couchliteos_gtk_osk.py
+for module in couchliteos_osk couchliteos_gtk_osk; do
+  rg -q "^install -D -m 0644 \"\\$ROOT/launcher/$module.py\" \"\\$CHROOT/usr/libexec/$module.py\"$" build/configure.sh
+done
+rg -q 'couchliteos_gtk_osk.py' launcher/Makefile
 # Cage docks that app-id along the bottom 40% (not full-screen), and applies the MOUSE SPEED setting.
 for cage_patch in foreign-toplevel osk-panel pointer-speed; do
   test -f "config/cage/cage-0.2.0-$cage_patch.patch"

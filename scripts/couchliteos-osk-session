@@ -11,10 +11,16 @@ trap cleanup EXIT INT TERM
 # The window the keyboard is opened for. The text is typed into it even if Home or the Guide
 # menu brought the launcher to the front meanwhile, and not at all once it has closed.
 target=$(/usr/libexec/couchliteos-osk --target) || target=
-# Cage docks this app-id along the bottom of the screen (config/cage/cage-0.2.0-osk-panel.patch),
-# so the app being typed into stays visible above the keyboard. Not full-screen, foot would
-# draw a title bar: the panel has none.
+# Cage docks the app-id couchliteos-osk along the bottom of the screen
+# (config/cage/cage-0.2.0-osk-panel.patch), so the app being typed into stays visible above the
+# keyboard. The keyboard is drawn in GTK like the TV interface; when GTK cannot show it (exit 3)
+# the terminal keyboard opens instead. Not full-screen, foot would draw a title bar: the panel
+# has none.
+status=0
+/usr/libexec/couchliteos-osk --gtk || status=$?
+if [ "$status" -eq 3 ]; then
 /usr/libexec/couchliteos-foot --app-id=couchliteos-osk -o csd.preferred=none --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk
+fi
 rm -f -- "$active"
 sleep 0.25
 exec /usr/libexec/couchliteos-osk --inject "$target"

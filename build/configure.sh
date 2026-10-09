@@ -135,6 +135,9 @@ install -D -m 0755 "$ROOT/launcher/couchliteos_app_runner.py" "$CHROOT/usr/libex
 install -D -m 0644 "$ROOT/launcher/couchliteos_setup.py" "$CHROOT/usr/libexec/couchliteos_setup.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_netmenu.py" "$CHROOT/usr/libexec/couchliteos_netmenu.py"
 install -D -m 0755 "$ROOT/launcher/couchliteos_osk.py" "$CHROOT/usr/libexec/couchliteos-osk"
+# The GTK keyboard imports the terminal one's keys and payload code as a module.
+install -D -m 0644 "$ROOT/launcher/couchliteos_osk.py" "$CHROOT/usr/libexec/couchliteos_osk.py"
+install -D -m 0644 "$ROOT/launcher/couchliteos_gtk_osk.py" "$CHROOT/usr/libexec/couchliteos_gtk_osk.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_display.py" "$CHROOT/usr/libexec/couchliteos_display.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_audio.py" "$CHROOT/usr/libexec/couchliteos_audio.py"
 install -D -m 0644 "$ROOT/launcher/couchliteos_audiomenu.py" "$CHROOT/usr/libexec/couchliteos_audiomenu.py"
