@@ -38,6 +38,12 @@ class LofiRadioTests(unittest.TestCase):
         self.assertIn("$nr.onclick=()=>{if(/[?&]safe=1/.test(location.search))return;", html)
         self.assertIn("index.html?safe=1", (REPO / "scripts/couchliteos-lofi-radio").read_text())
 
+    def test_the_page_has_no_control_characters(self):
+        # The page as sent wrote its safe-mode test as /[?&]safe=1<backspace>/, which never matched.
+        html = (PAGE / "index.html").read_text(encoding="utf-8")
+        self.assertFalse([c for c in html if ord(c) < 32 and c not in "\t\n\r"])
+        self.assertIn(r"try{if(/[?&]safe=1\b/.test(location.search))d.noRhodes=true}", html)
+
     def test_every_other_sample_the_page_names_is_shipped(self):
         html = (PAGE / "index.html").read_text(encoding="utf-8")
         dirs = set(re.findall(r"dir:'([a-z]+)'", html)) - {"erh"}

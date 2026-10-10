@@ -940,7 +940,7 @@ const S=(()=>{
     }
   }catch(e){}
   // ?safe=1 (for a stream): no Rhodes, whose samples are licensed for non-commercial use only
-  try{if(/[?&]safe=1/.test(location.search))d.noRhodes=true}catch(e){}
+  try{if(/[?&]safe=1\b/.test(location.search))d.noRhodes=true}catch(e){}
   return d;
 })();
 const saveS=()=>{try{localStorage.setItem('bhl-settings',JSON.stringify(S))}catch(e){}};
