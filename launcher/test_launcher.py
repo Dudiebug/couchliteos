@@ -84,7 +84,7 @@ class LauncherTest(unittest.TestCase):
             launcher = self.launcher()
         self.assertEqual(
             [label for label, _action in launcher.menu],
-            ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "SETTINGS", "SLEEP", "REBOOT", "SHUTDOWN"],
+            ["MOONLIGHT", "CHIAKI-NG", "FIREFOX", "GOOGLE CHROME", "TERMINAL", "TAILSCALE", "LO-FI RADIO", "SETTINGS", "SLEEP", "REBOOT", "SHUTDOWN"],
         )
 
     def test_custom_order_and_disabled_visibility(self):
