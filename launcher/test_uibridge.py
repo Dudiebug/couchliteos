@@ -171,6 +171,15 @@ class ParseTest(unittest.TestCase):
         self.assertIn(bridge.QrBlock("http://x/t/abc"), view.blocks)
         self.assertFalse(any(isinstance(block, bridge.TextBlock) and "\u2588" in "".join(block.lines) for block in view.blocks))
 
+    def test_a_wrapped_message_at_the_top_keeps_its_other_lines(self):
+        view = bridge.parse(frame(lists=[(2, 0, ["SAVED", "RESTART TO APPLY"], None)]))
+        self.assertEqual(view.title, "SAVED")
+        self.assertIn(bridge.TextBlock(("RESTART TO APPLY",), True), view.blocks)
+
+    def test_a_blank_message_at_the_top_is_not_a_title(self):
+        view = bridge.parse(frame(lists=[(2, 0, ["  "], None)]))
+        self.assertEqual(view.title, "")
+
     def test_split_row(self):
         self.assertEqual(bridge.split_row("SOFTWARE UPDATE  -  0.3.1 AVAILABLE"), bridge.Row("SOFTWARE UPDATE", "0.3.1 AVAILABLE"))
         self.assertEqual(bridge.split_row("PAIR A NEW DEVICE"), bridge.Row("PAIR A NEW DEVICE"))

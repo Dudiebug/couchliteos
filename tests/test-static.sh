@@ -1388,12 +1388,12 @@ rg -q '^install -D -m 0755 "\$ROOT/scripts/couchliteos-moonlight-prefs" "\$CHROO
 rg -q '^  /usr/libexec/couchliteos-moonlight-prefs ' scripts/couchliteos-run-app
 refute rg -q 'declare -A codec_values' scripts/couchliteos-run-app
 [[ $(head -1 scripts/couchliteos-moonlight-prefs) == '#!/usr/bin/python3 -I' ]]
-# LO-FI RADIO: its launcher, its page, and no Rhodes samples (CC BY-NC)
+# LO-FI RADIO: its launcher opens radio.dudiebug.net; no page is shipped
 python3 -m py_compile scripts/couchliteos-lofi-radio
 [[ $(head -1 scripts/couchliteos-lofi-radio) == '#!/usr/bin/python3 -I' ]]
 rg -q '^install -D -m 0755 "\$ROOT/scripts/couchliteos-lofi-radio" "\$CHROOT/usr/libexec/couchliteos-lofi-radio"$' build/configure.sh
-[[ -f overlay/usr/share/couchliteos/lofi-radio/index.html && ! -e overlay/usr/share/couchliteos/lofi-radio/samples/erh ]]
-rg -q 'Lo-fi Radio samples' THIRD_PARTY_NOTICES.md
+[[ ! -e overlay/usr/share/couchliteos/lofi-radio ]]
+rg -q '^URL = "https://radio\.dudiebug\.net/"$' scripts/couchliteos-lofi-radio
 
 # When the launcher gives up, a root-side unit tells the TV in plain words;
 # otherwise tty1 stays on frozen kernel text.

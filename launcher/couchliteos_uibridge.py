@@ -390,8 +390,13 @@ def parse(frame: dict) -> View:
             continue
         centered = _centered(column, stripped, cols) and not aligned
         items.append((row, TextBlock((stripped,), centered, bool(attr & (A_BOLD | A_REVERSE)))))
-    if not title and items and isinstance(items[0][1], TextBlock) and items[0][0] < rows_count // 4:
-        title = items.pop(0)[1].lines[0]
+    if not title and items and isinstance(items[0][1], TextBlock) and items[0][1].lines \
+            and items[0][0] < rows_count // 4:
+        # The first line is the title; the rest of a wrapped message stays on the page.
+        row, block = items.pop(0)
+        title = block.lines[0]
+        if block.lines[1:]:
+            items.insert(0, (row, dataclasses.replace(block, lines=block.lines[1:])))
 
     items.sort(key=lambda item: item[0])
     return View(title, tuple(_merge_text(block for _row, block in items)), tuple(hint))

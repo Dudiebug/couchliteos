@@ -676,6 +676,8 @@ class Worker:
             self.awake.wait()
             try:
                 self.run_job(key, app, host_label)
+            except Exception:  # noqa: BLE001 - a full disk must not end lookups for the session
+                pass
             finally:
                 with self.lock:
                     self.pending.discard(key)
