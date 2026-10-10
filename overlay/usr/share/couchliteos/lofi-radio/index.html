@@ -1532,9 +1532,10 @@ function sampler(k,dest,t,m,dur,v,o){
     src.detune.setValueAtTime(0,t+.22);src.detune.linearRampToValueAtTime(150,t+.3);
     lg.gain.setValueAtTime(0,t+.22);lg.gain.linearRampToValueAtTime(150,t+.3);l.connect(lg);lg.connect(src.detune);l.start(t);l.stop(end+L.rel*3);
   }
-  // in a lo-fi track the grand has felt on its hammers
-  const felt=L===LIB.piano&&T&&T.groove==='lofi'?.5:1;
-  const lp=bq('lowpass',(L.lp[0]+(L.lp[1]-L.lp[0])*v*v)*felt,.5),g=gn(0),peak=s.norm*Math.pow(v,1.4)*(L.gain||1)*(felt<1?(o.src==='mel'||o.src==='grace'?1.05:1.7):L===LIB.guitar&&T&&T.groove==='lofi'?1.5:L===LIB.bass&&T&&T.groove==='lofi'?.8:1);
+  // in a lo-fi track the grand has felt on its hammers, more or less of it from track to track (brighter hammers need less
+  // make-up gain)
+  const felt=L===LIB.piano&&T&&T.groove==='lofi'?(T.pno?T.pno.felt:.5):1;
+  const lp=bq('lowpass',(L.lp[0]+(L.lp[1]-L.lp[0])*v*v)*felt,.5),g=gn(0),peak=s.norm*Math.pow(v,1.4)*(L.gain||1)*(felt<1?(o.src==='mel'||o.src==='grace'?1.05:1+1.4*(1-felt)):L===LIB.guitar&&T&&T.groove==='lofi'?1.5:L===LIB.bass&&T&&T.groove==='lofi'?.8:1);
   // a hammer-on or pull-off isn't picked: no attack, a little quieter, straight into the ringing string
   const att=o.slur?(L.pick?.012:.03):L.att,skip=o.slur?(L.pick?.035:.025):0;
   // never let a note run off the end of its recording: fade before the sample does
@@ -2376,6 +2377,25 @@ function lfExtra(seed,lead,fi0){
   const horns=['sax','trumpet'].filter(k=>k!==lead&&k!==fi);
   return{fi,pad:horns.length&&r3<.38?horns[Math.floor(r4*horns.length)]:null};
 }
+// a seeded stream of its own for one decision-maker, so adding choices there never shifts anyone else's
+function lfHash(seed,n){let a=((seed||1)^Math.imul(n+1,0x85EBCA77)^0x27d4eb2d)>>>0;return()=>{a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const lfStrHash=s=>{let h=2166136261;for(const ch of String(s))h=Math.imul(h^ch.charCodeAt(0),16777619);return h>>>0};
+// who sits at the piano for this track. lh how often a left hand plays under the chords, crush grace notes crushed into the
+// third, inner a voice moving inside a held chord, broken chords spread into a figure, run runs where the tune leaves a
+// gap, ghost soft repeats before a hit, drag how far behind the beat the right hand sits, roll how slowly a chord is
+// spread, thin how many of the extra hits it leaves out, felt how muffled the hammers are
+const PNO={
+  dilla:{lh:.55,crush:.45,inner:.15,broken:0,run:.25,ghost:.55,drag:.018,roll:1.7,felt:[.4,.55]},
+  evans:{lh:.35,crush:.12,inner:.6,broken:.12,run:.35,ghost:0,drag:.004,roll:1,felt:[.5,.7]},
+  nujabes:{lh:.85,crush:.18,inner:.25,broken:.6,run:.4,ghost:.12,drag:0,roll:1.2,felt:[.55,.75]},
+  gospel:{lh:.7,crush:.6,inner:.3,broken:.1,run:.6,ghost:.35,drag:.008,roll:.7,felt:[.55,.8]},
+  sparse:{lh:.3,crush:.22,inner:.4,broken:0,run:.18,ghost:0,drag:.01,roll:1.4,thin:.45,felt:[.36,.5]}};
+function lfPianist(seed,comp){
+  const u=lfHash(seed,991),w={dilla:1,evans:1,nujabes:comp==='arp'?2.2:1,gospel:.9,sparse:.7};
+  let r=u()*Object.values(w).reduce((a,b)=>a+b,0),id='dilla';for(const k in w){id=k;if((r-=w[k])<0)break}
+  const P=Object.assign({id},PNO[id]);P.felt=P.felt[0]+(P.felt[1]-P.felt[0])*u();
+  P.lhShape=['r','r5','r7','r10'][Math.floor(u()*4)];P.oct=u()<.45;return P;
+}
 function makeLofi(opt){
   // the choices that lean on what came before (the last key, the last form, the listener's votes) are made first and
   // kept in T.rec; everything after them comes from the seed alone
@@ -2413,6 +2433,7 @@ function makeLofi(opt){
     tech:{slur:rnd(.45,.7),scoop:rnd(.15,.4),fall:rnd(.08,.3),vib:rnd(9,14),vibHz:rnd(4.6,5.3),gvib:rnd(6,10),ghost:rnd(.7,.82)},
     bArt:{leg:rnd(.8,.97),slide:rnd(.15,.38),ghost:rnd(.12,.36)},mlag:rnd(.004,.018),hatOff:rnd(-.006,.006),kickOff:rnd(-.004,.004)};
   if(R&&R.name)T.name=R.name;else if(!R)T.name=freshName(seed);
+  T.pno=lfPianist(seed,T.comp);
   T.seed=seed;T.rec={minor,MID,key,bpm0,fi,GTR,lead,rhodes,away,rain:T.rain,vinyl:T.vinyl,hiss:T.hiss,loops:[la,lb,lc],name:T.name};
   T.compC=pick(['ring','push','stab','dilla','pulse'].filter(x=>x!==T.comp));
   // the drummer's beats for this track: the verse groove, another for a switch-up, a lifted one for the chorus
@@ -2861,28 +2882,98 @@ function lofiBar(bp,t0,beat,roles,nextBp){
   }
   if(cad&&plays('bass')){const m=nearestOct(bp.chords[0].root,T.bprev??T.bassRef,28,43);play('bass',ts(0),m,bar*1.4,.82,{src:'bass'});lfSub(ts(0),m,bar*1.2,.8);roles.bass='Last note'}
 
-  // the chord loop
+  // the chord loop, played by this track's pianist (T.pno): a left hand under the chords, a grace note crushed into the
+  // third, a voice moving inside a held chord, chords broken into a figure, a run where the tune leaves a gap. Its choices
+  // come from a stream of their own, so everything else in the bar plays as it did
   if(kOn){
     roles[kb]=kb==='piano'?(T.rhodes?'Rhodes loop':'Piano loop'):'Chord loop';
+    const keepR=RNG;RNG=lfHash(T.seed,(bp.ix||0)*7+3);
+    try{
+    const P=kb==='piano'&&T.pno||null,drag=P?P.drag:0,rollK=P?P.roll:1;
     // softer while the tune is sounding, so it stays an accompaniment
     const under=(ta,tb)=>held.some(x=>x.t<tb-.05&&x.t+x.dur>ta+.05)?.8:1;
-    const strike=(vc,ta,dur,v,src)=>vc.forEach((m,k,a)=>play(kb,ta+k*T.roll+rnd(0,.006),m,dur,v*under(ta,ta+dur)*(k===a.length-1?1.08:k===0?.9:.84)*rnd(.92,1.05),{src}));
+    const strike=(vc,ta,dur,v,src,durs)=>vc.forEach((m,k,a)=>play(kb,ta+drag+k*T.roll*rollK+rnd(0,.006),m,durs?durs[k]:dur,v*under(ta,ta+dur)*(k===a.length-1?1.08:k===0?.9:.84)*rnd(.92,1.05),{src}));
+    // what the pianist does in this section is settled once for the section
+    const su=lfHash(T.seed^lfStrHash(bp.id||sec),17),sLH=su(),sBrk=su(),sPat=su();
+    const useLH=!!P&&!g&&!(IN&&it==='beat')&&sLH<P.lh+(sec==='c'?.15:0)+(!bassIn?.3:0)-(sec==='brk'?.15:0);
+    const useBrk=!!P&&!g&&!cad&&ent!=='stop'&&comp!=='stab'&&comp!=='arp'&&sBrk<P.broken+(sec==='brk'||(IN&&it==='keys')?.2:0);
+    const pat=[[[0],[1],[2],[3]],[[0],[1],[2],[3],[2],[1]],[[0],[2],[1],[3]],[[0,1],[2,3]]][Math.floor(sPat*4)];
+    const half1=(m,x)=>pc(x-m)===1||pc(m-x)===1;
+    // the left hand: the root low down, with its fifth, its seventh or a tenth above, a touch ahead of the right hand. Far
+    // below the tune, only a minor ninth against it would sting
+    const lh=(c,ta,dur,v,vc)=>{if(!useLH)return;
+      const top=Math.min(...vc)-3,r=nearestOct(c.root,Math.min(T.lhPrev??45,top),36,Math.max(40,Math.min(51,top))),ivs=CT[c.q],sh=P.lhShape;
+      let ns=sh==='r'?(P.oct&&r+12<=top?[r,r+12]:[r]):sh==='r5'?[r,r+7]:sh==='r7'?[r,r+ivs[3]]:[r,r+12+ivs[1]];
+      ns=ns.filter(m=>m<=top&&!held.some(x=>x.t<ta+dur-.05&&x.t+x.dur>ta+.05&&pc(x.m-m)===1)&&(c.q==='7b9'||!vc.some(x=>pc(x-m)===1)));if(!ns.length)return;T.lhPrev=r;
+      ns.forEach((m,k)=>play(kb,ta+drag-(P.id==='dilla'?.014:.004)+k*.014+rnd(0,.005),m,dur,v*(bassIn?.5:.78)*(k?.8:1)*rnd(.92,1.05),{src:'lh'}))};
+    // a grace note crushed into the third (a half step under a major third, the ninth under a minor one)
+    const crush=(vc,c,ta,v)=>{const ivs=CT[c.q],th=vc.find(m=>pc(m-c.root)===ivs[1])??vc[vc.length-1],gr=th-(pc(th-c.root)===4?1:2);
+      if(vc.includes(gr)||rubsMel(gr,ta-.05,ta+.03))return;play(kb,ta+drag-.045,gr,.07,v*.6,{src:'crush'})};
+    // a voice moving inside a held chord: a fourth falling to the third, or the top note stepping down a scale tone (and back)
+    const innerMove=(vc,c,ta,dur,s0,s1)=>{
+      const ivs=CT[c.q],tm=ts(s0+Math.min(4,Math.floor((s1-s0)/2))),end=ta+dur,clash=(m,ex)=>vc.some((x,k)=>k!==ex&&(x===m||half1(m,x)));
+      if(end-tm<.25)return null;
+      const ti=vc.findIndex(m=>pc(m-c.root)===ivs[1]);
+      if(ti>=0&&!['m7b5','dim7','7b9','7sus'].includes(c.q)&&rand()<.5){const s4=vc[ti]+(ivs[1]===3?2:1);
+        if(!clash(s4,ti)&&!rubsMel(s4,ta,tm)){const v2=vc.slice();v2[ti]=s4;return{vc:v2,durs:vc.map((_,k)=>k===ti?tm-ta-.02:dur),after:[{m:vc[ti],t:tm,dur:end-tm}]}}}
+      const top=vc.length-1,sc=SCALE[c.q].map(x=>(c.root+x)%12);
+      for(const d of[1,2]){const nb=vc[top]-d;if(!sc.includes(pc(nb))||clash(nb,top)||rubsMel(nb,tm,end))continue;
+        const back=s1-s0>=12,tb=back?ts(s0+Math.floor((s1-s0)*.75)):end,after=[{m:nb,t:tm,dur:tb-tm-(back?.02:0)}];
+        if(back&&!rubsMel(vc[top],tb,end))after.push({m:vc[top],t:tb,dur:end-tb});
+        return{vc,durs:vc.map((_,k)=>k===top?tm-ta-.02:dur),after}}
+      return null};
+    // the chord broken into a figure in eighths, the first notes left ringing under the pedal
+    const broken=(vc,s0,s1,v)=>{const end=ts(s1)-.05;
+      for(let st=s0,j=0;st<s1;st+=2,j++){const grp=[...new Set(pat[j%pat.length].map(k=>vc[Math.min(k,vc.length-1)]))],ta=ts(st);
+        grp.forEach((m,k)=>play(kb,ta+drag+k*.01+rnd(0,.006),m,Math.max(.1,j<pat.length?end-ta:Math.min(end-ta,beat*1.2)),v*under(ta,end)*(j===0?1:.76)*(st%4===0?1.06:.9)*rnd(.92,1.05),{src:'arp'}))}};
     if(ent==='stop'||cad){
       const c=bp.chords[0],e=cad?NS:3,vc=lfVoice(c,T.kprev,klo,khi,m=>rubsMel(m,ts(0),ts(e)),g);T.kprev=vc;
-      strike(vc,ts(0),cad?bar*1.6:ts(e)-ts(0)-.03,kv*(cad?1:1.05),'strike');T.pushed=false;
+      const dur=cad?bar*1.6:ts(e)-ts(0)-.03;
+      if(P)lh(c,ts(0),dur,kv,vc);
+      strike(vc,ts(0),dur,kv*(cad?1:1.05),'strike');T.pushed=false;
+      // the last chord: its top notes again an octave up, spread slowly as it rings
+      if(cad&&P&&rand()<.65)vc.slice(-3).map(m=>m+12).filter(m=>m<=88).forEach((m,k)=>play(kb,ts(0)+.34+k*.12+drag,m,bar*1.4-k*.12,kv*.42*(1-k*.08),{src:'strike'}));
       if(cad)roles[kb]='Last chord';
     }else{
       bp.chords.forEach((c,j)=>{
         const s0=c.beat*4,s1=j+1<bp.chords.length?bp.chords[j+1].beat*4:pushVc?pe:NS,span=s1-s0;
         if(j===0&&T.pushed){T.pushed=false;return}
         const vc=lfVoice(c,T.kprev,klo,khi,m=>rubsMel(m,ts(s0),ts(s1)),g);T.kprev=vc;
-        if(comp==='arp'){vc.forEach((m,k)=>{const st=s0+2*k;if(st<s1)play(kb,ts(st),m,ts(s1)-ts(st)-.03,kv*under(ts(st),ts(s1))*(k?.82:1),{src:'arp'})});return}
-        lfComp(comp,span).forEach(([x,d],k)=>{const st=s0+x,ta=ts(st);if(F&&!F.hush&&k>0&&st>=F.from&&chance(.65))return;const dur0=Math.max(.1,ts(Math.min(NS,st+d))-ta-.04),ped=T.dk.ped&&(comp==='ring'||comp==='pulse'),dur=ped?Math.max(dur0,ts(s1)-ta-.06):dur0;
-          strike(k?vc.slice(-3):vc,ta,dur,kv*(k?(ped?.7:.8):1),'strike')});
+        if(P)lh(c,ts(s0),ts(s1)-ts(s0)-.05,kv,vc);
+        if(comp==='arp'){vc.forEach((m,k)=>{const st=s0+2*k;if(st<s1)play(kb,ts(st)+drag,m,ts(s1)-ts(st)-.03,kv*under(ts(st),ts(s1))*(k?.82:1),{src:'arp'})});return}
+        if(useBrk&&span>=4){if(rand()<P.crush*.5)crush(vc,c,ts(s0),kv);broken(vc,s0,s1,kv);return}
+        const hits=lfComp(comp,span);
+        hits.forEach(([x,d],k)=>{const st=s0+x,ta=ts(st);if(F&&!F.hush&&k>0&&st>=F.from&&chance(.65))return;
+          if(P&&k>0&&P.thin&&rand()<P.thin)return;
+          const dur0=Math.max(.1,ts(Math.min(NS,st+d))-ta-.04),ped=T.dk.ped&&(comp==='ring'||comp==='pulse'),dur=ped?Math.max(dur0,ts(s1)-ta-.06):dur0;
+          if(k>0){
+            // a soft repeat of the top of the chord a sixteenth before the hit
+            if(P&&P.ghost&&x-1>hits[k-1][0]&&rand()<P.ghost*.5)strike(vc.slice(-2),ts(st-1),q16*.7,kv*.34,'strike');
+            strike(vc.slice(-3),ta,dur,kv*(ped?.7:.8),'strike');return}
+          if(P&&rand()<P.crush*(sec==='c'?1.15:1))crush(vc,c,ta,kv);
+          const mv=P&&dur>beat*1.4&&rand()<P.inner?innerMove(vc,c,ta,dur,s0,s1):null;
+          if(mv){strike(mv.vc,ta,dur,kv,'strike',mv.durs);mv.after.forEach(y=>play(kb,y.t+drag+rnd(0,.006),y.m,y.dur,kv*.8*under(y.t,y.t+y.dur),{src:'inner'}))}
+          else strike(vc,ta,dur,kv,'strike');
+          // in a chorus some pianists double the top note an octave up
+          if(P&&sec==='c'&&(P.id==='gospel'||P.id==='nujabes')&&rand()<.45){const tp=vc[vc.length-1]+12;if(tp<=86&&!rubsMel(tp,ta,ta+dur))play(kb,ta+drag+vc.length*T.roll*rollK,tp,dur,kv*.55,{src:'strike'})}
+        });
       });
       T.pushed=false;
       if(pushVc){T.kprev=pushVc;strike(pushVc,ts(pe),ts(NS)-ts(pe)+beat*1.4,kv*.95,'push');T.pushed=true}
+      // a run where the tune leaves a gap at the end of a phrase: down the scale from above the chords into a chord tone,
+      // or up the chord's notes to a high one
+      const rs=NS-(rand()<.5?4:6);
+      if(P&&!g&&!filled&&!pkOn&&!OUT&&!(IN&&it!=='keys')&&!pushVc&&(bp.fb===3||last||(bp.fb===1&&(sec==='brk'||sec==='a'||IN)))&&ent!=='stop'&&!held.some(x=>x.t+x.dur>ts(rs)-.05)&&rand()<P.run*(sec==='brk'?.6:1)){
+        const c=chordAt(bp.chords,(NS-1)/4),sc=SCALE[c.q].map(x=>(c.root+x)%12),ct=CT[c.q].map(x=>(c.root+x)%12),cnt=rs===NS-4?(rand()<.5?4:6):6;
+        const t1=ts(rs),dt=(ts(NS)-t1)/cnt,top0=Math.min(86,khi+ri(5,10)),notes=[];
+        if(rand()<.6){let m=top0;while(!sc.includes(pc(m)))m--;for(let j=0;j<cnt;j++){notes.push(m);m--;while(!sc.includes(pc(m)))m--}
+          while(!ct.includes(pc(notes[notes.length-1]))&&notes.length>3)notes.pop()}
+        else{let m=Math.max(khi-2,Math.min(...(T.kprev||[60])));while(!ct.includes(pc(m)))m++;for(let j=0;j<cnt;j++){notes.push(m);m++;while(!ct.includes(pc(m)))m++}}
+        notes.forEach((m,j)=>{const lst=j===notes.length-1;play(kb,t1+j*dt+drag+rnd(0,.006),m,lst?dt*3:dt*1.3,kv*(.5+.25*Math.sin(Math.PI*(j+.5)/notes.length))*(lst?1.1:1),{src:'run'})});
+        roles[kb]+=' + a run';
+      }
     }
+    }finally{RNG=keepR}
   }else T.pushed=false;
   // a guitar answering the hook with a little two-note chop
   if(T.gchop&&!filled&&!pkOn&&plays('guitar')&&kb!=='guitar'&&(sec==='v'||sec==='bri')&&i%2===1&&ent!=='stop'&&chance(.45)){

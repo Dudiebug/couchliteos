@@ -101,6 +101,17 @@ class CategoriesTest(XmbTestCase):
         self.assertNotIn("terminal", everything)
         self.assertEqual(self.labels(model, xmb.APPS), ["ADD AN APPLICATION"])
 
+    def test_lofi_radio_shows_without_a_browser_and_offers_one(self):
+        radio = app("lofi-radio", kind="command", command="/usr/libexec/couchliteos-lofi-radio",
+                    binary="/usr/bin/google-chrome-stable | /usr/bin/firefox-esr", category="apps", icon="music-note")
+        model = self.model(applications=APPS + (radio,), missing=("lofi-radio",))
+        item = next(item for item in self.items(model, xmb.APPS) if item.app == "lofi-radio")
+        self.assertEqual((item.label, item.action, item.detail, item.icon),
+                         ("LOFI-RADIO", ("add-browser",), xmb.NEEDS_BROWSER_DETAIL, "music-note"))
+        model = self.model(applications=APPS + (radio,))
+        item = next(item for item in self.items(model, xmb.APPS) if item.app == "lofi-radio")
+        self.assertEqual(item.action, ("app", "lofi-radio"))
+
     def test_the_network_tailscale_remote_desktop_and_diagnostics_are_in_settings_only(self):
         model = self.model(values={"NETWORK": "ONLINE"})
         settings = {item.label: item for item in self.items(model, xmb.SETTINGS)}

@@ -1826,6 +1826,8 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
             self.open_power()
         elif name in tvscreens.TILE_SCREENS:
             self.open_screen(tvscreens.TILE_SCREENS[name])
+        elif name == "add-browser":  # LO-FI RADIO before a browser is installed
+            self.open_screen("add-browser")
         else:
             self.show_text("message", name.upper(), "", BACK_HINT)
 

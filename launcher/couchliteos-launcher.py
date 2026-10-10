@@ -3581,6 +3581,7 @@ SCREENS: dict[str, Callable[[Settings, str], object]] = {
     "support-file": lambda settings, _app: settings.generate_support_file(),
     "setup": lambda settings, _app: first_start(settings.launcher),
     "connect": lambda settings, app: settings.launcher.launch_by_id(app),
+    "add-browser": lambda settings, _app: settings.launcher.browser_setup(),
 }
 
 

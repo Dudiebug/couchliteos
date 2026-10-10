@@ -87,6 +87,9 @@ class DispatchTest(unittest.TestCase):
         settings = mock.Mock()
         self.launcher.SCREENS["connect"](settings, "office-pc")
         settings.launcher.launch_by_id.assert_called_once_with("office-pc")
+        settings = mock.Mock()
+        self.launcher.SCREENS["add-browser"](settings, "")
+        settings.launcher.browser_setup.assert_called_once_with()
         for name, attribute in (("bluetooth", "run_bluetooth"), ("controllers", "run")):
             module = self.launcher.bluetooth if name == "bluetooth" else self.launcher.pads
             with mock.patch.object(module, attribute) as run:

@@ -137,6 +137,9 @@ WEB_GAMES = {"cloud-game"}
 WEB_VIDEO = {"film", "play-circle", "television", "broadcast", "music-note", "microphone", "trophy"}
 NO_VIDEO = "ADD A STREAMING SERVICE"
 MOONLIGHT_DETAIL = "YOUR GAMING PCS IN MOONLIGHT"
+# Built-in pages that run in a browser: shown without one, opening ADD A WEB BROWSER instead.
+NEEDS_BROWSER = frozenset({"lofi-radio"})
+NEEDS_BROWSER_DETAIL = "ADD A WEB BROWSER TO PLAY"
 WEB_URL_RE = re.compile(r"https?://[^\s'\"]+")
 
 Action = tuple
@@ -246,9 +249,14 @@ class XmbModel:
             if not (app.enabled and app.visible) or app.id in SETTINGS_APPS:
                 continue
             try:
-                if not self.home.installed(app):
-                    continue
+                ready = self.home.installed(app)
             except OSError:
+                ready = False
+            if not ready:
+                if app.id in NEEDS_BROWSER:
+                    placed[category_of(app)].append(Item(
+                        f"app:{app.id}", app.name.upper(), ("add-browser",), detail=NEEDS_BROWSER_DETAIL,
+                        icon=icon_of(app), app=app.id))
                 continue
             url = web_url(app)
             detail = "WEB" if url else ""

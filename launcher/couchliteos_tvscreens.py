@@ -55,6 +55,7 @@ SCREENS = (
     "support-file",
     "setup",  # the first-run wizard
     "connect",  # start the Remote Desktop connection --app names: certificate and password first
+    "add-browser",  # ADD A WEB BROWSER, from a tile that needs one (LO-FI RADIO)
 )
 
 SCREEN, APP, VIEW = "screen", "app", "view"  # a curses screen, an application, the TV interface itself
