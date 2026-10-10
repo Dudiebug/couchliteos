@@ -32,7 +32,7 @@ class ApplicationsTest(unittest.TestCase):
         visible = [app.id for app in result.applications if app.visible]
         self.assertEqual(
             visible,
-            ["moonlight", "chiaki-ng", "firefox", "google-chrome", "terminal", "tailscale"],
+            ["moonlight", "chiaki-ng", "firefox", "google-chrome", "terminal", "tailscale", "lofi-radio"],
         )
         self.assertEqual(result.errors, ())
 
