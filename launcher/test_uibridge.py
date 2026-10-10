@@ -50,6 +50,20 @@ class WindowTest(unittest.TestCase):
         with self.assertRaises(curses.error):
             screen.get_wch()
 
+    def test_get_wch_gives_enter_and_escape_as_characters_as_curses_does(self):
+        # Text fields (ADD WEB APPLICATION) compare with "\n" and "\x1b": as numbers, A and B did nothing.
+        screen, _sent = window([10, 27, 9, curses.KEY_BACKSPACE, curses.KEY_F12])
+        self.assertEqual([screen.get_wch() for _ in range(5)], ["\n", "\x1b", "\t", curses.KEY_BACKSPACE, curses.KEY_F12])
+
+    def test_a_qr_code_is_sent_as_its_url(self):
+        screen, sent = window()
+        screen.report_qr("http://192.168.1.5:4000/t/abc", 5)
+        screen.refresh()
+        self.assertEqual(json.loads(sent[0])["qr"], [5, "http://192.168.1.5:4000/t/abc"])
+        screen.erase()
+        screen.refresh()
+        self.assertNotIn("qr", json.loads(sent[1]))
+
     def test_unknown_window_calls_do_nothing(self):
         screen, _sent = window()
         self.assertIsNone(screen.attron(curses.A_BOLD))
@@ -147,6 +161,15 @@ class ParseTest(unittest.TestCase):
         text = "- " + "X" * 60
         view = bridge.parse(frame([centered(2, "NEWS"), (8, 19, text, 0), (9, 19, "- SHORT", 0)]))
         self.assertEqual(view.blocks, (bridge.TextBlock((text, "- SHORT"), False),))
+
+    def test_a_qr_code_is_a_picture_and_its_text_drawing_is_dropped(self):
+        code = ["\u2588\u2580\u2580\u2580\u2580\u2580\u2588 \u2584\u2588", "\u2588 \u2588\u2588\u2588 \u2588\u2584 \u2588"]
+        ops = [centered(1, "TYPE ON PHONE"), centered(3, "http://x/t/abc")] + [(5 + n, 40, line, 0) for n, line in enumerate(code)]
+        with_qr = frame(ops)
+        with_qr["qr"] = [5, "http://x/t/abc"]
+        view = bridge.parse(with_qr)
+        self.assertIn(bridge.QrBlock("http://x/t/abc"), view.blocks)
+        self.assertFalse(any(isinstance(block, bridge.TextBlock) and "\u2588" in "".join(block.lines) for block in view.blocks))
 
     def test_split_row(self):
         self.assertEqual(bridge.split_row("SOFTWARE UPDATE  -  0.3.1 AVAILABLE"), bridge.Row("SOFTWARE UPDATE", "0.3.1 AVAILABLE"))

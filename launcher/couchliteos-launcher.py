@@ -2612,7 +2612,9 @@ class ApplicationsSettings:
         add_centered(self.screen, 2, "SCAN WITH A PHONE ON THE SAME NETWORK, OR OPEN:")
         add_centered(self.screen, 3, url)
         top = 5
-        if len(code) <= height - top - 3 and code and max(len(line) for line in code) <= width - 4:
+        if getattr(type(self.screen), "report_qr", None) is not None:
+            self.screen.report_qr(url, top)  # the TV interface draws it as a picture
+        elif len(code) <= height - top - 3 and code and max(len(line) for line in code) <= width - 4:
             column = max(1, (width - max(len(line) for line in code)) // 2)
             for offset, line in enumerate(code):
                 try:

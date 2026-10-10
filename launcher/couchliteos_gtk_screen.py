@@ -15,9 +15,11 @@ from collections.abc import Callable
 
 import gi
 
+gi.require_version("Gdk", "4.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
 
 import couchliteos_uibridge as bridge  # noqa: E402
 
@@ -136,7 +138,9 @@ class ScreenPage(Gtk.Box):
         self.width = 900
         self.slots = 9
         self.px: Callable[[int], int] = lambda value: value
+        self.height = 1080
         self.view: bridge.View | None = None
+        self.qr: tuple[str, GdkPixbuf.Pixbuf | None] = ("", None)
 
     def relayout(self, layout, slots: int) -> None:
         """Sizes from the TV interface's Layout (the page's margins are set with the other pages')."""
@@ -144,6 +148,7 @@ class ScreenPage(Gtk.Box):
         self.width = max(320, min(round(layout.width * 0.62), layout.width - 2 * layout.margin_x))
         self.panel.set_size_request(self.width, -1)
         self.px, self.slots = layout.px, max(3, slots)
+        self.height = layout.height
         if self.view is not None:
             self.show_view(self.view)
 
@@ -158,6 +163,9 @@ class ScreenPage(Gtk.Box):
                 self.panel.append(self._list(block, self.slots if lists == 1 else max(3, self.slots // lists)))
             elif isinstance(block, bridge.ProgressBlock):
                 self.panel.append(self._progress(block))
+            elif isinstance(block, bridge.QrBlock):
+                if (widget := self._qr(block)) is not None:
+                    self.panel.append(widget)
             else:
                 self.panel.append(self._text(block))
         self.panel.set_visible(bool(view.blocks))
@@ -199,6 +207,23 @@ class ScreenPage(Gtk.Box):
             widget.add_css_class("tv-strong")
         return widget
 
+    def _qr(self, block: bridge.QrBlock) -> Gtk.Widget | None:
+        """The QR code as a picture, dark on white with its quiet zone, a third of the screen high
+        at most so the page fits at any size. Made once per URL (the screen redraws every poll)."""
+        if self.qr[0] != block.url:
+            self.qr = (block.url, qr_modules(block.url))
+        modules = self.qr[1]
+        if modules is None:
+            return None
+        side = max(160, min(round(self.height * 0.33), self.px(420)))
+        # Whole pixels per module, scaled without smoothing: every module stays a sharp square.
+        size = max(1, side // modules.get_width()) * modules.get_width()
+        scaled = modules.scale_simple(size, size, GdkPixbuf.InterpType.NEAREST)
+        picture = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(scaled))
+        picture.set_can_shrink(False)
+        picture.set_halign(Gtk.Align.CENTER)
+        return picture
+
     def _progress(self, block: bridge.ProgressBlock) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_spacing(self.px(10))
@@ -209,6 +234,24 @@ class ScreenPage(Gtk.Box):
         if block.text:
             box.append(_label(block.text, "tv-body", xalign=0.5))
         return box
+
+
+def qr_modules(url: str) -> GdkPixbuf.Pixbuf | None:
+    """qrencode's PNG of `url`, one pixel per module with a 2-module quiet zone, or None."""
+    try:
+        result = subprocess.run(["qrencode", "-t", "PNG", "-s", "1", "-m", "2", "-o", "-", url],
+                                capture_output=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    loader = GdkPixbuf.PixbufLoader()
+    try:
+        loader.write(result.stdout)
+        loader.close()
+    except GLib.Error:
+        return None
+    return loader.get_pixbuf()
 
 
 def stylesheet(colours, layout) -> str:

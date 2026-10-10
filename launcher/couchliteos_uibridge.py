@@ -26,7 +26,8 @@ import time
 from collections.abc import Callable
 
 ROWS, COLS = 30, 100  # the screen size the curses code lays out for (a 1080p foot window had about this)
-ENV = "COUCHLITEOS_BRIDGE"  # "<in fd>,<out fd>", set by the TV interface for the child
+ENV = "COUCHLITEOS_BRIDGE"
+QR_LINE = re.compile(r"^[ \u2580\u2584\u2588]{8,}$")  # qrencode -t UTF8: half and full blocks  # "<in fd>,<out fd>", set by the TV interface for the child
 
 # ---------------------------------------------------------------------- the child: a curses stand-in
 
@@ -101,6 +102,7 @@ class Window:
         self.delay: float | None = None  # curses timeout(): None blocks
         self.ops: list[list] = []
         self.lists: list[list] = []
+        self.qr: list | None = None
         self.boxed = False
         self.sent = ""
 
@@ -109,7 +111,7 @@ class Window:
         return self.rows, self.cols
 
     def erase(self) -> None:
-        self.ops, self.lists, self.boxed = [], [], False
+        self.ops, self.lists, self.qr, self.boxed = [], [], None, False
 
     clear = erase
 
@@ -135,8 +137,16 @@ class Window:
         """couchliteos_listview's rows, whole (the TV interface scrolls them itself)."""
         self.lists.append([top, left, [str(row) for row in rows], selected])
 
+    def report_qr(self, url: str, top: int) -> None:
+        """TYPE ON PHONE's QR code, as its URL: the TV interface draws it as a picture (half-block
+        characters in its own font came out garbled)."""
+        self.qr = [top, str(url)]
+
     def frame(self) -> dict:
-        return {"rows": self.rows, "cols": self.cols, "boxed": self.boxed, "ops": self.ops, "lists": self.lists}
+        frame = {"rows": self.rows, "cols": self.cols, "boxed": self.boxed, "ops": self.ops, "lists": self.lists}
+        if self.qr is not None:
+            frame["qr"] = self.qr
+        return frame
 
     def refresh(self) -> None:
         text = json.dumps(self.frame(), separators=(",", ":"))
@@ -170,7 +180,9 @@ class Window:
         key = self._read()
         if key is None:
             raise curses.error("no input")
-        return key
+        # curses gives Enter, Esc, Tab and Backspace as characters ("\n", "\x1b"); only function
+        # keys are numbers. Text fields compare with the characters: as numbers, A and B did nothing.
+        return chr(key) if isinstance(key, int) and 0 <= key < 256 else key
 
     def __getattr__(self, name: str):  # any other window call is drawn as nothing
         if name.startswith("__"):
@@ -260,6 +272,11 @@ class ProgressBlock:
 
 
 @dataclasses.dataclass(frozen=True)
+class QrBlock:
+    url: str
+
+
+@dataclasses.dataclass(frozen=True)
 class View:
     title: str
     blocks: tuple
@@ -318,9 +335,13 @@ def parse(frame: dict) -> View:
         stripped = text.strip()
         if not stripped or MORE.match(stripped) or RULE.match(stripped):
             continue
+        if "qr" in frame and QR_LINE.match(stripped):
+            continue  # a QR code drawn as text as well: the picture replaces it
         lines.append((row, column, text, attr))
 
     items: list[tuple[int, object]] = []
+    if isinstance(frame.get("qr"), list) and len(frame["qr"]) == 2:
+        items.append((int(frame["qr"][0]), QrBlock(str(frame["qr"][1]))))
     for top, _left, rows, selected in frame.get("lists", []):
         if selected is None:  # a list without a cursor is text (a message, wrapped to the width)
             items.append((int(top), TextBlock(tuple(row.strip() for row in rows if row.strip()), True)))
