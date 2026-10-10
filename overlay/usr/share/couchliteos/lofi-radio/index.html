@@ -2209,11 +2209,15 @@ function lofiLoop(minor){
   return pick(LOFI_LOOPS[minor?'min':'maj']).split('|').map(b=>b.split(' ').map(c=>{let [d,q]=c.split(':');
     if(q==='m9'&&chance(.2))q='m11';else if(q==='13'&&chance(.2))q='9';else if(q==='7b9'&&chance(.25))q='13';return d+':'+q}).join(' '));
 }
-const recentLoops=[];
+// every progression this session has played, by its shape (a m9 and a m11 on the same root count as the same chord), so a long
+// listen keeps moving to changes it hasn't heard yet, and only comes back to the one heard longest ago once they run out
+const heardLoops=new Map();let loopN=0;
+const loopShape=L=>L.join('|').replace(/:m(9|11|7)?\b/g,':m').replace(/:maj9/g,':M').replace(/:(13|9|7b9)/g,':7');
 function newLoop(minor,not){
-  let L=null;
-  for(let k=0;k<16;k++){L=lofiLoop(minor);const s=L.join('|');if(!recentLoops.includes(s)&&s!==not)break}
-  recentLoops.push(L.join('|'));if(recentLoops.length>10)recentLoops.shift();return L;
+  let best=null,bs=-1;
+  for(let k=0;k<40;k++){const L=lofiLoop(minor),s=L.join('|');if(s===not)continue;const sh=loopShape(L),g=heardLoops.has(sh)?loopN-heardLoops.get(sh):1e9;
+    if(g>bs){bs=g;best=L}if(g===1e9)break}
+  if(!best)best=lofiLoop(minor);heardLoops.set(loopShape(best),++loopN);return best;
 }
 // the hook: a one-bar rhythm said twice (the second time a step away, or answered by a new rhythm) that ends on a long note,
 // often with a pickup: a few notes before the downbeat that walk into its first note
@@ -2330,9 +2334,35 @@ function lfAmbAll(R,seed){
   }
   return o;
 }
+const LF_T=[(a,b)=>`${a} ${b}`,(a,b)=>`${a} ${b}`,(a,b,x)=>`${b} at ${x}`,(a,b)=>b,(a,b,x)=>`${a} ${b}, pt. ${x}`,(a,b,x)=>`${a} ${b} (${x})`];
+let LN=null;
 function lofiName(){
-  return pick([()=>`${pick(LF1)} ${pick(LF2)}`,()=>`${pick(LF1)} ${pick(LF2)}`,()=>`${pick(LF2)} at ${pick(['2am','3am','4am','dusk','dawn','midnight'])}`,
-    ()=>`${pick(LF2)}`,()=>`${pick(LF1)} ${pick(LF2)}, pt. ${ri(2,3)}`,()=>`${pick(LF1)} ${pick(LF2)} (${pick(['demo','tape','interlude'])})`])();
+  const ti=Math.floor(rand()*6);let a=null,b,x=null;
+  if(ti===2){b=pick(LF2);x=pick(['2am','3am','4am','dusk','dawn','midnight'])}
+  else if(ti===3)b=pick(LF2);
+  else{a=pick(LF1);b=pick(LF2);if(ti===4)x=ri(2,3);else if(ti===5)x=pick(['demo','tape','interlude'])}
+  LN={ti,a,b,x};return LF_T[ti](a,b,x);
+}
+// more words for the titles, and a memory of the ones used this session: a new song swaps out any word heard lately for one
+// that hasn't been (picked from the song's seed, so its music stays the same), and a kept song keeps the title it had
+const LF1X=[...LF1,'drowsy','hazy','misty','mellow','muted','dusty','amber','pale','hushed','silver','winter','early','gentle','distant',
+  'lilac','cobalt','sepia','wistful','drifting','humid','twilight','borrowed','second-hand','creaky','candlelit','tender','unhurried',
+  'overcast','rose','cinnamon','vintage','snowy','sunlit','evening','after-hours','idle','moonlit','weekend','smoky','half-awake','april',
+  'october','empty','mossy','lukewarm','windy','starry','hollow'];
+const LF2X=[...LF2,'bookshop','ferris wheel','night bus','vending machine','corner store','fire escape','paper cranes','radiator','attic',
+  'porch light','harbor','subway','postcards','typewriter','record player','green tea','reading lamp','puddles','dog walk','late shift',
+  'crosswalk','garden','skylight','alleyway','noodle bar','diner','hallway','sketchbook','headphones','overpass','station','chai','ramen',
+  'last train','windowsill','pier','planetarium','kettle','library','bike ride','rain boots','neon sign','arcade','museum','blanket',
+  'phone booth','ticket stub','moth wings','orange peel','fog'];
+const nameUse=new Map();let nameN=0;
+function freshName(seed){
+  const {ti,a,b,x}=LN;let h=(seed^0x2545F491)>>>0;
+  const u=()=>{h=Math.imul(h^h>>>16,0x45d9f3b)>>>0;h=Math.imul(h^h>>>16,0x45d9f3b)>>>0;h=(h^h>>>16)>>>0;return h/4294967296};
+  const fresh=(L,w,not)=>{if(w&&!nameUse.has(w)&&w!==not)return w;let best=w,bs=-1;
+    for(const c of L){if(c===not)continue;const g=(nameUse.has(c)?nameN-nameUse.get(c):1e6)+u();if(g>bs){bs=g;best=c}}return best};
+  const B=fresh(LF2X,b),A=a?fresh(LF1X,a,B):null;
+  for(const w of[A,B])if(w)nameUse.set(w,++nameN);
+  return LF_T[ti](A,B,x);
 }
 // song shapes: v a verse on the first loop, c a chorus (the second loop, its own higher hook), bri a bridge somewhere new,
 // brk a breakdown, a the beat on its own, solo the lead stretching out. Never the same shape twice running
@@ -2382,7 +2412,8 @@ function makeLofi(opt){
     feel:{amp:chance(.3)?0:rnd(.005,.013),per:pick([8,8,12]),ph:rnd(0,6.3),rit:rnd(.02,.045)},dk:{pp:rnd(0,.007),flam:rnd(0,.2),ped:chance(.65)},
     tech:{slur:rnd(.45,.7),scoop:rnd(.15,.4),fall:rnd(.08,.3),vib:rnd(9,14),vibHz:rnd(4.6,5.3),gvib:rnd(6,10),ghost:rnd(.7,.82)},
     bArt:{leg:rnd(.8,.97),slide:rnd(.15,.38),ghost:rnd(.12,.36)},mlag:rnd(.004,.018),hatOff:rnd(-.006,.006),kickOff:rnd(-.004,.004)};
-  T.seed=seed;T.rec={minor,MID,key,bpm0,fi,GTR,lead,rhodes,away,rain:T.rain,vinyl:T.vinyl,hiss:T.hiss,loops:[la,lb,lc]};
+  if(R&&R.name)T.name=R.name;else if(!R)T.name=freshName(seed);
+  T.seed=seed;T.rec={minor,MID,key,bpm0,fi,GTR,lead,rhodes,away,rain:T.rain,vinyl:T.vinyl,hiss:T.hiss,loops:[la,lb,lc],name:T.name};
   T.compC=pick(['ring','push','stab','dilla','pulse'].filter(x=>x!==T.comp));
   // the drummer's beats for this track: the verse groove, another for a switch-up, a lifted one for the chorus
   const D=LF_DRUMS[M.id],main=Object.keys(D).filter(k=>!/^(lift|half|sparse)/.test(k)),gv=pick(main);
