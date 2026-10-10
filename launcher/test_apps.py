@@ -56,7 +56,8 @@ class ApplicationsTest(unittest.TestCase):
     def test_browser_manifests_name_their_binary_and_are_hidden_without_it(self):
         result = self.load()
         binaries = {app.id: app.binary for app in result.applications if app.binary}
-        self.assertEqual(binaries, {"firefox": "/usr/bin/firefox-esr", "google-chrome": "/usr/bin/google-chrome-stable"})
+        self.assertEqual(binaries, {"firefox": "/usr/bin/firefox-esr", "google-chrome": "/usr/bin/google-chrome-stable",
+                                    "lofi-radio": "/usr/bin/google-chrome-stable | /usr/bin/firefox-esr"})
         root = pathlib.Path(self.temporary.name) / "root"
         firefox = next(app for app in result.applications if app.id == "firefox")
         terminal = next(app for app in result.applications if app.id == "terminal")
@@ -65,6 +66,23 @@ class ApplicationsTest(unittest.TestCase):
         (root / "usr/bin").mkdir(parents=True)
         (root / "usr/bin/firefox-esr").touch()
         self.assertTrue(apps.installed(firefox, root))
+
+    def test_lofi_radio_is_shown_with_either_browser(self):
+        radio = next(app for app in self.load().applications if app.id == "lofi-radio")
+        self.assertEqual((radio.category, radio.icon, radio.command), ("apps", "music-note", "/usr/libexec/couchliteos-lofi-radio"))
+        for browser in ("google-chrome-stable", "firefox-esr"):
+            root = pathlib.Path(self.temporary.name) / browser
+            self.assertFalse(apps.installed(radio, root))
+            (root / "usr/bin").mkdir(parents=True)
+            (root / "usr/bin" / browser).touch()
+            self.assertTrue(apps.installed(radio, root), browser)
+
+    def test_every_binary_alternative_must_be_absolute(self):
+        self.user.mkdir()
+        app = apps.Application(id="alt", name="ALT", kind="command", command="/bin/true",
+                               binary="/usr/bin/a | usr/bin/b", status_id="alt")
+        (self.user / "alt.ini").write_text(apps.serialize(app))
+        self.assertIn("alt.ini: binary must be an absolute path", self.load().errors)
 
     def test_binary_must_be_absolute_and_survives_a_round_trip(self):
         app = apps.Application(id="web", name="WEB", kind="command", command="/bin/true", binary="/usr/bin/x",

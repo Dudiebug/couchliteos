@@ -1,0 +1,53 @@
+#!/usr/bin/python3 -I
+"""LO-FI RADIO: the bundled Lo-fi Radio page, full screen in Chrome or Firefox.
+
+The page loads its samples with fetch(), which browsers refuse for file:// pages, so it is
+served from 127.0.0.1 on a free port for as long as the browser runs. `?safe=1` leaves out
+the one sample set whose licence forbids commercial use (it is not shipped either).
+"""
+import functools
+import http.server
+import os
+import pathlib
+import subprocess
+import sys
+import threading
+
+PAGE = pathlib.Path(os.environ.get("COUCHLITEOS_LOFI_RADIO_DIR", "/usr/share/couchliteos/lofi-radio"))
+CHROME = "/usr/bin/google-chrome-stable"
+FIREFOX = "/usr/bin/firefox-esr"
+
+
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *_args) -> None:
+        pass
+
+
+def browser_command(url: str, root: pathlib.Path = pathlib.Path("/")) -> list[str] | None:
+    if (root / CHROME.lstrip("/")).exists():
+        return [CHROME, "--ozone-platform=wayland", "--kiosk", "--no-first-run", "--no-default-browser-check",
+                "--autoplay-policy=no-user-gesture-required", url]
+    if (root / FIREFOX.lstrip("/")).exists():
+        return [FIREFOX, "--kiosk", url]
+    return None
+
+
+def main() -> int:
+    if not (PAGE / "index.html").is_file():
+        print(f"LO-FI RADIO is not installed: {PAGE}/index.html is missing", file=sys.stderr)
+        return 1
+    handler = functools.partial(Quiet, directory=str(PAGE))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    command = browser_command(f"http://127.0.0.1:{server.server_address[1]}/index.html?safe=1")
+    if command is None:
+        print("LO-FI RADIO needs a web browser: Settings > APPLICATIONS > ADD A WEB BROWSER", file=sys.stderr)
+        return 1
+    try:
+        return subprocess.call(command)
+    finally:
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

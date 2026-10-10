@@ -54,6 +54,7 @@ STREAM_WINDOW_WORDS = {"moonlight": "moonlight", "chiaki-ng": "chiaki"}  # found
 WINDOW_MATCHES = {
     "firefox": ("app_id:firefox-esr", "app_id:firefox", "title:Mozilla Firefox"),
     "google-chrome": ("app_id:google-chrome", "title:Google Chrome"),
+    "lofi-radio": ("title:Lo-fi Radio", "app_id:google-chrome", "app_id:firefox-esr", "app_id:firefox"),
     "moonlight": ("app_id:moonlight", "title:Moonlight"),
     "chiaki-ng": ("app_id:chiaki", "app_id:io.github.streetpea.Chiaki4deck", "title:Chiaki"),
 }

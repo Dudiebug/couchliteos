@@ -74,7 +74,7 @@ def desktop_entry(path: pathlib.Path) -> dict[str, str]:
 
 
 def _program(app: apps.Application) -> str:
-    return pathlib.PurePosixPath(app.binary or app.command or "").name
+    return pathlib.PurePosixPath((apps.binaries(app.binary) or [app.command or ""])[0]).name
 
 
 def _exec_program(entry: dict[str, str]) -> str:

@@ -168,6 +168,7 @@ install -D -m 0755 "$ROOT/scripts/couchliteos-osk-session" "$CHROOT/usr/libexec/
 install -D -m 0755 "$ROOT/scripts/couchliteos-tailscale-ui" "$CHROOT/usr/bin/couchliteos-tailscale-ui"
 install -D -m 0755 "$ROOT/scripts/couchliteos-run-app" "$CHROOT/usr/libexec/couchliteos-run-app"
 install -D -m 0755 "$ROOT/scripts/couchliteos-moonlight-prefs" "$CHROOT/usr/libexec/couchliteos-moonlight-prefs"
+install -D -m 0755 "$ROOT/scripts/couchliteos-lofi-radio" "$CHROOT/usr/libexec/couchliteos-lofi-radio"
 install -D -m 0755 "$ROOT/scripts/couchliteos-display-failed" "$CHROOT/usr/libexec/couchliteos-display-failed"
 install -D -m 0755 "$ROOT/scripts/couchliteos-firefox-drm-check" "$CHROOT/usr/libexec/couchliteos-firefox-drm-check"
 install -D -m 0755 "$ROOT/scripts/couchliteos-qemu-smoke" "$CHROOT/usr/libexec/couchliteos-qemu-smoke"

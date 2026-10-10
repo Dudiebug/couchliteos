@@ -140,7 +140,7 @@ def read_manifest(path: pathlib.Path, *, system: bool = False) -> Application:
         raise ManifestError("only flatpak applications can define flatpak")
     request = _scalar(section.get("request", "").strip(), "request", 64)
     binary = _scalar(section.get("binary", "").strip(), "binary", MAX_COMMAND)
-    if binary and not pathlib.PurePath(binary).is_absolute():
+    if binary and not all(pathlib.PurePath(item).is_absolute() for item in binaries(binary)):
         raise ManifestError("binary must be an absolute path")
     connection = _scalar(section.get("connection", "").strip(), "connection", 32)
     shortcut = _scalar(section.get("shortcut", "").strip().lower(), "shortcut", 16)
@@ -321,9 +321,15 @@ def cached_applications(
     return result
 
 
+def binaries(binary: str) -> list[str]:
+    """A manifest's `binary`: one path, or alternatives split by "|" (LO-FI RADIO runs in either browser)."""
+    return [item.strip() for item in binary.split("|") if item.strip()]
+
+
 def installed(app: Application, root: pathlib.Path = pathlib.Path("/")) -> bool:
-    """False when the app names a `binary` that is not there (Firefox or Chrome before it is installed)."""
-    return not app.binary or (root / app.binary.lstrip("/")).exists()
+    """False when the app names a `binary` that is not there (Firefox or Chrome before it is installed);
+    with alternatives, when none of them is."""
+    return not app.binary or any((root / item.lstrip("/")).exists() for item in binaries(app.binary))
 
 
 def visible_applications(**kwargs: object) -> LoadResult:

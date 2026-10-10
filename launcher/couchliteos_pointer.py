@@ -15,7 +15,7 @@ import pathlib
 from typing import Any
 
 FLAG = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos")) / "pointer-mode"
-BROWSER_IDS = frozenset({"firefox", "google-chrome"})
+BROWSER_IDS = frozenset({"firefox", "google-chrome", "lofi-radio"})  # LO-FI RADIO is a page in a browser
 # User-added web applications run Chrome in kiosk mode (Settings > APPLICATIONS > ADD WEB APPLICATION).
 BROWSER_BINARIES = frozenset({
     "firefox", "firefox-esr", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
