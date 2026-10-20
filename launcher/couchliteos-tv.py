@@ -2768,7 +2768,7 @@ class Tv(Screens, HelpScreens, Look, Script, session.Session):
         waited for both (the auto-stream's countdown), then the test steps."""
         def restore() -> None:
             try:
-                result = display.restore_saved_mode()
+                result = display.restore_at_boot()
             except Exception as error:  # noqa: BLE001 - the mode the compositor chose stays
                 display.log(f"tv: saved display mode not restored: {error!r}", session.LOG)
                 result = False

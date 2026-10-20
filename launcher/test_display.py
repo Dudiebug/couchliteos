@@ -290,3 +290,29 @@ class NativeAtBootTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestoreAtBootTest(unittest.TestCase):
+    def run_boot(self, results, missing):
+        calls, slept = [], []
+
+        def restore():
+            calls.append(1)
+            display._missing = missing[len(calls) - 1]
+            return results[len(calls) - 1]
+
+        with mock.patch.object(display, "restore_saved_mode", restore), \
+                mock.patch.object(display, "log"):
+            result = display.restore_at_boot(attempts=3, delay=0.5, sleep=slept.append)
+        return result, len(calls), slept
+
+    def test_retries_while_the_screen_is_not_ready(self):
+        self.assertEqual(self.run_boot([False, False, True], [True, True, False]), (True, 3, [0.5, 0.5]))
+
+    def test_gives_up_after_the_attempts(self):
+        self.assertEqual(self.run_boot([False] * 3, [True] * 3), (False, 3, [0.5, 0.5]))
+
+    def test_no_retry_for_other_failures_or_skips(self):
+        self.assertEqual(self.run_boot([False], [False]), (False, 1, []))
+        self.assertEqual(self.run_boot([None], [False]), (None, 1, []))
+        self.assertEqual(self.run_boot([True], [False]), (True, 1, []))

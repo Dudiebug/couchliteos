@@ -9,6 +9,7 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 
 
@@ -20,6 +21,7 @@ LOG = pathlib.Path("/var/log/couchliteos/display.log")
 # blacked out the screen, so it is not applied again.
 PENDING = DATA / "display-restore.pending"
 _unconfirmed = False
+_missing = False  # the last restore found its output or mode not (yet) advertised
 OUTPUT_RE = re.compile(r'^(\S+)(?:\s+"(.*)")?$')
 MODE_RE = re.compile(
     r"^\s+(\d+)x(\d+)\s+px,\s+([0-9]+(?:\.[0-9]+)?)\s+Hz"
@@ -320,6 +322,8 @@ def restore_saved_mode(pending: pathlib.Path = PENDING) -> bool | None:
         )
         validated = valid_output_mode(saved["output"], saved["identity"], requested)
         if not validated:
+            global _missing
+            _missing = True
             log("Saved output, display identity, or mode is absent; keeping compositor default")
             return False
         output, mode = validated
@@ -359,6 +363,24 @@ def restore_saved_mode(pending: pathlib.Path = PENDING) -> bool | None:
         return False
 
 
+BOOT_ATTEMPTS = 6
+BOOT_RETRY_S = 2.0
+
+
+def restore_at_boot(attempts: int = BOOT_ATTEMPTS, delay: float = BOOT_RETRY_S, sleep=time.sleep) -> bool | None:
+    """restore_saved_mode, tried again for a few seconds while the screen is not ready: a TV
+    still waking up lists no output, or only its 1080p modes, for the first seconds."""
+    global _missing
+    for attempt in range(attempts):
+        _missing = False
+        result = restore_saved_mode()
+        if result is not False or not _missing or attempt == attempts - 1:
+            return result
+        log(f"Display not ready; trying the display mode again in {delay:g} s")
+        sleep(delay)
+    return False
+
+
 def use_native_mode(pending: pathlib.Path = PENDING) -> bool | None:
     """No mode was chosen yet: switch to the screen's native mode when the compositor started
     in another one (a 4K TV that prefers 1080p). Guarded like a restore: a native mode that
@@ -368,6 +390,8 @@ def use_native_mode(pending: pathlib.Path = PENDING) -> bool | None:
     try:
         output = active_output(query_outputs())
         if output is None or output.current_mode is None:
+            global _missing
+            _missing = True
             log("No active display; keeping compositor default")
             return False
         mode = native_mode(output.modes)

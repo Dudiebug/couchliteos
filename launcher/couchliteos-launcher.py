@@ -1446,7 +1446,7 @@ class Launcher(session.Session):
         self.updates.start()
         self.draw()
         (RUN / "launcher-ready").touch()
-        if display.restore_saved_mode() is None:
+        if display.restore_at_boot() is None:
             self.status = "SAVED DISPLAY MODE SKIPPED — CHOOSE IT AGAIN IN SETTINGS > DISPLAY"
             self.last_status_update = time.monotonic() + 25  # keep it up for 30 s
         self.draw()
