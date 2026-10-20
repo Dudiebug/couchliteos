@@ -58,6 +58,13 @@ ACTIONS = (
 )
 # Two rows of at most 45 columns; one row of nine labels needs 88 and is cut off below 1080p.
 ACTION_ROWS = (ACTIONS[:5], ACTIONS[5:])
+# TYPE ON PHONE: only the GTK keyboard has room for it (and draws the QR code as a picture).
+PHONE_KEY = "TYPE ON PHONE"
+PHONE_ACTION_ROWS = (ACTIONS[:5], (*ACTIONS[5:], PHONE_KEY))
+# Characters the injector can type (US layout); others from a phone are left out.
+TYPEABLE = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_=+[]{}\\|;:'\",<.>/?`~!@#$%^&*()"
+)
 TITLE = "COUCHLITEOS KEYBOARD"
 HINT = "A / CROSS SELECTS  -  Y / SQUARE DELETES  -  B / CIRCLE CANCELS"  # ASCII: no locale is set here
 SHORT_HINT = "A SELECT - Y DELETE - B CANCEL"
@@ -66,7 +73,8 @@ MIN_ROWS = 1 + len(LETTERS) + len(ACTION_ROWS) + 1
 
 
 class Keyboard:
-    def __init__(self) -> None:
+    def __init__(self, phone: bool = False) -> None:
+        self.action_rows = PHONE_ACTION_ROWS if phone else ACTION_ROWS
         self.text = ""
         self.shift = False
         self.symbols = False
@@ -79,7 +87,7 @@ class Keyboard:
         rows = SYMBOLS if self.symbols else LETTERS
         if not self.symbols and not self.shift:
             rows = tuple(tuple(key.lower() if key.isalpha() else key for key in row) for row in rows)
-        return (*rows, *ACTION_ROWS)
+        return (*rows, *self.action_rows)
 
     def move(self, key: int) -> None:
         rows = self.rows
@@ -122,7 +130,22 @@ class Keyboard:
             return "type"
         elif key == "TYPE + ENTER":
             return "enter"
+        elif key == PHONE_KEY:
+            return "phone"
         return None
+
+    def focus(self, key: str) -> None:
+        """Put the cursor on an action key (TYPE once the phone's text is in)."""
+        for row_index, row in enumerate(self.rows):
+            if key in row:
+                self.row, self.column = row_index, row.index(key)
+                return
+
+
+def typeable(text: str) -> tuple[str, bool]:
+    """The text from a phone as the keyboard can type it, and whether anything was left out."""
+    kept = "".join(character for character in text if character in TYPEABLE)[:MAX_TEXT]
+    return kept, kept != text
 
 
 def atomic_payload(text: str, enter: bool, path: pathlib.Path = PAYLOAD) -> None:
@@ -397,7 +420,7 @@ FALLBACK_COLOURS = {"background": "0b1020", "surface": "161d33", "text": "f1f5f9
 
 def handle(keyboard: Keyboard, name: str, char: str = "") -> str | None:
     """One key for the GTK keyboard (Gdk key name, its character): "cancel", "type", "enter",
-    or None to keep going."""
+    "phone", or None to keep going."""
     code = GTK_KEYS.get(name)
     if code is None:
         if len(char) == 1 and char.isprintable():
@@ -495,19 +518,20 @@ def ui(screen: curses.window) -> None:
 def main(argv: list[str]) -> int:
     """No argument: the keyboard in a terminal. --gtk: the keyboard in GTK 4 (exits
     GTK_UNAVAILABLE when it cannot be shown). --target: print the focused window (JSON) for --inject.
+    --gtk --phone: the GTK keyboard opening on TYPE ON PHONE (the controller shortcut).
     --inject [TARGET]: type the keyboard's text, into TARGET when it is given and known."""
     if argv == ["--target"]:
         target = active_toplevel()
         if target is not None:
             print(json.dumps(target, separators=(",", ":")))
         return 0
-    if argv == ["--gtk"]:
+    if argv in (["--gtk"], ["--gtk", "--phone"]):
         try:
             import couchliteos_gtk_osk as gtk_osk
         except Exception as error:  # no GTK here: the session opens the terminal keyboard
             print(f"couchliteos-osk: GTK keyboard unavailable: {error}", file=sys.stderr)
             return GTK_UNAVAILABLE
-        return gtk_osk.run()
+        return gtk_osk.run(phone=argv[1:] == ["--phone"])
     if argv[:1] == ["--inject"] and len(argv) <= 2:
         return inject(target=parse_target(argv[1]) if len(argv) == 2 and argv[1] else None)
     return curses.wrapper(ui) or 0

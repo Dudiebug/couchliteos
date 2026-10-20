@@ -97,11 +97,12 @@ def detect_family(path: pathlib.Path = PROC_INPUT) -> str:
 
 def table(
     kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: str = inputprefs.DEFAULT_CHORD,
+    phone: str = inputprefs.PHONE_SELECT,
 ) -> list[tuple[list[str], str]]:
     """(button label lines, what the button does) for each row.
 
-    `home` and `keyboard` are the Settings > CONTROLS Home shortcut choices: the pad combo (gamepad-nav
-    HomeCombo) and the keyboard Home key chord ("" for none).
+    `home`, `keyboard` and `phone` are the Settings > CONTROLS shortcut choices: the pad combo (gamepad-nav
+    HomeCombo), the keyboard Home key chord ("" for none) and the TYPE ON PHONE button.
     """
     south, east, north, west, left, right, view, menu, guide = FAMILY_NAMES[kind]
     shortcuts = [f"{left}  {right}  {view}  {menu}"]
@@ -123,6 +124,9 @@ def table(
         rows.append((["L3 + R3 (BOTH STICKS IN)", held], "OPENS HOME, ALSO IN A STREAM"))
     if keyboard:
         rows.append(([f"KEYBOARD: {inputprefs.chord_label(keyboard)}"], "OPENS HOME, ALSO IN A STREAM"))
+    held_button = {inputprefs.PHONE_SELECT: view, inputprefs.PHONE_START: menu}.get(phone)
+    if held_button:
+        rows.append(([f"HOLD {held_button},", f"PRESS {guide}"], "TYPE ON PHONE INTO THE APP IN FRONT (NOT IN A STREAM)"))
     if can_sleep:
         rows.append(([f"HOLD {guide} {SLEEP_HOLD_SECONDS} S"], "SLEEP"))
     return rows
@@ -147,9 +151,10 @@ def keyboard_table(keyboard: str = inputprefs.DEFAULT_CHORD) -> list[tuple[list[
 
 def rows(
     kind: str, can_sleep: bool, home: str = inputprefs.HOME_SELECT_START, keyboard: str = inputprefs.DEFAULT_CHORD,
+    phone: str = inputprefs.PHONE_SELECT,
 ) -> list[str]:
     """The table as text lines of at most WIDTH columns; long descriptions wrap."""
-    return wrap_cells(table(kind, can_sleep, home, keyboard))
+    return wrap_cells(table(kind, can_sleep, home, keyboard, phone))
 
 
 def wrap_cells(cells: list[tuple[list[str], str]]) -> list[str]:
@@ -192,7 +197,8 @@ def show(
     """Draw the help for the connected pad until A or B (Enter or Esc) is pressed."""
     kind = detect_family(proc)
     shortcut = inputprefs.load_settings(config)
-    lines = rows(kind, sleep_supported() if can_sleep is None else can_sleep, shortcut.home, shortcut.keyboard_home)
+    lines = rows(kind, sleep_supported() if can_sleep is None else can_sleep, shortcut.home, shortcut.keyboard_home,
+                 shortcut.phone)
     show_lines(screen, TITLE, lines, footer(kind))
 
 

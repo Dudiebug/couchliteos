@@ -138,6 +138,38 @@ def find_mode(output: Output, resolution: str, refresh_mhz: int) -> Mode | None:
     )
 
 
+SMOOTH_MHZ = 50_000  # slower than this is too choppy to be the picture CouchLiteOS picks itself
+TARGET_MHZ = 60_500  # a bigger picture runs at the fastest rate up to 60 Hz (59.94 and 60 included)
+
+
+def native_mode(modes: tuple[Mode, ...] | list[Mode]) -> Mode | None:
+    """The picture size the screen really has, at a smooth rate.
+
+    Usually the mode the display marks as preferred, but some 4K TVs mark 1080p at 120 Hz:
+    then a bigger picture of the same shape, at 50 Hz or more, wins, at the fastest rate up
+    to 60 Hz. A preferred mode that already is the biggest keeps its own rate (a 144 Hz monitor).
+    """
+    if not modes:
+        return None
+    preferred = next((mode for mode in modes if mode.preferred), None)
+    base = preferred or max(modes, key=lambda mode: (mode.width * mode.height, mode.refresh_mhz))
+
+    def same_shape(mode: Mode) -> bool:  # 3840x2160 for a 16:9 TV, never the wider 4096x2160
+        return abs(mode.width * base.height - mode.height * base.width) <= base.width * base.height // 100
+
+    bigger = [
+        mode for mode in modes
+        if same_shape(mode) and mode.refresh_mhz >= SMOOTH_MHZ
+        and mode.width * mode.height > base.width * base.height
+    ]
+    if not bigger:
+        return base
+    size = max(mode.width * mode.height for mode in bigger)
+    rates = [mode for mode in bigger if mode.width * mode.height == size]
+    upto = [mode for mode in rates if mode.refresh_mhz <= TARGET_MHZ]
+    return max(upto, key=lambda mode: mode.refresh_mhz) if upto else min(rates, key=lambda mode: mode.refresh_mhz)
+
+
 def apply_mode(output: Output, mode: Mode, *, dryrun: bool = False) -> None:
     command = ["wlr-randr", "--output", output.name, "--mode", mode.argument]
     if dryrun:
@@ -273,15 +305,15 @@ def confirm_restore(pending: pathlib.Path = PENDING) -> None:
 
 
 def restore_saved_mode(pending: pathlib.Path = PENDING) -> bool | None:
-    """True when the saved mode is active, False when nothing was restored.
+    """True when the saved mode (or, with none saved, the native mode) is active, False when
+    nothing was restored.
 
     None means it was skipped because the previous restore was never confirmed.
     """
     global _unconfirmed
     saved = load_saved_display()
     if not saved:
-        log("No valid saved display mode; keeping compositor default")
-        return False
+        return use_native_mode(pending)
     try:
         requested = Mode(
             *map(int, saved["resolution"].split("x")), int(saved["refresh_mhz"])
@@ -324,4 +356,46 @@ def restore_saved_mode(pending: pathlib.Path = PENDING) -> bool | None:
         return True
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         log(f"Could not restore saved display mode; keeping compositor default: {error}")
+        return False
+
+
+def use_native_mode(pending: pathlib.Path = PENDING) -> bool | None:
+    """No mode was chosen yet: switch to the screen's native mode when the compositor started
+    in another one (a 4K TV that prefers 1080p). Guarded like a restore: a native mode that
+    left the screen black, never confirmed by a key press, is not tried again (False then,
+    quietly: Settings > DISPLAY still offers it). True when the native mode is active."""
+    global _unconfirmed
+    try:
+        output = active_output(query_outputs())
+        if output is None or output.current_mode is None:
+            log("No active display; keeping compositor default")
+            return False
+        mode = native_mode(output.modes)
+        current = output.current_mode
+        if mode is None or (mode.width, mode.height, mode.refresh_mhz) == (
+            current.width, current.height, current.refresh_mhz
+        ):
+            log(f"No saved display mode; native mode active on {output.name}: {current.argument}")
+            _unconfirmed = pending.exists()
+            return True
+        if pending.exists():
+            log(f"Native mode {mode.argument} was never confirmed by input; keeping {current.argument}")
+            return False
+        apply_mode(output, mode, dryrun=True)
+        try:
+            pending.write_text("pending", encoding="utf-8")
+        except OSError as error:
+            log(f"Cannot mark the native mode pending, so not applying it: {error}")
+            return False
+        _unconfirmed = True
+        try:
+            apply_mode(output, mode)
+        except RuntimeError:
+            _unconfirmed = False
+            pending.unlink(missing_ok=True)
+            raise
+        log(f"No saved display mode; switched {output.name} from {current.argument} to native {mode.argument}")
+        return True
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        log(f"Could not switch to the native display mode; keeping compositor default: {error}")
         return False

@@ -432,14 +432,18 @@ def check_connectivity(
 
 def display_choices(modes: Sequence[Any]) -> list[tuple[str, str, int]]:
     usable = [mode for mode in modes if mode.width >= 1280 and mode.height >= 720] or list(modes)
-    ordered = sorted(usable, key=lambda mode: (not mode.preferred, -mode.width * mode.height, -mode.refresh_mhz))
+    best = display.native_mode(list(modes))
+    native = (best.resolution, best.refresh_mhz) if best is not None else None
+    ordered = sorted(usable, key=lambda mode: (
+        (mode.resolution, mode.refresh_mhz) != native, -mode.width * mode.height, -mode.refresh_mhz,
+    ))
     choices, seen = [], set()
     for mode in ordered:
         key = (mode.resolution, mode.refresh_mhz)
         if key in seen:
             continue
         seen.add(key)
-        flags = [name for name, on in (("NATIVE", mode.preferred), ("CURRENT", mode.current)) if on]
+        flags = [name for name, on in (("NATIVE", key == native), ("CURRENT", mode.current)) if on]
         label = f"{mode.resolution}  {mode.refresh} HZ" + (f"  ({', '.join(flags)})" if flags else "")
         choices.append((label, mode.resolution, mode.refresh_mhz))
     return choices

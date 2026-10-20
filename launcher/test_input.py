@@ -369,17 +369,30 @@ class RowsAndCycleTest(TempDir):
             "KEYBOARD HOME KEY  CTRL+ALT+H",
             "CONTROLLER MOUSE SPEED  NORMAL",
             "MOUSE SPEED  NORMAL",
+            "TYPE ON PHONE SHORTCUT  HOLD SELECT, PRESS GUIDE",
         ])
-        rows = inputprefs.rows(inputprefs.Settings("guide", "", "very-fast", "slow"))
+        rows = inputprefs.rows(inputprefs.Settings("guide", "", "very-fast", "slow", "off"))
         self.assertEqual(rows[0], "HOME SHORTCUT  GUIDE (SELECT+START IN A STREAM)")
         self.assertEqual(rows[1], "KEYBOARD HOME KEY  OFF")
         self.assertEqual(rows[2], "CONTROLLER MOUSE SPEED  VERY FAST")
         self.assertEqual(rows[3], "MOUSE SPEED  SLOW")
+        self.assertEqual(rows[4], "TYPE ON PHONE SHORTCUT  OFF")
         self.assertEqual([label for _value, label in inputprefs.HOME_CHOICES],
                          ["GUIDE (SELECT+START IN A STREAM)", "GUIDE OR SELECT+START (HOLD)", "GUIDE OR L3+R3 (HOLD)"])
         for text in [*rows, *inputprefs.HELP.values()]:
             self.assertLessEqual(len(text), 76)
             self.assertEqual(text, text.upper())
+
+    def test_the_phone_shortcut_cycles_and_is_saved(self):
+        settings = inputprefs.Settings()
+        self.assertEqual(settings.phone, "select")
+        self.assertEqual(inputprefs.cycle(settings, "phone").phone, "start")
+        self.assertEqual(inputprefs.cycle(settings, "phone", -1).phone, "off")
+        inputprefs.save_settings(inputprefs.Settings(phone="start"), self.config)
+        self.assertIn("phone_shortcut = start", self.config.read_text())
+        self.assertEqual(inputprefs.load_settings(self.config, self.speed).phone, "start")
+        self.config.write_text("[input]\nphone_shortcut = both\n")
+        self.assertEqual(inputprefs.load_settings(self.config, self.speed).phone, "select")
 
     def test_cycling_wraps_both_ways(self):
         settings = inputprefs.Settings()
@@ -491,7 +504,7 @@ class ControlsScreenTest(TempDir):
         text = "\n".join(frames[0])
         for row in ("CONTROLS", "HOME SHORTCUT  GUIDE OR SELECT+START (HOLD)",
                     "KEYBOARD HOME KEY  CTRL+ALT+H", "CONTROLLER MOUSE SPEED  NORMAL",
-                    "MOUSE SPEED  NORMAL", "CONTROLLER BUTTONS", "KEYBOARD KEYS", "BACK", inputprefs.HELP["home"]):
+                    "MOUSE SPEED  NORMAL", "TYPE ON PHONE SHORTCUT  HOLD SELECT, PRESS GUIDE", "CONTROLLER BUTTONS", "KEYBOARD KEYS", "BACK", inputprefs.HELP["home"]):
             self.assertIn(row, text)
 
     def test_left_right_and_a_cycle_each_row_and_save(self):
@@ -499,16 +512,18 @@ class ControlsScreenTest(TempDir):
                 curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT,  # the Home key is not cycled
                 curses.KEY_DOWN, curses.KEY_LEFT,  # controller mouse: SLOW
                 curses.KEY_DOWN, curses.KEY_RIGHT,  # mouse: FAST
+                curses.KEY_DOWN, curses.KEY_RIGHT,  # TYPE ON PHONE: HOLD START
                 27]
         frames, _show, send = self.run_screen(keys)
         saved = inputprefs.load_settings(self.config, self.speed)
-        self.assertEqual(saved, inputprefs.Settings("guide", inputprefs.DEFAULT_CHORD, "slow", "fast"))
+        self.assertEqual(saved, inputprefs.Settings("guide", inputprefs.DEFAULT_CHORD, "slow", "fast", "start"))
         self.capture.assert_not_called()
         self.assertEqual(self.speed.read_text(), "0.4\n")
         send.assert_called_once_with()
         last = "\n".join(frames[-1])
         self.assertIn("HOME SHORTCUT  GUIDE (SELECT+START IN A STREAM)", last)
         self.assertIn("MOUSE SPEED  FAST", last)
+        self.assertIn("TYPE ON PHONE SHORTCUT  HOLD START, PRESS GUIDE", last)
         self.assertIn("HOME SHORTCUT  GUIDE OR L3+R3 (HOLD)", "\n".join(frames[1]))
 
     def test_controller_buttons_opens_the_help_and_back_leaves(self):

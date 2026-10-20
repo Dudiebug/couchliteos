@@ -8,6 +8,8 @@ import unittest
 from unittest import mock
 
 import couchliteos_whatsnew as whatsnew
+
+V030 = dict(whatsnew.RELEASES)["0.3.0"]  # the release the screen tests draw
 from test_launcher import Screen as LauncherScreen
 
 
@@ -248,7 +250,7 @@ class ScreenTest(unittest.TestCase):
         text = "\n".join(screen.text())
         self.assertIn("WHAT'S NEW IN 0.3.0", text)
         self.assertIn(whatsnew.RENAME_NOTICE, text)
-        for feature in whatsnew.FEATURES:
+        for feature in V030:
             self.assertIn(feature, text)
         self.assertIn("PRESS A, B, ENTER OR ESC TO CONTINUE", text)
         # Nothing is drawn on top of anything else.
@@ -283,7 +285,7 @@ class ScreenTest(unittest.TestCase):
     def test_an_upgrade_from_0_2_7_shows_only_0_3_0_without_the_rename(self):
         text = "\n".join(self.draw(seen="0.2.7").text())
         self.assertNotIn(whatsnew.RENAME_NOTICE, text)
-        for feature in whatsnew.FEATURES:
+        for feature in V030:
             self.assertIn(feature, text)
         self.assertNotIn("TOUCHPAD", text)  # 0.2.7 notes were seen already
         self.assertNotIn("NEW IN 0.3.0:", text)  # one release needs no heading
@@ -293,10 +295,10 @@ class ScreenTest(unittest.TestCase):
         screen = self.draw(seen="0.1.13")
         text = "\n".join(screen.text())
         self.assertIn(whatsnew.RENAME_NOTICE, text)
-        for feature in whatsnew.FEATURES:
+        for feature in V030:
             self.assertIn(feature, text)
-        for _release, features in whatsnew.RELEASES[1:]:
-            for feature in features:
+        for release, features in whatsnew.RELEASES:
+            for feature in features if release != "0.3.0" else ():
                 self.assertNotIn(feature, text)
         self.assertEqual(text.count(whatsnew.EARLIER), 1)
         rows = [row for row, _col, _text, _attr in screen.frame]
@@ -323,8 +325,16 @@ class ContentTest(unittest.TestCase):
         newest = [release for release, _features in whatsnew.RELEASES[:2]]
         self.assertTrue(newest[0] == current or newest[1] == current, (newest, current))
 
-    def test_0_3_0_names_each_feature_and_where_to_find_it(self):
+    def test_0_3_1_names_the_phone_shortcut_and_the_4k_fix(self):
         release, features = whatsnew.RELEASES[0]
+        self.assertEqual(release, "0.3.1")
+        text = " ".join(features)
+        for needle in ("TYPE ON PHONE IN ANY APP", "HOLD SELECT (VIEW), PRESS GUIDE / PS", "SETTINGS > CONTROLS",
+                       "TYPE ON PHONE KEY", "NATIVE 4K", "SETTINGS > DISPLAY > RESOLUTION"):
+            self.assertIn(needle, text)
+
+    def test_0_3_0_names_each_feature_and_where_to_find_it(self):
+        release, features = whatsnew.RELEASES[1]
         self.assertEqual(release, "0.3.0")
         text = " ".join(features)
         for needle in ("TV HOME SCREEN", "QUICK MENU", "SETTINGS > APPEARANCE", "RESTORE PREVIOUS VERSION",
@@ -339,13 +349,13 @@ class ContentTest(unittest.TestCase):
 
     def test_0_3_0_says_how_to_go_back_to_the_old_look_right_after_the_new_one(self):
         # Upgraders get the new interface and theme; they learn at once that the old ones are kept.
-        _release, features = whatsnew.RELEASES[0]
+        _release, features = whatsnew.RELEASES[1]
         self.assertIn("NEW TV HOME SCREEN", features[0])
         self.assertEqual(features[1], "PREFER THE OLD LOOK? SETTINGS > APPEARANCE > INTERFACE > CLASSIC")
         self.assertEqual(features[2], "AND THE OLD COLOURS: SETTINGS > APPEARANCE > THEME > TERMINAL")
 
     def test_0_2_7_says_guide_stays_with_the_stream_and_how_to_get_home(self):
-        release, features = whatsnew.RELEASES[1]
+        release, features = whatsnew.RELEASES[2]
         self.assertEqual(release, "0.2.7")
         text = " ".join(features)
         self.assertIn("GUIDE GOES TO THE STREAM", text)
@@ -355,14 +365,14 @@ class ContentTest(unittest.TestCase):
         self.assertIn("EVERY START", text)
 
     def test_0_2_6_says_a_paired_pc_is_recognised_and_the_notice_is_gone(self):
-        release, features = whatsnew.RELEASES[2]
+        release, features = whatsnew.RELEASES[3]
         self.assertEqual(release, "0.2.6")
         text = " ".join(features)
         self.assertIn("PAIRED GAMING PC", text)
         self.assertIn("NO MORE NOTICE", text)
 
     def test_0_2_5_says_the_super_key_no_longer_opens_home_and_where_to_set_the_key(self):
-        release, features = whatsnew.RELEASES[3]
+        release, features = whatsnew.RELEASES[4]
         self.assertEqual(release, "0.2.5")
         text = " ".join(features)
         self.assertIn("SUPER", text)
@@ -370,7 +380,7 @@ class ContentTest(unittest.TestCase):
         self.assertIn("SETTINGS > CONTROLS", text)
 
     def test_notes_are_only_the_installed_release(self):
-        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[5]]))
+        self.assertEqual(whatsnew.notes("0.2.3", "0.2.2"), (False, [whatsnew.RELEASES[6]]))
         renamed, releases = whatsnew.notes("0.2.3", "0.2.0")
         self.assertFalse(renamed)
         self.assertEqual([r for r, _f in releases], ["0.2.3"])
@@ -384,10 +394,10 @@ class ContentTest(unittest.TestCase):
         self.assertEqual(whatsnew.notes("0.2.8", "0.2.7"), (False, []))
         self.assertEqual(whatsnew.notes("0.2.7.1", "0.2.7"), (False, []))
         # A pre-release of 0.2.7 already shows the 0.2.7 notes.
-        self.assertEqual(whatsnew.notes("0.2.7-rc.1", "0.2.6")[1], [whatsnew.RELEASES[1]])
-        self.assertEqual(whatsnew.notes("0.3.0-rc.1", "0.2.7")[1], [whatsnew.RELEASES[0]])
+        self.assertEqual(whatsnew.notes("0.2.7-rc.1", "0.2.6")[1], [whatsnew.RELEASES[2]])
+        self.assertEqual(whatsnew.notes("0.3.0-rc.1", "0.2.7")[1], [whatsnew.RELEASES[1]])
         # An upgrade from 0.2.x shows the 0.3.0 notes alone, and says earlier ones were skipped.
-        self.assertEqual(whatsnew.notes("0.3.0", "0.2.5"), (False, [whatsnew.RELEASES[0]]))
+        self.assertEqual(whatsnew.notes("0.3.0", "0.2.5"), (False, [whatsnew.RELEASES[1]]))
         self.assertTrue(whatsnew.skipped_releases("0.3.0", "0.2.5"))
         self.assertFalse(whatsnew.skipped_releases("0.3.0", "0.2.7"))
         # A future version's notes are not shown on an older system.

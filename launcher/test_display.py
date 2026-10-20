@@ -197,5 +197,96 @@ class RestoreConfirmationTest(unittest.TestCase):
         self.assertFalse(self.pending.exists())
 
 
+def mode(width, height, hz, **flags):
+    return display.Mode(width, height, round(hz * 1000), **flags)
+
+
+class NativeModeTest(unittest.TestCase):
+    """The preferred mode is not always the screen's size: some 4K TVs prefer 1080p at 120 Hz."""
+
+    def test_preferred_mode_that_is_the_biggest_stays(self):
+        modes = display.parse_wlr_randr(SAMPLE)[0].modes
+        self.assertEqual(display.native_mode(modes), mode(3840, 2160, 60, preferred=True, current=True))
+
+    def test_4k_tv_preferring_1080p_120_gets_4k_60(self):
+        modes = (mode(1920, 1080, 120, preferred=True, current=True), mode(3840, 2160, 30),
+                 mode(3840, 2160, 59.94), mode(3840, 2160, 60), mode(3840, 2160, 120),
+                 mode(4096, 2160, 60), mode(1920, 1080, 60))
+        self.assertEqual(display.native_mode(modes), mode(3840, 2160, 60))
+
+    def test_4k_only_at_30_hz_keeps_the_preferred_mode(self):
+        modes = (mode(1920, 1080, 120, preferred=True), mode(3840, 2160, 30), mode(3840, 2160, 24))
+        self.assertEqual(display.native_mode(modes), mode(1920, 1080, 120, preferred=True))
+
+    def test_high_refresh_monitor_keeps_its_own_rate(self):
+        modes = (mode(2560, 1440, 144, preferred=True), mode(2560, 1440, 60), mode(1920, 1080, 60))
+        self.assertEqual(display.native_mode(modes), mode(2560, 1440, 144, preferred=True))
+
+    def test_bigger_mode_only_above_60_hz_takes_the_slowest(self):
+        modes = (mode(1920, 1080, 60, preferred=True), mode(3840, 2160, 144), mode(3840, 2160, 120))
+        self.assertEqual(display.native_mode(modes), mode(3840, 2160, 120))
+
+    def test_no_preferred_mode_takes_the_biggest(self):
+        modes = (mode(1280, 720, 60), mode(1920, 1080, 60))
+        self.assertEqual(display.native_mode(modes), mode(1920, 1080, 60))
+        self.assertIsNone(display.native_mode(()))
+
+
+TV_1080P_PREFERRED = '''HDMI-A-1 "Some TV 4K"
+  Enabled: yes
+  Modes:
+    1920x1080 px, 120.000000 Hz (preferred, current)
+    3840x2160 px, 60.000000 Hz
+    1920x1080 px, 60.000000 Hz
+'''
+
+
+class NativeAtBootTest(unittest.TestCase):
+    """With no saved mode, the screen's native mode replaces the compositor's choice once."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.pending = pathlib.Path(self.directory.name) / "display-restore.pending"
+        display._unconfirmed = False
+        self.addCleanup(setattr, display, "_unconfirmed", False)
+
+    def restore(self, text=TV_1080P_PREFERRED, apply=None):
+        with mock.patch.object(display, "load_saved_display", return_value={}), mock.patch.object(
+            display, "query_outputs", return_value=display.parse_wlr_randr(text)
+        ), mock.patch.object(display, "apply_mode", side_effect=apply) as applied,                 mock.patch.object(display, "log"):
+            result = display.restore_saved_mode(self.pending)
+        return result, [call.args[1] for call in applied.call_args_list if not call.kwargs.get("dryrun")]
+
+    def test_switches_to_4k_and_marks_it_pending(self):
+        result, applied = self.restore()
+        self.assertTrue(result)
+        self.assertEqual(applied, [mode(3840, 2160, 60)])
+        self.assertTrue(self.pending.exists())
+        display.confirm_restore(self.pending)
+        self.assertFalse(self.pending.exists())
+
+    def test_unconfirmed_native_mode_is_not_tried_again_quietly(self):
+        self.pending.write_text("pending", encoding="utf-8")
+        result, applied = self.restore()
+        self.assertIs(result, False)
+        self.assertEqual(applied, [])
+
+    def test_native_mode_already_active_changes_nothing(self):
+        result, applied = self.restore(SAMPLE)
+        self.assertTrue(result)
+        self.assertEqual(applied, [])
+        self.assertFalse(self.pending.exists())
+
+    def test_refused_mode_leaves_no_marker(self):
+        def refuse(_output, _mode, dryrun=False):
+            if not dryrun:
+                raise RuntimeError("wlr-randr failed")
+
+        result, _applied = self.restore(apply=refuse)
+        self.assertFalse(result)
+        self.assertFalse(self.pending.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

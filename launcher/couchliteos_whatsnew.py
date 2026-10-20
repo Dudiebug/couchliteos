@@ -27,6 +27,13 @@ RENAMED_IN = "0.2.0"  # upgrades from before this version also see RENAME_NOTICE
 # What each release added, newest first: one line per feature, at most 66 columns (the screen wraps longer ones at 80x24).
 # An upgrade shows every release newer than the one last seen, newest first.
 RELEASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("0.3.1", (
+        "TYPE ON PHONE IN ANY APP: HOLD SELECT (VIEW), PRESS GUIDE / PS",
+        "CHANGE OR TURN IT OFF: SETTINGS > CONTROLS",
+        "THE ON-SCREEN KEYBOARD HAS A TYPE ON PHONE KEY TOO",
+        "4K TVS THAT ASK FOR 1080P NOW GET THEIR NATIVE 4K",
+        "STILL 1080P? PICK 4K IN SETTINGS > DISPLAY > RESOLUTION",
+    )),
     ("0.3.0", (
         "A NEW TV HOME SCREEN AND MENUS, PS3 STYLE. TOUR: SETTINGS > HELP",
         "PREFER THE OLD LOOK? SETTINGS > APPEARANCE > INTERFACE > CLASSIC",

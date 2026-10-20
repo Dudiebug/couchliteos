@@ -33,6 +33,7 @@ KEYS = [ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
 RUN = pathlib.Path(os.environ.get("COUCHLITEOS_RUN_DIR", "/run/couchliteos"))
 OSK_ACTIVE = RUN / "osk-active"
 START_OSK = RUN / "start-osk"
+OSK_PHONE = RUN / "osk-phone"  # with START_OSK: the keyboard opens on TYPE ON PHONE
 HOME_REQUEST = RUN / "home.request"
 APP_ACTIVE = RUN / "app-active"
 # Written by the launcher for apps without controller support (browsers, web apps): the pad drives a mouse.
@@ -182,14 +183,31 @@ def pointer_mode(active_osk: bool) -> bool:
     return not active_osk and POINTER_MODE.exists() and app_owns_pad()
 
 
-def open_keyboard() -> None:
-    """Open the buffered keyboard over the app in front; it types into that app when it closes."""
+def open_keyboard(phone: bool = False) -> None:
+    """Open the buffered keyboard over the app in front; it types into that app when it closes.
+    `phone`: it opens on TYPE ON PHONE, a QR code for a form on the phone."""
     if OSK_ACTIVE.exists():
         return
     try:
+        if phone:
+            OSK_PHONE.touch()
         START_OSK.touch()
     except OSError:
-        pass
+        OSK_PHONE.unlink(missing_ok=True)  # not left for the next, ordinary keyboard
+
+
+def phone_button() -> int | None:
+    """The button held with Guide for TYPE ON PHONE (Settings > CONTROLS), None when it is off."""
+    return {inputprefs.PHONE_SELECT: ecodes.BTN_SELECT, inputprefs.PHONE_START: ecodes.BTN_START}.get(
+        INPUT_SETTINGS.current().phone)
+
+
+def phone_shortcut(event, held: Iterable[int] | None) -> bool:
+    """Guide pressed while the chosen button is held, over an app that has the controller (not a
+    stream: Guide is the stream's there, and not the launcher: its text fields have SELECT)."""
+    button = phone_button()
+    return (button is not None and is_guide_press(event) and held is not None and button in held
+            and app_owns_pad() and not stream_owns_pad())
 
 
 def stick_curve(value: float) -> float:
@@ -539,7 +557,10 @@ class Pads:
         if event.type != ecodes.EV_KEY:
             return
         self.combo.feed(path, event, now)
-        if is_home_event(event):
+        if phone_shortcut(event, self.taps.down.get(path)):
+            self.taps.disarm(path)  # the held SELECT / START is part of the shortcut, not a tap
+            open_keyboard(phone=True)
+        elif is_home_event(event):
             # The grab hides the pad from watch_home(): Guide must still bring up the menu.
             request_home(guide=True)
         elif event.code in POINTER_BUTTONS and event.value in (0, 1):
@@ -1042,9 +1063,12 @@ class PairTaps:
 
     BUTTONS = frozenset({ecodes.BTN_SELECT, ecodes.BTN_START})
 
-    def __init__(self, deferred: Callable[[], bool] | None = None) -> None:
+    def __init__(self, deferred: Callable[[], bool] | None = None,
+                 held_back: Callable[[], int | None] | None = None) -> None:
         self.deferred = deferred or (
             lambda: effective_home_choice(INPUT_SETTINGS.current().home) == inputprefs.HOME_SELECT_START)
+        # The TYPE ON PHONE button waits for its release too: Guide may come while it is held.
+        self.held_back = held_back or phone_button
         self.down: dict[object, set[int]] = {}
         self.armed: dict[object, set[int]] = {}  # pressed alone so far: a tap when let go
 
@@ -1057,7 +1081,7 @@ class PairTaps:
         if event.value:
             together = bool(down - {event.code})
             down.add(event.code)
-            if not self.deferred():
+            if not self.deferred() and event.code != self.held_back():
                 armed.clear()
                 return event.code
             if together:
@@ -1070,6 +1094,10 @@ class PairTaps:
             armed.discard(event.code)
             return event.code
         return None
+
+    def disarm(self, path: object) -> None:
+        """The buttons held now were part of another shortcut: no tap when they are let go."""
+        self.armed.pop(path, None)
 
     def forget(self, path: object) -> None:
         self.down.pop(path, None)
@@ -1201,6 +1229,8 @@ def watch_home() -> None:
                     guide_goes_home = is_home_event(event) and not (is_guide_press(event) and stream_owns_pad())
                     if chorded:
                         request_home()
+                    elif is_guide_press(event) and phone_shortcut(event, pressed_keys(device)):
+                        open_keyboard(phone=True)
                     elif guide_goes_home:
                         request_home(guide=True)
                     # Deliberately also during a stream or remote desktop: the volume and

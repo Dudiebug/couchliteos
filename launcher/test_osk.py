@@ -521,6 +521,39 @@ class GtkKeysTest(unittest.TestCase):
     def test_gtk_mode_without_gtk_asks_for_the_terminal_keyboard(self):
         with mock.patch.dict(sys.modules, {"couchliteos_gtk_osk": None}), mock.patch("sys.stderr", io.StringIO()):
             self.assertEqual(osk.main(["--gtk"]), osk.GTK_UNAVAILABLE)
+            self.assertEqual(osk.main(["--gtk", "--phone"]), osk.GTK_UNAVAILABLE)
+
+    def test_gtk_phone_flag_opens_on_type_on_phone(self):
+        fake = types.SimpleNamespace(run=mock.Mock(return_value=0))
+        with mock.patch.dict(sys.modules, {"couchliteos_gtk_osk": fake}):
+            osk.main(["--gtk", "--phone"])
+            osk.main(["--gtk"])
+        self.assertEqual([call.kwargs for call in fake.run.call_args_list], [{"phone": True}, {"phone": False}])
+
+
+class PhoneKeyTest(unittest.TestCase):
+    """TYPE ON PHONE: a key of the GTK keyboard only; the phone's text comes back to the keyboard."""
+
+    def test_only_the_gtk_keyboard_has_the_key(self):
+        self.assertNotIn(osk.PHONE_KEY, [key for row in osk.Keyboard().rows for key in row])
+        keyboard = osk.Keyboard(phone=True)
+        self.assertEqual(keyboard.rows[-1][-1], osk.PHONE_KEY)
+        self.assertEqual(len(keyboard.rows), len(osk.Keyboard().rows))
+        keyboard.focus(osk.PHONE_KEY)
+        self.assertEqual(keyboard.select(), "phone")
+        self.assertEqual(osk.handle(keyboard, "Return"), "phone")
+
+    def test_focus_puts_the_cursor_on_type(self):
+        keyboard = osk.Keyboard(phone=True)
+        keyboard.focus("TYPE")
+        self.assertEqual(keyboard.rows[keyboard.row][keyboard.column], "TYPE")
+
+    def test_the_phones_text_keeps_only_what_can_be_typed(self):
+        self.assertEqual(osk.typeable("Wifi pass: x!@#$%^&*()_+-=[]{};':\",./<>?`~|\\"),
+                         ("Wifi pass: x!@#$%^&*()_+-=[]{};':\",./<>?`~|\\", False))
+        self.assertEqual(osk.typeable("caf\u00e9 \U0001f600ok"), ("caf ok", True))
+        self.assertEqual(osk.typeable("tab\there"), ("tabhere", True))
+        self.assertEqual(len(osk.typeable("a" * 2000)[0]), osk.MAX_TEXT)
 
 
 if __name__ == "__main__":

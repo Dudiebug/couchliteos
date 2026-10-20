@@ -4,7 +4,11 @@ set -Eeuo pipefail
 active=/run/couchliteos/osk-active
 payload=/run/couchliteos/osk-payload.json
 request=/run/couchliteos/start-osk
-rm -f -- "$request" "$payload"
+# Written with the request by the controller's TYPE ON PHONE shortcut: open on the QR code.
+phone=/run/couchliteos/osk-phone
+mode=()
+if [ -f "$phone" ] && [ ! -L "$phone" ]; then mode=(--phone); fi
+rm -f -- "$request" "$payload" "$phone"
 touch "$active"
 cleanup() { rm -f -- "$active"; }
 trap cleanup EXIT INT TERM
@@ -17,7 +21,7 @@ target=$(/usr/libexec/couchliteos-osk --target) || target=
 # the terminal keyboard opens instead. Not full-screen, foot would draw a title bar: the panel
 # has none.
 status=0
-/usr/libexec/couchliteos-osk --gtk || status=$?
+/usr/libexec/couchliteos-osk --gtk "${mode[@]}" || status=$?
 if [ "$status" -eq 3 ]; then
 /usr/libexec/couchliteos-foot --app-id=couchliteos-osk -o csd.preferred=none --title 'COUCHLITEOS KEYBOARD' -- /usr/libexec/couchliteos-osk
 fi

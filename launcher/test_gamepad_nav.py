@@ -810,7 +810,8 @@ class PointerModeTest(unittest.TestCase):
                 (run / name).touch()
         for attribute, name in (("APP_ACTIVE", "app-active"), ("POINTER_MODE", "pointer-mode"),
                                 ("LAUNCHER_FOCUS", "launcher-focus"), ("OSK_ACTIVE", "osk-active"),
-                                ("START_OSK", "start-osk"), ("HOME_REQUEST", "home.request")):
+                                ("START_OSK", "start-osk"), ("HOME_REQUEST", "home.request"),
+                                ("OSK_PHONE", "osk-phone")):
             patcher = mock.patch.object(self.module, attribute, run / name)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -2125,12 +2126,76 @@ class HomeShortcutTest(unittest.TestCase):
         steps = [(0.0, [(Codes.BTN_SELECT, 1)]), (0.2, [(Codes.BTN_START, 1)]),
                  (0.3, [(Codes.BTN_START, 0), (Codes.BTN_SELECT, 0)])]
         for home in ("guide", "l3-r3"):
-            self.use(home=home)
+            self.use(home=home, phone="off")
             for mode, keys in (("launcher", (Codes.KEY_F7, Codes.KEY_F8)), ("pointer", (Codes.KEY_ESC, Codes.KEY_SPACE))):
                 with self.subTest(home=home, mode=mode):
                     run = self.run_dir(app=mode == "pointer", pointer=mode == "pointer")
                     pressed, _timeouts, _pads, _mouse, _pad = self.drive(self.tap_script(*steps), run=run)
                     self.assertEqual(pressed, [(0.0, keys[0]), (0.2, keys[1])])
+
+    def test_the_type_on_phone_button_waits_for_release_whatever_the_home_shortcut(self):
+        # Guide may come while it is held; START (not the phone button) still acts on press.
+        self.use(home="guide", phone="select")
+        steps = [(0.0, [(Codes.BTN_SELECT, 1)]), (0.2, [(Codes.BTN_SELECT, 0)]),
+                 (0.3, [(Codes.BTN_START, 1)]), (0.4, [(Codes.BTN_START, 0)])]
+        run = self.run_dir(app=True, pointer=True)
+        pressed, *_rest = self.drive(self.tap_script(*steps), run=run)
+        self.assertEqual(pressed, [(0.2, Codes.KEY_ESC), (0.3, Codes.KEY_SPACE)])
+
+    def phone_drive(self, *, phone="select", button=None, app="firefox", focus=False):
+        """Hold the phone button (SELECT by default), press Guide, let both go, in pointer mode."""
+        self.use(phone=phone)
+        button = button or Codes.BTN_SELECT
+        run = self.run_dir(app=True, pointer=True, focus=focus)
+        (run / "app-active").write_text(f"{app}\n")
+        steps = [(0.0, [(button, 1)]), (0.2, [(Codes.BTN_MODE, 1)]), (0.3, [(Codes.BTN_MODE, 0)]),
+                 (0.4, [(button, 0)])]
+        with mock.patch.object(self.module.subprocess, "run"):
+            pressed, *_rest = self.drive(self.tap_script(*steps), run=run)
+        return run, pressed
+
+    def test_select_held_with_guide_opens_the_keyboard_on_type_on_phone(self):
+        run, pressed = self.phone_drive()
+        self.assertTrue((run / "start-osk").exists())
+        self.assertTrue((run / "osk-phone").exists())
+        self.assertFalse((run / "home.request").exists(), "no quick menu as well")
+        self.assertEqual(pressed, [], "the held SELECT is no Esc tap when it is let go")
+
+    def test_the_start_choice_uses_start(self):
+        run, pressed = self.phone_drive(phone="start", button=Codes.BTN_START)
+        self.assertTrue((run / "osk-phone").exists())
+        self.assertEqual(pressed, [])
+        run, _pressed = self.phone_drive(phone="start")
+        self.assertFalse((run / "osk-phone").exists(), "SELECT is not the chosen button")
+        self.assertTrue((run / "home.request").exists())
+
+    def test_with_the_shortcut_off_guide_opens_the_quick_menu(self):
+        run, _pressed = self.phone_drive(phone="off")
+        self.assertFalse((run / "osk-phone").exists())
+        self.assertFalse((run / "start-osk").exists())
+        self.assertTrue((run / "home.request").exists())
+
+    def test_the_shortcut_needs_an_app_with_the_controller_and_not_a_stream(self):
+        guide = key_event(Codes.BTN_MODE, 1)
+        self.use(phone="select")
+        for app, focus, expected in (("firefox", False, True), ("moonlight", False, False),
+                                     ("chiaki-ng", False, False), ("firefox", True, False)):
+            with self.subTest(app=app, focus=focus):
+                run = self.run_dir(app=True, pointer=False, focus=focus)
+                (run / "app-active").write_text(f"{app}\n")
+                self.assertEqual(self.module.phone_shortcut(guide, [Codes.BTN_SELECT]), expected)
+        run = self.run_dir(app=True, pointer=False)
+        self.assertFalse(self.module.phone_shortcut(guide, []), "SELECT is not held")
+        self.assertFalse(self.module.phone_shortcut(guide, None), "the pad cannot say")
+        self.assertFalse(self.module.phone_shortcut(key_event(Codes.KEY_HOME, 1), [Codes.BTN_SELECT]),
+                         "the keyboard's Home key is not Guide")
+
+    def test_the_keyboard_is_not_asked_for_twice(self):
+        self.use(phone="select")
+        run = self.run_dir(app=True, pointer=False, osk=True)
+        self.module.open_keyboard(phone=True)
+        self.assertFalse((run / "osk-phone").exists())
+        self.assertFalse((run / "start-osk").exists())
 
     def test_pair_taps_are_tracked_per_pad_and_forgotten(self):
         taps = self.module.PairTaps(deferred=lambda: True)
@@ -2146,6 +2211,9 @@ class HomeShortcutTest(unittest.TestCase):
         taps.feed("two", key_event(Codes.BTN_START, 1))
         taps.reset()
         self.assertIsNone(taps.feed("two", key_event(Codes.BTN_START, 0)))
+        taps.feed("one", key_event(Codes.BTN_SELECT, 1))
+        taps.disarm("one")
+        self.assertIsNone(taps.feed("one", key_event(Codes.BTN_SELECT, 0)), "part of another shortcut")
 
     def test_a_button_let_go_while_an_app_had_the_pad_is_forgotten(self):
         # Home over an app: SELECT goes down in the launcher, the app takes the pad back before it

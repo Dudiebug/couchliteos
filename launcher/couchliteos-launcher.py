@@ -1529,7 +1529,8 @@ class Settings:
     def native_resolution(self) -> str:
         if self.output is None:
             return ""
-        return next((mode.resolution for mode in self.output.modes if mode.preferred), "")
+        native = display.native_mode(self.output.modes)
+        return native.resolution if native is not None else ""
 
     def refresh_rates(self) -> list[int]:
         if self.output is None:

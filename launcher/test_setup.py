@@ -367,6 +367,19 @@ class DisplayAndSoundLogicTest(unittest.TestCase):
         self.assertEqual(choices[0][1:], ("3840x2160", 60000))
         self.assertEqual(len(labels), len(set(labels)))
 
+    def test_a_4k_tv_that_prefers_1080p_120_hz_lists_4k_first_as_native(self):
+        import couchliteos_display as display
+
+        choices = setup.display_choices((
+            display.Mode(1920, 1080, 120000, current=True, preferred=True),
+            display.Mode(3840, 2160, 30000),
+            display.Mode(3840, 2160, 60000),
+            display.Mode(1920, 1080, 60000),
+        ))
+        self.assertEqual(choices[0][1:], ("3840x2160", 60000))
+        self.assertIn("NATIVE", choices[0][0])
+        self.assertEqual([label for label, *_ in choices if "NATIVE" in label], [choices[0][0]])
+
     def test_choices_fall_back_to_every_mode_when_all_are_small(self):
         import couchliteos_display as display
 

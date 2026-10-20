@@ -5,20 +5,32 @@ couchliteos-osk, so Cage docks it along the bottom 40% of the screen like the te
 it replaces. The keys, the text and what is done with it are couchliteos_osk's; this file only
 draws them. Anything going wrong exits GTK_UNAVAILABLE, and the session opens the terminal
 keyboard instead: the controller is grabbed while the keyboard is up, so it must never hang.
+
+TYPE ON PHONE (its key, or `--phone` from the controller shortcut) swaps the keys for a QR code
+of a one-time form on the home network (couchliteos_phone). The text sent from the phone comes
+back into the keyboard with TYPE picked, so it is still checked and typed from here.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango  # noqa: E402
 
 import couchliteos_osk as osk  # noqa: E402
+import couchliteos_phone as phone  # noqa: E402
+
+try:
+    from couchliteos_gtk_screen import qr_modules
+except Exception:  # the address alone still works
+    qr_modules = None
 
 try:
     import couchliteos_theme as theme
@@ -31,6 +43,8 @@ except Exception:
     renderer = None
 
 PANEL_SHARE = 0.40  # CAGE_OSK_PANEL_SHARE in config/cage/cage-0.2.0-osk-panel.patch
+PHONE_POLL_MS = 250
+PHONE_HINT = "B / CIRCLE GOES BACK TO THE KEYBOARD"
 
 
 def colours() -> dict[str, str]:
@@ -47,10 +61,12 @@ def panel_height() -> int:
 
 
 class KeyboardWindow:
-    def __init__(self, loop: GLib.MainLoop) -> None:
+    def __init__(self, loop: GLib.MainLoop, phone_first: bool = False) -> None:
         self.loop = loop
         self.status = 0
-        self.keyboard = osk.Keyboard()
+        self.phone_first = phone_first  # opened by the shortcut: B leaves the keyboard too
+        self.session: phone.Session | None = None
+        self.keyboard = osk.Keyboard(phone=True)
         self.keyboard.masked = osk.consume_mask_request()
         self.shown_rows: tuple = ()
         self.cells: list[list[Gtk.Label]] = []
@@ -63,7 +79,7 @@ class KeyboardWindow:
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        panel = self.panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         panel.add_css_class("osk-panel")
         panel.set_valign(Gtk.Align.CENTER)
         title = Gtk.Label(label=osk.TITLE)
@@ -78,7 +94,7 @@ class KeyboardWindow:
         self.keys = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.keys.set_halign(Gtk.Align.CENTER)
         panel.append(self.keys)
-        hint = Gtk.Label(label=osk.HINT)
+        hint = self.hint = Gtk.Label(label=osk.HINT)
         hint.add_css_class("osk-hint")
         panel.append(hint)
         window.set_child(panel)
@@ -89,6 +105,80 @@ class KeyboardWindow:
         window.connect("close-request", self.on_close)
         self.render()
         window.present()
+        if phone_first:
+            self.open_phone()
+
+    def show_note(self, note: str = "") -> None:
+        """A line in place of the button hint until the next key (no room for another line)."""
+        self.hint.set_label(note or osk.HINT)
+
+    def open_phone(self) -> None:
+        interfaces = phone.lan_interfaces()
+        if not interfaces:
+            self.show_note("TYPE ON PHONE NEEDS A HOME NETWORK CONNECTION")
+            return
+        try:
+            self.session = phone.Session(
+                str(interfaces[0].ip), time.monotonic, networks=[item.network for item in interfaces],
+                title="COUCHLITEOS", prompt="TEXT FOR THE TV", limit=osk.MAX_TEXT, masked=self.keyboard.masked,
+            )
+        except OSError:
+            self.show_note("COULD NOT START TYPE ON PHONE")
+            return
+        self.window.set_child(self.phone_view(self.session.url))
+        GLib.timeout_add(PHONE_POLL_MS, self.poll_phone)
+
+    def phone_view(self, url: str) -> Gtk.Widget:
+        view = Gtk.Box(spacing=24)
+        view.add_css_class("osk-panel")
+        view.set_halign(Gtk.Align.CENTER)
+        view.set_valign(Gtk.Align.CENTER)
+        modules = qr_modules(url) if qr_modules is not None else None
+        if modules is not None:
+            side = round(panel_height() * 0.75)
+            size = max(1, side // modules.get_width()) * modules.get_width()  # sharp square modules
+            scaled = modules.scale_simple(size, size, GdkPixbuf.InterpType.NEAREST)
+            picture = Gtk.Picture.new_for_paintable(Gdk.Texture.new_for_pixbuf(scaled))
+            picture.set_can_shrink(False)
+            view.append(picture)
+        words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        words.set_valign(Gtk.Align.CENTER)
+        for text, style in ((osk.PHONE_KEY, "osk-title"),
+                            ("SCAN THE CODE WITH A PHONE ON THE SAME NETWORK, OR OPEN:", "osk-hint"),
+                            (url, "osk-text"),
+                            ("SEND IT ON THE PHONE; THE TEXT COMES BACK TO THIS KEYBOARD", "osk-hint"),
+                            (PHONE_HINT, "osk-hint")):
+            label = Gtk.Label(label=text)
+            label.add_css_class(style)
+            label.set_xalign(0.0)
+            words.append(label)
+        view.append(words)
+        return view
+
+    def poll_phone(self) -> bool:
+        session = self.session
+        if session is None:
+            return GLib.SOURCE_REMOVE
+        typed = session.poll()
+        if typed is not None:
+            text, dropped = osk.typeable(typed)
+            self.keyboard.text = text
+            self.keyboard.focus("TYPE")
+            self.close_phone("SOME CHARACTERS CANNOT BE TYPED AND WERE LEFT OUT" if dropped
+                             else "FROM YOUR PHONE: CHOOSE TYPE OR TYPE + ENTER")
+            return GLib.SOURCE_REMOVE
+        if session.expired():
+            self.close_phone("TYPE ON PHONE TIMED OUT")
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+    def close_phone(self, note: str = "") -> None:
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+        self.window.set_child(self.panel)
+        self.render()
+        self.show_note(note)
 
     def build_rows(self) -> None:
         child = self.keys.get_first_child()
@@ -134,9 +224,20 @@ class KeyboardWindow:
             if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK):
                 return False
             name = Gdk.keyval_name(keyval) or ""
+            if self.session is not None:  # the QR code is up: only B does something
+                if osk.GTK_KEYS.get(name) == 27:
+                    if self.phone_first:
+                        self.finish(0)
+                    else:
+                        self.close_phone()
+                return True
             code = Gdk.keyval_to_unicode(keyval)
+            self.show_note()
             action = osk.handle(self.keyboard, name, chr(code) if code else "")
-            if action in ("type", "enter"):
+            if action == "phone":
+                self.phone_first = False  # from here B on the QR code goes back to the keys
+                self.open_phone()
+            elif action in ("type", "enter"):
                 osk.atomic_payload(self.keyboard.text, action == "enter")
                 self.finish(0)
             elif action == "cancel":
@@ -159,11 +260,14 @@ class KeyboardWindow:
         return False
 
     def finish(self, status: int) -> None:
+        if self.session is not None:
+            self.session.close()
+            self.session = None
         self.status = status
         self.loop.quit()
 
 
-def run() -> int:
+def run(phone: bool = False) -> int:
     if renderer is not None:
         try:
             renderer.prepare(os.environ)  # the TV's choice: OpenGL where Vulkan is slow or missing
@@ -175,7 +279,7 @@ def run() -> int:
         return osk.GTK_UNAVAILABLE
     loop = GLib.MainLoop()
     try:
-        window = KeyboardWindow(loop)
+        window = KeyboardWindow(loop, phone_first=phone)
     except Exception as error:
         print(f"couchliteos-osk: GTK keyboard failed: {error!r}", file=sys.stderr)
         return osk.GTK_UNAVAILABLE

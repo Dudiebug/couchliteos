@@ -1,6 +1,6 @@
-"""Settings > CONTROLS: the Home shortcut and the pointer speeds.
+"""Settings > CONTROLS: the Home shortcut, the TYPE ON PHONE shortcut and the pointer speeds.
 
-The launcher saves the Home shortcut and the controller mouse speed in the [input] section
+The launcher saves the shortcuts and the controller mouse speed in the [input] section
 of config.ini. gamepad-nav runs as the same user and re-reads the file when it changes
 (Watcher), so a choice takes effect at once. Mouse and touchpad speed belongs to Cage: the
 launcher writes libinput's acceleration speed to MOUSE_SPEED_FILE and sends Cage SIGHUP,
@@ -39,6 +39,15 @@ HOME_CHOICES = (
     (HOME_STICKS, "GUIDE OR L3+R3 (HOLD)"),
 )
 HOME_HOLD_SECONDS = 1.5
+# TYPE ON PHONE over the app in front: Guide pressed while SELECT (or START) is held.
+PHONE_SELECT = "select"
+PHONE_START = "start"
+PHONE_OFF = "off"
+PHONE_CHOICES = (
+    (PHONE_SELECT, "HOLD SELECT, PRESS GUIDE"),
+    (PHONE_START, "HOLD START, PRESS GUIDE"),
+    (PHONE_OFF, "OFF"),
+)
 SPEED_CHOICES = (("slow", "SLOW"), ("normal", "NORMAL"), ("fast", "FAST"), ("very-fast", "VERY FAST"))
 # Controller mouse: times gamepad-nav's top pointer speed.
 PAD_SPEEDS = {"slow": 0.5, "normal": 1.0, "fast": 1.6, "very-fast": 2.4}
@@ -71,13 +80,15 @@ ROW_HOME = "HOME SHORTCUT"
 ROW_KEYBOARD = "KEYBOARD HOME KEY"
 ROW_PAD_SPEED = "CONTROLLER MOUSE SPEED"
 ROW_MOUSE_SPEED = "MOUSE SPEED"
-FIELDS = ("home", "keyboard_home", "pad_speed", "mouse_speed")
+ROW_PHONE = "TYPE ON PHONE SHORTCUT"
+FIELDS = ("home", "keyboard_home", "pad_speed", "mouse_speed", "phone")
 HELP = {
     "home": "HOLD THE BUTTONS 1.5 S TO OPEN HOME. IN A STREAM GUIDE GOES TO THE STREAM",
     # Also over a stream or remote desktop.
     "keyboard_home": "OPENS HOME FROM A KEYBOARD, EVEN DURING A STREAM. A / CROSS CHANGES IT",
     "pad_speed": "HOW FAST THE STICK MOVES THE POINTER IN BROWSERS",
     "mouse_speed": "FOR MICE AND TOUCHPADS",
+    "phone": "TYPE INTO THE APP IN FRONT FROM YOUR PHONE (NOT DURING A STREAM)",
 }
 
 
@@ -87,6 +98,7 @@ class Settings:
     keyboard_home: str = DEFAULT_CHORD
     pad_speed: str = "normal"
     mouse_speed: str = "normal"
+    phone: str = PHONE_SELECT
 
 
 def parse_chord(text: str | None) -> frozenset[str]:
@@ -218,6 +230,7 @@ def load_settings(path: pathlib.Path | None = None, speed_file: pathlib.Path | N
         pad_speed=_choice(parser.get(SECTION, "controller_mouse_speed", fallback=None), SPEED_CHOICES,
                           defaults.pad_speed),
         mouse_speed=load_mouse_speed(speed_file),
+        phone=_choice(parser.get(SECTION, "phone_shortcut", fallback=None), PHONE_CHOICES, defaults.phone),
     )
 
 
@@ -246,6 +259,7 @@ def save_settings(settings: Settings, path: pathlib.Path | None = None) -> None:
         f"home_shortcut = {settings.home}\n"
         f"keyboard_home = {settings.keyboard_home or 'off'}\n"
         f"controller_mouse_speed = {settings.pad_speed}\n"
+        f"phone_shortcut = {settings.phone}\n"
     )
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
@@ -323,16 +337,20 @@ def apply_mouse_speed(
     return (send or signal_compositor)()
 
 
+def _choices(field: str) -> tuple[tuple[str, str], ...]:
+    return {"home": HOME_CHOICES, "phone": PHONE_CHOICES}.get(field, SPEED_CHOICES)
+
+
 def label(field: str, settings: Settings) -> str:
     value = getattr(settings, field)
     if field == "keyboard_home":
         return chord_label(value)
-    return dict(HOME_CHOICES if field == "home" else SPEED_CHOICES)[value]
+    return dict(_choices(field))[value]
 
 
 def rows(settings: Settings) -> list[str]:
-    """The Settings > CONTROLS rows for the four choices, in FIELDS order."""
-    names = (ROW_HOME, ROW_KEYBOARD, ROW_PAD_SPEED, ROW_MOUSE_SPEED)
+    """The Settings > CONTROLS rows for the choices, in FIELDS order."""
+    names = (ROW_HOME, ROW_KEYBOARD, ROW_PAD_SPEED, ROW_MOUSE_SPEED, ROW_PHONE)
     return [f"{name}  {label(field, settings)}" for name, field in zip(names, FIELDS)]
 
 
@@ -340,7 +358,7 @@ def cycle(settings: Settings, field: str, step: int = 1) -> Settings:
     """The next (step 1) or previous (step -1) choice for one field, wrapping round."""
     if field == "keyboard_home":  # chosen by capture, not cycled
         return settings
-    values = [value for value, _label in (HOME_CHOICES if field == "home" else SPEED_CHOICES)]
+    values = [value for value, _label in _choices(field)]
     index = values.index(getattr(settings, field)) if getattr(settings, field) in values else 0
     return dataclasses.replace(settings, **{field: values[(index + step) % len(values)]})
 
