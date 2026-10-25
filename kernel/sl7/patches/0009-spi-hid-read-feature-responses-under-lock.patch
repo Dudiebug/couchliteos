@@ -1,0 +1,84 @@
+Subject: [PATCH] HID: spi-hid: read feature responses under the transport lock
+
+GET_FEATURE and SET_FEATURE dropped shid->lock before inspecting
+resp_type and copying resp_buf, so a concurrent request (iptsd and the HID
+core) could replace the response first. Evaluate and copy it while the
+lock is still held.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 1b5b55d..574ff4d 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -863,47 +863,47 @@ static int spi_hid_ll_raw_request(struct hid_device *hid,
+ 					   buf[0], buf + 1, len - 1);
+ 		/* Mode changes may reset the device; see spi_hid_device_reset(). */
+ 		shid->last_set_feature = jiffies ?: 1;
+-		mutex_unlock(&shid->lock);
+-		if (ret)
+-			return ret;
+-		if (shid->resp_type == SPI_HID_REPORT_TYPE_RESET_RESP)
+-			return len;
+-		if (shid->resp_type != SPI_HID_REPORT_TYPE_SET_FEATURE_RESP) {
++		/* Read the response before another request can replace it. */
++		if (!ret && shid->resp_type != SPI_HID_REPORT_TYPE_RESET_RESP &&
++		    shid->resp_type != SPI_HID_REPORT_TYPE_SET_FEATURE_RESP) {
+ 			dev_err(dev, "SET_FEATURE got resp type %d\n",
+ 				shid->resp_type);
+-			return -EIO;
++			ret = -EIO;
+ 		}
+-		return len;
++		mutex_unlock(&shid->lock);
++		return ret ? ret : len;
+ 	}
+ 
+ 	if (reqtype == HID_REQ_GET_REPORT && rtype == HID_FEATURE_REPORT) {
+ 		mutex_lock(&shid->lock);
+ 		ret = spi_hid_sync_request(shid, SPI_HID_OUT_GET_FEATURE,
+ 					   reportnum, NULL, 0);
+-		mutex_unlock(&shid->lock);
+ 		if (ret) {
+ 			dev_err(dev, "GET_FEATURE 0x%02x failed: %d\n",
+ 				reportnum, ret);
+-			return ret;
++			goto out_unlock;
+ 		}
+ 
+ 		if (shid->resp_type == SPI_HID_REPORT_TYPE_RESET_RESP) {
+ 			memset(buf, 0, len);
+ 			buf[0] = reportnum;
+-			return len;
++			ret = len;
++			goto out_unlock;
+ 		}
+ 
+ 		if (shid->resp_type != SPI_HID_REPORT_TYPE_GET_FEATURE_RESP) {
+ 			dev_err(dev, "GET_FEATURE got resp type %d\n",
+ 				shid->resp_type);
+-			return -EIO;
++			ret = -EIO;
++			goto out_unlock;
+ 		}
+ 
+ 		copy_len = shid->resp_len - SPI_HID_BODY_HEADER_LEN;
+ 		if (copy_len <= 0) {
+ 			dev_err(dev, "GET_FEATURE 0x%02x: empty response\n",
+ 				reportnum);
+-			return -EIO;
++			ret = -EIO;
++			goto out_unlock;
+ 		}
+ 		if (copy_len > (int)len - 1)
+ 			copy_len = (int)len - 1;
+@@ -911,7 +911,10 @@ static int spi_hid_ll_raw_request(struct hid_device *hid,
+ 		buf[0] = reportnum;
+ 		memcpy(buf + 1, shid->resp_buf + SPI_HID_BODY_HEADER_LEN,
+ 		       copy_len);
+-		return 1 + copy_len;
++		ret = 1 + copy_len;
++out_unlock:
++		mutex_unlock(&shid->lock);
++		return ret;
+ 	}
+ 
+ 	if (reqtype == HID_REQ_SET_REPORT) {

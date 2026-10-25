@@ -1,0 +1,36 @@
+Subject: [PATCH] HID: spi-hid: pad output reports to a 4-byte multiple
+
+hidspi.sys (CxClient::SendWriteToBus) always transmits the body header and
+content zero-padded to a multiple of four bytes, with the real length kept
+in the body header. Do the same instead of sending odd-sized writes.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 574ff4d..6c7029e 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -148,11 +148,13 @@ static int spi_hid_send_output(struct spi_hid *shid,
+ {
+ 	u8 body[SPI_HID_BODY_HEADER_LEN + 512];
+ 	int body_len = SPI_HID_BODY_HEADER_LEN + content_len;
++	/* Windows HIDSPI zero-pads every output body to a 4-byte multiple. */
++	int xfer_len = ALIGN(body_len, 4);
+ 
+ 	if (READ_ONCE(shid->stopping))
+ 		return -ESHUTDOWN;
+ 
+-	if (body_len > sizeof(body)) {
++	if (xfer_len > sizeof(body)) {
+ 		dev_err(&shid->spi->dev, "Output too large: %d\n", body_len);
+ 		return -E2BIG;
+ 	}
+@@ -163,8 +165,9 @@ static int spi_hid_send_output(struct spi_hid *shid,
+ 	body[3] = content_id;
+ 	if (content && content_len > 0)
+ 		memcpy(body + SPI_HID_BODY_HEADER_LEN, content, content_len);
++	memset(body + body_len, 0, xfer_len - body_len);
+ 
+-	return qspi_write_sync(shid, SPI_HID_OUTPUT_ADDR, body, body_len);
++	return qspi_write_sync(shid, SPI_HID_OUTPUT_ADDR, body, xfer_len);
+ }
+ 
+ /* Caller must hold shid->lock. */

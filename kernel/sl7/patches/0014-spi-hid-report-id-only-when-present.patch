@@ -1,0 +1,48 @@
+Subject: [PATCH] HID: spi-hid: pass the report ID only when the device sends one
+
+The input report handler always handed the content ID byte to the HID
+core as a report ID. hidspi.sys prepends it only when it is non-zero;
+content ID 0 means the device's report descriptor declares no report IDs,
+and the HID core then expects the report data without an ID byte.
+
+Both current digitizers use report IDs, so their reports are unchanged.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 1919dabd5..dfb4df044 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -445,6 +445,8 @@ static int spi_hid_input_report_handler(struct spi_hid *shid,
+ 					 const u8 *body, int body_len)
+ {
+ 	struct spi_hid_body_header bhdr;
++	const u8 *data;
++	u32 size;
+ 	int ret;
+ 
+ 	if (!shid->ready || !shid->hid)
+@@ -452,9 +454,22 @@ static int spi_hid_input_report_handler(struct spi_hid *shid,
+ 
+ 	spi_hid_parse_body_header(body, &bhdr);
+ 
+-	ret = hid_input_report(shid->hid, HID_INPUT_REPORT,
+-			       (u8 *)(body + 3),
+-			       bhdr.content_length + 1, 1);
++	/*
++	 * Like hidspi.sys, prepend the report ID only when the device sent
++	 * one: content ID 0 means the report descriptor has no report IDs.
++	 */
++	if (bhdr.content_id) {
++		data = body + 3;
++		size = bhdr.content_length + 1;
++	} else {
++		data = body + SPI_HID_BODY_HEADER_LEN;
++		size = bhdr.content_length;
++	}
++	if (!size)
++		return 0;
++
++	ret = hid_input_report(shid->hid, HID_INPUT_REPORT, (u8 *)data,
++			       size, 1);
+ 
+ 	if (ret == -ENODEV || ret == -EBUSY)
+ 		return 0;

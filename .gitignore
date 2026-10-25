@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 build/.tests-passed
 steamgriddb.key
+kernel/work/
+kernel/out/

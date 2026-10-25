@@ -1,0 +1,45 @@
+Subject: [PATCH] arm64: dts: Romulus15 touch power GPIO ownership and panel link
+
+Companion to spi-hid power lifecycle changes; test image only.
+---
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+@@ -14,3 +14,5 @@
+ };
+ 
+ #include "x1e80100-microsoft-romulus15-touchscreen.dtsi"
++
++#include "x1e80100-microsoft-romulus15-gpio-power.dtsi"
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-gpio-power.dtsi
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/* GPIO ownership and sequencing from this Romulus15's HSPI/GTCH ACPI. */
++
++&vreg_ts_5p0 {
++	regulator-boot-on;
++	startup-delay-us = <500000>;
++};
++
++&spi19_hid0_reset_deassert {
++	pins = "gpio120";
++};
++
++&spi19_hid0_reset_assert {
++	pins = "gpio120";
++};
++
++&gtch_power {
++	/delete-property/ regulator-always-on;
++};
++
++&mdss_dp3 {
++	aux-bus {
++		sl7_edp_panel: panel {
++		};
++	};
++};
++
++&gtch {
++	panel = <&sl7_edp_panel>;
++};

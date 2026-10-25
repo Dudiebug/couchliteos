@@ -1,0 +1,59 @@
+Subject: [PATCH] arm64: dts: qcom: romulus15: add audio playback over DisplayPort
+
+The sound card has only WCD, WSA and VA links, so audio can't play on a
+monitor attached to either USB-C port. The Romulus topology already
+provides the DISPLAY_PORT_RX_0/1 backends and their mixers, and the
+Surface Laptop 7 UCM profile (shared with the ThinkPad T14s) already
+has HDMI0/HDMI1 devices. Those devices only appear once the machine
+driver creates the DP0/DP1 jacks, which needs these DAI links.
+
+Follows the Surface Pro 11 patch "arm64: dts: qcom: x1-denali: Add
+audio playback over DisplayPort" on the same SoC.
+---
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+index c9ce9c61a..e1b1b784b 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+@@ -16,3 +16,42 @@
+ #include "x1e80100-microsoft-romulus15-touchscreen.dtsi"
+ 
+ #include "x1e80100-microsoft-romulus15-gpio-power.dtsi"
++
++/*
++ * Both USB-C ports carry DisplayPort (DP0, DP1). The Romulus topology already
++ * has the DISPLAY_PORT_RX backends; these links give the machine driver the
++ * "DP0 Jack"/"DP1 Jack" controls that UCM's HDMI0/HDMI1 devices need.
++ */
++&{/sound} {
++	displayport-0-dai-link {
++		link-name = "DisplayPort0 Playback";
++
++		codec {
++			sound-dai = <&mdss_dp0>;
++		};
++
++		cpu {
++			sound-dai = <&q6apmbedai DISPLAY_PORT_RX_0>;
++		};
++
++		platform {
++			sound-dai = <&q6apm>;
++		};
++	};
++
++	displayport-1-dai-link {
++		link-name = "DisplayPort1 Playback";
++
++		codec {
++			sound-dai = <&mdss_dp1>;
++		};
++
++		cpu {
++			sound-dai = <&q6apmbedai DISPLAY_PORT_RX_1>;
++		};
++
++		platform {
++			sound-dai = <&q6apm>;
++		};
++	};
++};

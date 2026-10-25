@@ -1,0 +1,1939 @@
+Subject: [PATCH] arm64: Surface Laptop 7 QSPI touchpad support on Ubuntu 7.3
+
+Port the QSPI/GPI and HID-over-SPI v3 implementation from ELLX commit
+0e9944fa4cf2ccf575f5162bfd53ed4dc1592251 to Ubuntu linux 7.3.0-5.5
+(upstream v7.3-rc3). Enable the touchpad wiring only for
+microsoft,romulus15.
+
+Retain the new geni_spi_desc resource/clock/power callbacks and SA8255P
+match entry. Extend that descriptor with the QSPI flag instead of adding
+a second match-data structure. Use the new scoped runtime-PM acquisition
+on error returns; do not reintroduce the old manual PM cleanup label.
+
+Adapt the HID transport to in-tree Kbuild and drain all asynchronous
+workers on removal before freeing buffers. Firmware protocol and board
+power sequencing follow the community implementation. Camera, audio and
+unrelated ELLX changes are excluded.
+
+The Ubuntu 7.2 version of this patch was retired on 2026-09-27; the DMA,
+HID transport and Romulus15 wiring portions were identical in both.
+
+Origin: ELLX commit 0e9944fa4cf2ccf575f5162bfd53ed4dc1592251
+https://github.com/ProgrammerIn-wonderland/ELLX-Kernel
+---
+--- a/drivers/spi/spi-geni-qcom.c
++++ b/drivers/spi/spi-geni-qcom.c
+@@ -7,6 +7,7 @@
+ #include <trace/events/qcom_geni_spi.h>
+ 
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/dmaengine.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/dma/qcom-gpi-dma.h>
+@@ -80,16 +81,67 @@
+ #define GSI_CPHA		BIT(4)
+ #define GSI_CPOL		BIT(5)
+ 
++/* QSPI 1-4-4 support (added on top of the standard SPI controller). */
++#define QSPI_SE_PROTO		9
++
++#define GENI_IO_MUX_1_EN	BIT(1)
++#define GENI_IO_MUX_2_EN	BIT(2)
++#define GENI_IO_MUX_3_EN	BIT(3)
++#define GENI_QSPI_IO_MUX_EN	(GENI_IO_MUX_0_EN | GENI_IO_MUX_1_EN | \
++				 GENI_IO_MUX_2_EN | GENI_IO_MUX_3_EN)
++
++#define SE_GSI_EVENT_EN			0xe18
++#define SE_IRQ_EN			0xe1c
++#define SE_DMA_TX_IRQ_CLR		0xc44
++#define SE_DMA_TX_IRQ_EN_SET		0xc4c
++#define SE_DMA_TX_IRQ_EN_CLR		0xc50
++#define SE_DMA_RX_IRQ_CLR		0xd44
++#define SE_DMA_RX_IRQ_EN_SET		0xd4c
++#define SE_DMA_RX_IRQ_EN_CLR		0xd50
++
++#define DMA_RX_EVENT_EN			BIT(0)
++#define DMA_TX_EVENT_EN			BIT(1)
++#define GENI_M_EVENT_EN			BIT(2)
++#define GENI_S_EVENT_EN			BIT(3)
++
++#define QSPI_M_IRQ_EN_GPI		0x33c00046
++#define QSPI_S_IRQ_EN_GPI		0x03001e06
++#define QSPI_DMA_TX_IRQ_EN		0x0d
++#define QSPI_DMA_RX_IRQ_EN		0x1d
++
++#define QSPI_SINGLE_SDR			0x000
++#define QSPI_QUAD_SDR			BIT(9)
++
++/* Defaults for a quad read with 1-byte opcode + 3-byte address. */
++#define QSPI_DEFAULT_READ_OPCODE	0xEB
++#define QSPI_DEFAULT_DUMMY_CLK_CNT	8
++#define QSPI_DEFAULT_TX_CMD_LEN		4
++#define QSPI_DEFAULT_MAX_SPEED_HZ	20000000
++
++/**
++ * struct spi_geni_qspi_params - per-SE QSPI tunables read from DT
++ * @read_opcode: first TX byte that identifies a read transfer (e.g. 0xEB)
++ * @dummy_clk_cnt: dummy clocks inserted between address and read data
++ * @tx_cmd_len: number of TX bytes forming the read command (opcode+address)
++ */
++struct spi_geni_qspi_params {
++	u32 read_opcode;
++	u32 dummy_clk_cnt;
++	u32 tx_cmd_len;
++};
++
+ struct geni_spi_desc {
+ 	int (*resources_init)(struct geni_se *se);
+ 	int (*set_rate)(struct geni_se *se, unsigned long clk_freq);
+ 	int (*power_on)(struct geni_se *se);
+ 	int (*power_off)(struct geni_se *se);
++	bool qspi_mode;
+ };
+ 
+ struct spi_geni_master {
+ 	struct geni_se se;
+ 	struct device *dev;
++	struct spi_geni_qspi_params qspi;
+ 	u32 tx_fifo_depth;
+ 	u32 fifo_width_bits;
+ 	u32 tx_wm;
+@@ -116,6 +168,52 @@
+ 	int cur_xfer_mode;
+ 	const struct geni_spi_desc *dev_data;
+ };
++
++static inline bool spi_geni_is_qspi(const struct spi_geni_master *mas)
++{
++	return mas->dev_data->qspi_mode;
++}
++
++/* Enable all 4 data lanes on the GENI output mux for QSPI. */
++static void qspi_setup_io_mux(struct spi_geni_master *mas)
++{
++	struct geni_se *se = &mas->se;
++	u32 out;
++
++	out = readl(se->base + GENI_OUTPUT_CTRL);
++	out |= GENI_QSPI_IO_MUX_EN;
++	writel(out, se->base + GENI_OUTPUT_CTRL);
++}
++
++/*
++ * Reprogram the SE IRQ / DMA / event registers for GPI DMA.
++ *
++ * geni_se_resources_activate() (called from runtime_resume) writes a fixed set of
++ * values into SE_IRQ_EN that are correct for FIFO/SE_DMA mode but clobber the
++ * GPI configuration. The QSPI SE_PROTO (9) also needs different masks than
++ * the defaults. Call this from prepare_message (post resume, pre transfer)
++ * to restore the GPI-friendly values.
++ */
++static void prep_se_for_gpi_dma(struct spi_geni_master *mas)
++{
++	void __iomem *base = mas->se.base;
++
++	writel(GENI_DMA_MODE_EN, base + SE_GENI_DMA_MODE_EN);
++	writel(0, base + SE_IRQ_EN);
++	writel(DMA_RX_EVENT_EN | DMA_TX_EVENT_EN |
++	       GENI_M_EVENT_EN | GENI_S_EVENT_EN,
++	       base + SE_GSI_EVENT_EN);
++	writel(QSPI_M_IRQ_EN_GPI, base + SE_GENI_M_IRQ_EN);
++	writel(QSPI_S_IRQ_EN_GPI, base + SE_GENI_S_IRQ_EN);
++	writel(0xf, base + SE_DMA_TX_IRQ_EN_CLR);
++	writel(QSPI_DMA_TX_IRQ_EN, base + SE_DMA_TX_IRQ_EN_SET);
++	writel(0xfff, base + SE_DMA_RX_IRQ_EN_CLR);
++	writel(QSPI_DMA_RX_IRQ_EN, base + SE_DMA_RX_IRQ_EN_SET);
++	writel(0xffc07fff, base + SE_GENI_M_IRQ_CLEAR);
++	writel(0x0fc07f3f, base + SE_GENI_S_IRQ_CLEAR);
++	writel(0xf, base + SE_DMA_TX_IRQ_CLR);
++	writel(0xfff, base + SE_DMA_RX_IRQ_CLR);
++}
+ 
+ static void spi_slv_setup(struct spi_geni_master *mas)
+ {
+@@ -439,7 +537,20 @@
+ 	}
+ 
+ 	if (xfer->tx_buf && xfer->rx_buf) {
+-		peripheral.cmd = SPI_DUPLEX;
++		/*
++		 * QSPI uses SPI_TX_RX (7) for TX-opcode-then-RX-data transfers;
++		 * standard SPI uses SPI_DUPLEX (3) for true full-duplex.
++		 *
++		 * For QSPI_TX_RX the GSI firmware needs an explicit rx_len so
++		 * it knows how many bytes to clock in after the TX command
++		 * phase. SPI_DUPLEX uses xfer->len implicitly.
++		 */
++		if (spi_geni_is_qspi(mas)) {
++			peripheral.cmd = SPI_TX_RX;
++			peripheral.rx_len = (xfer->len << 3) / xfer->bits_per_word;
++		} else {
++			peripheral.cmd = SPI_DUPLEX;
++		}
+ 	} else if (xfer->tx_buf) {
+ 		peripheral.cmd = SPI_TX;
+ 		peripheral.rx_len = 0;
+@@ -478,6 +589,44 @@
+ 	peripheral.fragmentation = list_is_last(&xfer->transfer_list, &spi->cur_msg->transfers) ?
+ 				   xfer->cs_change : !xfer->cs_change;
+ 
++	if (spi_geni_is_qspi(mas)) {
++		bool multi = !list_is_singular(&spi->cur_msg->transfers);
++
++		peripheral.qspi_mode = true;
++
++		/*
++		 * In a multi-transfer message the first write uses SINGLE_SDR
++		 * (opcode+addr lane transition) while subsequent TX-only
++		 * transfers stay in QUAD.
++		 */
++		if (multi && xfer->tx_buf && !xfer->rx_buf &&
++		    &xfer->transfer_list == spi->cur_msg->transfers.next)
++			peripheral.qspi_lane_flags = QSPI_SINGLE_SDR;
++		else
++			peripheral.qspi_lane_flags = QSPI_QUAD_SDR;
++
++		if (peripheral.cmd == SPI_TX_RX && xfer->tx_buf) {
++			const u8 *tx = xfer->tx_buf;
++
++			/*
++			 * The configured read opcode is followed by an address
++			 * then dummy clocks before the device drives the data
++			 * lanes. Any other first byte means the host is issuing
++			 * a write command, so downgrade to TX-only.
++			 */
++			if (tx[0] == mas->qspi.read_opcode) {
++				peripheral.dummy_clk_cnt = mas->qspi.dummy_clk_cnt;
++				peripheral.tx_cmd_len = mas->qspi.tx_cmd_len;
++			} else {
++				peripheral.cmd = SPI_TX;
++				peripheral.dummy_clk_cnt = 0;
++				peripheral.rx_len = 0;
++			}
++		} else if (peripheral.cmd == SPI_RX) {
++			peripheral.dummy_clk_cnt = mas->qspi.dummy_clk_cnt;
++		}
++	}
++
+ 	if (peripheral.cmd & SPI_RX) {
+ 		dmaengine_slave_config(mas->rx, &config);
+ 		rx_desc = dmaengine_prep_slave_sg(mas->rx, xfer->rx_sg.sgl, xfer->rx_sg.nents,
+@@ -500,8 +649,18 @@
+ 		return -EIO;
+ 	}
+ 
+-	tx_desc->callback_result = spi_gsi_callback_result;
+-	tx_desc->callback_param = spi;
++	/*
++	 * In QSPI mode the Go TRE on the TX channel has no DMA TRE for SPI_RX
++	 * (and for TX_RX completes TX-side early), so the real completion
++	 * event is the IEOT on the RX channel. Attach the callback there.
++	 */
++	if (spi_geni_is_qspi(mas) && (peripheral.cmd & SPI_RX)) {
++		rx_desc->callback_result = spi_gsi_callback_result;
++		rx_desc->callback_param = spi;
++	} else {
++		tx_desc->callback_result = spi_gsi_callback_result;
++		tx_desc->callback_param = spi;
++	}
+ 
+ 	if (peripheral.cmd & SPI_RX)
+ 		dmaengine_submit(rx_desc);
+@@ -567,7 +726,13 @@
+ 		return ret;
+ 
+ 	case GENI_GPI_DMA:
+-		/* nothing to do for GPI DMA */
++		/*
++		 * In QSPI mode, runtime_resume's call to geni_se_resources_on()
++		 * clobbers the GPI-specific IRQ/DMA register layout. Restore
++		 * it before every message.
++		 */
++		if (spi_geni_is_qspi(mas))
++			prep_se_for_gpi_dma(mas);
+ 		return 0;
+ 	}
+ 
+@@ -647,6 +812,18 @@
+ 			return -EINVAL;
+ 		}
+ 		spi_slv_setup(mas);
++	} else if (spi_geni_is_qspi(mas)) {
++		/*
++		 * QSPI SEs report protocol 9 in hardware. The GENI_SE_SPI
++		 * firmware loader cannot be used here (no firmware for proto 9
++		 * is shipped), so reject anything else.
++		 */
++		if (proto != QSPI_SE_PROTO) {
++			dev_err(mas->dev, "Expected QSPI proto %d, got %d\n",
++				QSPI_SE_PROTO, proto);
++			return -EINVAL;
++		}
++		qspi_setup_io_mux(mas);
+ 	} else if (proto == GENI_SE_INVALID_PROTO) {
+ 		ret = geni_load_se_firmware(se, GENI_SE_SPI);
+ 		if (ret) {
+@@ -678,9 +855,28 @@
+ 	else
+ 		mas->oversampling = 1;
+ 
++	/*
++	 * QSPI SEs cannot use FIFO mode (the FIFO path would try to drive
++	 * a single-lane word format on a 4-lane QSPI bus), so force GPI DMA
++	 * regardless of what GENI_IF_DISABLE_RO reports.
++	 */
+ 	fifo_disable = readl(se->base + GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE;
++	if (spi_geni_is_qspi(mas))
++		fifo_disable = 1;
++
+ 	switch (fifo_disable) {
+ 	case 1:
++		/*
++		 * For QSPI, bring the SE up in SE_DMA first (which arms the
++		 * DMA-related registers) and let it settle before switching
++		 * to GPI_DMA and grabbing the GPII channels. Without this
++		 * intermediate step the first GPI command after probe can
++		 * hang on the CH STOP completion.
++		 */
++		if (spi_geni_is_qspi(mas)) {
++			geni_se_select_mode(se, GENI_SE_DMA);
++			msleep(10);
++		}
+ 		ret = spi_geni_grab_gpi_chan(mas);
+ 		if (!ret) { /* success case */
+ 			mas->cur_xfer_mode = GENI_GPI_DMA;
+@@ -688,6 +884,16 @@
+ 			dev_dbg(mas->dev, "Using GPI DMA mode for SPI\n");
+ 			break;
+ 		} else if (ret == -EPROBE_DEFER) {
++			return ret;
++		}
++		/*
++		 * For QSPI there is no usable FIFO fallback: FIFO mode cannot
++		 * drive a 4-lane QSPI bus. Fail the probe instead of silently
++		 * producing garbage.
++		 */
++		if (spi_geni_is_qspi(mas)) {
++			dev_err(mas->dev, "Failed to grab GPI DMA channels for QSPI: %d\n",
++				ret);
+ 			return ret;
+ 		}
+ 		/*
+@@ -1106,15 +1312,30 @@
+ 	if (!mas->dev_data)
+ 		return -EINVAL;
+ 
++	if (spi_geni_is_qspi(mas)) {
++		mas->qspi.read_opcode = QSPI_DEFAULT_READ_OPCODE;
++		mas->qspi.dummy_clk_cnt = QSPI_DEFAULT_DUMMY_CLK_CNT;
++		mas->qspi.tx_cmd_len = QSPI_DEFAULT_TX_CMD_LEN;
++		device_property_read_u32(dev, "qcom,qspi-read-opcode",
++					 &mas->qspi.read_opcode);
++		device_property_read_u32(dev, "qcom,qspi-read-dummy-clocks",
++					 &mas->qspi.dummy_clk_cnt);
++		device_property_read_u32(dev, "qcom,qspi-read-cmd-bytes",
++					 &mas->qspi.tx_cmd_len);
++	}
++
+ 	ret = mas->dev_data->resources_init(&mas->se);
+ 	if (ret)
+ 		return ret;
+ 
+ 	spi->bus_num = -1;
+ 	spi->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LOOP | SPI_CS_HIGH;
++	if (spi_geni_is_qspi(mas))
++		spi->mode_bits |= SPI_TX_QUAD | SPI_RX_QUAD;
+ 	spi->bits_per_word_mask = SPI_BPW_RANGE_MASK(4, 32);
+ 	spi->num_chipselect = 4;
+-	spi->max_speed_hz = 50000000;
++	spi->max_speed_hz = spi_geni_is_qspi(mas) ? QSPI_DEFAULT_MAX_SPEED_HZ
++						  : 50000000;
+ 	spi->max_dma_len = 0xffff0; /* 24 bits for tx/rx dma length */
+ 	spi->prepare_message = spi_geni_prepare_message;
+ 	spi->transfer_one = spi_geni_transfer_one;
+@@ -1233,9 +1454,18 @@
+ 	.set_rate = geni_se_set_perf_opp,
+ };
+ 
++static const struct geni_spi_desc geni_qspi = {
++	.resources_init = geni_se_resources_init,
++	.set_rate = geni_spi_set_clock_and_bw,
++	.power_on = geni_se_resources_activate,
++	.power_off = geni_se_resources_deactivate,
++	.qspi_mode = true,
++};
++
+ static const struct of_device_id spi_geni_dt_match[] = {
+ 	{ .compatible = "qcom,geni-spi", .data = &geni_spi },
+ 	{ .compatible = "qcom,sa8255p-geni-spi", .data = &sa8255p_geni_spi },
++	{ .compatible = "qcom,geni-spi-qspi", .data = &geni_qspi },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, spi_geni_dt_match);
+--- a/drivers/dma/qcom/gpi.c
++++ b/drivers/dma/qcom/gpi.c
+@@ -47,6 +47,12 @@
+ #define TRE_SPI_GO_CMD		GENMASK(4, 0)
+ #define TRE_SPI_GO_CS		GENMASK(10, 8)
+ #define TRE_SPI_GO_FRAG		BIT(26)
++
++/* QSPI GO WD0 - flags field is 12 bits at [31:20] instead of SPI's 8 bits */
++#define TRE_QSPI_GO_FLAGS	GENMASK(31, 20)
++
++/* QSPI Config0 WD0 - dummy clock count */
++#define TRE_SPI_C0_DUMMY_CLK	GENMASK(21, 14)
+ 
+ /* GO WD2 */
+ #define TRE_RX_LEN		GENMASK(23, 0)
+@@ -1275,8 +1281,17 @@
+ 		      upper_32_bits(ring->phys_addr));
+ 	gpi_write_reg(gpii, chan->ch_cntxt_db_reg + CNTXT_5_RING_RP_MSB - CNTXT_4_RING_RP_LSB,
+ 		      upper_32_bits(ring->phys_addr));
+-	gpi_write_reg(gpii, gpii->regs + GPII_n_CH_k_SCRATCH_0_OFFS(id, chid),
+-		      GPII_n_CH_k_SCRATCH_0(pair_chid, chan->protocol, chan->seid));
++	/*
++	 * For QSPI, use the SE's native protocol value (9) in SCRATCH_0.
++	 * The DT binding uses QCOM_GPI_QSPI=4 for channel selection, but
++	 * the GSI firmware expects the actual SE protocol ID.
++	 */
++	{
++		u32 hw_proto = chan->protocol == QCOM_GPI_QSPI ?
++			       9 : chan->protocol;
++		gpi_write_reg(gpii, gpii->regs + GPII_n_CH_k_SCRATCH_0_OFFS(id, chid),
++			      GPII_n_CH_k_SCRATCH_0(pair_chid, hw_proto, chan->seid));
++	}
+ 	gpi_write_reg(gpii, gpii->regs + GPII_n_CH_k_SCRATCH_1_OFFS(id, chid), 0);
+ 	gpi_write_reg(gpii, gpii->regs + GPII_n_CH_k_SCRATCH_2_OFFS(id, chid), 0);
+ 	gpi_write_reg(gpii, gpii->regs + GPII_n_CH_k_SCRATCH_3_OFFS(id, chid), 0);
+@@ -1699,6 +1714,116 @@
+ 	return tre_idx;
+ }
+ 
++static void qspi_add_config_tre(struct gpi_spi_config *spi,
++				struct gpi_tre *tre)
++{
++	tre->dword[0] = u32_encode_bits(spi->word_len, TRE_SPI_C0_WORD_SZ);
++	tre->dword[0] |= u32_encode_bits(spi->loopback_en, TRE_SPI_C0_LOOPBACK);
++	tre->dword[0] |= u32_encode_bits(spi->clock_pol_high, TRE_SPI_C0_CPOL);
++	tre->dword[0] |= u32_encode_bits(spi->data_pol_high, TRE_SPI_C0_CPHA);
++	tre->dword[0] |= u32_encode_bits(spi->pack_en, TRE_SPI_C0_TX_PACK);
++	tre->dword[0] |= u32_encode_bits(spi->pack_en, TRE_SPI_C0_RX_PACK);
++	tre->dword[0] |= u32_encode_bits(spi->dummy_clk_cnt, TRE_SPI_C0_DUMMY_CLK);
++
++	tre->dword[1] = 0;
++
++	tre->dword[2] = u32_encode_bits(spi->clk_div, TRE_C0_CLK_DIV);
++	tre->dword[2] |= u32_encode_bits(spi->clk_src, TRE_C0_CLK_SRC);
++
++	tre->dword[3] = u32_encode_bits(TRE_TYPE_CONFIG0, TRE_FLAGS_TYPE);
++	tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_CHAIN);
++}
++
++static int gpi_create_qspi_tre(struct gchan *chan, struct gpi_desc *desc,
++			       struct scatterlist *sgl,
++			       enum dma_transfer_direction direction)
++{
++	struct gpi_spi_config *spi = chan->config;
++	struct device *dev = chan->gpii->gpi_dev->dev;
++	unsigned int tre_idx = 0;
++	struct gpi_tre *tre;
++	u32 qspi_flags;
++	dma_addr_t address;
++	int len;
++
++	/* Config TRE (TX channel only) */
++	if (direction == DMA_MEM_TO_DEV && spi->set_config) {
++		qspi_add_config_tre(spi, &desc->tre[tre_idx]);
++		tre_idx++;
++	}
++
++	/* Go TRE (TX channel only) */
++	if (direction == DMA_MEM_TO_DEV) {
++		tre = &desc->tre[tre_idx];
++		tre_idx++;
++
++		qspi_flags = spi->qspi_lane_flags;
++		if (spi->fragmentation)
++			qspi_flags |= BIT(6);
++
++		tre->dword[0] = u32_encode_bits(qspi_flags, TRE_QSPI_GO_FLAGS);
++		tre->dword[0] |= u32_encode_bits(spi->cs, TRE_SPI_GO_CS);
++		tre->dword[0] |= u32_encode_bits(spi->cmd, TRE_SPI_GO_CMD);
++
++		tre->dword[1] = 0;
++		tre->dword[2] = u32_encode_bits(spi->rx_len, TRE_RX_LEN);
++
++		tre->dword[3] = u32_encode_bits(TRE_TYPE_GO, TRE_FLAGS_TYPE);
++		if (spi->cmd == SPI_RX) {
++			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_IEOB);
++			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_LINK);
++		} else if (spi->cmd == SPI_TX) {
++			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_CHAIN);
++		} else { /* SPI_TX_RX or SPI_DUPLEX */
++			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_CHAIN);
++			if (spi->rx_len > 0)
++				tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_LINK);
++		}
++	}
++
++	/* DMA TRE - skip for SPI_RX on TX channel */
++	if (direction == DMA_MEM_TO_DEV && spi->cmd == SPI_RX)
++		goto skip_dma_tre;
++
++	tre = &desc->tre[tre_idx];
++	tre_idx++;
++
++	address = sg_dma_address(sgl);
++	len = sg_dma_len(sgl);
++
++	/*
++	 * For QSPI TX_RX, limit TX DMA to command bytes only.
++	 * The SE parses the TX data as opcode+address and uses rx_len
++	 * from the Go TRE for the receive phase. Sending more TX bytes
++	 * than the command length confuses the SE's QSPI state machine.
++	 */
++	if (direction == DMA_MEM_TO_DEV && spi->cmd == SPI_TX_RX &&
++	    spi->tx_cmd_len > 0 && spi->tx_cmd_len < len)
++		len = spi->tx_cmd_len;
++
++	if (direction == DMA_MEM_TO_DEV && len <= 2 * sizeof(tre->dword[0])) {
++		tre->dword[0] = 0;
++		tre->dword[1] = 0;
++		memcpy(&tre->dword[0], sg_virt(sgl), len);
++		tre->dword[2] = u32_encode_bits(len, TRE_DMA_IMMEDIATE_LEN);
++		tre->dword[3] = u32_encode_bits(TRE_TYPE_IMMEDIATE_DMA, TRE_FLAGS_TYPE);
++	} else {
++		tre->dword[0] = lower_32_bits(address);
++		tre->dword[1] = upper_32_bits(address);
++		tre->dword[2] = u32_encode_bits(len, TRE_DMA_LEN);
++		tre->dword[3] = u32_encode_bits(TRE_TYPE_DMA, TRE_FLAGS_TYPE);
++	}
++	tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_IEOT);
++
++skip_dma_tre:
++	for (len = 0; len < tre_idx; len++)
++		dev_dbg(dev, "QSPI TRE:%d %x:%x:%x:%x\n", len,
++			desc->tre[len].dword[0], desc->tre[len].dword[1],
++			desc->tre[len].dword[2], desc->tre[len].dword[3]);
++
++	return tre_idx;
++}
++
+ static int gpi_create_spi_tre(struct gchan *chan, struct gpi_desc *desc,
+ 			      struct scatterlist *sgl, enum dma_transfer_direction direction)
+ {
+@@ -1841,7 +1966,9 @@
+ 		return NULL;
+ 
+ 	/* create TREs for xfer */
+-	if (gchan->protocol == QCOM_GPI_SPI) {
++	if (gchan->protocol == QCOM_GPI_QSPI) {
++		i = gpi_create_qspi_tre(gchan, gpi_desc, sgl, direction);
++	} else if (gchan->protocol == QCOM_GPI_SPI) {
+ 		i = gpi_create_spi_tre(gchan, gpi_desc, sgl, direction);
+ 	} else if (gchan->protocol == QCOM_GPI_I2C) {
+ 		i = gpi_create_i2c_tre(gchan, gpi_desc, sgl, direction, flags);
+--- a/include/dt-bindings/dma/qcom-gpi.h
++++ b/include/dt-bindings/dma/qcom-gpi.h
+@@ -7,5 +7,6 @@
+ #define QCOM_GPI_SPI		1
+ #define QCOM_GPI_UART		2
+ #define QCOM_GPI_I2C		3
++#define QCOM_GPI_QSPI		4
+ 
+ #endif /* __DT_BINDINGS_DMA_QCOM_GPI_H__ */
+--- a/include/linux/dma/qcom-gpi-dma.h
++++ b/include/linux/dma/qcom-gpi-dma.h
+@@ -16,6 +16,7 @@
+ 	SPI_TX = 1,
+ 	SPI_RX,
+ 	SPI_DUPLEX,
++	SPI_TX_RX = 7,	/* QSPI full-duplex (TX opcode+addr, RX data) */
+ };
+ 
+ /**
+@@ -47,6 +48,11 @@
+ 	u32 clk_src;
+ 	enum spi_transfer_cmd cmd;
+ 	u32 rx_len;
++	/* QSPI extensions */
++	bool qspi_mode;
++	u16 qspi_lane_flags;
++	u8 dummy_clk_cnt;
++	u16 tx_cmd_len;
+ };
+ 
+ enum i2c_op {
+--- a/drivers/hid/hid-core.c
++++ b/drivers/hid/hid-core.c
+@@ -2370,6 +2370,9 @@
+ 	case BUS_I2C:
+ 		bus = "I2C";
+ 		break;
++	case BUS_SPI:
++		bus = "SPI";
++		break;
+ 	case BUS_SDW:
+ 		bus = "SOUNDWIRE";
+ 		break;
+--- a/include/linux/hid.h
++++ b/include/linux/hid.h
+@@ -819,6 +819,8 @@
+ 	.bus = BUS_BLUETOOTH, .vendor = (ven), .product = (prod)
+ #define HID_I2C_DEVICE(ven, prod)				\
+ 	.bus = BUS_I2C, .vendor = (ven), .product = (prod)
++#define HID_SPI_DEVICE(ven, prod)				\
++	.bus = BUS_SPI, .vendor = (ven), .product = (prod)
+ 
+ #define HID_REPORT_ID(rep) \
+ 	.report_type = (rep)
+--- a/drivers/hid/Kconfig
++++ b/drivers/hid/Kconfig
+@@ -1480,6 +1480,8 @@
+ 
+ source "drivers/hid/i2c-hid/Kconfig"
+ 
++source "drivers/hid/spi-hid/Kconfig"
++
+ source "drivers/hid/intel-ish-hid/Kconfig"
+ 
+ source "drivers/hid/amd-sfh-hid/Kconfig"
+--- a/drivers/hid/Makefile
++++ b/drivers/hid/Makefile
+@@ -175,6 +175,8 @@
+ 
+ obj-$(CONFIG_I2C_HID_CORE)	+= i2c-hid/
+ 
++obj-$(CONFIG_SPI_HID)		+= spi-hid/
++
+ obj-$(CONFIG_INTEL_ISH_HID)	+= intel-ish-hid/
+ 
+ obj-$(CONFIG_AMD_SFH_HID)       += amd-sfh-hid/
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+@@ -6,6 +6,7 @@
+ /dts-v1/;
+ 
+ #include "x1e80100-microsoft-romulus.dtsi"
++#include "x1e80100-microsoft-romulus15-touchpad.dtsi"
+ 
+ / {
+ 	model = "Microsoft Surface Laptop 7 (15 inch)";
+--- /dev/null
++++ b/drivers/hid/spi-hid/Kconfig
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: GPL-2.0
++config SPI_HID
++	tristate "HID over SPI v3 transport for QSPI touchpads"
++	depends on SPI && OF && PINCTRL && REGULATOR
++	help
++	  Enable the HID-over-SPI v3 transport used by the Surface Laptop 7
++	  QSPI touchpad. The module is named spi-hid.
+--- /dev/null
++++ b/drivers/hid/spi-hid/Makefile
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_SPI_HID) += spi-hid.o
++spi-hid-y := spi-hid-core.o
+--- /dev/null
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -0,0 +1,1050 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * HID over SPI (HIDSPI v3) transport driver for QSPI touchpads.
++ *
++ * Based on Microsoft's spi-hid v2 driver.
++ * Copyright (c) 2020 Microsoft Corporation
++ */
++
++#include <linux/module.h>
++#include <linux/spi/spi.h>
++#include <linux/interrupt.h>
++#include <linux/input.h>
++#include <linux/irq.h>
++#include <linux/delay.h>
++#include <linux/slab.h>
++#include <linux/device.h>
++#include <linux/wait.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/pm_runtime.h>
++#include <linux/string.h>
++#include <linux/kernel.h>
++#include <linux/hid.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/regulator/consumer.h>
++#include <linux/workqueue.h>
++
++#include "spi-hid-core.h"
++
++static struct hid_ll_driver spi_hid_ll_driver;
++static int spi_hid_process_input_report(struct spi_hid *shid,
++					 const u8 *body, int body_len);
++
++/* QSPI transfer helpers */
++
++static void qspi_fill_cmd(u8 *buf, u8 opcode, u32 addr)
++{
++	buf[0] = opcode;
++	buf[1] = (addr >> 16) & 0xFF;
++	buf[2] = (addr >> 8) & 0xFF;
++	buf[3] = addr & 0xFF;
++}
++
++static int qspi_write_sync(struct spi_hid *shid, u32 addr,
++			    const void *data, int len)
++{
++	struct spi_transfer xfer = {};
++	int total = SPI_HID_QSPI_CMD_LEN + len;
++	u8 *tx;
++	int ret;
++
++	tx = kzalloc(total, GFP_KERNEL);
++	if (!tx)
++		return -ENOMEM;
++
++	qspi_fill_cmd(tx, SPI_HID_QSPI_WRITE_OPCODE, addr);
++	if (data && len > 0)
++		memcpy(tx + SPI_HID_QSPI_CMD_LEN, data, len);
++
++	xfer.tx_buf = tx;
++	xfer.rx_buf = NULL;
++	xfer.len = total;
++	xfer.tx_nbits = 4;
++	xfer.rx_nbits = 4;
++
++	ret = spi_sync_transfer(shid->spi, &xfer, 1);
++
++	kfree(tx);
++	return ret;
++}
++
++static void spi_hid_parse_input_header(const u8 *buf,
++					struct spi_hid_input_header *hdr)
++{
++	u32 raw = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
++
++	hdr->sync_const = (raw >> 24) & 0xFF;
++	hdr->version = raw & 0x0F;
++	hdr->body_len = ((raw >> 8) & 0x3FFF) * 4;
++	hdr->last_frag = (raw >> 22) & 1;
++}
++
++static void spi_hid_parse_body_header(const u8 *buf,
++				       struct spi_hid_body_header *bhdr)
++{
++	bhdr->report_type = buf[0];
++	bhdr->content_length = buf[1] | (buf[2] << 8);
++	bhdr->content_id = buf[3];
++}
++
++static int spi_hid_validate_header(struct spi_hid *shid,
++				    struct spi_hid_input_header *hdr)
++{
++	struct device *dev = &shid->spi->dev;
++
++	if (hdr->sync_const != SPI_HID_INPUT_HEADER_SYNC_BYTE) {
++		dev_err(dev, "Bad sync: 0x%02x\n", hdr->sync_const);
++		return -EINVAL;
++	}
++
++	if (hdr->version != SPI_HID_INPUT_HEADER_VERSION) {
++		dev_err(dev, "Bad version: %d\n", hdr->version);
++		return -EINVAL;
++	}
++
++	if (hdr->body_len == 0)
++		return 0;
++
++	if (shid->desc.max_input_length != 0 &&
++	    hdr->body_len > shid->desc.max_input_length) {
++		dev_err(dev, "Body %u > max %u\n",
++			hdr->body_len, shid->desc.max_input_length);
++		return -EMSGSIZE;
++	}
++
++	return 0;
++}
++
++static void spi_hid_parse_dev_desc(struct spi_hid_device_desc_raw *raw,
++				    struct spi_hid_device_descriptor *desc)
++{
++	desc->hid_version = le16_to_cpu(raw->bcdVersion);
++	desc->report_descriptor_length = le16_to_cpu(raw->wReportDescLength);
++	desc->max_input_length = le16_to_cpu(raw->wMaxInputLength);
++	desc->max_output_length = le16_to_cpu(raw->wMaxOutputLength);
++	desc->max_fragment_length = le16_to_cpu(raw->wMaxFragmentLength);
++	desc->vendor_id = le16_to_cpu(raw->wVendorID);
++	desc->product_id = le16_to_cpu(raw->wProductID);
++	desc->version_id = le16_to_cpu(raw->wVersionID);
++	desc->flags = le16_to_cpu(raw->wFlags);
++}
++
++static int spi_hid_send_output(struct spi_hid *shid,
++			       u8 report_type, u8 content_id,
++			       const u8 *content, int content_len)
++{
++	u8 body[SPI_HID_BODY_HEADER_LEN + 512];
++	int body_len = SPI_HID_BODY_HEADER_LEN + content_len;
++
++	if (body_len > sizeof(body)) {
++		dev_err(&shid->spi->dev, "Output too large: %d\n", body_len);
++		return -E2BIG;
++	}
++
++	body[0] = report_type;
++	body[1] = content_len & 0xFF;
++	body[2] = (content_len >> 8) & 0xFF;
++	body[3] = content_id;
++	if (content && content_len > 0)
++		memcpy(body + SPI_HID_BODY_HEADER_LEN, content, content_len);
++
++	return qspi_write_sync(shid, SPI_HID_OUTPUT_ADDR, body, body_len);
++}
++
++/* Caller must hold shid->lock. */
++static int spi_hid_sync_request_ms(struct spi_hid *shid,
++				    u8 report_type, u8 content_id,
++				    const u8 *content, int content_len,
++				    unsigned int timeout_ms)
++{
++	struct device *dev = &shid->spi->dev;
++	unsigned long timeout;
++	int ret;
++
++	reinit_completion(&shid->output_done);
++
++	ret = spi_hid_send_output(shid, report_type, content_id,
++				  content, content_len);
++	if (ret) {
++		dev_err(dev, "Failed to send output type %d: %d\n",
++			report_type, ret);
++		return ret;
++	}
++
++	timeout = wait_for_completion_timeout(&shid->output_done,
++				msecs_to_jiffies(timeout_ms));
++	if (timeout == 0) {
++		dev_err(dev, "Response timeout for type %d (%ums)\n",
++			report_type, timeout_ms);
++		return -ETIMEDOUT;
++	}
++
++	return 0;
++}
++
++static int spi_hid_sync_request(struct spi_hid *shid,
++				u8 report_type, u8 content_id,
++				const u8 *content, int content_len)
++{
++	return spi_hid_sync_request_ms(shid, report_type, content_id,
++				       content, content_len,
++				       SPI_HID_RESPONSE_TIMEOUT_MS);
++}
++
++static int spi_hid_power_down(struct spi_hid *shid)
++{
++	int ret;
++
++	if (!shid->powered)
++		return 0;
++
++	if (shid->pinctrl_sleep)
++		pinctrl_select_state(shid->pinctrl, shid->pinctrl_sleep);
++
++	if (shid->supply) {
++		ret = regulator_disable(shid->supply);
++		if (ret) {
++			dev_err(&shid->spi->dev, "regulator disable failed\n");
++			return ret;
++		}
++	}
++
++	shid->powered = false;
++	return 0;
++}
++
++static int spi_hid_power_up(struct spi_hid *shid)
++{
++	int ret;
++
++	if (shid->powered)
++		return 0;
++
++	shid->powered = true;
++
++	if (shid->supply) {
++		ret = regulator_enable(shid->supply);
++		if (ret) {
++			shid->powered = false;
++			return ret;
++		}
++	}
++
++	usleep_range(5000, 6000);
++	return 0;
++}
++
++static struct hid_device *spi_hid_disconnect_hid(struct spi_hid *shid)
++{
++	struct hid_device *hid = shid->hid;
++
++	shid->hid = NULL;
++	return hid;
++}
++
++static void spi_hid_stop_hid(struct spi_hid *shid)
++{
++	struct hid_device *hid;
++
++	hid = spi_hid_disconnect_hid(shid);
++	if (hid) {
++		cancel_work_sync(&shid->create_device_work);
++		cancel_work_sync(&shid->refresh_device_work);
++		hid_destroy_device(hid);
++	}
++}
++
++static int spi_hid_error_handler(struct spi_hid *shid)
++{
++	struct device *dev = &shid->spi->dev;
++	int ret;
++
++	if (shid->power_state == SPI_HID_POWER_MODE_OFF)
++		return 0;
++
++	dev_err(dev, "Error handler (attempt %d)\n", shid->attempts);
++
++	if (shid->attempts++ >= SPI_HID_MAX_RESET_ATTEMPTS) {
++		dev_err(dev, "Unresponsive device, aborting\n");
++		spi_hid_stop_hid(shid);
++		spi_hid_power_down(shid);
++		return -ESHUTDOWN;
++	}
++
++	shid->ready = false;
++
++	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
++	if (ret) {
++		dev_err(dev, "Reset assert failed\n");
++		return ret;
++	}
++	shid->power_state = SPI_HID_POWER_MODE_OFF;
++
++	msleep(SPI_HID_RESET_ASSERT_MS);
++
++	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
++	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
++	if (ret) {
++		dev_err(dev, "Reset deassert failed\n");
++		return ret;
++	}
++
++	msleep(SPI_HID_POST_DIR_DELAY_MS);
++
++	return 0;
++}
++
++static int spi_hid_input_report_handler(struct spi_hid *shid,
++					 const u8 *body, int body_len)
++{
++	struct spi_hid_body_header bhdr;
++	int ret;
++
++	if (!shid->ready || !shid->hid)
++		return 0;
++
++	spi_hid_parse_body_header(body, &bhdr);
++
++	ret = hid_input_report(shid->hid, HID_INPUT_REPORT,
++			       (u8 *)(body + 3),
++			       bhdr.content_length + 1, 1);
++
++	if (ret == -ENODEV || ret == -EBUSY)
++		return 0;
++
++	return ret;
++}
++
++static int spi_hid_process_input_report(struct spi_hid *shid,
++					 const u8 *body, int body_len)
++{
++	struct device *dev = &shid->spi->dev;
++	struct spi_hid_body_header bhdr;
++	struct spi_hid_device_desc_raw *raw;
++
++	if (body_len < SPI_HID_BODY_HEADER_LEN) {
++		dev_err(dev, "Body too short: %d\n", body_len);
++		return -EINVAL;
++	}
++
++	spi_hid_parse_body_header(body, &bhdr);
++
++	switch (bhdr.report_type) {
++	case SPI_HID_REPORT_TYPE_DATA:
++		return spi_hid_input_report_handler(shid, body, body_len);
++
++	case SPI_HID_REPORT_TYPE_RESET_RESP:
++		shid->resp_type = SPI_HID_REPORT_TYPE_RESET_RESP;
++		shid->resp_len = 0;
++		if (!completion_done(&shid->output_done)) {
++			complete(&shid->output_done);
++		} else {
++			if (!shid->ready)
++				schedule_work(&shid->reset_work);
++			else
++				schedule_work(&shid->refresh_device_work);
++		}
++		return 0;
++
++	case SPI_HID_REPORT_TYPE_DEVICE_DESC:
++		shid->attempts = 0;
++		if (body_len >= SPI_HID_BODY_HEADER_LEN +
++				sizeof(struct spi_hid_device_desc_raw)) {
++			raw = (struct spi_hid_device_desc_raw *)
++				(body + SPI_HID_BODY_HEADER_LEN);
++			spi_hid_parse_dev_desc(raw, &shid->desc);
++		}
++		if (shid->resp_buf && body_len <= SPI_HID_MAX_INPUT_LEN) {
++			memcpy(shid->resp_buf, body, body_len);
++			shid->resp_len = body_len;
++			shid->resp_type = bhdr.report_type;
++		}
++		if (!completion_done(&shid->output_done))
++			complete(&shid->output_done);
++		else if (!shid->hid)
++			schedule_work(&shid->create_device_work);
++		else
++			schedule_work(&shid->refresh_device_work);
++		return 0;
++
++	case SPI_HID_REPORT_TYPE_COMMAND_RESP:
++	case SPI_HID_REPORT_TYPE_GET_FEATURE_RESP:
++	case SPI_HID_REPORT_TYPE_REPORT_DESC:
++	case SPI_HID_REPORT_TYPE_SET_FEATURE_RESP:
++	case SPI_HID_REPORT_TYPE_OUTPUT_REPORT_RESP:
++	case SPI_HID_REPORT_TYPE_GET_INPUT_RESP:
++		if (shid->resp_buf && body_len <= SPI_HID_MAX_INPUT_LEN) {
++			memcpy(shid->resp_buf, body, body_len);
++			shid->resp_len = body_len;
++			shid->resp_type = bhdr.report_type;
++		}
++		if (!completion_done(&shid->output_done))
++			complete(&shid->output_done);
++		return 0;
++
++	default:
++		dev_err(dev, "Unknown report type: 0x%x (body_len=%d raw: %*ph)\n",
++			bhdr.report_type, body_len,
++			min(body_len, 16), body);
++		return -EINVAL;
++	}
++}
++
++static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
++{
++	struct spi_hid *shid = _shid;
++	struct device *dev = &shid->spi->dev;
++	struct spi_hid_input_header hdr;
++	struct spi_transfer xfer = {};
++	int ret;
++
++	if (!shid->powered)
++		return IRQ_HANDLED;
++
++	xfer.tx_buf = shid->irq_hdr_tx;
++	xfer.rx_buf = shid->irq_hdr_rx;
++	xfer.len = SPI_HID_INPUT_HEADER_LEN;
++	xfer.tx_nbits = 4;
++	xfer.rx_nbits = 4;
++
++	ret = spi_sync_transfer(shid->spi, &xfer, 1);
++	if (ret) {
++		shid->bus_error_count++;
++		shid->bus_last_error = ret;
++		if (shid->bus_error_count <= 5)
++			dev_err(dev, "Header read failed: %d\n", ret);
++		if (shid->bus_error_count == 100) {
++			dev_err(dev, "Too many read errors, disabling IRQ\n");
++			disable_irq_nosync(shid->spi->irq);
++		}
++		return IRQ_HANDLED;
++	}
++
++	spi_hid_parse_input_header(shid->irq_hdr_rx, &hdr);
++
++	ret = spi_hid_validate_header(shid, &hdr);
++	if (ret) {
++		shid->bus_error_count++;
++		shid->bus_last_error = ret;
++		if (shid->bus_error_count <= 5 ||
++		    shid->bus_error_count % 1000 == 0)
++			dev_err(dev, "Invalid header (%u errors): %*ph\n",
++				shid->bus_error_count,
++				SPI_HID_INPUT_HEADER_LEN, shid->irq_hdr_rx);
++		if (shid->bus_error_count == 100) {
++			dev_err(dev, "Too many errors, disabling IRQ\n");
++			disable_irq_nosync(shid->spi->irq);
++		}
++		return IRQ_HANDLED;
++	}
++	shid->bus_error_count = 0;
++
++	if (hdr.body_len == 0)
++		return IRQ_HANDLED;
++
++	if (hdr.body_len > SPI_HID_MAX_INPUT_LEN) {
++		dev_err(dev, "Body too large: %u\n", hdr.body_len);
++		return IRQ_HANDLED;
++	}
++
++	memset(&xfer, 0, sizeof(xfer));
++	xfer.tx_buf = shid->irq_bdy_tx;
++	xfer.rx_buf = shid->irq_bdy_rx;
++	xfer.len = hdr.body_len;
++	xfer.tx_nbits = 4;
++	xfer.rx_nbits = 4;
++
++	ret = spi_sync_transfer(shid->spi, &xfer, 1);
++	if (ret) {
++		dev_err(dev, "Body read failed: %d\n", ret);
++		shid->bus_error_count++;
++		shid->bus_last_error = ret;
++		return IRQ_HANDLED;
++	}
++
++	spi_hid_process_input_report(shid, shid->irq_bdy_rx, hdr.body_len);
++
++	return IRQ_HANDLED;
++}
++
++static int spi_hid_create_device(struct spi_hid *shid);
++
++static void spi_hid_reset_work(struct work_struct *work)
++{
++	struct spi_hid *shid = container_of(work, struct spi_hid, reset_work);
++	struct device *dev = &shid->spi->dev;
++	int ret, attempt;
++
++	if (shid->ready)
++		shid->dir_count++;
++
++	flush_work(&shid->create_device_work);
++
++	if (shid->power_state == SPI_HID_POWER_MODE_OFF)
++		return;
++
++	flush_work(&shid->refresh_device_work);
++
++	mutex_lock(&shid->lock);
++
++	for (attempt = 0; attempt < SPI_HID_MAX_RESET_ATTEMPTS; attempt++) {
++		int dd_try, rd_try, rd_len;
++
++		if (attempt > 0) {
++			pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
++			msleep(SPI_HID_RESET_ASSERT_MS);
++			pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
++			msleep(2000);
++		}
++
++		for (dd_try = 0; dd_try < SPI_HID_MAX_INIT_RETRIES; dd_try++) {
++			ret = spi_hid_sync_request(shid,
++						   SPI_HID_OUT_DEVICE_DESC,
++						   0, NULL, 0);
++			if (ret) {
++				dev_err(dev, "GET_DD failed: %d\n", ret);
++				break;
++			}
++			if (shid->resp_type == SPI_HID_REPORT_TYPE_DEVICE_DESC)
++				break;
++			if (shid->resp_type == SPI_HID_REPORT_TYPE_RESET_RESP) {
++				msleep(SPI_HID_POST_DIR_DELAY_MS);
++				continue;
++			}
++			dev_err(dev, "GET_DD: unexpected type %d\n",
++				shid->resp_type);
++			msleep(SPI_HID_POST_DIR_DELAY_MS);
++		}
++		if (dd_try >= SPI_HID_MAX_INIT_RETRIES || ret) {
++			dev_err(dev, "GET_DD failed, restarting\n");
++			continue;
++		}
++
++		for (rd_try = 0; rd_try < SPI_HID_MAX_INIT_RETRIES; rd_try++) {
++			ret = spi_hid_sync_request(shid,
++						   SPI_HID_OUT_REPORT_DESC,
++						   0, NULL, 0);
++			if (ret) {
++				dev_err(dev, "GET_RD failed: %d\n", ret);
++				break;
++			}
++			if (shid->resp_type == SPI_HID_REPORT_TYPE_REPORT_DESC)
++				break;
++			if (shid->resp_type == SPI_HID_REPORT_TYPE_RESET_RESP) {
++				msleep(SPI_HID_POST_DIR_DELAY_MS);
++				continue;
++			}
++			dev_err(dev, "GET_RD: unexpected type %d\n",
++				shid->resp_type);
++			msleep(SPI_HID_POST_DIR_DELAY_MS);
++		}
++		if (rd_try >= SPI_HID_MAX_INIT_RETRIES || ret) {
++			dev_err(dev, "GET_RD failed, restarting\n");
++			continue;
++		}
++
++		rd_len = shid->resp_len - SPI_HID_BODY_HEADER_LEN;
++		if (rd_len <= 0 || rd_len > 2048) {
++			dev_err(dev, "GET_RD: bad length %d\n", rd_len);
++			continue;
++		}
++		memcpy(shid->rd_buf,
++		       shid->resp_buf + SPI_HID_BODY_HEADER_LEN, rd_len);
++		shid->rd_len = rd_len;
++
++		goto success;
++	}
++
++	dev_err(dev, "Init failed after %d reset cycles\n", attempt);
++	mutex_unlock(&shid->lock);
++	spi_hid_error_handler(shid);
++	return;
++
++success:
++	mutex_unlock(&shid->lock);
++
++	if (!shid->hid)
++		spi_hid_create_device(shid);
++}
++
++static int spi_hid_create_device(struct spi_hid *shid)
++{
++	struct hid_device *hid;
++	struct device *dev = &shid->spi->dev;
++	int ret;
++
++	hid = hid_allocate_device();
++	if (IS_ERR(hid)) {
++		dev_err(dev, "Failed to allocate hid device: %ld\n",
++			PTR_ERR(hid));
++		return PTR_ERR(hid);
++	}
++
++	hid->driver_data = shid->spi;
++	hid->ll_driver = &spi_hid_ll_driver;
++	hid->dev.parent = &shid->spi->dev;
++	hid->bus = BUS_SPI;
++	hid->version = shid->desc.hid_version;
++	hid->vendor = shid->desc.vendor_id;
++	hid->product = shid->desc.product_id;
++
++	snprintf(hid->name, sizeof(hid->name), "spi %04hX:%04hX",
++		 hid->vendor, hid->product);
++	strscpy(hid->phys, dev_name(&shid->spi->dev), sizeof(hid->phys));
++
++	shid->hid = hid;
++
++	ret = hid_add_device(hid);
++	if (ret) {
++		dev_err(dev, "Failed to add hid device: %d\n", ret);
++		hid = spi_hid_disconnect_hid(shid);
++		if (hid)
++			hid_destroy_device(hid);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void spi_hid_create_device_work(struct work_struct *work)
++{
++	struct spi_hid *shid =
++		container_of(work, struct spi_hid, create_device_work);
++	struct device *dev = &shid->spi->dev;
++	int ret;
++
++	if (shid->desc.hid_version != SPI_HID_SUPPORTED_VERSION) {
++		dev_err(dev, "Unsupported version 0x%04x (expected 0x%04x)\n",
++			shid->desc.hid_version, SPI_HID_SUPPORTED_VERSION);
++		spi_hid_error_handler(shid);
++		return;
++	}
++
++	ret = spi_hid_create_device(shid);
++	if (ret) {
++		dev_err(dev, "Failed to create HID device: %d\n", ret);
++		return;
++	}
++
++	shid->attempts = 0;
++}
++
++static void spi_hid_refresh_device_work(struct work_struct *work)
++{
++	struct spi_hid *shid =
++		container_of(work, struct spi_hid, refresh_device_work);
++
++	shid->ready = true;
++}
++
++static int spi_hid_ll_start(struct hid_device *hid)
++{
++	struct spi_device *spi = hid->driver_data;
++	struct spi_hid *shid = spi_get_drvdata(spi);
++
++	if (shid->desc.max_input_length < HID_MIN_BUFFER_SIZE) {
++		dev_err(&spi->dev, "max_input_length %d < HID_MIN_BUFFER_SIZE\n",
++			shid->desc.max_input_length);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static void spi_hid_ll_stop(struct hid_device *hid)
++{
++	hid->claimed = 0;
++}
++
++static int spi_hid_ll_open(struct hid_device *hid)
++{
++	return 0;
++}
++
++static void spi_hid_ll_close(struct hid_device *hid)
++{
++}
++
++static int spi_hid_ll_power(struct hid_device *hid, int level)
++{
++	struct spi_device *spi = hid->driver_data;
++	struct spi_hid *shid = spi_get_drvdata(spi);
++
++	if (!shid->hid)
++		return -ENODEV;
++
++	return 0;
++}
++
++static int spi_hid_ll_parse(struct hid_device *hid)
++{
++	struct spi_device *spi = hid->driver_data;
++	struct spi_hid *shid = spi_get_drvdata(spi);
++	struct device *dev = &spi->dev;
++	int ret;
++
++	if (!shid->rd_buf || shid->rd_len <= 0) {
++		dev_err(dev, "No report descriptor available\n");
++		return -ENODATA;
++	}
++
++	ret = hid_parse_report(hid, shid->rd_buf, shid->rd_len);
++	if (ret)
++		dev_err(dev, "hid_parse_report failed: %d\n", ret);
++	else
++		shid->ready = true;
++
++	return ret;
++}
++
++static int spi_hid_ll_raw_request(struct hid_device *hid,
++				  unsigned char reportnum, __u8 *buf,
++				  size_t len, unsigned char rtype, int reqtype)
++{
++	struct spi_device *spi = hid->driver_data;
++	struct spi_hid *shid = spi_get_drvdata(spi);
++	struct device *dev = &spi->dev;
++
++	int ret, copy_len;
++
++	if (reqtype == HID_REQ_SET_REPORT && rtype == HID_FEATURE_REPORT) {
++		mutex_lock(&shid->lock);
++		ret = spi_hid_sync_request(shid, SPI_HID_OUT_SET_FEATURE,
++					   buf[0], buf + 1, len - 1);
++		mutex_unlock(&shid->lock);
++		if (ret)
++			return ret;
++		if (shid->resp_type == SPI_HID_REPORT_TYPE_RESET_RESP)
++			return len;
++		if (shid->resp_type != SPI_HID_REPORT_TYPE_SET_FEATURE_RESP) {
++			dev_err(dev, "SET_FEATURE got resp type %d\n",
++				shid->resp_type);
++			return -EIO;
++		}
++		return len;
++	}
++
++	if (reqtype == HID_REQ_GET_REPORT && rtype == HID_FEATURE_REPORT) {
++		mutex_lock(&shid->lock);
++		ret = spi_hid_sync_request(shid, SPI_HID_OUT_GET_FEATURE,
++					   reportnum, NULL, 0);
++		mutex_unlock(&shid->lock);
++		if (ret) {
++			dev_err(dev, "GET_FEATURE 0x%02x failed: %d\n",
++				reportnum, ret);
++			return ret;
++		}
++
++		if (shid->resp_type == SPI_HID_REPORT_TYPE_RESET_RESP) {
++			memset(buf, 0, len);
++			buf[0] = reportnum;
++			return len;
++		}
++
++		if (shid->resp_type != SPI_HID_REPORT_TYPE_GET_FEATURE_RESP) {
++			dev_err(dev, "GET_FEATURE got resp type %d\n",
++				shid->resp_type);
++			return -EIO;
++		}
++
++		copy_len = shid->resp_len - SPI_HID_BODY_HEADER_LEN;
++		if (copy_len <= 0) {
++			dev_err(dev, "GET_FEATURE 0x%02x: empty response\n",
++				reportnum);
++			return -EIO;
++		}
++		if (copy_len > (int)len - 1)
++			copy_len = (int)len - 1;
++
++		buf[0] = reportnum;
++		memcpy(buf + 1, shid->resp_buf + SPI_HID_BODY_HEADER_LEN,
++		       copy_len);
++		return 1 + copy_len;
++	}
++
++	if (reqtype == HID_REQ_SET_REPORT) {
++		mutex_lock(&shid->lock);
++		ret = spi_hid_send_output(shid, SPI_HID_OUT_OUTPUT_REPORT,
++					  buf[0], buf + 1, len - 1);
++		mutex_unlock(&shid->lock);
++		return ret ? ret : len;
++	}
++
++	dev_err(dev, "Unsupported request: reqtype=%d rtype=%d\n",
++		reqtype, rtype);
++	return -EIO;
++}
++
++static int spi_hid_ll_output_report(struct hid_device *hid,
++				    __u8 *buf, size_t len)
++{
++	struct spi_device *spi = hid->driver_data;
++	struct spi_hid *shid = spi_get_drvdata(spi);
++	struct device *dev = &spi->dev;
++	int ret;
++
++	mutex_lock(&shid->lock);
++	if (!shid->ready) {
++		dev_err(dev, "output_report called in unready state\n");
++		ret = -ENODEV;
++		goto out;
++	}
++
++	ret = spi_hid_send_output(shid, SPI_HID_OUT_OUTPUT_REPORT,
++				  buf[0], &buf[1], len - 1);
++	if (ret == 0)
++		ret = len;
++
++out:
++	mutex_unlock(&shid->lock);
++	return ret;
++}
++
++static struct hid_ll_driver spi_hid_ll_driver = {
++	.start = spi_hid_ll_start,
++	.stop = spi_hid_ll_stop,
++	.open = spi_hid_ll_open,
++	.close = spi_hid_ll_close,
++	.power = spi_hid_ll_power,
++	.parse = spi_hid_ll_parse,
++	.output_report = spi_hid_ll_output_report,
++	.raw_request = spi_hid_ll_raw_request,
++};
++
++static ssize_t ready_show(struct device *dev,
++			  struct device_attribute *attr, char *buf)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%s\n", shid->ready ? "ready" : "not ready");
++}
++static DEVICE_ATTR_RO(ready);
++
++static ssize_t bus_error_count_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d (%d)\n",
++			  shid->bus_error_count, shid->bus_last_error);
++}
++static DEVICE_ATTR_RO(bus_error_count);
++
++static ssize_t device_initiated_reset_count_show(struct device *dev,
++					struct device_attribute *attr,
++					char *buf)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", shid->dir_count);
++}
++static DEVICE_ATTR_RO(device_initiated_reset_count);
++
++static const struct attribute *const spi_hid_attributes[] = {
++	&dev_attr_ready.attr,
++	&dev_attr_bus_error_count.attr,
++	&dev_attr_device_initiated_reset_count.attr,
++	NULL
++};
++
++static int spi_hid_probe(struct spi_device *spi)
++{
++	struct device *dev = &spi->dev;
++	struct spi_hid *shid;
++	unsigned long irqflags;
++	int ret;
++
++	if (spi->irq <= 0) {
++		dev_err(dev, "Missing IRQ\n");
++		return spi->irq ?: -EINVAL;
++	}
++
++	shid = devm_kzalloc(dev, sizeof(*shid), GFP_KERNEL);
++	if (!shid)
++		return -ENOMEM;
++
++	shid->spi = spi;
++	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
++	spi_set_drvdata(spi, shid);
++
++	spi->mode = SPI_MODE_0 | SPI_TX_QUAD | SPI_RX_QUAD;
++	spi->max_speed_hz = 20000000;
++	spi->bits_per_word = 8;
++	ret = spi_setup(spi);
++	if (ret) {
++		dev_err(dev, "SPI setup failed: %d\n", ret);
++		return ret;
++	}
++
++	shid->resp_buf = kzalloc(SPI_HID_MAX_INPUT_LEN, GFP_KERNEL);
++	shid->rd_buf = kzalloc(2048, GFP_KERNEL);
++	shid->irq_hdr_tx = kzalloc(SPI_HID_INPUT_HEADER_LEN, GFP_KERNEL);
++	shid->irq_hdr_rx = kzalloc(SPI_HID_INPUT_HEADER_LEN, GFP_KERNEL);
++	shid->irq_bdy_tx = kzalloc(SPI_HID_MAX_INPUT_LEN, GFP_KERNEL);
++	shid->irq_bdy_rx = kzalloc(SPI_HID_MAX_INPUT_LEN, GFP_KERNEL);
++	if (!shid->resp_buf || !shid->rd_buf ||
++	    !shid->irq_hdr_tx || !shid->irq_hdr_rx ||
++	    !shid->irq_bdy_tx || !shid->irq_bdy_rx) {
++		ret = -ENOMEM;
++		goto err_free;
++	}
++
++	qspi_fill_cmd(shid->irq_hdr_tx, SPI_HID_QSPI_READ_OPCODE,
++		       SPI_HID_INPUT_HDR_ADDR);
++	qspi_fill_cmd(shid->irq_bdy_tx, SPI_HID_QSPI_READ_OPCODE,
++		       SPI_HID_INPUT_BDY_ADDR);
++
++	shid->desc.max_input_length = SPI_HID_MAX_INPUT_LEN;
++
++	ret = sysfs_create_files(&dev->kobj, spi_hid_attributes);
++	if (ret) {
++		dev_err(dev, "sysfs_create_files failed\n");
++		goto err_free;
++	}
++
++	mutex_init(&shid->lock);
++	init_completion(&shid->output_done);
++	complete(&shid->output_done);
++
++	INIT_WORK(&shid->reset_work, spi_hid_reset_work);
++	INIT_WORK(&shid->create_device_work, spi_hid_create_device_work);
++	INIT_WORK(&shid->refresh_device_work, spi_hid_refresh_device_work);
++
++	shid->supply = devm_regulator_get_optional(dev, "vdd");
++	if (IS_ERR(shid->supply)) {
++		if (PTR_ERR(shid->supply) == -EPROBE_DEFER) {
++			ret = -EPROBE_DEFER;
++			goto err_sysfs;
++		}
++		shid->supply = NULL;
++	}
++
++	shid->pinctrl = devm_pinctrl_get(dev);
++	if (IS_ERR(shid->pinctrl)) {
++		dev_err(dev, "pinctrl_get failed: %ld\n",
++			PTR_ERR(shid->pinctrl));
++		ret = PTR_ERR(shid->pinctrl);
++		goto err_sysfs;
++	}
++
++	shid->pinctrl_reset = pinctrl_lookup_state(shid->pinctrl, "reset");
++	if (IS_ERR(shid->pinctrl_reset)) {
++		dev_err(dev, "pinctrl 'reset' not found: %ld\n",
++			PTR_ERR(shid->pinctrl_reset));
++		ret = PTR_ERR(shid->pinctrl_reset);
++		goto err_sysfs;
++	}
++
++	shid->pinctrl_active = pinctrl_lookup_state(shid->pinctrl, "active");
++	if (IS_ERR(shid->pinctrl_active)) {
++		dev_err(dev, "pinctrl 'active' not found: %ld\n",
++			PTR_ERR(shid->pinctrl_active));
++		ret = PTR_ERR(shid->pinctrl_active);
++		goto err_sysfs;
++	}
++
++	shid->pinctrl_sleep = pinctrl_lookup_state(shid->pinctrl, "sleep");
++	if (IS_ERR(shid->pinctrl_sleep))
++		shid->pinctrl_sleep = shid->pinctrl_reset;
++
++	irqflags = irq_get_trigger_type(spi->irq) | IRQF_ONESHOT;
++	ret = request_threaded_irq(spi->irq, NULL, spi_hid_irq_thread,
++				   irqflags, dev_name(&spi->dev), shid);
++	if (ret) {
++		dev_err(dev, "request_threaded_irq failed: %d\n", ret);
++		goto err_sysfs;
++	}
++	disable_irq(spi->irq);
++	shid->irq_enabled = false;
++
++	pm_runtime_enable(dev->parent);
++	ret = pm_runtime_get_sync(dev->parent);
++	if (ret < 0) {
++		dev_warn(dev, "SPI ctrl PM get failed: %d\n", ret);
++		pm_runtime_put_noidle(dev->parent);
++	}
++
++	/*
++	 * Bring-up: hold the device in reset (power off, reset asserted)
++	 * for a few ms, then deassert reset and enable the regulator. The
++	 * 2 s settle gives the touchpad firmware time to boot before we
++	 * arm the IRQ and start talking to it.
++	 */
++	pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
++	msleep(SPI_HID_RESET_ASSERT_MS);
++	pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
++	spi_hid_power_up(shid);
++	msleep(2000);
++
++	pm_runtime_put(dev->parent);
++
++	enable_irq(spi->irq);
++	shid->irq_enabled = true;
++
++	return 0;
++
++err_sysfs:
++	sysfs_remove_files(&dev->kobj, spi_hid_attributes);
++err_free:
++	kfree(shid->resp_buf);
++	kfree(shid->rd_buf);
++	kfree(shid->irq_hdr_tx);
++	kfree(shid->irq_hdr_rx);
++	kfree(shid->irq_bdy_tx);
++	kfree(shid->irq_bdy_rx);
++	return ret;
++}
++
++static void spi_hid_remove(struct spi_device *spi)
++{
++	struct spi_hid *shid = spi_get_drvdata(spi);
++	struct device *dev = &spi->dev;
++
++	free_irq(spi->irq, shid);
++	shid->irq_enabled = false;
++	/* Drain every worker before releasing the transport buffers. */
++	cancel_work_sync(&shid->reset_work);
++	cancel_work_sync(&shid->create_device_work);
++	cancel_work_sync(&shid->refresh_device_work);
++	sysfs_remove_files(&dev->kobj, spi_hid_attributes);
++	spi_hid_stop_hid(shid);
++	spi_hid_power_down(shid);
++
++	kfree(shid->resp_buf);
++	kfree(shid->rd_buf);
++	kfree(shid->irq_hdr_tx);
++	kfree(shid->irq_hdr_rx);
++	kfree(shid->irq_bdy_tx);
++	kfree(shid->irq_bdy_rx);
++}
++
++static const struct of_device_id spi_hid_of_match[] = {
++	{ .compatible = "hid-over-spi" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, spi_hid_of_match);
++
++static const struct spi_device_id spi_hid_id_table[] = {
++	{ "hid-over-spi", 0 },
++	{ },
++};
++MODULE_DEVICE_TABLE(spi, spi_hid_id_table);
++
++static struct spi_driver spi_hid_driver = {
++	.driver = {
++		.name	= "spi_hid",
++		.owner	= THIS_MODULE,
++		.of_match_table = of_match_ptr(spi_hid_of_match),
++	},
++	.probe		= spi_hid_probe,
++	.remove		= spi_hid_remove,
++	.id_table	= spi_hid_id_table,
++};
++
++module_spi_driver(spi_hid_driver);
++
++MODULE_DESCRIPTION("HID over SPI (HIDSPI v3) QSPI transport driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -0,0 +1,148 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * HID over SPI (HIDSPI v3) transport driver for QSPI touchpads.
++ *
++ * Based on Microsoft's spi-hid v2 driver.
++ * Copyright (c) 2020 Microsoft Corporation
++ */
++
++#ifndef SPI_HID_CORE_H
++#define SPI_HID_CORE_H
++
++#include <linux/kernel.h>
++#include <linux/completion.h>
++#include <linux/spi/spi.h>
++#include <linux/types.h>
++
++#define SPI_HID_INPUT_HEADER_SYNC_BYTE		0x5A
++#define SPI_HID_INPUT_HEADER_VERSION		0x03
++
++#define SPI_HID_QSPI_READ_OPCODE		0xEB
++#define SPI_HID_QSPI_WRITE_OPCODE		0xE2
++#define SPI_HID_QSPI_CMD_LEN			4
++
++#define SPI_HID_INPUT_HDR_ADDR			0x1000
++#define SPI_HID_INPUT_BDY_ADDR			0x1004
++#define SPI_HID_OUTPUT_ADDR			0x2000
++
++#define SPI_HID_SUPPORTED_VERSION		0x0300
++
++#define SPI_HID_BODY_HEADER_LEN		4
++
++/* Input report types (device -> host) */
++#define SPI_HID_REPORT_TYPE_DATA		0x01
++#define SPI_HID_REPORT_TYPE_RESET_RESP		0x03
++#define SPI_HID_REPORT_TYPE_COMMAND_RESP	0x04
++#define SPI_HID_REPORT_TYPE_GET_FEATURE_RESP	0x05
++#define SPI_HID_REPORT_TYPE_DEVICE_DESC		0x07
++#define SPI_HID_REPORT_TYPE_REPORT_DESC		0x08
++#define SPI_HID_REPORT_TYPE_SET_FEATURE_RESP	0x09
++#define SPI_HID_REPORT_TYPE_OUTPUT_REPORT_RESP	0x0A
++#define SPI_HID_REPORT_TYPE_GET_INPUT_RESP	0x0B
++
++/* Output report types (host -> device) */
++#define SPI_HID_OUT_DEVICE_DESC			0x01
++#define SPI_HID_OUT_REPORT_DESC			0x02
++#define SPI_HID_OUT_SET_FEATURE			0x03
++#define SPI_HID_OUT_GET_FEATURE			0x04
++#define SPI_HID_OUT_OUTPUT_REPORT		0x05
++#define SPI_HID_OUT_GET_INPUT_REPORT		0x06
++#define SPI_HID_OUT_COMMAND_CONTENT		0x07
++
++#define SPI_HID_POWER_MODE_ACTIVE		0x01
++#define SPI_HID_POWER_MODE_SLEEP		0x02
++#define SPI_HID_POWER_MODE_OFF			0x03
++
++#define SPI_HID_RESET_ASSERT_MS		300
++#define SPI_HID_POST_DIR_DELAY_MS		25
++#define SPI_HID_RESPONSE_TIMEOUT_MS		2000
++#define SPI_HID_MAX_RESET_ATTEMPTS		3
++#define SPI_HID_MAX_INIT_RETRIES		10
++
++#define SPI_HID_INPUT_HEADER_LEN		4
++#define SPI_HID_MAX_INPUT_LEN			SZ_8K
++
++struct spi_hid_device_desc_raw {
++	__le16 wDeviceDescLength;
++	__le16 bcdVersion;
++	__le16 wReportDescLength;
++	__le16 wMaxInputLength;
++	__le16 wMaxOutputLength;
++	__le16 wMaxFragmentLength;
++	__le16 wVendorID;
++	__le16 wProductID;
++	__le16 wVersionID;
++	__le16 wFlags;
++	__u8 reserved[4];
++} __packed;
++
++/* Parsed device descriptor */
++struct spi_hid_device_descriptor {
++	u16 hid_version;
++	u16 report_descriptor_length;
++	u16 max_input_length;
++	u16 max_output_length;
++	u16 max_fragment_length;
++	u16 vendor_id;
++	u16 product_id;
++	u16 version_id;
++	u16 flags;
++};
++
++struct spi_hid_input_header {
++	u8 version;
++	u16 body_len;
++	u8 last_frag;
++	u8 sync_const;
++};
++
++struct spi_hid_body_header {
++	u8 report_type;
++	u16 content_length;
++	u8 content_id;
++};
++
++struct spi_hid {
++	struct spi_device	*spi;
++	struct hid_device	*hid;
++
++	struct spi_hid_device_descriptor desc;
++
++	u8 *resp_buf;
++	int resp_len;
++	u8 resp_type;
++
++	u8 power_state;
++	u8 attempts;
++
++	bool ready;
++	bool irq_enabled;
++
++	struct regulator *supply;
++	struct pinctrl *pinctrl;
++	struct pinctrl_state *pinctrl_reset;
++	struct pinctrl_state *pinctrl_active;
++	struct pinctrl_state *pinctrl_sleep;
++	struct work_struct reset_work;
++	struct work_struct create_device_work;
++	struct work_struct refresh_device_work;
++
++	struct mutex lock;
++	struct completion output_done;
++
++	u32 bus_error_count;
++	int bus_last_error;
++
++	u32 dir_count;
++	u32 powered;
++
++	u8 *rd_buf;
++	int rd_len;
++
++	u8 *irq_hdr_tx;
++	u8 *irq_hdr_rx;
++	u8 *irq_bdy_tx;
++	u8 *irq_bdy_rx;
++};
++
++#endif
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchpad.dtsi
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/* QSPI touchpad wiring from the ELLX Surface Laptop 7 support tree. */
++
++#include <dt-bindings/dma/qcom-gpi.h>
++
++/ {
++	vreg_ts_5p0: ts-5p0-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "vreg_ts_5p0";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		gpio = <&tlmm 65 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		startup-delay-us = <100000>;
++	};
++};
++
++&tlmm {
++	qup_qspi19_data_clk: qup-qspi19-data-clk-state {
++		pins = "gpio76", "gpio77", "gpio78";
++		function = "qup2_se3";
++		drive-strength = <6>;
++		bias-disable;
++	};
++
++	qup_qspi19_cs: qup-qspi19-cs-state {
++		pins = "gpio79";
++		function = "qup2_se3";
++		drive-strength = <6>;
++		bias-disable;
++	};
++
++	qup_qspi19_data23: qup-qspi19-data23-state {
++		pins = "gpio66", "gpio67";
++		function = "qup2_se3";
++		drive-strength = <6>;
++		bias-disable;
++	};
++
++	spi19_hid0_reset_deassert: spi19-hid0-reset-deassert-state {
++		pins = "gpio65", "gpio120";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-disable;
++		output-high;
++	};
++
++	spi19_hid0_reset_assert: spi19-hid0-reset-assert-state {
++		pins = "gpio65", "gpio120";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-disable;
++		output-low;
++	};
++
++	spi19_hid0_int_bias: spi19-hid0-int-bias-state {
++		pins = "gpio3";
++		function = "gpio";
++		input-enable;
++		bias-pull-up;
++	};
++};
++
++&gpi_dma2 {
++	status = "okay";
++};
++
++&spi19 {
++	compatible = "qcom,geni-spi-qspi";
++	spi-max-frequency = <20000000>;
++	qcom,qspi-read-opcode = <0xeb>;
++	qcom,qspi-read-dummy-clocks = <8>;
++	qcom,qspi-read-cmd-bytes = <4>;
++
++	pinctrl-0 = <&qup_qspi19_data_clk>, <&qup_qspi19_cs>,
++		    <&qup_qspi19_data23>, <&spi19_hid0_int_bias>;
++	pinctrl-names = "default";
++	dmas = <&gpi_dma2 0 3 QCOM_GPI_QSPI>,
++	       <&gpi_dma2 1 3 QCOM_GPI_QSPI>;
++	dma-names = "tx", "rx";
++	status = "okay";
++
++	touchpad: touchpad@0 {
++		compatible = "hid-over-spi";
++		reg = <0>;
++		spi-max-frequency = <20000000>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
++		vdd-supply = <&vreg_ts_5p0>;
++		pinctrl-0 = <&spi19_hid0_reset_deassert>;
++		pinctrl-1 = <&spi19_hid0_reset_assert>;
++		pinctrl-names = "active", "reset";
++	};
++};

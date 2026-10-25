@@ -1,0 +1,72 @@
+name: kernel-arm64-sl7
+
+# The Snapdragon X (Surface Laptop 7) kernel packages: kernel/sl7/build.sh on GitHub's
+# native arm64 runner in a Debian trixie container. Runs on a push that touches the
+# kernel tree, or by hand; `publish` attaches the packages to a GitHub release named
+# kernel-sl7-<version>-<revision> so the arm64 ISO build can fetch them by name.
+
+on:
+  push:
+    branches: [main, arm64-sl7]
+    paths:
+      - 'kernel/**'
+      - '.github/workflows/kernel-arm64.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Attach the packages to a kernel-sl7-<version>-<revision> release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: Install git for the checkout
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v5
+      - name: Kernel version
+        run: |
+          # shellcheck disable=SC1091
+          . kernel/sl7/version.conf
+          echo "KERNEL_VERSION=$KERNEL_VERSION" >> "$GITHUB_ENV"
+          echo "PKG_REVISION=$PKG_REVISION" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-sl7-${{ env.KERNEL_VERSION }}-${{ hashFiles('kernel/sl7/config.fragment', 'kernel/sl7/patches/**') }}
+          restore-keys: |
+            ccache-sl7-${{ env.KERNEL_VERSION }}-
+      - name: Build
+        run: |
+          kernel/sl7/build.sh --install-deps
+          ccache --show-stats || true
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-sl7-${{ env.KERNEL_VERSION }}-${{ env.PKG_REVISION }}
+          path: |
+            kernel/out/*.deb
+            kernel/out/SHA256SUMS
+          if-no-files-found: error
+      - name: Publish release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apt-get install --yes --no-install-recommends gh
+          tag="kernel-sl7-$KERNEL_VERSION-$PKG_REVISION"
+          gh release create "$tag" --title "Snapdragon X kernel $KERNEL_VERSION-$PKG_REVISION (Surface Laptop 7)" \
+            --notes "linux-image-$KERNEL_VERSION.0-sl7 for the arm64 ISO. Built by kernel-arm64-sl7 from kernel/sl7 at $GITHUB_SHA." \
+            --target "$GITHUB_SHA" kernel/out/*.deb kernel/out/SHA256SUMS

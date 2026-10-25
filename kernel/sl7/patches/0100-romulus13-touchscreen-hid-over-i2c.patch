@@ -1,0 +1,71 @@
+From: fQwQf <fqwqf@fqwqf.xyz>
+Date: Mon, 7 Sep 2026 05:44:05 +0000
+Subject: [PATCH] arm64: dts: qcom: microsoft-romulus13: enable touchscreen
+
+The 13.8-inch Surface Laptop 7 has an ITCH MSHW0468 touchscreen
+connected to QUP1 SE0 at I2C address 0x34. Describe the controller,
+interrupt, reset GPIO, and HID descriptor register so i2c-hid can
+enumerate the touchscreen.
+
+The HID descriptor is located at register 0x0000 rather than the default
+0x0020.
+
+[Projekt Linux SL7: aus dem linux-input-Thread vom 2026-09-07 uebernommen
+ (https://ratatoskr.run/linux-input/2026/09/17522701/t), ergaenzt um die im
+ Review angemahnte pinctrl-Konfiguration fuer IRQ (gpio38, pull-up) und
+ Reset (gpio31). EXPERIMENTELL - Touchscreen war bisher nicht funktionsfaehig.]
+---
+ .../boot/dts/qcom/x1e80100-microsoft-romulus13.dts | 37 ++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts
+index eb7580dd9..8b73f742d 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts
+@@ -5,9 +5,46 @@
+ 
+ /dts-v1/;
+ 
++#include <dt-bindings/interrupt-controller/irq.h>
+ #include "x1e80100-microsoft-romulus.dtsi"
+ 
+ / {
+ 	model = "Microsoft Surface Laptop 7 (13.8 inch)";
+ 	compatible = "microsoft,romulus13", "qcom,x1e80100";
+ };
++
++&i2c8 {
++	clock-frequency = <400000>;
++
++	status = "okay";
++
++	touchscreen@34 {
++		compatible = "hid-over-i2c";
++		reg = <0x34>;
++		hid-descr-addr = <0x0000>;
++
++		interrupts-extended = <&tlmm 38 IRQ_TYPE_LEVEL_LOW>;
++		reset-gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
++
++		pinctrl-0 = <&ts_default>;
++		pinctrl-names = "default";
++	};
++};
++
++&tlmm {
++	ts_default: ts-default-state {
++		int-n-pins {
++			pins = "gpio38";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++
++		reset-n-pins {
++			pins = "gpio31";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++};

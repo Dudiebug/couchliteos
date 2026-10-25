@@ -1,0 +1,30 @@
+Subject: [PATCH] spi: geni-qcom: log GENI_IF_DISABLE_RO on QSPI controllers
+
+prep_se_for_gpi_dma() matches qcspi8380.sys register for register, but
+Windows skips that whole block when GENI_IF_DISABLE_RO bit 0
+(FIFO_IF_DISABLE) is set, while we always write it before each message.
+Whether the difference matters depends on the bit's value on these
+serial engines, which is not known. Log it once per QSPI controller at
+probe. Behaviour is unchanged.
+---
+diff --git a/drivers/spi/spi-geni-qcom.c b/drivers/spi/spi-geni-qcom.c
+index dea5b1668..ca589fa0a 100644
+--- a/drivers/spi/spi-geni-qcom.c
++++ b/drivers/spi/spi-geni-qcom.c
+@@ -861,8 +861,15 @@ static int spi_geni_init(struct spi_geni_master *mas)
+ 	 * regardless of what GENI_IF_DISABLE_RO reports.
+ 	 */
+ 	fifo_disable = readl(se->base + GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE;
+-	if (spi_geni_is_qspi(mas))
++	if (spi_geni_is_qspi(mas)) {
++		/*
++		 * qcspi8380.sys skips its GPI register setup when this bit is
++		 * set; record it so that difference can be judged on hardware.
++		 */
++		dev_info(mas->dev, "QSPI GENI_IF_DISABLE_RO FIFO_IF_DISABLE=%u\n",
++			 fifo_disable);
+ 		fifo_disable = 1;
++	}
+ 
+ 	switch (fifo_disable) {
+ 	case 1:

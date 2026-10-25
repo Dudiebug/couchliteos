@@ -1,0 +1,161 @@
+Subject: [PATCH] HID: spi-hid: bound input reports and reassemble fragments
+
+The body header's content length was passed to hid_input_report() without
+checking it against the body the input header announced, so a corrupt or
+mid-reset read could make the HID core read past the 8 KiB receive buffer.
+Windows HIDSPI rejects such bodies (hidspi.sys CxClient::ProcessBody) and
+HidSpiCx resets the device when content exceeds wMaxInputLength.
+
+The last-fragment bit was parsed but ignored, so each fragment of a
+multi-fragment report would be delivered as a complete report. Accumulate
+fragments until the last one, as hidspi.sys does, and drop a partial report
+after the same one-second timeout (WaitingForNextFragment) or on any
+transport error.
+
+Log the device descriptor after each enumeration so the fragment and input
+limits of both digitizers are visible when validating this change.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index fae738f..997867a 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -349,6 +349,14 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 
+ 	spi_hid_parse_body_header(body, &bhdr);
+ 
++	/* The content must fit in the body the input header announced. */
++	if (bhdr.content_length > body_len - SPI_HID_BODY_HEADER_LEN) {
++		dev_err_ratelimited(dev, "Type 0x%x content %u exceeds body %d\n",
++				    bhdr.report_type, bhdr.content_length,
++				    body_len);
++		return -EMSGSIZE;
++	}
++
+ 	switch (bhdr.report_type) {
+ 	case SPI_HID_REPORT_TYPE_DATA:
+ 		return spi_hid_input_report_handler(shid, body, body_len);
+@@ -416,6 +424,7 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 	struct device *dev = &shid->spi->dev;
+ 	struct spi_hid_input_header hdr;
+ 	struct spi_transfer xfer = {};
++	u32 body_len;
+ 	int ret;
+ 
+ 	if (!shid->powered || READ_ONCE(shid->stopping))
+@@ -431,6 +440,7 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 	if (ret) {
+ 		shid->bus_error_count++;
+ 		shid->bus_last_error = ret;
++		shid->frag_len = 0;
+ 		if (shid->bus_error_count <= 5)
+ 			dev_err(dev, "Header read failed: %d\n", ret);
+ 		if (shid->bus_error_count == 100) {
+@@ -446,6 +456,7 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 	if (ret) {
+ 		shid->bus_error_count++;
+ 		shid->bus_last_error = ret;
++		shid->frag_len = 0;
+ 		if (shid->bus_error_count <= 5 ||
+ 		    shid->bus_error_count % 1000 == 0)
+ 			dev_err(dev, "Invalid header (%u errors): %*ph\n",
+@@ -462,14 +473,25 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 	if (hdr.body_len == 0)
+ 		return IRQ_HANDLED;
+ 
+-	if (hdr.body_len > SPI_HID_MAX_INPUT_LEN) {
+-		dev_err(dev, "Body too large: %u\n", hdr.body_len);
++	/* Like Windows HIDSPI, give up on a partial report after one second. */
++	if (shid->frag_len &&
++	    time_after(jiffies, shid->frag_jiffies +
++		       msecs_to_jiffies(SPI_HID_FRAGMENT_TIMEOUT_MS))) {
++		dev_warn_ratelimited(dev, "Dropping stale %u-byte partial report\n",
++				     shid->frag_len);
++		shid->frag_len = 0;
++	}
++
++	if (hdr.body_len > SPI_HID_MAX_INPUT_LEN - shid->frag_len) {
++		dev_err(dev, "Body too large: %u (+%u buffered)\n",
++			hdr.body_len, shid->frag_len);
++		shid->frag_len = 0;
+ 		return IRQ_HANDLED;
+ 	}
+ 
+ 	memset(&xfer, 0, sizeof(xfer));
+ 	xfer.tx_buf = shid->irq_bdy_tx;
+-	xfer.rx_buf = shid->irq_bdy_rx;
++	xfer.rx_buf = shid->irq_bdy_rx + shid->frag_len;
+ 	xfer.len = hdr.body_len;
+ 	xfer.tx_nbits = 4;
+ 	xfer.rx_nbits = 4;
+@@ -479,10 +501,22 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 		dev_err(dev, "Body read failed: %d\n", ret);
+ 		shid->bus_error_count++;
+ 		shid->bus_last_error = ret;
++		shid->frag_len = 0;
++		return IRQ_HANDLED;
++	}
++
++	/* Only the last fragment completes a report; earlier ones accumulate. */
++	if (!hdr.last_frag) {
++		if (!shid->frag_len)
++			dev_dbg(dev, "Multi-fragment input report\n");
++		shid->frag_len += hdr.body_len;
++		shid->frag_jiffies = jiffies;
+ 		return IRQ_HANDLED;
+ 	}
+ 
+-	spi_hid_process_input_report(shid, shid->irq_bdy_rx, hdr.body_len);
++	body_len = shid->frag_len + hdr.body_len;
++	shid->frag_len = 0;
++	spi_hid_process_input_report(shid, shid->irq_bdy_rx, body_len);
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -587,6 +621,10 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 	return;
+ 
+ success:
++	dev_info(dev, "HID-SPI %04x:%04x v%04x: input %u, output %u, fragment %u bytes\n",
++		 shid->desc.vendor_id, shid->desc.product_id,
++		 shid->desc.version_id, shid->desc.max_input_length,
++		 shid->desc.max_output_length, shid->desc.max_fragment_length);
+ 	mutex_unlock(&shid->lock);
+ 
+ 	if (!shid->hid)
+@@ -856,6 +894,7 @@ static int spi_hid_start(struct spi_hid *shid)
+ 	shid->ready = false;
+ 	shid->attempts = 0;
+ 	shid->rd_len = 0;
++	shid->frag_len = 0;
+ 	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
+ 	WRITE_ONCE(shid->stopping, false);
+ 	enable_irq(shid->spi->irq);
+@@ -1230,4 +1269,4 @@ module_spi_driver(spi_hid_driver);
+ 
+ MODULE_DESCRIPTION("HID over SPI (HIDSPI v3) QSPI transport driver");
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION("sl7.20260915.1");
++MODULE_VERSION("sl7.20260927.1");
+diff --git a/drivers/hid/spi-hid/spi-hid-core.h b/drivers/hid/spi-hid/spi-hid-core.h
+index 9fff172..e239ba8 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -59,6 +59,7 @@
+ #define SPI_HID_RESPONSE_TIMEOUT_MS		2000
+ #define SPI_HID_MAX_RESET_ATTEMPTS		3
+ #define SPI_HID_MAX_INIT_RETRIES		10
++#define SPI_HID_FRAGMENT_TIMEOUT_MS		1000
+ 
+ #define SPI_HID_INPUT_HEADER_LEN		4
+ #define SPI_HID_MAX_INPUT_LEN			SZ_8K
+@@ -150,6 +151,10 @@ struct spi_hid {
+ 	u8 *irq_hdr_rx;
+ 	u8 *irq_bdy_tx;
+ 	u8 *irq_bdy_rx;
++
++	/* Bytes of a multi-fragment input report already in irq_bdy_rx. */
++	u32 frag_len;
++	unsigned long frag_jiffies;
+ };
+ 
+ #endif

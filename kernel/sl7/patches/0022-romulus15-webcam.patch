@@ -1,0 +1,233 @@
+Subject: [PATCH] arm64: dts: qcom: romulus15: enable the front OV02C10 camera
+
+CAMSS, CCI and the CSI2 PHYs are in the Ubuntu 7.3 tree, and the
+ov02c10, CCI, CSI2 PHY and CAMSS drivers are built as modules, but
+Romulus describes no camera, so there is no capture device.
+
+Add the PM8010 camera supplies, enable CCI1 and CSIPHY4, and connect
+an OV02C10 at 0x36 on CCI1 bus 1 to CAMSS port 3 (CSIPHY4) with two
+data lanes, MCLK4 at 19.2 MHz and GPIO237 as an active-low reset. Use
+the existing camera indicator LED (GPIO225) as the V4L2 privacy LED.
+
+The node shape is Oliver White's "arm64: dts: qcom:
+x1e80100-microsoft-romulus: enable OV02C10 MIPI CSI-2 camera" (v1 and
+v2, linux-arm-msm, 2026-04-09), which ELLX carries in commit 36afa550
+and which follows the ThinkPad T14s camera nodes. Unlike that series
+it applies only to Romulus15, as a separate dtsi. The PM8010 rails use
+the flat voltages Konrad Dybcio asked for in review of v2 1/2, and only
+the rails this sensor uses are declared. This machine's ACPI names
+\_SB.CAMF as OVTI02C1 / MSHW0470, and Windows' CAMF_RES_MSHW0470.bin
+powers it from PM8010 LDO3 1.8 V, LDO1 1.2 V and LDO5 2.8 V and drives
+GPIO237 as reset. SCFG_FRONT_MSHW0470.bin gives the 8-bit I2C address
+0x6c (0x36) and the 0x300a chip ID 0x5602. The MCLK pin and rate,
+the CCI bus and the CSIPHY lanes are not in the Windows resources;
+they come from the reference shape and ELLX's Romulus13 test.
+
+Also backport "media: ov02c10: Implement get_selection" by Felipe
+Calliari (v3 2/5, linux-media, 2026-09-23, Reviewed-by Bryan
+O'Donoghue). libcamera asks the sensor for its native size and crop
+and otherwise reports that the sensor driver needs fixing. The pad op
+drops the v4l2_subdev_client_info argument that linux-next has added.
+It replaces ELLX's own get_selection/crop-state change to ov02c10.c.
+
+Origin: ELLX commit 36afa550628cf584a7e4a1d1c894fa36515c808d
+https://github.com/ProgrammerIn-wonderland/ELLX-Kernel
+Origin: https://patchwork.kernel.org/project/linux-arm-msm/patch/20260409201717.108169-3-oliverjwhite07@gmail.com/
+Origin: https://patchwork.kernel.org/project/linux-media/patch/20260923234100.318151-3-calliarifelipe@gmail.com/
+---
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-camera.dtsi b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-camera.dtsi
+new file mode 100644
+index 000000000..4db3778ee
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-camera.dtsi
+@@ -0,0 +1,114 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Front RGB camera (OV02C10) on CCI1 bus 1 and CSIPHY4.
++ *
++ * Board shape from Oliver White's "x1e80100-microsoft-romulus: enable
++ * OV02C10 MIPI CSI-2 camera" (as carried by ELLX), which follows the
++ * ThinkPad T14s camera nodes. This machine's ACPI names \_SB.CAMF as
++ * OVTI02C1 with subsystem MSHW0470; Windows' CAMF_RES_MSHW0470.bin powers it
++ * from PM8010 LDO3 (1.8 V), LDO1 (1.2 V) and LDO5 (2.8 V) and holds
++ * GPIO237 low as reset. The IR sensor (CAMI, MSHW0472) uses LDO2/4/6 and
++ * GPIO109 and is not described here.
++ */
++
++&apps_rsc {
++	regulators-8 {
++		compatible = "qcom,pm8010-rpmh-regulators";
++		qcom,pmic-id = "m";
++
++		vdd-l1-l2-supply = <&vreg_s5j>;
++		vdd-l3-l4-supply = <&vreg_s4c>;
++
++		vreg_l1m_1p2: ldo1 {
++			regulator-name = "vreg_l1m_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l3m_1p8: ldo3 {
++			regulator-name = "vreg_l3m_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l5m_2p8: ldo5 {
++			regulator-name = "vreg_l5m_2p8";
++			regulator-min-microvolt = <2800000>;
++			regulator-max-microvolt = <2800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++};
++
++&camss {
++	status = "okay";
++};
++
++&camss_csiphy4_inep0 {
++	clock-lanes = <7>;
++	data-lanes = <0 1>;
++	remote-endpoint = <&ov02c10_ep>;
++};
++
++&cci1 {
++	status = "okay";
++};
++
++&cci1_i2c1 {
++	camera@36 {
++		compatible = "ovti,ov02c10";
++		reg = <0x36>;
++
++		reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&cam_rgb_default>;
++
++		leds = <&{/leds/led-camera-indicator}>;
++		led-names = "privacy";
++
++		clocks = <&camcc CAM_CC_MCLK4_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		orientation = <0>; /* front facing */
++
++		avdd-supply = <&vreg_l5m_2p8>;
++		dvdd-supply = <&vreg_l1m_1p2>;
++		dovdd-supply = <&vreg_l3m_1p8>;
++
++		port {
++			ov02c10_ep: endpoint {
++				data-lanes = <1 2>;
++				link-frequencies = /bits/ 64 <400000000>;
++				remote-endpoint = <&camss_csiphy4_inep0>;
++			};
++		};
++	};
++};
++
++&csiphy4 {
++	vdda-0p8-supply = <&vreg_l2c>;
++	vdda-1p2-supply = <&vreg_l1c>;
++
++	status = "okay";
++};
++
++&tlmm {
++	cam_rgb_default: cam-rgb-default-state {
++		mclk-pins {
++			pins = "gpio100";
++			function = "cam_aon";
++			drive-strength = <16>;
++			bias-disable;
++		};
++
++		reset-n-pins {
++			pins = "gpio237";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-disable;
++		};
++	};
++};
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+index e12c50dc9..3fecb07aa 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+@@ -17,6 +17,8 @@
+ 
+ #include "x1e80100-microsoft-romulus15-gpio-power.dtsi"
+ 
++#include "x1e80100-microsoft-romulus15-camera.dtsi"
++
+ /*
+  * Both USB-C ports carry DisplayPort (DP0, DP1). The Romulus topology already
+  * has the DISPLAY_PORT_RX backends; these links give the machine driver the
+diff --git a/drivers/media/i2c/ov02c10.c b/drivers/media/i2c/ov02c10.c
+index cf93d3603..5604c1e88 100644
+--- a/drivers/media/i2c/ov02c10.c
++++ b/drivers/media/i2c/ov02c10.c
+@@ -10,6 +10,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <media/v4l2-cci.h>
++#include <media/v4l2-common.h>
+ #include <media/v4l2-ctrls.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-fwnode.h>
+@@ -18,6 +19,13 @@
+ #define OV02C10_MCLK			19200000
+ #define OV02C10_RGB_DEPTH		10
+ 
++#define OV02C10_NATIVE_WIDTH		1928
++#define OV02C10_NATIVE_HEIGHT		1092
++#define OV02C10_ACTIVE_WIDTH		1920
++#define OV02C10_ACTIVE_HEIGHT		1080
++#define OV02C10_ACTIVE_LEFT		4
++#define OV02C10_ACTIVE_TOP		6
++
+ #define OV02C10_REG_CHIP_ID		CCI_REG16(0x300a)
+ #define OV02C10_CHIP_ID			0x5602
+ 
+@@ -768,11 +776,36 @@ static const struct v4l2_subdev_video_ops ov02c10_video_ops = {
+ 	.s_stream = v4l2_subdev_s_stream_helper,
+ };
+ 
++static int ov02c10_get_selection(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_selection *sel)
++{
++	switch (sel->target) {
++	case V4L2_SEL_TGT_NATIVE_SIZE:
++	case V4L2_SEL_TGT_CROP_BOUNDS:
++		sel->r.top = 0;
++		sel->r.left = 0;
++		sel->r.width = OV02C10_NATIVE_WIDTH;
++		sel->r.height = OV02C10_NATIVE_HEIGHT;
++		return 0;
++	case V4L2_SEL_TGT_CROP:
++	case V4L2_SEL_TGT_CROP_DEFAULT:
++		sel->r.top = OV02C10_ACTIVE_TOP;
++		sel->r.left = OV02C10_ACTIVE_LEFT;
++		sel->r.width = OV02C10_ACTIVE_WIDTH;
++		sel->r.height = OV02C10_ACTIVE_HEIGHT;
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
+ static const struct v4l2_subdev_pad_ops ov02c10_pad_ops = {
+ 	.set_fmt = ov02c10_set_format,
+ 	.get_fmt = v4l2_subdev_get_fmt,
+ 	.enum_mbus_code = ov02c10_enum_mbus_code,
+ 	.enum_frame_size = ov02c10_enum_frame_size,
++	.get_selection = ov02c10_get_selection,
+ 	.enable_streams = ov02c10_enable_streams,
+ 	.disable_streams = ov02c10_disable_streams,
+ };

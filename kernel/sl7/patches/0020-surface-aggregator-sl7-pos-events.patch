@@ -1,0 +1,97 @@
+Subject: [PATCH] platform/surface: aggregator: enable POS events on Surface Laptop 7
+
+On the Surface Laptop 7 the EC keeps the touchpad off after a posture
+change (lid closed -> laptop) until the host has taken the POS event.
+Windows' SurfaceHotPlug enables POS events at every boot. Linux never
+did on this model, so after a lid close that the host did not see
+(e.g. closing the lid right after Windows starts shutting down) the
+touchpad stays silent and has no haptics across reboots and power
+cycles until Windows is booted or the EC is reset.
+
+Enabling the events (TC 0x01, CID 0x0b, payload 26 01 26 00 00, the
+same bytes Windows sends) makes the EC deliver the pending posture
+change at once, and the touchpad resumes within 10 ms.
+
+Add the POS tablet-switch node to the SL7 group so the tablet-switch
+driver enables them at probe. The EC reports one posture source, ID 1,
+with 2 for lid closed and 3 for laptop; teach the driver that source
+and never report tablet mode for it, since unknown sources would
+otherwise be treated as tablet mode and libinput would turn off the
+keyboard and touchpad.
+---
+--- a/drivers/platform/surface/surface_aggregator_registry.c
++++ b/drivers/platform/surface/surface_aggregator_registry.c
+@@ -297,6 +297,7 @@
+ 	&ssam_node_root,
+ 	&ssam_node_tmp_perf_profile_with_fan,
+ 	&ssam_node_fan_speed,
++	&ssam_node_pos_tablet_switch,
+ 	&ssam_node_hid_sam_keyboard,
+ 	/* TODO: evaluate thermal sensors devices when we get a driver for that */
+ 	NULL,
+--- a/drivers/platform/surface/surface_aggregator_tabletsw.c
++++ b/drivers/platform/surface/surface_aggregator_tabletsw.c
+@@ -331,6 +331,7 @@
+ 
+ enum ssam_pos_source_id {
+ 	SSAM_POS_SOURCE_COVER = 0x00,
++	SSAM_POS_SOURCE_LID   = 0x01,
+ 	SSAM_POS_SOURCE_SLS   = 0x03,
+ };
+ 
+@@ -343,6 +344,12 @@
+ 	SSAM_POS_COVER_BOOK          = 0x06,
+ };
+ 
++/* Lid of a clamshell laptop (Surface Laptop 7). */
++enum ssam_pos_state_lid {
++	SSAM_POS_LID_CLOSED = 0x02,
++	SSAM_POS_LID_LAPTOP = 0x03,
++};
++
+ enum ssam_pos_state_sls {
+ 	SSAM_POS_SLS_LID_CLOSED = 0x00,
+ 	SSAM_POS_SLS_LAPTOP     = 0x01,
+@@ -382,6 +389,21 @@
+ 	}
+ }
+ 
++static const char *ssam_pos_state_name_lid(struct ssam_tablet_sw *sw, u32 state)
++{
++	switch (state) {
++	case SSAM_POS_LID_CLOSED:
++		return "closed";
++
++	case SSAM_POS_LID_LAPTOP:
++		return "laptop";
++
++	default:
++		dev_warn(&sw->sdev->dev, "unknown device posture for lid: %u\n", state);
++		return "<unknown>";
++	}
++}
++
+ static const char *ssam_pos_state_name_sls(struct ssam_tablet_sw *sw, u32 state)
+ {
+ 	switch (state) {
+@@ -410,6 +432,9 @@
+ 	case SSAM_POS_SOURCE_COVER:
+ 		return ssam_pos_state_name_cover(sw, state->state);
+ 
++	case SSAM_POS_SOURCE_LID:
++		return ssam_pos_state_name_lid(sw, state->state);
++
+ 	case SSAM_POS_SOURCE_SLS:
+ 		return ssam_pos_state_name_sls(sw, state->state);
+ 
+@@ -464,6 +489,10 @@
+ 	case SSAM_POS_SOURCE_COVER:
+ 		return ssam_pos_state_is_tablet_mode_cover(sw, state->state);
+ 
++	case SSAM_POS_SOURCE_LID:
++		/* A clamshell lid has no tablet posture. */
++		return false;
++
+ 	case SSAM_POS_SOURCE_SLS:
+ 		return ssam_pos_state_is_tablet_mode_sls(sw, state->state);
+ 

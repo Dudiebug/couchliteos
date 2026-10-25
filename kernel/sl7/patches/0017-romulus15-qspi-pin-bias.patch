@@ -1,0 +1,97 @@
+Subject: [PATCH] arm64: dts: qcom: romulus15: match Windows QSPI pin bias and drive
+
+In D0, Windows configures every touchpad and touchscreen QSPI pin with
+a pull-down. Surface's BSRC_QSPI_ROM.bin raises the touchpad pins from
+the stock 4 mA to 6 mA, while the touchscreen keeps 4 mA. The device
+tree had bias-disable on all of them and 6 mA on the touchscreen.
+
+Use pull-down everywhere and 4 mA on the touchscreen. The touchscreen
+gets its own SPI10 pin states, so the shared hamoa.dtsi states stay as
+they are. The pull-down may matter during turnaround and dummy cycles,
+when the bus isn't driven. This patch is separate from the driver
+changes so it can be dropped on its own if touch input regresses.
+---
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchpad.dtsi b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchpad.dtsi
+index b3ebc2863..f62f03ab8 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchpad.dtsi
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchpad.dtsi
+@@ -16,25 +16,29 @@
+ };
+ 
+ &tlmm {
++	/*
++	 * Windows (qcspi8380.sys with Surface's BSRC_QSPI_ROM.bin) drives the
++	 * touchpad QSPI pins at 6 mA with pull-down in D0.
++	 */
+ 	qup_qspi19_data_clk: qup-qspi19-data-clk-state {
+ 		pins = "gpio76", "gpio77", "gpio78";
+ 		function = "qup2_se3";
+ 		drive-strength = <6>;
+-		bias-disable;
++		bias-pull-down;
+ 	};
+ 
+ 	qup_qspi19_cs: qup-qspi19-cs-state {
+ 		pins = "gpio79";
+ 		function = "qup2_se3";
+ 		drive-strength = <6>;
+-		bias-disable;
++		bias-pull-down;
+ 	};
+ 
+ 	qup_qspi19_data23: qup-qspi19-data23-state {
+ 		pins = "gpio66", "gpio67";
+ 		function = "qup2_se3";
+ 		drive-strength = <6>;
+-		bias-disable;
++		bias-pull-down;
+ 	};
+ 
+ 	spi19_hid0_reset_deassert: spi19-hid0-reset-deassert-state {
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
+index 6527cfb88..b28f28f39 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
+@@ -19,11 +19,31 @@
+ };
+ 
+ &tlmm {
++	/*
++	 * Windows drives the touchscreen QSPI pins at 4 mA with pull-down in
++	 * D0. Local states, so the shared SPI10 states in hamoa.dtsi stay as
++	 * they are.
++	 */
++	qup_qspi10_data_clk: qup-qspi10-data-clk-state {
++		/* IO0, IO1, CLK */
++		pins = "gpio40", "gpio41", "gpio42";
++		function = "qup1_se2";
++		drive-strength = <4>;
++		bias-pull-down;
++	};
++
++	qup_qspi10_cs: qup-qspi10-cs-state {
++		pins = "gpio43";
++		function = "qup1_se2";
++		drive-strength = <4>;
++		bias-pull-down;
++	};
++
+ 	qup_qspi10_data23: qup-qspi10-data23-state {
+ 		pins = "gpio49", "gpio50";
+ 		function = "qup1_se2";
+-		drive-strength = <6>;
+-		bias-disable;
++		drive-strength = <4>;
++		bias-pull-down;
+ 	};
+ 
+ 	gtch_power_pin: gtch-power-state {
+@@ -67,7 +87,7 @@
+ 	qcom,qspi-read-opcode = <0xeb>;
+ 	qcom,qspi-read-dummy-clocks = <8>;
+ 	qcom,qspi-read-cmd-bytes = <4>;
+-	pinctrl-0 = <&qup_spi10_data_clk>, <&qup_spi10_cs>,
++	pinctrl-0 = <&qup_qspi10_data_clk>, <&qup_qspi10_cs>,
+ 		    <&qup_qspi10_data23>, <&gtch_interrupt>;
+ 	pinctrl-names = "default";
+ 	dmas = <&gpi_dma1 0 2 QCOM_GPI_QSPI>,

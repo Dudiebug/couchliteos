@@ -1,0 +1,136 @@
+Subject: [PATCH] HID: spi-hid: drop unused enumeration work and check the HIDSPI version
+
+Since device-initiated resets are recognised explicitly, nothing queues
+create_device_work or refresh_device_work any more; reset_work creates
+the HID device itself. Remove both, and with them the only place that
+checked the HIDSPI version. Check it in reset_work instead, right after
+the device descriptor arrives, and restart enumeration on a mismatch as
+for any other bad descriptor.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 821f8c88c..1919dabd5 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -336,11 +336,8 @@ static void spi_hid_stop_hid(struct spi_hid *shid)
+ 	struct hid_device *hid;
+ 
+ 	hid = spi_hid_disconnect_hid(shid);
+-	if (hid) {
+-		cancel_work_sync(&shid->create_device_work);
+-		cancel_work_sync(&shid->refresh_device_work);
++	if (hid)
+ 		hid_destroy_device(hid);
+-	}
+ }
+ 
+ static int spi_hid_error_handler(struct spi_hid *shid)
+@@ -647,14 +644,11 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 	int ret, attempt;
+ 
+ 	shid->enumeration_started = true;
+-	flush_work(&shid->create_device_work);
+ 
+ 	if (READ_ONCE(shid->stopping) ||
+ 	    shid->power_state == SPI_HID_POWER_MODE_OFF)
+ 		return;
+ 
+-	flush_work(&shid->refresh_device_work);
+-
+ 	/* After a device-initiated reset, let hidraw clients start over. */
+ 	if (shid->recreate_hid) {
+ 		shid->recreate_hid = false;
+@@ -701,6 +695,11 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 			dev_err(dev, "GET_DD failed, restarting\n");
+ 			continue;
+ 		}
++		if (shid->desc.hid_version != SPI_HID_SUPPORTED_VERSION) {
++			dev_err(dev, "Unsupported version 0x%04x (expected 0x%04x), restarting\n",
++				shid->desc.hid_version, SPI_HID_SUPPORTED_VERSION);
++			continue;
++		}
+ 
+ 		for (rd_try = 0; rd_try < SPI_HID_MAX_INIT_RETRIES; rd_try++) {
+ 			ret = spi_hid_sync_request(shid,
+@@ -813,29 +812,6 @@ static int spi_hid_create_device(struct spi_hid *shid)
+ 	return 0;
+ }
+ 
+-static void spi_hid_create_device_work(struct work_struct *work)
+-{
+-	struct spi_hid *shid =
+-		container_of(work, struct spi_hid, create_device_work);
+-	struct device *dev = &shid->spi->dev;
+-	int ret;
+-
+-	if (shid->desc.hid_version != SPI_HID_SUPPORTED_VERSION) {
+-		dev_err(dev, "Unsupported version 0x%04x (expected 0x%04x)\n",
+-			shid->desc.hid_version, SPI_HID_SUPPORTED_VERSION);
+-		spi_hid_error_handler(shid);
+-		return;
+-	}
+-
+-	ret = spi_hid_create_device(shid);
+-	if (ret) {
+-		dev_err(dev, "Failed to create HID device: %d\n", ret);
+-		return;
+-	}
+-
+-	shid->attempts = 0;
+-}
+-
+ /*
+  * Windows HidSpiCx arms a timer when it resets the device at start. Here a
+  * silent device would otherwise never be enumerated, retried or power cycled.
+@@ -852,15 +828,6 @@ static void spi_hid_start_watchdog(struct work_struct *work)
+ 	queue_work(system_freezable_wq, &shid->reset_work);
+ }
+ 
+-static void spi_hid_refresh_device_work(struct work_struct *work)
+-{
+-	struct spi_hid *shid =
+-		container_of(work, struct spi_hid, refresh_device_work);
+-
+-	if (!READ_ONCE(shid->stopping))
+-		shid->ready = true;
+-}
+-
+ static int spi_hid_ll_start(struct hid_device *hid)
+ {
+ 	struct spi_device *spi = hid->driver_data;
+@@ -1083,8 +1050,6 @@ static int spi_hid_stop(struct spi_hid *shid)
+ 	/* The watchdog may queue reset_work, so cancel it first. */
+ 	cancel_delayed_work_sync(&shid->start_watchdog);
+ 	cancel_work_sync(&shid->reset_work);
+-	cancel_work_sync(&shid->create_device_work);
+-	cancel_work_sync(&shid->refresh_device_work);
+ 	spi_hid_stop_hid(shid);
+ 	/* Synchronize any remaining raw request before removing power. */
+ 	mutex_lock(&shid->lock);
+@@ -1277,8 +1242,6 @@ static int spi_hid_probe(struct spi_device *spi)
+ 	complete(&shid->output_done);
+ 
+ 	INIT_WORK(&shid->reset_work, spi_hid_reset_work);
+-	INIT_WORK(&shid->create_device_work, spi_hid_create_device_work);
+-	INIT_WORK(&shid->refresh_device_work, spi_hid_refresh_device_work);
+ 	INIT_WORK(&shid->panel_work, spi_hid_panel_work);
+ 	INIT_DELAYED_WORK(&shid->start_watchdog, spi_hid_start_watchdog);
+ 
+@@ -1447,4 +1410,4 @@ module_spi_driver(spi_hid_driver);
+ 
+ MODULE_DESCRIPTION("HID over SPI (HIDSPI v3) QSPI transport driver");
+ MODULE_LICENSE("GPL");
+-MODULE_VERSION("sl7.20260927.1");
++MODULE_VERSION("sl7.20260927.2");
+diff --git a/drivers/hid/spi-hid/spi-hid-core.h b/drivers/hid/spi-hid/spi-hid-core.h
+index b5f35f361..2e7d24132 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -137,8 +137,6 @@ struct spi_hid {
+ 	struct pinctrl_state *pinctrl_active;
+ 	struct pinctrl_state *pinctrl_sleep;
+ 	struct work_struct reset_work;
+-	struct work_struct create_device_work;
+-	struct work_struct refresh_device_work;
+ 	struct work_struct panel_work;
+ 	struct drm_panel_follower panel_follower;
+ 	struct mutex power_lock;

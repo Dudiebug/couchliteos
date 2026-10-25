@@ -1,0 +1,100 @@
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15.dts
+@@ -12,3 +12,5 @@
+ 	model = "Microsoft Surface Laptop 7 (15 inch)";
+ 	compatible = "microsoft,romulus15", "qcom,x1e80100";
+ };
++
++#include "x1e80100-microsoft-romulus15-touchscreen.dtsi"
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/* Local test derived from this machine's MSHW0461/GTCH Windows ACPI resources. */
++
++#include <dt-bindings/dma/qcom-gpi.h>
++
++/ {
++	/* GPIO enable only: ACPI does not identify the rail voltage. */
++	gtch_power: regulator-gtch-power {
++		compatible = "regulator-fixed";
++		regulator-name = "sl7-gtch-power";
++		gpio = <&tlmm 64 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		startup-delay-us = <500000>;
++		regulator-boot-on;
++		regulator-always-on;
++		pinctrl-names = "default";
++		pinctrl-0 = <&gtch_power_pin>;
++	};
++};
++
++&tlmm {
++	qup_qspi10_data23: qup-qspi10-data23-state {
++		pins = "gpio49", "gpio50";
++		function = "qup1_se2";
++		drive-strength = <6>;
++		bias-disable;
++	};
++
++	gtch_power_pin: gtch-power-state {
++		pins = "gpio64";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	gtch_reset_active: gtch-reset-active-state {
++		pins = "gpio48";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		output-high;
++	};
++
++	gtch_reset_assert: gtch-reset-assert-state {
++		pins = "gpio48";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		output-low;
++	};
++
++	gtch_interrupt: gtch-interrupt-state {
++		pins = "gpio51";
++		function = "gpio";
++		input-enable;
++		bias-pull-up;
++	};
++};
++
++&gpi_dma1 {
++	status = "okay";
++};
++
++&spi10 {
++	compatible = "qcom,geni-spi-qspi";
++	spi-max-frequency = <20000000>;
++	qcom,qspi-read-opcode = <0xeb>;
++	qcom,qspi-read-dummy-clocks = <8>;
++	qcom,qspi-read-cmd-bytes = <4>;
++	pinctrl-0 = <&qup_spi10_data_clk>, <&qup_spi10_cs>,
++		    <&qup_qspi10_data23>, <&gtch_interrupt>;
++	pinctrl-names = "default";
++	dmas = <&gpi_dma1 0 2 QCOM_GPI_QSPI>,
++	       <&gpi_dma1 1 2 QCOM_GPI_QSPI>;
++	dma-names = "tx", "rx";
++	status = "okay";
++
++	gtch: touchscreen@0 {
++		compatible = "hid-over-spi";
++		reg = <0>;
++		spi-max-frequency = <20000000>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <51 IRQ_TYPE_EDGE_FALLING>;
++		vdd-supply = <&gtch_power>;
++		pinctrl-0 = <&gtch_reset_active>;
++		pinctrl-1 = <&gtch_reset_assert>;
++		pinctrl-names = "active", "reset";
++	};
++};

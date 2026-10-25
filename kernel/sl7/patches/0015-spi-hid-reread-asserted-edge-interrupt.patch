@@ -1,0 +1,210 @@
+Subject: [PATCH] HID: spi-hid: re-read while an edge-triggered interrupt stays asserted
+
+The GTCH touchscreen interrupt is falling-edge (ACPI flags 0x13, as on
+the Surface Pro 11), and the IRQ thread read exactly one report per
+interrupt. If the device asserts the line for its next report while the
+previous one is still being read, no new edge follows and input stalls
+until something else toggles the line.
+
+With an optional irq-gpios line, keep reading after each report while
+the line is still asserted, up to eight reports per interrupt. Stop on
+any bus or header error, and on an empty report. Level-triggered
+interrupts, such as the touchpad's, don't use this. Count the extra
+reads in the irq_reread_count sysfs attribute so hardware tests can tell
+whether stranded reports actually happen.
+
+pinctrl-msm does not report IRQCHIP_STATE_LINE_LEVEL, so the level is
+read through the GPIO. gpio51 is already muxed as a GPIO for the
+interrupt, which the strict pinmux check allows.
+---
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
+index 3d762b8c6..6527cfb88 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus15-touchscreen.dtsi
+@@ -81,6 +81,7 @@
+ 		spi-max-frequency = <20000000>;
+ 		interrupt-parent = <&tlmm>;
+ 		interrupts = <51 IRQ_TYPE_EDGE_FALLING>;
++		irq-gpios = <&tlmm 51 GPIO_ACTIVE_LOW>;
+ 		vdd-supply = <&gtch_power>;
+ 		pinctrl-0 = <&gtch_reset_active>;
+ 		pinctrl-1 = <&gtch_reset_assert>;
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index dfb4df044..245c7864c 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -16,6 +16,7 @@
+ #include <linux/device.h>
+ #include <linux/wait.h>
+ #include <linux/err.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/io.h>
+ #include <linux/pm.h>
+ #include <linux/string.h>
+@@ -546,18 +547,15 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 	}
+ }
+ 
+-static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
++/* IRQ thread: read one input report. False if nothing more should be read. */
++static bool spi_hid_read_input(struct spi_hid *shid)
+ {
+-	struct spi_hid *shid = _shid;
+ 	struct device *dev = &shid->spi->dev;
+ 	struct spi_hid_input_header hdr;
+ 	struct spi_transfer xfer = {};
+ 	u32 body_len;
+ 	int ret;
+ 
+-	if (!shid->powered || READ_ONCE(shid->stopping))
+-		return IRQ_HANDLED;
+-
+ 	xfer.tx_buf = shid->irq_hdr_tx;
+ 	xfer.rx_buf = shid->irq_hdr_rx;
+ 	xfer.len = SPI_HID_INPUT_HEADER_LEN;
+@@ -575,7 +573,7 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 			dev_err(dev, "Too many read errors, disabling IRQ\n");
+ 			disable_irq_nosync(shid->spi->irq);
+ 		}
+-		return IRQ_HANDLED;
++		return false;
+ 	}
+ 
+ 	spi_hid_parse_input_header(shid->irq_hdr_rx, &hdr);
+@@ -594,12 +592,12 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 			dev_err(dev, "Too many errors, disabling IRQ\n");
+ 			disable_irq_nosync(shid->spi->irq);
+ 		}
+-		return IRQ_HANDLED;
++		return false;
+ 	}
+ 	shid->bus_error_count = 0;
+ 
+ 	if (hdr.body_len == 0)
+-		return IRQ_HANDLED;
++		return false;
+ 
+ 	/* Like Windows HIDSPI, give up on a partial report after one second. */
+ 	if (shid->frag_len &&
+@@ -614,7 +612,7 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 		dev_err(dev, "Body too large: %u (+%u buffered)\n",
+ 			hdr.body_len, shid->frag_len);
+ 		shid->frag_len = 0;
+-		return IRQ_HANDLED;
++		return false;
+ 	}
+ 
+ 	memset(&xfer, 0, sizeof(xfer));
+@@ -630,7 +628,7 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 		shid->bus_error_count++;
+ 		shid->bus_last_error = ret;
+ 		shid->frag_len = 0;
+-		return IRQ_HANDLED;
++		return false;
+ 	}
+ 
+ 	/* Only the last fragment completes a report; earlier ones accumulate. */
+@@ -639,13 +637,36 @@ static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
+ 			dev_dbg(dev, "Multi-fragment input report\n");
+ 		shid->frag_len += hdr.body_len;
+ 		shid->frag_jiffies = jiffies;
+-		return IRQ_HANDLED;
++		return true;
+ 	}
+ 
+ 	body_len = shid->frag_len + hdr.body_len;
+ 	shid->frag_len = 0;
+ 	spi_hid_process_input_report(shid, shid->irq_bdy_rx, body_len);
+ 
++	return true;
++}
++
++static irqreturn_t spi_hid_irq_thread(int irq, void *_shid)
++{
++	struct spi_hid *shid = _shid;
++	unsigned int reads = 0;
++
++	do {
++		if (!shid->powered || READ_ONCE(shid->stopping))
++			break;
++		if (!spi_hid_read_input(shid))
++			break;
++		/*
++		 * An edge-triggered line that is still asserted means the
++		 * device has another report ready and will not signal again.
++		 */
++		if (!shid->irq_gpio ||
++		    gpiod_get_value_cansleep(shid->irq_gpio) <= 0)
++			break;
++		shid->irq_reread_count++;
++	} while (++reads < SPI_HID_MAX_IRQ_READS);
++
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -1186,11 +1207,21 @@ static ssize_t device_initiated_reset_count_show(struct device *dev,
+ }
+ static DEVICE_ATTR_RO(device_initiated_reset_count);
+ 
++static ssize_t irq_reread_count_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%u\n", shid->irq_reread_count);
++}
++static DEVICE_ATTR_RO(irq_reread_count);
++
+ static const struct attribute *const spi_hid_attributes[] = {
+ 	&dev_attr_ready.attr,
+ 	&dev_attr_power_state.attr,
+ 	&dev_attr_bus_error_count.attr,
+ 	&dev_attr_device_initiated_reset_count.attr,
++	&dev_attr_irq_reread_count.attr,
+ 	NULL
+ };
+ 
+@@ -1271,6 +1302,19 @@ static int spi_hid_probe(struct spi_device *spi)
+ 		shid->supply = NULL;
+ 	}
+ 
++	/*
++	 * Optional: lets an edge-triggered interrupt be re-checked after each
++	 * report, so a report that arrives during the read is not stranded.
++	 */
++	if (irq_get_trigger_type(spi->irq) & IRQ_TYPE_EDGE_BOTH) {
++		shid->irq_gpio = devm_gpiod_get_optional(dev, "irq", GPIOD_IN);
++		if (IS_ERR(shid->irq_gpio)) {
++			ret = dev_err_probe(dev, PTR_ERR(shid->irq_gpio),
++					    "Failed to get irq GPIO\n");
++			goto err_sysfs;
++		}
++	}
++
+ 	shid->pinctrl = devm_pinctrl_get(dev);
+ 	if (IS_ERR(shid->pinctrl)) {
+ 		dev_err(dev, "pinctrl_get failed: %ld\n",
+diff --git a/drivers/hid/spi-hid/spi-hid-core.h b/drivers/hid/spi-hid/spi-hid-core.h
+index 2e7d24132..1e8f652ad 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -68,6 +68,8 @@
+ #define SPI_HID_POWER_OFF_MS			500
+ /* Enumerate anyway if no reset response arrives this long after power on. */
+ #define SPI_HID_START_WATCHDOG_MS		5000
++/* Reports read per interrupt while an edge-triggered line stays asserted. */
++#define SPI_HID_MAX_IRQ_READS			8
+ 
+ #define SPI_HID_INPUT_HEADER_LEN		4
+ #define SPI_HID_MAX_INPUT_LEN			SZ_8K
+@@ -173,6 +175,10 @@ struct spi_hid {
+ 	/* reset_work has run since the last start. */
+ 	bool enumeration_started;
+ 	struct delayed_work start_watchdog;
++
++	/* Level of an edge-triggered interrupt line, if described. */
++	struct gpio_desc *irq_gpio;
++	u32 irq_reread_count;
+ };
+ 
+ #endif

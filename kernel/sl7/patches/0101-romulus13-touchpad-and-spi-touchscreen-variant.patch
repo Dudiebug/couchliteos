@@ -1,0 +1,85 @@
+From: CouchLiteOS <couchliteos@users.noreply.github.com>
+Subject: [PATCH] arm64: dts: qcom: romulus13: touchpad wiring and an SPI-touchscreen variant
+
+Give the 13.8-inch Surface Laptop 7 the same QSPI touchpad wiring as the
+15-inch model (the hardware is the same spi19 HID device), with the rail
+boot-on and gpio120-only reset sequencing from the 15-inch GPIO power
+description. The I2C touchscreen from the previous patch stays the
+default.
+
+Add x1e80100-microsoft-romulus13-spi-touch.dtb for 13.8-inch units whose
+touch panel is the GTCH on spi10 (the 15-inch wiring), which depends on
+the panel supplier. The ISO offers it as an alternative boot entry.
+
+Not yet validated on hardware. Touchpad sequencing after the Fedora SL7
+project's experimental romulus13 tree (1Martin11/surface-laptop-7-fedora).
+---
+diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+index 1c86e7e98..633f12e7e 100644
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -453,6 +453,7 @@ x1e80100-microsoft-denali-oled-el2-dtbs	:= x1e80100-microsoft-denali-oled.dtb x1
+ dtb-$(CONFIG_ARCH_QCOM)	+= x1e80100-microsoft-denali-oled.dtb x1e80100-microsoft-denali-oled-el2.dtb
+ x1e80100-microsoft-romulus13-el2-dtbs	:= x1e80100-microsoft-romulus13.dtb x1-el2.dtbo
+ dtb-$(CONFIG_ARCH_QCOM)	+= x1e80100-microsoft-romulus13.dtb x1e80100-microsoft-romulus13-el2.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= x1e80100-microsoft-romulus13-spi-touch.dtb
+ x1e80100-microsoft-romulus15-el2-dtbs	:= x1e80100-microsoft-romulus15.dtb x1-el2.dtbo
+ dtb-$(CONFIG_ARCH_QCOM)	+= x1e80100-microsoft-romulus15.dtb x1e80100-microsoft-romulus15-el2.dtb
+ x1e80100-qcp-el2-dtbs	:= x1e80100-qcp.dtb x1-el2.dtbo
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13-spi-touch.dts b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13-spi-touch.dts
+new file mode 100644
+index 000000000..1b43b6d4a
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13-spi-touch.dts
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Microsoft Surface Laptop 7 (13.8 inch) with the SPI (GTCH) touchscreen.
++ *
++ * 13.8-inch units come with one of two touch panels: an ITCH MSHW0468 on
++ * i2c8 (x1e80100-microsoft-romulus13.dts) or a GTCH on spi10 wired like
++ * the 15-inch model. A unit whose touchscreen stays silent with the
++ * default device tree is booted with this one instead.
++ */
++
++/dts-v1/;
++
++#include "x1e80100-microsoft-romulus.dtsi"
++#include "x1e80100-microsoft-romulus15-touchpad.dtsi"
++
++/ {
++	model = "Microsoft Surface Laptop 7 (13.8 inch, SPI touchscreen)";
++	compatible = "microsoft,romulus13", "qcom,x1e80100";
++};
++
++#include "x1e80100-microsoft-romulus15-touchscreen.dtsi"
++
++#include "x1e80100-microsoft-romulus15-gpio-power.dtsi"
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts
+index 8b73f742d..03dcfadc0 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-microsoft-romulus13.dts
+@@ -48,3 +48,23 @@ reset-n-pins {
+ 		};
+ 	};
+ };
++
++/*
++ * The haptic touchpad is the same QSPI HID device as on the 15-inch model
++ * (spi19); the rail and reset sequencing follow the 15-inch GPIO power
++ * description, without the SPI touchscreen parts.
++ */
++#include "x1e80100-microsoft-romulus15-touchpad.dtsi"
++
++&vreg_ts_5p0 {
++	regulator-boot-on;
++	startup-delay-us = <500000>;
++};
++
++&spi19_hid0_reset_deassert {
++	pins = "gpio120";
++};
++
++&spi19_hid0_reset_assert {
++	pins = "gpio120";
++};

@@ -8,6 +8,7 @@ and source records remain installed under `/usr/share/doc/*/copyright`.
 |---|---|---|
 | Debian 13 and packages | https://www.debian.org/ | Per-package licenses; corresponding source is available from Debian repositories configured for the image |
 | Linux kernel | https://kernel.org/ | GPL-2.0-only |
+| Surface Laptop 7 kernel patches (`kernel/sl7/patches`, arm64 ISO only) | https://github.com/ItsLucas/surface-laptop-7-ubuntu-kernel, https://github.com/1Martin11/surface-laptop-7-fedora, https://github.com/ProgrammerIn-wonderland/ELLX-Kernel | GPL-2.0-only kernel patches (the HID-over-SPI transport is Microsoft's Surface Duo driver, GPL-2.0) and BSD-3-Clause device tree sources, applied unmodified to the upstream kernel the arm64 ISO ships; `kernel/sl7/README.md` lists each patch and its author |
 | Moonlight Qt | https://github.com/moonlight-stream/moonlight-qt | GPL-3.0-only; v6.1.0 unmodified payload extracted from pinned AppImage |
 | chiaki-ng | https://github.com/streetpea/chiaki-ng | AGPL-3.0-only; v1.10.0 unmodified payload extracted from pinned AppImage |
 | Mozilla Firefox ESR | https://www.mozilla.org/firefox/ | MPL-2.0 and component-specific terms; installed unmodified from Debian repositories |

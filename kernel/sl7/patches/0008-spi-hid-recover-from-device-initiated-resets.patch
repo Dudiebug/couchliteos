@@ -1,0 +1,303 @@
+Subject: [PATCH] HID: spi-hid: recover from device-initiated resets
+
+Whether a report answered a request was decided with completion_done(),
+which is false whenever no response is pending, i.e. in the steady state.
+A reset response the device sent on its own was therefore completed into
+nothing; when it was noticed at all, the driver only set ready = true. The
+device came back in its default mode, iptsd kept reading a stale stream,
+and device_initiated_reset_count stayed 0 because it was only incremented
+from reset_work, which never ran for these resets.
+
+Track the outstanding request explicitly and give responses only to it.
+Count every unsolicited reset, re-read the descriptors, and (like Windows
+HidSpiCx notifying hidclass through EvtDeviceReset) recreate the HID device
+so hidraw clients re-apply their mode. Keep the HID device when the reset
+follows a host SET_FEATURE within three seconds, since a mode change may
+itself reset the device, and recreate at most once every ten seconds.
+If the report descriptor changed, always recreate.
+
+reset_recovery (module parameter, runtime writable) selects the behaviour:
+0 counts and logs only, 1 also re-reads descriptors, 2 (default) also
+recreates the HID device.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 997867a..1b5b55d 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -33,6 +33,16 @@ static struct hid_ll_driver spi_hid_ll_driver;
+ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 					 const u8 *body, int body_len);
+ 
++/*
++ * Windows HidSpiCx reports every device-initiated reset to hidclass so its
++ * clients reconfigure the device. hidraw has no such notification, so the
++ * closest equivalent is a fresh HID device, which restarts iptsd.
++ */
++static unsigned int reset_recovery = 2;
++module_param(reset_recovery, uint, 0644);
++MODULE_PARM_DESC(reset_recovery,
++		 "Device-initiated reset handling: 0 = count only, 1 = re-read descriptors, 2 = also recreate the HID device (default)");
++
+ /* QSPI transfer helpers */
+ 
+ static void qspi_fill_cmd(u8 *buf, u8 opcode, u32 addr)
+@@ -171,18 +181,27 @@ static int spi_hid_sync_request_ms(struct spi_hid *shid,
+ 	if (READ_ONCE(shid->stopping))
+ 		return -ESHUTDOWN;
+ 
++	/*
++	 * Mark the request outstanding before the device can answer, so the
++	 * IRQ thread can tell responses from device-initiated reports.
++	 */
++	WRITE_ONCE(shid->awaiting_response, true);
+ 	ret = spi_hid_send_output(shid, report_type, content_id,
+ 				  content, content_len);
+ 	if (ret) {
++		WRITE_ONCE(shid->awaiting_response, false);
+ 		dev_err(dev, "Failed to send output type %d: %d\n",
+ 			report_type, ret);
+ 		return ret;
+ 	}
+ 
+-	if (READ_ONCE(shid->stopping))
++	if (READ_ONCE(shid->stopping)) {
++		WRITE_ONCE(shid->awaiting_response, false);
+ 		return -ESHUTDOWN;
++	}
+ 	timeout = wait_for_completion_timeout(&shid->output_done,
+ 				msecs_to_jiffies(timeout_ms));
++	WRITE_ONCE(shid->awaiting_response, false);
+ 	if (READ_ONCE(shid->stopping))
+ 		return -ESHUTDOWN;
+ 	if (timeout == 0) {
+@@ -314,6 +333,66 @@ static int spi_hid_error_handler(struct spi_hid *shid)
+ 	return 0;
+ }
+ 
++/* True while less than @ms have passed since @stamp; 0 means never. */
++static bool spi_hid_recent(unsigned long stamp, unsigned int ms)
++{
++	return stamp && time_before(jiffies, stamp + msecs_to_jiffies(ms));
++}
++
++/* IRQ thread: the device sent a reset response that no request asked for. */
++static void spi_hid_device_reset(struct spi_hid *shid)
++{
++	struct device *dev = &shid->spi->dev;
++	unsigned int mode = READ_ONCE(reset_recovery);
++	bool recreate;
++
++	/* Power-on and recovery resets start enumeration, as before. */
++	if (!shid->ready) {
++		queue_work(system_freezable_wq, &shid->reset_work);
++		return;
++	}
++
++	shid->dir_count++;
++	if (!mode) {
++		dev_warn(dev, "Device-initiated reset %u (recovery disabled)\n",
++			 shid->dir_count);
++		return;
++	}
++
++	/*
++	 * Keep the HID device when the reset may be the device's answer to a
++	 * mode change, and never recreate it in a tight loop.
++	 */
++	recreate = mode >= 2 &&
++		   !spi_hid_recent(shid->last_set_feature,
++				   SPI_HID_FEATURE_RESET_GRACE_MS) &&
++		   !spi_hid_recent(shid->last_recreate,
++				   SPI_HID_RECREATE_INTERVAL_MS);
++
++	dev_warn(dev, "Device-initiated reset %u; re-reading descriptors%s\n",
++		 shid->dir_count, recreate ? " and recreating HID device" : "");
++	shid->recreate_hid = recreate;
++	shid->ready = false;
++	queue_work(system_freezable_wq, &shid->reset_work);
++}
++
++/* IRQ thread: hand a response to the waiting request, if there is one. */
++static bool spi_hid_claim_response(struct spi_hid *shid, const u8 *body,
++				   int body_len, u8 report_type)
++{
++	if (!xchg(&shid->awaiting_response, false))
++		return false;
++
++	shid->resp_type = report_type;
++	shid->resp_len = 0;
++	if (body && shid->resp_buf && body_len <= SPI_HID_MAX_INPUT_LEN) {
++		memcpy(shid->resp_buf, body, body_len);
++		shid->resp_len = body_len;
++	}
++	complete(&shid->output_done);
++	return true;
++}
++
+ static int spi_hid_input_report_handler(struct spi_hid *shid,
+ 					 const u8 *body, int body_len)
+ {
+@@ -362,16 +441,12 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 		return spi_hid_input_report_handler(shid, body, body_len);
+ 
+ 	case SPI_HID_REPORT_TYPE_RESET_RESP:
+-		shid->resp_type = SPI_HID_REPORT_TYPE_RESET_RESP;
+-		shid->resp_len = 0;
+-		if (!completion_done(&shid->output_done)) {
+-			complete(&shid->output_done);
+-		} else {
+-			if (!shid->ready)
+-				queue_work(system_freezable_wq, &shid->reset_work);
+-			else
+-				queue_work(system_freezable_wq, &shid->refresh_device_work);
+-		}
++		/*
++		 * completion_done() is false whenever no response is pending,
++		 * so it cannot tell a requested reset from a spontaneous one.
++		 */
++		if (!spi_hid_claim_response(shid, NULL, 0, bhdr.report_type))
++			spi_hid_device_reset(shid);
+ 		return 0;
+ 
+ 	case SPI_HID_REPORT_TYPE_DEVICE_DESC:
+@@ -382,17 +457,10 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 				(body + SPI_HID_BODY_HEADER_LEN);
+ 			spi_hid_parse_dev_desc(raw, &shid->desc);
+ 		}
+-		if (shid->resp_buf && body_len <= SPI_HID_MAX_INPUT_LEN) {
+-			memcpy(shid->resp_buf, body, body_len);
+-			shid->resp_len = body_len;
+-			shid->resp_type = bhdr.report_type;
+-		}
+-		if (!completion_done(&shid->output_done))
+-			complete(&shid->output_done);
+-		else if (!shid->hid)
+-			queue_work(system_freezable_wq, &shid->create_device_work);
+-		else
+-			queue_work(system_freezable_wq, &shid->refresh_device_work);
++		/* Enumeration always runs from reset_work, which asks for this. */
++		if (!spi_hid_claim_response(shid, body, body_len,
++					    bhdr.report_type))
++			dev_dbg(dev, "Unsolicited device descriptor\n");
+ 		return 0;
+ 
+ 	case SPI_HID_REPORT_TYPE_COMMAND_RESP:
+@@ -401,13 +469,10 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 	case SPI_HID_REPORT_TYPE_SET_FEATURE_RESP:
+ 	case SPI_HID_REPORT_TYPE_OUTPUT_REPORT_RESP:
+ 	case SPI_HID_REPORT_TYPE_GET_INPUT_RESP:
+-		if (shid->resp_buf && body_len <= SPI_HID_MAX_INPUT_LEN) {
+-			memcpy(shid->resp_buf, body, body_len);
+-			shid->resp_len = body_len;
+-			shid->resp_type = bhdr.report_type;
+-		}
+-		if (!completion_done(&shid->output_done))
+-			complete(&shid->output_done);
++		if (!spi_hid_claim_response(shid, body, body_len,
++					    bhdr.report_type))
++			dev_dbg(dev, "Unsolicited response type 0x%x\n",
++				bhdr.report_type);
+ 		return 0;
+ 
+ 	default:
+@@ -527,11 +592,9 @@ static void spi_hid_reset_work(struct work_struct *work)
+ {
+ 	struct spi_hid *shid = container_of(work, struct spi_hid, reset_work);
+ 	struct device *dev = &shid->spi->dev;
++	bool rd_changed = false;
+ 	int ret, attempt;
+ 
+-	if (shid->ready)
+-		shid->dir_count++;
+-
+ 	flush_work(&shid->create_device_work);
+ 
+ 	if (READ_ONCE(shid->stopping) ||
+@@ -540,6 +603,13 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 
+ 	flush_work(&shid->refresh_device_work);
+ 
++	/* After a device-initiated reset, let hidraw clients start over. */
++	if (shid->recreate_hid) {
++		shid->recreate_hid = false;
++		shid->last_recreate = jiffies ?: 1;
++		spi_hid_stop_hid(shid);
++	}
++
+ 	mutex_lock(&shid->lock);
+ 
+ 	for (attempt = 0; attempt < SPI_HID_MAX_RESET_ATTEMPTS; attempt++) {
+@@ -608,6 +678,10 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 			dev_err(dev, "GET_RD: bad length %d\n", rd_len);
+ 			continue;
+ 		}
++		rd_changed = shid->hid && (rd_len != shid->rd_len ||
++			     memcmp(shid->rd_buf,
++				    shid->resp_buf + SPI_HID_BODY_HEADER_LEN,
++				    rd_len));
+ 		memcpy(shid->rd_buf,
+ 		       shid->resp_buf + SPI_HID_BODY_HEADER_LEN, rd_len);
+ 		shid->rd_len = rd_len;
+@@ -627,8 +701,16 @@ success:
+ 		 shid->desc.max_output_length, shid->desc.max_fragment_length);
+ 	mutex_unlock(&shid->lock);
+ 
++	/* A kept HID device is only valid while its report descriptor is. */
++	if (rd_changed) {
++		dev_warn(dev, "Report descriptor changed; recreating HID device\n");
++		spi_hid_stop_hid(shid);
++	}
++
+ 	if (!shid->hid)
+ 		spi_hid_create_device(shid);
++	else if (!READ_ONCE(shid->stopping))
++		shid->ready = true;
+ }
+ 
+ static int spi_hid_create_device(struct spi_hid *shid)
+@@ -779,6 +861,8 @@ static int spi_hid_ll_raw_request(struct hid_device *hid,
+ 		mutex_lock(&shid->lock);
+ 		ret = spi_hid_sync_request(shid, SPI_HID_OUT_SET_FEATURE,
+ 					   buf[0], buf + 1, len - 1);
++		/* Mode changes may reset the device; see spi_hid_device_reset(). */
++		shid->last_set_feature = jiffies ?: 1;
+ 		mutex_unlock(&shid->lock);
+ 		if (ret)
+ 			return ret;
+@@ -895,6 +979,7 @@ static int spi_hid_start(struct spi_hid *shid)
+ 	shid->attempts = 0;
+ 	shid->rd_len = 0;
+ 	shid->frag_len = 0;
++	shid->recreate_hid = false;
+ 	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
+ 	WRITE_ONCE(shid->stopping, false);
+ 	enable_irq(shid->spi->irq);
+diff --git a/drivers/hid/spi-hid/spi-hid-core.h b/drivers/hid/spi-hid/spi-hid-core.h
+index e239ba8..14cbf1c 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -60,6 +60,10 @@
+ #define SPI_HID_MAX_RESET_ATTEMPTS		3
+ #define SPI_HID_MAX_INIT_RETRIES		10
+ #define SPI_HID_FRAGMENT_TIMEOUT_MS		1000
++/* A reset this soon after a host SET_FEATURE is taken as part of that request. */
++#define SPI_HID_FEATURE_RESET_GRACE_MS		3000
++/* Minimum interval between HID device re-creations after device resets. */
++#define SPI_HID_RECREATE_INTERVAL_MS		10000
+ 
+ #define SPI_HID_INPUT_HEADER_LEN		4
+ #define SPI_HID_MAX_INPUT_LEN			SZ_8K
+@@ -155,6 +159,13 @@ struct spi_hid {
+ 	/* Bytes of a multi-fragment input report already in irq_bdy_rx. */
+ 	u32 frag_len;
+ 	unsigned long frag_jiffies;
++
++	/* A synchronous request is waiting for the next response report. */
++	bool awaiting_response;
++	/* reset_work must destroy the HID device before re-enumerating. */
++	bool recreate_hid;
++	unsigned long last_set_feature;
++	unsigned long last_recreate;
+ };
+ 
+ #endif

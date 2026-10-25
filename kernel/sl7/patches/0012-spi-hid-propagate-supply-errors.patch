@@ -1,0 +1,24 @@
+Subject: [PATCH] HID: spi-hid: propagate supply lookup errors
+
+Every error from devm_regulator_get_optional() other than -ENODEV was
+turned into -EPROBE_DEFER, so a real failure deferred forever without a
+message. Return the actual error through dev_err_probe(), which still
+defers quietly when the supply is not ready yet.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 17eefe2..821f8c8 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -1284,8 +1284,10 @@ static int spi_hid_probe(struct spi_device *spi)
+ 
+ 	shid->supply = devm_regulator_get_optional(dev, "vdd");
+ 	if (IS_ERR(shid->supply)) {
+-		if (PTR_ERR(shid->supply) != -ENODEV) {
+-			ret = -EPROBE_DEFER;
++		ret = PTR_ERR(shid->supply);
++		/* Only a missing supply is optional; defer or fail otherwise. */
++		if (ret != -ENODEV) {
++			dev_err_probe(dev, ret, "Failed to get vdd supply\n");
+ 			goto err_sysfs;
+ 		}
+ 		shid->supply = NULL;

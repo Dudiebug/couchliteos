@@ -1,0 +1,532 @@
+Subject: [PATCH] HID: spi-hid: sequence rails and reset, manage panel and system power
+
+Local Romulus15 test based on this machine's HSPI/GTCH ACPI and the
+DRM panel-follower API used by in-tree i2c-hid. Keep rail GPIOs owned by
+regulators, power down on shutdown/suspend, and rebuild HID state after
+resume. Enumeration uses freezable work so children appear after thaw.
+
+No firmware update, EC reset, or HID mode/calibration changes.
+Not yet validated on hardware.
+
+---
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -17,7 +17,7 @@
+ #include <linux/wait.h>
+ #include <linux/err.h>
+ #include <linux/io.h>
+-#include <linux/pm_runtime.h>
++#include <linux/pm.h>
+ #include <linux/string.h>
+ #include <linux/kernel.h>
+ #include <linux/hid.h>
+@@ -139,6 +139,9 @@
+ 	u8 body[SPI_HID_BODY_HEADER_LEN + 512];
+ 	int body_len = SPI_HID_BODY_HEADER_LEN + content_len;
+ 
++	if (READ_ONCE(shid->stopping))
++		return -ESHUTDOWN;
++
+ 	if (body_len > sizeof(body)) {
+ 		dev_err(&shid->spi->dev, "Output too large: %d\n", body_len);
+ 		return -E2BIG;
+@@ -165,6 +168,8 @@
+ 	int ret;
+ 
+ 	reinit_completion(&shid->output_done);
++	if (READ_ONCE(shid->stopping))
++		return -ESHUTDOWN;
+ 
+ 	ret = spi_hid_send_output(shid, report_type, content_id,
+ 				  content, content_len);
+@@ -174,8 +179,12 @@
+ 		return ret;
+ 	}
+ 
++	if (READ_ONCE(shid->stopping))
++		return -ESHUTDOWN;
+ 	timeout = wait_for_completion_timeout(&shid->output_done,
+ 				msecs_to_jiffies(timeout_ms));
++	if (READ_ONCE(shid->stopping))
++		return -ESHUTDOWN;
+ 	if (timeout == 0) {
+ 		dev_err(dev, "Response timeout for type %d (%ums)\n",
+ 			report_type, timeout_ms);
+@@ -201,8 +210,11 @@
+ 	if (!shid->powered)
+ 		return 0;
+ 
+-	if (shid->pinctrl_sleep)
+-		pinctrl_select_state(shid->pinctrl, shid->pinctrl_sleep);
++	/* ACPI _PS3: assert reset before removing the supply. */
++	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
++	if (ret)
++		return ret;
++	usleep_range(10000, 11000);
+ 
+ 	if (shid->supply) {
+ 		ret = regulator_disable(shid->supply);
+@@ -220,20 +232,24 @@
+ {
+ 	int ret;
+ 
+-	if (shid->powered)
+-		return 0;
+-
++	/* Reset stays asserted throughout regulator startup and its delay. */
++	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
++	if (ret)
++		return ret;
++	if (!shid->powered && shid->supply) {
++		ret = regulator_enable(shid->supply);
++		if (ret)
++			return ret;
++	}
+ 	shid->powered = true;
+-
+-	if (shid->supply) {
+-		ret = regulator_enable(shid->supply);
+-		if (ret) {
+-			shid->powered = false;
+-			return ret;
+-		}
+-	}
+-
+-	usleep_range(5000, 6000);
++	msleep(SPI_HID_RESET_ASSERT_MS);
++	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
++	if (ret) {
++		spi_hid_power_down(shid);
++		return ret;
++	}
++	/* Preserve the tested firmware startup interval before arming IRQ. */
++	msleep(2000);
+ 	return 0;
+ }
+ 
+@@ -262,7 +278,8 @@
+ 	struct device *dev = &shid->spi->dev;
+ 	int ret;
+ 
+-	if (shid->power_state == SPI_HID_POWER_MODE_OFF)
++	if (READ_ONCE(shid->stopping) ||
++	    shid->power_state == SPI_HID_POWER_MODE_OFF)
+ 		return 0;
+ 
+ 	dev_err(dev, "Error handler (attempt %d)\n", shid->attempts);
+@@ -343,9 +360,9 @@
+ 			complete(&shid->output_done);
+ 		} else {
+ 			if (!shid->ready)
+-				schedule_work(&shid->reset_work);
++				queue_work(system_freezable_wq, &shid->reset_work);
+ 			else
+-				schedule_work(&shid->refresh_device_work);
++				queue_work(system_freezable_wq, &shid->refresh_device_work);
+ 		}
+ 		return 0;
+ 
+@@ -365,9 +382,9 @@
+ 		if (!completion_done(&shid->output_done))
+ 			complete(&shid->output_done);
+ 		else if (!shid->hid)
+-			schedule_work(&shid->create_device_work);
++			queue_work(system_freezable_wq, &shid->create_device_work);
+ 		else
+-			schedule_work(&shid->refresh_device_work);
++			queue_work(system_freezable_wq, &shid->refresh_device_work);
+ 		return 0;
+ 
+ 	case SPI_HID_REPORT_TYPE_COMMAND_RESP:
+@@ -401,7 +418,7 @@
+ 	struct spi_transfer xfer = {};
+ 	int ret;
+ 
+-	if (!shid->powered)
++	if (!shid->powered || READ_ONCE(shid->stopping))
+ 		return IRQ_HANDLED;
+ 
+ 	xfer.tx_buf = shid->irq_hdr_tx;
+@@ -483,7 +500,8 @@
+ 
+ 	flush_work(&shid->create_device_work);
+ 
+-	if (shid->power_state == SPI_HID_POWER_MODE_OFF)
++	if (READ_ONCE(shid->stopping) ||
++	    shid->power_state == SPI_HID_POWER_MODE_OFF)
+ 		return;
+ 
+ 	flush_work(&shid->refresh_device_work);
+@@ -492,6 +510,11 @@
+ 
+ 	for (attempt = 0; attempt < SPI_HID_MAX_RESET_ATTEMPTS; attempt++) {
+ 		int dd_try, rd_try, rd_len;
++
++		if (READ_ONCE(shid->stopping)) {
++			mutex_unlock(&shid->lock);
++			return;
++		}
+ 
+ 		if (attempt > 0) {
+ 			pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
+@@ -576,6 +599,9 @@
+ 	struct device *dev = &shid->spi->dev;
+ 	int ret;
+ 
++	if (READ_ONCE(shid->stopping))
++		return -ESHUTDOWN;
++
+ 	hid = hid_allocate_device();
+ 	if (IS_ERR(hid)) {
+ 		dev_err(dev, "Failed to allocate hid device: %ld\n",
+@@ -637,7 +663,8 @@
+ 	struct spi_hid *shid =
+ 		container_of(work, struct spi_hid, refresh_device_work);
+ 
+-	shid->ready = true;
++	if (!READ_ONCE(shid->stopping))
++		shid->ready = true;
+ }
+ 
+ static int spi_hid_ll_start(struct hid_device *hid)
+@@ -814,6 +841,135 @@
+ 	.raw_request = spi_hid_ll_raw_request,
+ };
+ 
++/* Call with power_lock held. A fresh HID child lets hidraw clients restore
++ * their device mode after reset, rather than leaving iptsd on a stale stream.
++ */
++static int spi_hid_start(struct spi_hid *shid)
++{
++	int ret;
++
++	if (!READ_ONCE(shid->stopping))
++		return 0;
++	ret = spi_hid_power_up(shid);
++	if (ret)
++		return ret;
++	shid->ready = false;
++	shid->attempts = 0;
++	shid->rd_len = 0;
++	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
++	WRITE_ONCE(shid->stopping, false);
++	enable_irq(shid->spi->irq);
++	shid->irq_enabled = true;
++	dev_info(&shid->spi->dev, "SL7 power on; waiting for HID enumeration\n");
++	return 0;
++}
++
++/* Stop requests/IRQs and all enumeration work before changing GPIOs. */
++static int spi_hid_stop(struct spi_hid *shid)
++{
++	int ret;
++
++	WRITE_ONCE(shid->stopping, true);
++	if (shid->irq_enabled) {
++		disable_irq(shid->spi->irq);
++		shid->irq_enabled = false;
++	}
++	complete_all(&shid->output_done);
++	cancel_work_sync(&shid->reset_work);
++	cancel_work_sync(&shid->create_device_work);
++	cancel_work_sync(&shid->refresh_device_work);
++	spi_hid_stop_hid(shid);
++	/* Synchronize any remaining raw request before removing power. */
++	mutex_lock(&shid->lock);
++	shid->ready = false;
++	shid->power_state = SPI_HID_POWER_MODE_OFF;
++	ret = spi_hid_power_down(shid);
++	mutex_unlock(&shid->lock);
++	if (!ret)
++		dev_info(&shid->spi->dev, "SL7 reset asserted; supply released\n");
++	return ret;
++}
++
++static void spi_hid_panel_work(struct work_struct *work)
++{
++	struct spi_hid *shid = container_of(work, struct spi_hid, panel_work);
++	int ret;
++
++	mutex_lock(&shid->power_lock);
++	ret = spi_hid_start(shid);
++	mutex_unlock(&shid->power_lock);
++	if (ret)
++		dev_err(&shid->spi->dev, "Panel touch resume failed: %d\n", ret);
++}
++
++static int spi_hid_panel_on(struct drm_panel_follower *follower)
++{
++	struct spi_hid *shid = container_of(follower, struct spi_hid, panel_follower);
++
++	/* Do not delay display enable or enumerate children until thaw. */
++	queue_work(system_freezable_wq, &shid->panel_work);
++	return 0;
++}
++
++static int spi_hid_panel_off(struct drm_panel_follower *follower)
++{
++	struct spi_hid *shid = container_of(follower, struct spi_hid, panel_follower);
++	int ret;
++
++	cancel_work_sync(&shid->panel_work);
++	mutex_lock(&shid->power_lock);
++	ret = spi_hid_stop(shid);
++	mutex_unlock(&shid->power_lock);
++	return ret;
++}
++
++static const struct drm_panel_follower_funcs spi_hid_panel_funcs = {
++	.panel_enabled = spi_hid_panel_on,
++	.panel_disabling = spi_hid_panel_off,
++};
++
++static int spi_hid_suspend(struct device *dev)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++	int ret;
++
++	/* The display driver already controls followers during system sleep. */
++	if (shid->is_panel_follower)
++		return 0;
++	mutex_lock(&shid->power_lock);
++	ret = spi_hid_stop(shid);
++	if (ret)
++		spi_hid_start(shid);
++	mutex_unlock(&shid->power_lock);
++	return ret;
++}
++
++static int spi_hid_resume(struct device *dev)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++	int ret;
++
++	if (shid->is_panel_follower)
++		return 0;
++	mutex_lock(&shid->power_lock);
++	ret = spi_hid_start(shid);
++	mutex_unlock(&shid->power_lock);
++	return ret;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(spi_hid_pm_ops, spi_hid_suspend, spi_hid_resume);
++
++static ssize_t power_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct spi_hid *shid = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "supply=%u stopping=%u panel_follower=%u\n",
++			 READ_ONCE(shid->powered), READ_ONCE(shid->stopping),
++			 shid->is_panel_follower);
++}
++static DEVICE_ATTR_RO(power_state);
++
+ static ssize_t ready_show(struct device *dev,
+ 			  struct device_attribute *attr, char *buf)
+ {
+@@ -845,6 +1001,7 @@
+ 
+ static const struct attribute *const spi_hid_attributes[] = {
+ 	&dev_attr_ready.attr,
++	&dev_attr_power_state.attr,
+ 	&dev_attr_bus_error_count.attr,
+ 	&dev_attr_device_initiated_reset_count.attr,
+ 	NULL
+@@ -867,7 +1024,9 @@
+ 		return -ENOMEM;
+ 
+ 	shid->spi = spi;
+-	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
++	shid->power_state = SPI_HID_POWER_MODE_OFF;
++	shid->stopping = true;
++	shid->is_panel_follower = drm_is_panel_follower(dev);
+ 	spi_set_drvdata(spi, shid);
+ 
+ 	spi->mode = SPI_MODE_0 | SPI_TX_QUAD | SPI_RX_QUAD;
+@@ -906,16 +1065,18 @@
+ 	}
+ 
+ 	mutex_init(&shid->lock);
++	mutex_init(&shid->power_lock);
+ 	init_completion(&shid->output_done);
+ 	complete(&shid->output_done);
+ 
+ 	INIT_WORK(&shid->reset_work, spi_hid_reset_work);
+ 	INIT_WORK(&shid->create_device_work, spi_hid_create_device_work);
+ 	INIT_WORK(&shid->refresh_device_work, spi_hid_refresh_device_work);
++	INIT_WORK(&shid->panel_work, spi_hid_panel_work);
+ 
+ 	shid->supply = devm_regulator_get_optional(dev, "vdd");
+ 	if (IS_ERR(shid->supply)) {
+-		if (PTR_ERR(shid->supply) == -EPROBE_DEFER) {
++		if (PTR_ERR(shid->supply) != -ENODEV) {
+ 			ret = -EPROBE_DEFER;
+ 			goto err_sysfs;
+ 		}
+@@ -960,32 +1121,41 @@
+ 	disable_irq(spi->irq);
+ 	shid->irq_enabled = false;
+ 
+-	pm_runtime_enable(dev->parent);
+-	ret = pm_runtime_get_sync(dev->parent);
+-	if (ret < 0) {
+-		dev_warn(dev, "SPI ctrl PM get failed: %d\n", ret);
+-		pm_runtime_put_noidle(dev->parent);
+-	}
+-
+-	/*
+-	 * Bring-up: hold the device in reset (power off, reset asserted)
+-	 * for a few ms, then deassert reset and enable the regulator. The
+-	 * 2 s settle gives the touchpad firmware time to boot before we
+-	 * arm the IRQ and start talking to it.
+-	 */
+-	pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
+-	msleep(SPI_HID_RESET_ASSERT_MS);
+-	pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
+-	spi_hid_power_up(shid);
+-	msleep(2000);
+-
+-	pm_runtime_put(dev->parent);
+-
+-	enable_irq(spi->irq);
+-	shid->irq_enabled = true;
++	/* Controller runtime PM belongs to the SPI controller, not its child. */
++	if (shid->is_panel_follower) {
++		/* Park a boot-enabled rail safely before following display state. */
++		ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
++		if (ret)
++			goto err_irq;
++		if (shid->supply) {
++			ret = regulator_enable(shid->supply);
++			if (ret)
++				goto err_irq;
++		}
++		shid->powered = true;
++		ret = spi_hid_power_down(shid);
++		if (ret)
++			goto err_power;
++		shid->panel_follower.funcs = &spi_hid_panel_funcs;
++		device_set_wakeup_capable(dev, false);
++		ret = drm_panel_add_follower(dev, &shid->panel_follower);
++		if (ret)
++			goto err_power;
++		shid->follower_registered = true;
++	} else {
++		mutex_lock(&shid->power_lock);
++		ret = spi_hid_start(shid);
++		mutex_unlock(&shid->power_lock);
++		if (ret)
++			goto err_power;
++	}
+ 
+ 	return 0;
+ 
++err_power:
++	spi_hid_power_down(shid);
++err_irq:
++	free_irq(spi->irq, shid);
+ err_sysfs:
+ 	sysfs_remove_files(&dev->kobj, spi_hid_attributes);
+ err_free:
+@@ -998,20 +1168,30 @@
+ 	return ret;
+ }
+ 
++static void spi_hid_shutdown(struct spi_device *spi)
++{
++	struct spi_hid *shid = spi_get_drvdata(spi);
++	int ret;
++
++	if (shid->follower_registered) {
++		drm_panel_remove_follower(&shid->panel_follower);
++		shid->follower_registered = false;
++	}
++	cancel_work_sync(&shid->panel_work);
++	mutex_lock(&shid->power_lock);
++	ret = spi_hid_stop(shid);
++	mutex_unlock(&shid->power_lock);
++	if (ret)
++		dev_err(&spi->dev, "Failed to power down: %d\n", ret);
++}
++
+ static void spi_hid_remove(struct spi_device *spi)
+ {
+ 	struct spi_hid *shid = spi_get_drvdata(spi);
+-	struct device *dev = &spi->dev;
+-
++
++	spi_hid_shutdown(spi);
+ 	free_irq(spi->irq, shid);
+-	shid->irq_enabled = false;
+-	/* Drain every worker before releasing the transport buffers. */
+-	cancel_work_sync(&shid->reset_work);
+-	cancel_work_sync(&shid->create_device_work);
+-	cancel_work_sync(&shid->refresh_device_work);
+-	sysfs_remove_files(&dev->kobj, spi_hid_attributes);
+-	spi_hid_stop_hid(shid);
+-	spi_hid_power_down(shid);
++	sysfs_remove_files(&spi->dev.kobj, spi_hid_attributes);
+ 
+ 	kfree(shid->resp_buf);
+ 	kfree(shid->rd_buf);
+@@ -1038,9 +1218,11 @@
+ 		.name	= "spi_hid",
+ 		.owner	= THIS_MODULE,
+ 		.of_match_table = of_match_ptr(spi_hid_of_match),
++		.pm = pm_sleep_ptr(&spi_hid_pm_ops),
+ 	},
+ 	.probe		= spi_hid_probe,
+ 	.remove		= spi_hid_remove,
++	.shutdown	= spi_hid_shutdown,
+ 	.id_table	= spi_hid_id_table,
+ };
+ 
+@@ -1048,3 +1230,4 @@
+ 
+ MODULE_DESCRIPTION("HID over SPI (HIDSPI v3) QSPI transport driver");
+ MODULE_LICENSE("GPL");
++MODULE_VERSION("sl7.20260915.1");
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -13,6 +13,7 @@
+ #include <linux/completion.h>
+ #include <linux/spi/spi.h>
+ #include <linux/types.h>
++#include <drm/drm_panel.h>
+ 
+ #define SPI_HID_INPUT_HEADER_SYNC_BYTE		0x5A
+ #define SPI_HID_INPUT_HEADER_VERSION		0x03
+@@ -117,6 +118,9 @@
+ 
+ 	bool ready;
+ 	bool irq_enabled;
++	bool stopping;
++	bool is_panel_follower;
++	bool follower_registered;
+ 
+ 	struct regulator *supply;
+ 	struct pinctrl *pinctrl;
+@@ -126,6 +130,9 @@
+ 	struct work_struct reset_work;
+ 	struct work_struct create_device_work;
+ 	struct work_struct refresh_device_work;
++	struct work_struct panel_work;
++	struct drm_panel_follower panel_follower;
++	struct mutex power_lock;
+ 
+ 	struct mutex lock;
+ 	struct completion output_done;
+--- a/drivers/hid/spi-hid/Kconfig
++++ b/drivers/hid/spi-hid/Kconfig
+@@ -2,6 +2,9 @@
+ config SPI_HID
+ 	tristate "HID over SPI v3 transport for QSPI touchpads"
+ 	depends on SPI && OF && PINCTRL && REGULATOR
++	depends on DRM || !DRM
+ 	help
+ 	  Enable the HID-over-SPI v3 transport used by the Surface Laptop 7
+-	  QSPI touchpad. The module is named spi-hid.
++	  QSPI touchpad and touchscreen. Touchscreens with a panel reference
++	  follow display power; other devices power down during system sleep.
++	  The module is named spi-hid.

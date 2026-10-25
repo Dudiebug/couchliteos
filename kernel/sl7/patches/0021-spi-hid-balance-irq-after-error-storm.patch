@@ -1,0 +1,120 @@
+Subject: [PATCH] HID: spi-hid: balance the IRQ masked after an error storm
+
+After 100 consecutive header or read errors the IRQ thread masks its own
+line with disable_irq_nosync(). spi_hid_stop() then disables it a second
+time and spi_hid_start() enables it only once, so the depth never returns
+to zero: the device stays silent across every later system sleep or panel
+off/on cycle until the module is reloaded or the machine rebooted.
+
+Record the thread's disable and drop it in spi_hid_stop() after the
+regular disable_irq(), which waits for the thread, so the line stays
+masked until the next start. Clear the consecutive error count on start
+so a restarted device gets the full budget again.
+
+Behaviour without an error storm is unchanged. The upstream v5 spi-hid
+series and the Romulus13 RFC instead route header errors to the bounded
+reset worker; that policy change is not part of this patch.
+
+Not hardware-validated. Compile-tested (W=1) against Ubuntu 7.3.0-9.9 +
+0001-0020 with the sl7.57.1 config.
+---
+ drivers/hid/spi-hid/spi-hid-core.c | 35 +++++++++++++++++++++++++++--------
+ drivers/hid/spi-hid/spi-hid-core.h |  4 ++++
+ 2 files changed, 31 insertions(+), 8 deletions(-)
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 245c7864c..0761a3111 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -547,6 +547,22 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
+ 	}
+ }
+ 
++/*
++ * IRQ thread: too many consecutive errors. Mask the line until the next stop,
++ * which balances this disable, so a later resume or panel enable can revive
++ * the device instead of finding its IRQ still disabled.
++ */
++static void spi_hid_irq_storm(struct spi_hid *shid)
++{
++	if (shid->irq_storm)
++		return;
++	dev_err(&shid->spi->dev,
++		"%u consecutive errors, disabling IRQ until the next power cycle\n",
++		shid->bus_error_count);
++	shid->irq_storm = true;
++	disable_irq_nosync(shid->spi->irq);
++}
++
+ /* IRQ thread: read one input report. False if nothing more should be read. */
+ static bool spi_hid_read_input(struct spi_hid *shid)
+ {
+@@ -569,10 +585,8 @@ static bool spi_hid_read_input(struct spi_hid *shid)
+ 		shid->frag_len = 0;
+ 		if (shid->bus_error_count <= 5)
+ 			dev_err(dev, "Header read failed: %d\n", ret);
+-		if (shid->bus_error_count == 100) {
+-			dev_err(dev, "Too many read errors, disabling IRQ\n");
+-			disable_irq_nosync(shid->spi->irq);
+-		}
++		if (shid->bus_error_count == SPI_HID_IRQ_STORM_ERRORS)
++			spi_hid_irq_storm(shid);
+ 		return false;
+ 	}
+ 
+@@ -588,10 +602,8 @@ static bool spi_hid_read_input(struct spi_hid *shid)
+ 			dev_err(dev, "Invalid header (%u errors): %*ph\n",
+ 				shid->bus_error_count,
+ 				SPI_HID_INPUT_HEADER_LEN, shid->irq_hdr_rx);
+-		if (shid->bus_error_count == 100) {
+-			dev_err(dev, "Too many errors, disabling IRQ\n");
+-			disable_irq_nosync(shid->spi->irq);
+-		}
++		if (shid->bus_error_count == SPI_HID_IRQ_STORM_ERRORS)
++			spi_hid_irq_storm(shid);
+ 		return false;
+ 	}
+ 	shid->bus_error_count = 0;
+@@ -1059,6 +1071,7 @@ static int spi_hid_start(struct spi_hid *shid)
+ 	shid->attempts = 0;
+ 	shid->rd_len = 0;
+ 	shid->frag_len = 0;
++	shid->bus_error_count = 0;
+ 	shid->recreate_hid = false;
+ 	shid->power_cycled = false;
+ 	shid->enumeration_started = false;
+@@ -1079,7 +1092,13 @@ static int spi_hid_stop(struct spi_hid *shid)
+ 
+ 	WRITE_ONCE(shid->stopping, true);
+ 	if (shid->irq_enabled) {
++		/* Waits for the IRQ thread, so irq_storm is stable afterwards. */
+ 		disable_irq(shid->spi->irq);
++		if (shid->irq_storm) {
++			/* Drop the thread's own disable; the line stays masked. */
++			enable_irq(shid->spi->irq);
++			shid->irq_storm = false;
++		}
+ 		shid->irq_enabled = false;
+ 	}
+ 	complete_all(&shid->output_done);
+diff --git a/drivers/hid/spi-hid/spi-hid-core.h b/drivers/hid/spi-hid/spi-hid-core.h
+index 1e8f652ad..5bf81b0c9 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -70,6 +70,8 @@
+ #define SPI_HID_START_WATCHDOG_MS		5000
+ /* Reports read per interrupt while an edge-triggered line stays asserted. */
+ #define SPI_HID_MAX_IRQ_READS			8
++/* Consecutive header/read errors before the IRQ thread masks its line. */
++#define SPI_HID_IRQ_STORM_ERRORS		100
+ 
+ #define SPI_HID_INPUT_HEADER_LEN		4
+ #define SPI_HID_MAX_INPUT_LEN			SZ_8K
+@@ -129,6 +131,8 @@ struct spi_hid {
+ 
+ 	bool ready;
+ 	bool irq_enabled;
++	/* The IRQ thread disabled its own IRQ after repeated errors. */
++	bool irq_storm;
+ 	bool stopping;
+ 	bool is_panel_follower;
+ 	bool follower_registered;

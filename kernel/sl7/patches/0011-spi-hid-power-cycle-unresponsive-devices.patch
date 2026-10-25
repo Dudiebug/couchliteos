@@ -1,0 +1,197 @@
+Subject: [PATCH] HID: spi-hid: power cycle unresponsive devices
+
+The touchpad supply is enabled by firmware and marked boot-on, so the
+driver's regulator_enable() never switched it off and the device only ever
+saw reset pulses. The one known recovery for a touchpad that stays dead
+after boot is an EC reset, which removes power.
+
+Before the first start of a non-panel device, take a supply reference and
+power down (ACPI _PS3 order: reset, 10 ms, supply off) for 500 ms, so it
+starts from a real power cycle. When reset_work exhausts its reset pulses,
+power cycle once before handing over to the error handler, with the IRQ
+masked because an unpowered device may hold a level-triggered line low.
+
+A device that sends no reset response after power on was never enumerated,
+retried or power cycled. Like the start timer in Windows HidSpiCx, request
+the descriptors if reset_work has not run five seconds after power on.
+---
+diff --git a/drivers/hid/spi-hid/spi-hid-core.c b/drivers/hid/spi-hid/spi-hid-core.c
+index 6c7029e..17eefe2 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.c
++++ b/drivers/hid/spi-hid/spi-hid-core.c
+@@ -275,6 +275,54 @@ static int spi_hid_power_up(struct spi_hid *shid)
+ 	return 0;
+ }
+ 
++/*
++ * ACPI _PS3 plus an off period. A boot-on supply is otherwise never removed,
++ * and removing it (as the EC reset does) is what revives a wedged device.
++ */
++static int spi_hid_supply_off(struct spi_hid *shid)
++{
++	int ret;
++
++	if (!shid->supply)
++		return 0;
++	if (!shid->powered) {
++		/* Take a reference so the disable really switches the rail off. */
++		ret = regulator_enable(shid->supply);
++		if (ret)
++			return ret;
++		shid->powered = true;
++	}
++	ret = spi_hid_power_down(shid);
++	if (ret)
++		return ret;
++	msleep(SPI_HID_POWER_OFF_MS);
++	return 0;
++}
++
++/* Reset pulses did not revive the device: remove power once per start. */
++static bool spi_hid_power_cycle_once(struct spi_hid *shid)
++{
++	struct device *dev = &shid->spi->dev;
++	int ret;
++
++	if (!shid->supply || shid->power_cycled || READ_ONCE(shid->stopping))
++		return false;
++
++	dev_warn(dev, "Unresponsive device; power cycling once\n");
++	shid->power_cycled = true;
++	/* An unpowered device may hold a level-triggered line asserted. */
++	disable_irq(shid->spi->irq);
++	ret = spi_hid_supply_off(shid);
++	if (!ret)
++		ret = spi_hid_power_up(shid);
++	enable_irq(shid->spi->irq);
++	if (ret) {
++		dev_err(dev, "Power cycle failed: %d\n", ret);
++		return false;
++	}
++	return true;
++}
++
+ static struct hid_device *spi_hid_disconnect_hid(struct spi_hid *shid)
+ {
+ 	struct hid_device *hid = shid->hid;
+@@ -598,6 +646,7 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 	bool rd_changed = false;
+ 	int ret, attempt;
+ 
++	shid->enumeration_started = true;
+ 	flush_work(&shid->create_device_work);
+ 
+ 	if (READ_ONCE(shid->stopping) ||
+@@ -694,10 +743,16 @@ static void spi_hid_reset_work(struct work_struct *work)
+ 
+ 	dev_err(dev, "Init failed after %d reset cycles\n", attempt);
+ 	mutex_unlock(&shid->lock);
++	/* A silent device sends no reset response, so re-queue explicitly. */
++	if (spi_hid_power_cycle_once(shid)) {
++		queue_work(system_freezable_wq, &shid->reset_work);
++		return;
++	}
+ 	spi_hid_error_handler(shid);
+ 	return;
+ 
+ success:
++	shid->power_cycled = false;
+ 	dev_info(dev, "HID-SPI %04x:%04x v%04x: input %u, output %u, fragment %u bytes\n",
+ 		 shid->desc.vendor_id, shid->desc.product_id,
+ 		 shid->desc.version_id, shid->desc.max_input_length,
+@@ -781,6 +836,22 @@ static void spi_hid_create_device_work(struct work_struct *work)
+ 	shid->attempts = 0;
+ }
+ 
++/*
++ * Windows HidSpiCx arms a timer when it resets the device at start. Here a
++ * silent device would otherwise never be enumerated, retried or power cycled.
++ */
++static void spi_hid_start_watchdog(struct work_struct *work)
++{
++	struct spi_hid *shid = container_of(to_delayed_work(work),
++					    struct spi_hid, start_watchdog);
++
++	if (READ_ONCE(shid->stopping) || shid->enumeration_started)
++		return;
++	dev_warn(&shid->spi->dev,
++		 "No reset response after power on; requesting descriptors\n");
++	queue_work(system_freezable_wq, &shid->reset_work);
++}
++
+ static void spi_hid_refresh_device_work(struct work_struct *work)
+ {
+ 	struct spi_hid *shid =
+@@ -986,10 +1057,14 @@ static int spi_hid_start(struct spi_hid *shid)
+ 	shid->rd_len = 0;
+ 	shid->frag_len = 0;
+ 	shid->recreate_hid = false;
++	shid->power_cycled = false;
++	shid->enumeration_started = false;
+ 	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
+ 	WRITE_ONCE(shid->stopping, false);
+ 	enable_irq(shid->spi->irq);
+ 	shid->irq_enabled = true;
++	queue_delayed_work(system_freezable_wq, &shid->start_watchdog,
++			   msecs_to_jiffies(SPI_HID_START_WATCHDOG_MS));
+ 	dev_info(&shid->spi->dev, "SL7 power on; waiting for HID enumeration\n");
+ 	return 0;
+ }
+@@ -1005,6 +1080,8 @@ static int spi_hid_stop(struct spi_hid *shid)
+ 		shid->irq_enabled = false;
+ 	}
+ 	complete_all(&shid->output_done);
++	/* The watchdog may queue reset_work, so cancel it first. */
++	cancel_delayed_work_sync(&shid->start_watchdog);
+ 	cancel_work_sync(&shid->reset_work);
+ 	cancel_work_sync(&shid->create_device_work);
+ 	cancel_work_sync(&shid->refresh_device_work);
+@@ -1203,6 +1280,7 @@ static int spi_hid_probe(struct spi_device *spi)
+ 	INIT_WORK(&shid->create_device_work, spi_hid_create_device_work);
+ 	INIT_WORK(&shid->refresh_device_work, spi_hid_refresh_device_work);
+ 	INIT_WORK(&shid->panel_work, spi_hid_panel_work);
++	INIT_DELAYED_WORK(&shid->start_watchdog, spi_hid_start_watchdog);
+ 
+ 	shid->supply = devm_regulator_get_optional(dev, "vdd");
+ 	if (IS_ERR(shid->supply)) {
+@@ -1273,6 +1351,13 @@ static int spi_hid_probe(struct spi_device *spi)
+ 			goto err_power;
+ 		shid->follower_registered = true;
+ 	} else {
++		/*
++		 * Begin from a real power cycle, as after a cold boot: firmware
++		 * leaves this rail on, so reset pulses were all it ever saw.
++		 */
++		ret = spi_hid_supply_off(shid);
++		if (ret)
++			goto err_power;
+ 		mutex_lock(&shid->power_lock);
+ 		ret = spi_hid_start(shid);
+ 		mutex_unlock(&shid->power_lock);
+diff --git a/drivers/hid/spi-hid/spi-hid-core.h b/drivers/hid/spi-hid/spi-hid-core.h
+index 14cbf1c..b5f35f3 100644
+--- a/drivers/hid/spi-hid/spi-hid-core.h
++++ b/drivers/hid/spi-hid/spi-hid-core.h
+@@ -64,6 +64,10 @@
+ #define SPI_HID_FEATURE_RESET_GRACE_MS		3000
+ /* Minimum interval between HID device re-creations after device resets. */
+ #define SPI_HID_RECREATE_INTERVAL_MS		10000
++/* How long the supply stays off during a full power cycle. */
++#define SPI_HID_POWER_OFF_MS			500
++/* Enumerate anyway if no reset response arrives this long after power on. */
++#define SPI_HID_START_WATCHDOG_MS		5000
+ 
+ #define SPI_HID_INPUT_HEADER_LEN		4
+ #define SPI_HID_MAX_INPUT_LEN			SZ_8K
+@@ -166,6 +170,11 @@ struct spi_hid {
+ 	bool recreate_hid;
+ 	unsigned long last_set_feature;
+ 	unsigned long last_recreate;
++	/* The one supply power cycle per start has been used. */
++	bool power_cycled;
++	/* reset_work has run since the last start. */
++	bool enumeration_started;
++	struct delayed_work start_watchdog;
+ };
+ 
+ #endif
