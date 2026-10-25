@@ -77,10 +77,17 @@ LIST
   image=$(apt-cache depends --target-release "$DEBIAN_BASE-backports" linux-image-arm64 \
     | sed -n 's/^ *Depends: \(linux-image-[0-9][^ ]*-arm64\)$/\1/p' | head -n 1)
   [[ -n $image ]] || { echo "No linux-image-arm64 in $DEBIAN_BASE-backports" >&2; exit 1; }
-  echo "Base config: Debian $image"
-  (cd "$WORK" && apt-get download --target-release "$DEBIAN_BASE-backports" "$image")
-  dpkg-deb --fsys-tarfile "$WORK/${image}_"*.deb | tar -xOf - --wildcards './boot/config-*' > .config
-  [[ -s .config ]] || { echo "No /boot/config-* in $image" >&2; exit 1; }
+  # Since 7.x the image package is a stub; the config is in its linux-base-<ver> dependency
+  # (/usr/lib/modules/<ver>/config). Older layouts put it at /boot/config-<ver>.
+  base=$(apt-cache depends --target-release "$DEBIAN_BASE-backports" "$image"     | sed -n 's/^ *Depends: \(linux-base-[0-9][^ ]*\)$//p' | head -n 1)
+  pkg=${base:-$image}
+  echo "Base config: Debian $image ($pkg)"
+  (cd "$WORK" && apt-get download --target-release "$DEBIAN_BASE-backports" "$pkg")
+  deb=$(ls "$WORK/${pkg}_"*.deb | head -n 1)
+  member=$(dpkg-deb --fsys-tarfile "$deb" | tar -tf -     | grep -E '^\./(usr/lib/modules/[^/]+/config|boot/config-[^/]+)$' | head -n 1)
+  [[ -n $member ]] || { echo "No kernel config in $pkg" >&2; exit 1; }
+  dpkg-deb --fsys-tarfile "$deb" | tar -xOf - "$member" > .config
+  [[ -s .config ]] || { echo "Empty kernel config in $pkg" >&2; exit 1; }
 fi
 scripts/kconfig/merge_config.sh -m .config "$HERE/config.fragment" > /dev/null
 make ARCH=arm64 olddefconfig > /dev/null
