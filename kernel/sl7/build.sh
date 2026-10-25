@@ -79,12 +79,14 @@ LIST
   [[ -n $image ]] || { echo "No linux-image-arm64 in $DEBIAN_BASE-backports" >&2; exit 1; }
   # Since 7.x the image package is a stub; the config is in its linux-base-<ver> dependency
   # (/usr/lib/modules/<ver>/config). Older layouts put it at /boot/config-<ver>.
-  base=$(apt-cache depends --target-release "$DEBIAN_BASE-backports" "$image"     | sed -n 's/^ *Depends: \(linux-base-[0-9][^ ]*\)$//p' | head -n 1)
+  base=$(apt-cache depends --target-release "$DEBIAN_BASE-backports" "$image" \
+    | sed -n 's/^ *Depends: \(linux-base-[0-9][^ ]*\)$/\1/p' | head -n 1)
   pkg=${base:-$image}
   echo "Base config: Debian $image ($pkg)"
   (cd "$WORK" && apt-get download --target-release "$DEBIAN_BASE-backports" "$pkg")
   deb=$(ls "$WORK/${pkg}_"*.deb | head -n 1)
-  member=$(dpkg-deb --fsys-tarfile "$deb" | tar -tf -     | grep -E '^\./(usr/lib/modules/[^/]+/config|boot/config-[^/]+)$' | head -n 1)
+  member=$(dpkg-deb --fsys-tarfile "$deb" | tar -tf - \
+    | grep -E '^\./(usr/lib/modules/[^/]+/config|boot/config-[^/]+)$' | head -n 1)
   [[ -n $member ]] || { echo "No kernel config in $pkg" >&2; exit 1; }
   dpkg-deb --fsys-tarfile "$deb" | tar -xOf - "$member" > .config
   [[ -s .config ]] || { echo "Empty kernel config in $pkg" >&2; exit 1; }
