@@ -1,5 +1,5 @@
-# Base, boot, init, and network
-linux-image-amd64
+# Base, boot, init, and network. The kernel is not listed: live-build installs
+# linux-image-<flavour> (amd64's linux-image-amd64, or a profile's --linux-flavours).
 live-boot
 live-config
 systemd-sysv
