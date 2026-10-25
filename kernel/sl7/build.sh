@@ -36,7 +36,7 @@ if ((install_deps)); then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install --yes --no-install-recommends \
-    build-essential bc bison flex libssl-dev libelf-dev libncurses-dev dwarves \
+    build-essential bc bison flex libssl-dev libelf-dev libdw-dev libncurses-dev dwarves \
     python3 rsync kmod cpio xz-utils zstd ca-certificates curl patch \
     dpkg-dev debhelper fakeroot ccache git
 fi
@@ -115,7 +115,7 @@ export KBUILD_BUILD_USER=couchliteos KBUILD_BUILD_HOST=build
 export KBUILD_BUILD_TIMESTAMP=${SOURCE_DATE_EPOCH:+@$SOURCE_DATE_EPOCH}
 [[ -n $KBUILD_BUILD_TIMESTAMP ]] || unset KBUILD_BUILD_TIMESTAMP
 echo "Building with -j$JOBS"
-make ARCH=arm64 CC="$cc" -j"$JOBS" LOCALVERSION=-sl7 \
+make ARCH=arm64 CC="$cc" -j"$JOBS" LOCALVERSION=-sl7 KDEB_CHANGELOG_DIST="$DEBIAN_BASE" \
   KDEB_PKGVERSION="$KERNEL_VERSION-$PKG_REVISION~couchliteos" KDEB_COMPRESS=xz bindeb-pkg
 
 # 5. Packages and sums.
