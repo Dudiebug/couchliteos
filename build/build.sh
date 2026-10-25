@@ -36,11 +36,14 @@ command -v lb >/dev/null || { echo 'live-build is required (apt install live-bui
   echo "build/work was not prepared for profile $PROFILE; run: make configure PROFILE=$PROFILE" >&2
   exit 1
 }
+# The image architecture: amd64 unless the profile names another (snapdragon: arm64).
+ARCH=amd64
+KERNEL_ARGS=
 # shellcheck source=config/profiles/general/profile.conf
 source "$ROOT/config/profiles/$PROFILE/profile.conf"
 # shellcheck source=build/lb-cache.sh
 source "$ROOT/build/lb-cache.sh"
-ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"
+ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}$ARCH.iso"
 read -r -a profile_options <<< "${LB_EXTRA_CONFIG:-}"
 
 mkdir -p "$OUT"
@@ -105,12 +108,13 @@ fi
 # xz's 124 s on the 0.2.3 general chroot (16 CPUs), for a 13% larger image (1.57 GB
 # instead of 1.40 GB); level 15 took 50 s for 7%. The Debian 13 kernel the image boots
 # (CONFIG_SQUASHFS_ZSTD=y) and live-boot read zstd.
-# Releases also use 1 MiB blocks and xz's x86 BCJ filter (smaller code); live-build adds
-# MKSQUASHFS_OPTIONS from the environment to its mksquashfs command (binary_rootfs).
+# Releases also use 1 MiB blocks and xz's x86 BCJ filter (smaller code; amd64 only); live-build
+# adds MKSQUASHFS_OPTIONS from the environment to its mksquashfs command (binary_rootfs).
 if ((release)); then
   squashfs_options=(--chroot-squashfs-compression-type xz)
   export MKSQUASHFS_OPTIONS='-b 1M -Xbcj x86'
-  echo 'Build type: release (xz squashfs, 1 MiB blocks, x86 BCJ)'
+  [[ $ARCH == amd64 ]] || MKSQUASHFS_OPTIONS='-b 1M'
+  echo "Build type: release (xz squashfs, mksquashfs $MKSQUASHFS_OPTIONS)"
 else
   squashfs_options=(--chroot-squashfs-compression-type zstd --chroot-squashfs-compression-level 9)
   echo 'Build type: test (zstd squashfs; sudo make build RELEASE=1 for a release)'
@@ -122,14 +126,14 @@ fi
 lb config noauto \
   --mode debian \
   --distribution trixie \
-  --architectures amd64 \
+  --architectures "$ARCH" \
   --binary-images iso-hybrid \
   --archive-areas 'main contrib non-free non-free-firmware' \
   --debian-installer live \
   --debian-installer-gui false \
   --uefi-secure-boot enable \
   --debootstrap-options '--include=ca-certificates' \
-  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8' \
+  --bootappend-live 'boot=live components persistence ipv6.disable=1 hostname=couchliteos username=couchliteos locales=en_US.UTF-8 keyboard-layouts=us console=tty1 console=ttyS0,115200n8'"${KERNEL_ARGS:+ $KERNEL_ARGS}" \
   --bootappend-install 'ipv6.disable=1' \
   --iso-application 'CouchLiteOS streaming appliance' \
   --iso-publisher 'CouchLiteOS Project' \

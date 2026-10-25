@@ -7,7 +7,8 @@ PROFILE ?= general
 export PROFILE
 VERSION := $(shell cat VERSION)
 ISO_SUFFIX := $(shell . config/profiles/$(PROFILE)/profile.conf 2>/dev/null && printf '%s' "$$ISO_SUFFIX")
-ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso
+ARCH := $(shell . config/profiles/$(PROFILE)/profile.conf 2>/dev/null && printf '%s' "$${ARCH:-amd64}")
+ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)$(ARCH).iso
 # RELEASE=1 builds a release ISO (xz squashfs).
 # Without it `make build` makes a test ISO (zstd squashfs; docs/BUILDING.md).
 # FRESH=1 installs every package even when COUCHLITEOS_LB_CACHE holds a matching

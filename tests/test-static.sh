@@ -128,8 +128,11 @@ cmp -s VERSION overlay/etc/couchliteos-version
 rg -Fq 'path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso' .github/workflows/build.yml
 rg -Fq 'echo "VERSION=$(< VERSION)" >> "$GITHUB_ENV"' .github/workflows/build.yml
 refute rg -q 'couchliteos-[0-9]+\.[0-9]+\.[0-9]+-' .github/workflows/build.yml
-rg -Fq 'ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)amd64.iso' Makefile
-rg -Fq 'ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}amd64.iso"' build/build.sh
+rg -Fq 'ISO ?= build/out/couchliteos-$(VERSION)-$(if $(ISO_SUFFIX),$(ISO_SUFFIX)-)$(ARCH).iso' Makefile
+rg -Fq "printf '%s' \"\$\${ARCH:-amd64}\"" Makefile
+rg -Fq 'ISO="$OUT/couchliteos-$VERSION-${ISO_SUFFIX:+$ISO_SUFFIX-}$ARCH.iso"' build/build.sh
+rg -q '^ARCH=amd64$' build/build.sh
+rg -Fq -- '--architectures "$ARCH" \' build/build.sh
 rg -q '^PROFILE \?= general$' Makefile
 refute rg -qi 'sha-?256|sha256|\.sha256' .github/workflows/build.yml
 rg -q 'sudo chown -R .*build/out' .github/workflows/build.yml
@@ -1012,9 +1015,11 @@ rg -Fq -- '--release) release=1 ;;' build/build.sh
 rg -Fq "squashfs_options=(--chroot-squashfs-compression-type xz)" build/build.sh
 rg -q 'squashfs_options=\(--chroot-squashfs-compression-type zstd --chroot-squashfs-compression-level [0-9]+\)' build/build.sh
 rg -Fq '"${squashfs_options[@]}"' build/build.sh
-# Release squashfs: 1 MiB blocks and the x86 BCJ filter, release builds only.
-[[ $(sed -n '/^if ((release)); then$/,/^else$/p' build/build.sh | rg -c "^  export MKSQUASHFS_OPTIONS='-b 1M -Xbcj x86'$") == 1 ]]
-[[ $(rg -c 'MKSQUASHFS_OPTIONS=' build/build.sh) == 1 ]]
+# Release squashfs: 1 MiB blocks and the x86 BCJ filter (amd64 only), release builds only.
+release_squashfs=$(sed -n '/^if ((release)); then$/,/^else$/p' build/build.sh)
+[[ $(rg -c "^  export MKSQUASHFS_OPTIONS='-b 1M -Xbcj x86'$" <<< "$release_squashfs") == 1 ]]
+[[ $(rg -cFx "  [[ \$ARCH == amd64 ]] || MKSQUASHFS_OPTIONS='-b 1M'" <<< "$release_squashfs") == 1 ]]
+[[ $(rg -c 'MKSQUASHFS_OPTIONS=' build/build.sh) == 2 ]]
 rg -q '^  --apt-indices false \\$' build/build.sh
 # No documentation, manual pages or non-English translations; copyright files stay.
 slim_cfg=config/live-build/includes.chroot_before_packages/etc/dpkg/dpkg.cfg.d/couchliteos-slim
