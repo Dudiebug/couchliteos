@@ -18,7 +18,8 @@
 0019-romulus15-enable-iris.patch
 0020-surface-aggregator-sl7-pos-events.patch
 0021-spi-hid-balance-irq-after-error-storm.patch
-0022-romulus15-webcam.patch
+# 0022-romulus15-webcam.patch: needs the X1E80100 CAMSS/CCI/CSIPHY nodes, which upstream
+# gets in 7.4 (Ubuntu 7.3 carries them). Re-enable at the 7.4 bump.
 0026-qce-register-algos-only-on-request.patch
 0027-qce-revert-mark-broken.patch
 0100-romulus13-touchscreen-hid-over-i2c.patch

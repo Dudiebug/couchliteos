@@ -114,6 +114,13 @@ command -v ccache > /dev/null && cc='ccache gcc'
 export KBUILD_BUILD_USER=couchliteos KBUILD_BUILD_HOST=build
 export KBUILD_BUILD_TIMESTAMP=${SOURCE_DATE_EPOCH:+@$SOURCE_DATE_EPOCH}
 [[ -n $KBUILD_BUILD_TIMESTAMP ]] || unset KBUILD_BUILD_TIMESTAMP
+# The device trees first, on their own: a DTS error then stops the build in seconds
+# instead of surfacing after an hour of compiling, buried under parallel make output.
+echo "Compiling the Qualcomm device trees"
+make ARCH=arm64 CC="$cc" -j"$JOBS" dtbs > /dev/null
+for dtb in x1e80100-microsoft-romulus13 x1e80100-microsoft-romulus13-spi-touch x1e80100-microsoft-romulus15; do
+  [[ -s arch/arm64/boot/dts/qcom/$dtb.dtb ]] || { echo "$dtb.dtb was not built" >&2; exit 1; }
+done
 echo "Building with -j$JOBS"
 make ARCH=arm64 CC="$cc" -j"$JOBS" LOCALVERSION=-sl7 KDEB_CHANGELOG_DIST="$DEBIAN_BASE" \
   KDEB_PKGVERSION="$KERNEL_VERSION-$PKG_REVISION~couchliteos" KDEB_COMPRESS=xz bindeb-pkg

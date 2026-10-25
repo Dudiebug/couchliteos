@@ -24,7 +24,8 @@ community patch set, as Debian packages, on GitHub's arm64 runner
 | 0003, 0005, 0017 | ItsLucas | The 15-inch GTCH touchscreen on spi10, its power and reset sequencing, pin bias |
 | 0004, 0007-0015, 0021 | ItsLucas | spi-hid robustness: power lifecycle, fragment reassembly, device resets, IRQ handling |
 | 0016 | ItsLucas | GENI SPI diagnostics |
-| 0018, 0019, 0022 | ItsLucas | 15-inch: audio over DisplayPort, the Iris video decoder, the front camera |
+| 0018, 0019 | ItsLucas | 15-inch: audio over DisplayPort, the Iris video decoder |
+| 0022 (held) | ItsLucas | 15-inch front camera; needs the CAMSS device tree nodes that upstream gets in 7.4, so it is commented out in `series` until then |
 | 0020 | ItsLucas | Surface EC posture events, so the touchpad comes back after a lid close |
 | 0026, 0027 | Qualcomm (via ItsLucas) | Make the QCE crypto engine safe to enable |
 | 0100 | fQwQf (linux-input, 2026-09-07), via 1Martin11 | 13.8-inch touchscreen (ITCH MSHW0468) as HID-over-I2C on i2c8 |
