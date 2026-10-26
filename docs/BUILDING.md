@@ -40,6 +40,23 @@ The single-machine profiles `intel` and `imac2013` still build
 (`couchliteos-<version>-intel-amd64.iso`, `-imac2013-amd64.iso`) but are not release
 assets.
 
+### Snapdragon (arm64)
+
+The `snapdragon` profile builds `couchliteos-<version>-snapdragon-arm64.iso` for the
+Microsoft Surface Laptop 7 (Snapdragon X, 13.8 and 15 inch). Build it on Debian 13 arm64
+(GitHub's `ubuntu-24.04-arm` runner in a `debian:trixie` container does, see
+`.github/workflows/build-snapdragon.yml`):
+
+```bash
+sudo apt install --yes make git live-build curl ca-certificates xorriso squashfs-tools zstd apt-utils grub-efi-arm64-bin mtools dosfstools
+sudo make build PROFILE=snapdragon
+```
+
+The kernel is `linux-image-7.3.0-sl7` from `kernel/sl7` (a `kernel-sl7-*` release, pinned by
+SHA-256 in `config/profiles/snapdragon/packages.lock`). It is a live ISO with persistence
+only, without the Debian Installer, and it is not a release asset yet. See
+[Surface Laptop 7](SURFACE-LAPTOP-7.md) for booting it.
+
 ## Test builds and release builds
 
 ```bash
