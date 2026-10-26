@@ -44,6 +44,12 @@ if [[ -n $PROFILE_BASE ]]; then
   profile_dirs+=("$base_dir")
 fi
 profile_dirs+=("$PROFILE_DIR")
+# The image architecture (amd64 unless the profile says otherwise) picks the application
+# images: build/applications.lock on amd64, build/applications.<arch>.lock elsewhere.
+ARCH=$(profile_conf_value "$PROFILE_DIR/profile.conf" ARCH)
+ARCH=${ARCH:-amd64}
+APPS_LOCK="$ROOT/build/applications.lock"
+[[ $ARCH == amd64 ]] || APPS_LOCK="$ROOT/build/applications.$ARCH.lock"
 for profile_dir in "${profile_dirs[@]}"; do
   if [[ -d "$profile_dir/package-lists" ]]; then
     cp -a "$profile_dir/package-lists/." "$WORK/config/package-lists/"
@@ -74,6 +80,25 @@ install -D -m 0644 "$ROOT/build/downloads/tailscale-archive-keyring.gpg" \
   "$CHROOT/usr/share/keyrings/tailscale-archive-keyring.gpg"
 install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
   "$WORK/config/archives/google-chrome.key.chroot"
+# Google Chrome is amd64 only (its archive is [arch=amd64]).
+if [[ $ARCH != amd64 ]]; then
+  rm -f "$WORK/config/archives/google-chrome.list.chroot" "$WORK/config/archives/google-chrome.key.chroot"
+fi
+# Packages from outside Debian (the snapdragon kernel): scripts/fetch-apps.sh downloaded them,
+# each is checked against its SHA-256 again and installed by live-build from packages.chroot.
+if [[ -f "$PROFILE_DIR/packages.lock" ]]; then
+  install -d -m 0755 "$WORK/config/packages.chroot"
+  while IFS='|' read -r name version _url filename sha256; do
+    [[ -z "$name" || "$name" == \#* ]] && continue
+    deb="$ROOT/build/downloads/$filename"
+    [[ -s $deb ]] || { echo "$name $version is not downloaded (make fetch-apps)" >&2; exit 1; }
+    [[ $(sha256sum "$deb" | cut -d' ' -f1) == "$sha256" ]] || {
+      echo "$deb does not match its SHA-256 in packages.lock" >&2
+      exit 1
+    }
+    install -m 0644 "$deb" "$WORK/config/packages.chroot/$filename"
+  done < "$PROFILE_DIR/packages.lock"
+fi
 install -D -m 0644 "$ROOT/build/downloads/google-linux-signing-key.asc" \
   "$CHROOT/usr/share/keyrings/google-chrome.asc"
 
@@ -196,7 +221,7 @@ install -D -m 0755 "$ROOT/usbip/couchliteos-usbip" "$CHROOT/usr/sbin/couchliteos
 install -D -m 0644 "$ROOT/config/default/couchliteos" "$CHROOT/etc/default/couchliteos"
 install -D -m 0644 "$ROOT/config/nftables/couchliteos.nft" "$CHROOT/etc/couchliteos/nftables.template"
 install -D -m 0644 "$ROOT/usbip/usbip-allowlist.conf" "$CHROOT/etc/couchliteos/usbip-allowlist.conf"
-install -D -m 0644 "$ROOT/build/applications.lock" \
+install -D -m 0644 "$APPS_LOCK" \
   "$CHROOT/usr/share/couchliteos/applications.lock"
 install -D -m 0644 "$ROOT/build/sources.lock" \
   "$CHROOT/usr/share/couchliteos/sources.lock"
@@ -274,6 +299,6 @@ while IFS='|' read -r name _version _url filename; do
   esac
   find "$extract" -depth -delete
   trap - EXIT
-done < "$ROOT/build/applications.lock"
+done < "$APPS_LOCK"
 
-printf 'Prepared %s for build profile %s%s\n' "$WORK" "$PROFILE" "${PROFILE_BASE:+ (base: $PROFILE_BASE)}"
+printf 'Prepared %s for build profile %s (%s)%s\n' "$WORK" "$PROFILE" "$ARCH" "${PROFILE_BASE:+ (base: $PROFILE_BASE)}"

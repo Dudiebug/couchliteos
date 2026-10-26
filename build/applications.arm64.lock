@@ -1,0 +1,3 @@
+# name|version|url|installed filename
+# arm64 (snapdragon profile). Moonlight publishes no Linux arm64 AppImage yet.
+chiaki-ng|1.10.0|https://github.com/streetpea/chiaki-ng/releases/download/v1.10.0/chiaki-ng.AppImage_arm64|chiaki-ng-arm64.AppImage

@@ -561,13 +561,24 @@ assert c.getboolean('tailscale', 'ssh_enabled') is False
 assert c.getboolean('tailscale', 'remote_usbip') is False
 assert c.get('tailscale', 'allowed_usbip_peer') == ''
 assert c.get('host:gaming-pc', 'address_mode') == 'auto'
-for lock in ('build/applications.lock', 'build/sources.lock'):
+for lock in ('build/applications.lock', 'build/applications.arm64.lock', 'build/sources.lock'):
     for line in pathlib.Path(lock).read_text().splitlines():
         if not line or line.startswith('#'):
             continue
         fields = line.split('|')
         assert len(fields) == 4, (lock, line)
         assert fields[2].startswith('https://'), (lock, line)
+# Packages from outside Debian (config/profiles/<profile>/packages.lock): a .deb from this
+# project's GitHub releases, pinned by SHA-256.
+for lock in pathlib.Path('config/profiles').glob('*/packages.lock'):
+    for line in lock.read_text().splitlines():
+        if not line or line.startswith('#'):
+            continue
+        fields = line.split('|')
+        assert len(fields) == 5, (lock, line)
+        assert fields[2].startswith('https://github.com/Dudiebug/couchliteos/releases/download/'), (lock, line)
+        assert fields[3].endswith('.deb') and '/' not in fields[3], (lock, line)
+        assert re.fullmatch(r'[0-9a-f]{64}', fields[4]), (lock, line)
 
 for workflow in pathlib.Path('.github/workflows').glob('*.yml'):
     lines = workflow.read_text().splitlines()
