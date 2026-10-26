@@ -93,6 +93,17 @@ class BootOrderTest(unittest.TestCase):
         self.assertIn("couchliteos-hwdetect-early.service", units)
         self.assertEqual(violations(units), [])
 
+    def test_profile_units_never_hold_udev_back(self):
+        # A profile's overlay units run beside the shipped ones (snapdragon's Wi-Fi board data
+        # is made before udev loads ath12k).
+        profiles = SERVICES.parent / "config" / "profiles"
+        found = False
+        for directory in sorted(profiles.glob("*/overlay/etc/systemd/system")):
+            found = True
+            units = {**load(), **load(directory)}
+            self.assertEqual(violations(units), [], directory)
+        self.assertTrue(found)
+
     def test_catches_the_v021_migrate_deadlock(self):
         units = {
             "early.service": parse("[Unit]\nDefaultDependencies=no\nBefore=systemd-udevd.service\n"),
