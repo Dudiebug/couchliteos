@@ -1,0 +1,5 @@
+# Packages this profile installs from outside Debian, into config/packages.chroot
+# (scripts/fetch-apps.sh downloads, build/configure.sh checks the SHA-256 again).
+# GitHub renames ~ to . in release asset names; the file keeps the package's own name.
+# name|version|url|file name|sha256
+linux-image-7.3.0-sl7|7.3-1~couchliteos|https://github.com/Dudiebug/couchliteos/releases/download/kernel-sl7-7.3-1/linux-image-7.3.0-sl7_7.3-1.couchliteos_arm64.deb|linux-image-7.3.0-sl7_7.3-1~couchliteos_arm64.deb|4d9cc0b20a0c629f27b268493337545f13b64bf11b8ef03bfcd4fe61d7dce706

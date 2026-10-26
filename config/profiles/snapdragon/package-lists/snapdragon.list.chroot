@@ -1,0 +1,20 @@
+# Snapdragon X (Surface Laptop 7). Curated firmware (live-build's firmware auto-install
+# is off for this profile); trixie-backports has the X1E80100 files (trixie's are older).
+# Adreno X1-85 (gen70500 SQE/GMU, the generic zap shader), QUP serial engines, the
+# Romulus audio topology:
+firmware-qcom-soc/trixie-backports
+# WCN7850 Wi-Fi (ath12k) and Bluetooth (qca):
+firmware-atheros/trixie-backports
+firmware-linux-free
+# Qualcomm IPC router tools for the remote processors (ADSP: audio, battery, USB-C)
+qrtr-tools
+# Copying the laptop's own firmware from the Windows drivers (msiextract, cabextract)
+msitools
+cabextract
+# Hardware testing on the laptop: input devices, device tree, Wi-Fi, sensors
+libinput-tools
+evtest
+device-tree-compiler
+iw
+lm-sensors
+dmidecode

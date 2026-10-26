@@ -1,0 +1,34 @@
+# CouchLiteOS snapdragon: what the initrd needs to find the live USB stick on a
+# Surface Laptop 7 (USB-C through the Qualcomm DWC3 controller, its eUSB2 and QMP
+# PHYs, the retimers and the Type-C mux), and the keyboard (Surface Aggregator over
+# the GENI UART) for a rescue shell. The image kernel builds all of them as modules.
+tcsrcc-x1e80100
+qcom-rpmh-regulator
+qcom-refgen-regulator
+i2c-qcom-geni
+gpi
+phy-snps-eusb2
+phy-qcom-eusb2-repeater
+phy-qcom-qmp-combo
+phy-qcom-qmp-usb
+phy-qcom-qmp-usbc
+ps883x
+nb7vpq904m
+fsa4480
+gpio-sbu-mux
+typec
+pmic_glink
+pmic_glink_altmode
+ucsi_glink
+onboard_usb_dev
+dwc3
+dwc3-qcom
+xhci-plat-hcd
+usb-storage
+uas
+surface_aggregator
+surface_aggregator_registry
+surface_aggregator_hub
+surface_hid_core
+surface_hid
+surface_kbd
