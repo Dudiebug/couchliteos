@@ -1,0 +1,63 @@
+name: build-snapdragon
+
+# The arm64 live ISO for the Surface Laptop 7 (PROFILE=snapdragon): the source tests, then
+# live-build on GitHub's native arm64 runner in a Debian trixie container (privileged:
+# live-build mounts /proc, /sys and /dev/pts in its chroot). No QEMU boot test: the image
+# only boots with the laptop's device tree, which a virtual machine does not have.
+
+on:
+  push:
+    branches: [arm64-sl7]
+    paths-ignore:
+      - 'kernel/**'
+      - '.github/workflows/kernel-arm64.yml'
+      - 'docs/**'
+      - '*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  iso:
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:trixie
+      options: --privileged
+    timeout-minutes: 150
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends git ca-certificates curl make \
+            live-build debootstrap debian-archive-keyring cpio e2fsprogs xorriso squashfs-tools \
+            grub-efi-arm64-bin grub-common mtools dosfstools ripgrep zstd python3 apt-utils \
+            dpkg-dev file python3-gi gir1.2-gtk-4.0 librsvg2-common
+          lb --version
+      - uses: actions/checkout@v5
+      - name: Read version
+        run: |
+          # The checkout is owned by another user inside the container.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "VERSION=$(< VERSION)" >> "$GITHUB_ENV"
+      - name: Source tests
+        run: make test
+      - name: Build ISO
+        run: make build PROFILE=snapdragon
+      - name: Upload ISO
+        uses: actions/upload-artifact@v7
+        with:
+          name: couchliteos-${{ env.VERSION }}-snapdragon-arm64
+          path: build/out/couchliteos-${{ env.VERSION }}-snapdragon-arm64.iso
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: couchliteos-snapdragon-build-logs-${{ github.run_id }}
+          path: |
+            build/work/lb-binary.log
+            build/out/build-times.txt
+          if-no-files-found: warn
+          retention-days: 7
