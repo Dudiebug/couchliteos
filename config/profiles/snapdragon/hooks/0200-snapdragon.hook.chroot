@@ -16,6 +16,8 @@ for manifest in /usr/share/couchliteos/apps.d/*-google-chrome.ini /usr/share/cou
   echo "snapdragon: removed ${manifest#/usr/share/couchliteos/apps.d/}"
 done
 systemctl disable couchliteos-app-update.timer couchliteos-app-update.path
+# The WCN7850 board data for this laptop, made from the installed firmware at boot.
+systemctl enable couchliteos-sl7-wifi-board.service
 # The device trees GRUB loads (0300-devicetree.hook.binary copies them to the ISO).
 for dtb in x1e80100-microsoft-romulus13-spi-touch x1e80100-microsoft-romulus13 x1e80100-microsoft-romulus15; do
   compgen -G "/usr/lib/linux-image-*/qcom/$dtb.dtb" >/dev/null || { echo "snapdragon: no $dtb.dtb" >&2; exit 1; }

@@ -34,9 +34,14 @@ Manager: `MSHW0460` (SPI) or `MSHW0468` (I2C) under Human Interface Devices.
 ## Firmware
 
 Debian ships the firmware for the GPU (Adreno X1-85), the Wi-Fi (WCN7850) and the audio
-topology. The laptop's own signed firmware (audio and compute DSPs, the GPU's zap shader,
-video decoding, battery) is Microsoft's and cannot be shipped in the image; a later version
-will copy it from the Windows drivers on the laptop. Until then audio, battery reporting
+topology. Debian's Wi-Fi board file has no entry under the name this laptop's card asks
+for, so at every boot the image adds that name to a copy of the installed file (pointing at
+the board data of a compatible card, as bryce-hoehn's `fix-board-2-wifi.sh` does on Ubuntu)
+in `/usr/lib/firmware/updates/`; persistence keeps the copy.
+
+The laptop's own signed firmware (audio and compute DSPs, the GPU's zap shader, video
+decoding, battery) is Microsoft's and cannot be shipped in the image; a later version will
+copy it from the Windows drivers on the laptop. Until then audio, battery reporting
 and hardware video decoding may not work.
 
 ## What to expect

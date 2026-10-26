@@ -87,6 +87,7 @@ test:
 	python3 -m unittest -v tests/test_persist_setup.py
 	python3 -m unittest -v tests/test_qemu_smoke_updater.py
 	python3 -m unittest -v tests/test_live_update_grub.py
+	python3 -m unittest -v tests/test_sl7_wifi_board.py
 	$(MAKE) -C launcher test
 	./build/test-gate.sh mark
 

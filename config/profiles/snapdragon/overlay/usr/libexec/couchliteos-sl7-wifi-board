@@ -1,0 +1,147 @@
+#!/usr/bin/python3 -I
+"""Wi-Fi board data for the Surface Laptop 7's WCN7850, made on the laptop at boot.
+
+usage: couchliteos-sl7-wifi-board [ROOT]
+
+ath12k looks the card's board data up in board-2.bin by a name made of its PCI IDs and the
+board id the chip reports. The Surface Laptop 7 reports 17cb:1107 with subsystem 17cb:1107
+and board id 255, a name Debian's firmware-atheros does not have, and without board data the
+card does not start. This adds that name to the board-data entry of the 17cb:3378 card with
+board id 255 (the same data bryce-hoehn's fix-board-2-wifi.sh uses on Ubuntu) in a copy of
+the installed board-2.bin, written to /usr/lib/firmware/updates/, which the kernel reads
+before /usr/lib/firmware. Nothing modified is shipped in the image: the copy is made from the
+laptop's own installed firmware, and live persistence keeps it.
+
+Runs before udev loads the drivers (couchliteos-sl7-wifi-board.service). Only on a Surface
+Laptop 7 (its device tree's compatible string). The copy is made again when Debian's
+board-2.bin changes (its SHA-256 is kept beside the copy), and removed once Debian's own file
+has the name. ROOT (default /) is for tests.
+"""
+import hashlib
+import os
+import pathlib
+import struct
+import sys
+
+COMPATIBLE = "proc/device-tree/compatible"
+MODELS = (b"microsoft,romulus13", b"microsoft,romulus15")
+SOURCE = "usr/lib/firmware/ath12k/WCN7850/hw2.0/board-2.bin"
+TARGET = "usr/lib/firmware/updates/ath12k/WCN7850/hw2.0/board-2.bin"
+STAMP_SUFFIX = ".couchliteos-source-sha256"
+MAGIC = b"QCA-ATH12K-BOARD\0"
+IE_BOARD = 0
+IE_BOARD_NAME = 0
+IE_BOARD_DATA = 1
+NAME = ("bus=pci,vendor=17cb,device=1107,subsystem-vendor=17cb,subsystem-device=1107,"
+        "qmi-chip-id=2,qmi-board-id=255").encode()
+DONOR = ("bus=pci,vendor=17cb,device=1107,subsystem-vendor=17cb,subsystem-device=3378,"
+         "qmi-chip-id=2,qmi-board-id=255").encode()
+
+
+class BoardFileError(Exception):
+    pass
+
+
+def _align(length):
+    return (length + 3) & ~3
+
+
+def elements(data):
+    """[(id, payload)] of a sequence of (le32 id, le32 length, payload padded to 4) elements."""
+    found, pos = [], 0
+    while pos < len(data):
+        if pos + 8 > len(data):
+            raise BoardFileError(f"truncated element header at byte {pos}")
+        ie_id, length = struct.unpack_from("<II", data, pos)
+        pos += 8
+        if pos + length > len(data):
+            raise BoardFileError(f"element at byte {pos - 8} runs past the end")
+        found.append((ie_id, data[pos:pos + length]))
+        pos += _align(length)
+    return found
+
+
+def pack(items):
+    out = bytearray()
+    for ie_id, payload in items:
+        out += struct.pack("<II", ie_id, len(payload)) + payload + b"\0" * (_align(len(payload)) - len(payload))
+    return bytes(out)
+
+
+def names(board_payload):
+    return [payload for ie_id, payload in elements(board_payload) if ie_id == IE_BOARD_NAME]
+
+
+def add_name(blob, name=NAME, donor=DONOR):
+    """board-2.bin with `name` added before the board data of `donor`'s entry; None when the
+    file already has `name`."""
+    header = _align(len(MAGIC))
+    if not blob.startswith(MAGIC) or len(blob) < header:
+        raise BoardFileError("not an ath12k board-2.bin")
+    top = elements(blob[header:])
+    if any(ie_id == IE_BOARD and name in names(payload) for ie_id, payload in top):
+        return None
+    out, added = [], False
+    for ie_id, payload in top:
+        if ie_id == IE_BOARD and not added and donor in names(payload):
+            sub = elements(payload)
+            data_at = next((i for i, (sub_id, _) in enumerate(sub) if sub_id == IE_BOARD_DATA), None)
+            if data_at is None:
+                raise BoardFileError("the donor entry has no board data")
+            sub.insert(data_at, (IE_BOARD_NAME, name))
+            payload, added = pack(sub), True
+        out.append((ie_id, payload))
+    if not added:
+        raise BoardFileError(f"no board data for {donor.decode()}")
+    return blob[:header] + pack(out)
+
+
+def write_atomically(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    with open(temporary, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def main(argv):
+    root = pathlib.Path(argv[1] if len(argv) > 1 else "/")
+    try:
+        compatible = (root / COMPATIBLE).read_bytes()
+    except OSError:
+        compatible = b""
+    if not any(model in compatible.split(b"\0") for model in MODELS):
+        print("sl7-wifi-board: not a Surface Laptop 7, nothing to do")
+        return 0
+    source, target = root / SOURCE, root / TARGET
+    stamp = target.with_name(target.name + STAMP_SUFFIX)
+    try:
+        blob = source.read_bytes()
+    except OSError as error:
+        print(f"sl7-wifi-board: no WCN7850 board file ({error})", file=sys.stderr)
+        return 0
+    digest = hashlib.sha256(blob).hexdigest()
+    if target.is_file() and stamp.is_file() and stamp.read_text().strip() == digest:
+        print("sl7-wifi-board: board data already made from this board-2.bin")
+        return 0
+    try:
+        patched = add_name(blob)
+    except BoardFileError as error:
+        print(f"sl7-wifi-board: {error}; Wi-Fi keeps Debian's board-2.bin", file=sys.stderr)
+        return 1
+    if patched is None:
+        for path in (target, stamp):
+            path.unlink(missing_ok=True)
+        print("sl7-wifi-board: Debian's board-2.bin already names this card")
+        return 0
+    write_atomically(target, patched)
+    write_atomically(stamp, (digest + "\n").encode())
+    print(f"sl7-wifi-board: wrote /{TARGET} from /{SOURCE} ({digest[:12]})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

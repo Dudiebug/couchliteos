@@ -1,0 +1,16 @@
+[Unit]
+Description=CouchLiteOS: Wi-Fi board data for the Surface Laptop 7
+Documentation=file:/usr/libexec/couchliteos-sl7-wifi-board
+# Before udev loads ath12k, which reads board-2.bin once when the card probes. The root
+# filesystem (live-boot's overlay, with persistence) is mounted by the initrd.
+DefaultDependencies=no
+Before=systemd-udev-trigger.service sysinit.target
+ConditionPathExists=/proc/device-tree/compatible
+RequiresMountsFor=/usr/lib/firmware
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/couchliteos-sl7-wifi-board
+
+[Install]
+WantedBy=sysinit.target
