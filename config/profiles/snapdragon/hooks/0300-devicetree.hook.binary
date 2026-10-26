@@ -1,0 +1,112 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# Snapdragon X laptops boot Linux from a device tree, which GRUB hands to the kernel
+# (`devicetree`; Secure Boot is off, GRUB's lockdown would refuse it). After
+# 0100-autoboot.hook.binary:
+#   - the one kernel and initrd get the names the amd64 ISO uses (/live/vmlinuz,
+#     /live/initrd.img), which build.sh's checks and the live-update slots expect;
+#   - the Surface Laptop 7 device trees go to /live/dtb/;
+#   - grub.cfg picks one by the SMBIOS SKU before its first entry (GRUB has no keyboard
+#     on this laptop, so the default has to be right): ..._2037 is the 15-inch model,
+#     every other machine gets the 13.8-inch tree with the SPI (GTCH) touchscreen;
+#   - every `linux` line gets a `devicetree` line, and the end of the menu gets one entry
+#     per device tree for a machine the SKU does not identify.
+# Binary hooks run in the ISO tree's parent or in the ISO tree; tests run it one level up.
+chroot_dir=chroot
+[[ -d live || ! -d binary/live ]] || cd binary
+[[ -d live && -d boot/grub ]] || { echo 'devicetree: no live/ and boot/grub/ here' >&2; exit 1; }
+[[ -d $chroot_dir ]] || chroot_dir=../chroot
+fail() { echo "devicetree: $*" >&2; exit 1; }
+
+DEFAULT_DTB=x1e80100-microsoft-romulus13-spi-touch.dtb
+LARGE_DTB=x1e80100-microsoft-romulus15.dtb
+I2C_DTB=x1e80100-microsoft-romulus13.dtb
+
+if [[ ! -e live/vmlinuz ]]; then
+  kernels=(live/vmlinuz-*)
+  initrds=(live/initrd.img-*)
+  ((${#kernels[@]} == 1)) && [[ -f ${kernels[0]} ]] || fail "expected one live/vmlinuz-*: ${kernels[*]}"
+  ((${#initrds[@]} == 1)) && [[ -f ${initrds[0]} ]] || fail "expected one live/initrd.img-*: ${initrds[*]}"
+  version=${kernels[0]#live/vmlinuz-}
+  [[ ${initrds[0]} == "live/initrd.img-$version" ]] || fail "${initrds[0]} is not the initrd of $version"
+  mv -f -- "${kernels[0]}" live/vmlinuz
+  mv -f -- "${initrds[0]}" live/initrd.img
+  printf '%s\n' "$version" > live/kernel-version
+fi
+version=$(< live/kernel-version)
+dtb_dir="$chroot_dir/usr/lib/linux-image-$version/qcom"
+install -d -m 0755 live/dtb
+for dtb in "$DEFAULT_DTB" "$LARGE_DTB" "$I2C_DTB"; do
+  [[ -f $dtb_dir/$dtb ]] || fail "missing $dtb_dir/$dtb"
+  install -m 0644 "$dtb_dir/$dtb" "live/dtb/$dtb"
+done
+
+# Rewrites a file through a temporary copy, keeping its mode (grub.cfg is read-only).
+rewrite() {
+  local cfg=$1 output
+  shift
+  output=$(mktemp "${cfg}.XXXXXX")
+  "$@" < "$cfg" > "$output"
+  chmod --reference="$cfg" "$output"
+  mv -f -- "$output" "$cfg"
+}
+
+while IFS= read -r -d '' cfg; do
+  rewrite "$cfg" sed -e "s|/live/vmlinuz-$version\b|/live/vmlinuz|g" -e "s|/live/initrd\.img-$version\b|/live/initrd.img|g"
+done < <(find boot/grub -type f -name '*.cfg' -print0)
+
+cfg=boot/grub/grub.cfg
+[[ -f $cfg ]] || fail "no $cfg"
+grep -Fq '# couchliteos devicetree' "$cfg" && exit 0
+start_line=$(grep -m 1 -E '^menuentry "Start CouchLiteOS"' -A 3 "$cfg" | grep -m 1 -E '^[[:space:]]*linux[[:space:]]') ||
+  fail "no Start CouchLiteOS entry in $cfg"
+args=$(sed -E 's/^[[:space:]]*linux[[:space:]]+[^[:space:]]+[[:space:]]*//' <<< "$start_line")
+header=$(cat <<EOF
+# couchliteos devicetree
+insmod fdt
+insmod smbios
+insmod regexp
+set couchliteos_dtb=/live/dtb/$DEFAULT_DTB
+set couchliteos_sku=
+smbios --type 1 --get-string 25 --set couchliteos_sku
+if regexp '_2037\$' "\${couchliteos_sku}"; then
+  set couchliteos_dtb=/live/dtb/$LARGE_DTB
+fi
+export couchliteos_dtb
+# end couchliteos devicetree
+EOF
+)
+entries=$(cat <<EOF
+
+# couchliteos devicetree entries
+menuentry "Start CouchLiteOS (Surface Laptop 7, 13.8-inch, SPI touchscreen)" {
+	linux	/live/vmlinuz $args
+	devicetree	/live/dtb/$DEFAULT_DTB
+	initrd	/live/initrd.img
+}
+menuentry "Start CouchLiteOS (Surface Laptop 7, 13.8-inch, I2C touchscreen)" {
+	linux	/live/vmlinuz $args
+	devicetree	/live/dtb/$I2C_DTB
+	initrd	/live/initrd.img
+}
+menuentry "Start CouchLiteOS (Surface Laptop 7, 15-inch)" {
+	linux	/live/vmlinuz $args
+	devicetree	/live/dtb/$LARGE_DTB
+	initrd	/live/initrd.img
+}
+EOF
+)
+add_devicetree() {
+  HEADER=$header ENTRIES=$entries awk '
+    !done && /^(menuentry|submenu|# couchliteos live-update)/ { print ENVIRON["HEADER"]; done=1 }
+    { print }
+    /^[[:space:]]*linux[[:space:]]/ {
+      indent=$0; sub(/[^[:space:]].*$/, "", indent)
+      print indent "devicetree ${couchliteos_dtb}"
+    }
+    END { if (!done) exit 1; print ENVIRON["ENTRIES"] }
+  '
+}
+rewrite "$cfg" add_devicetree
+echo "devicetree: kernel $version, default $DEFAULT_DTB, ${LARGE_DTB} for SKU *_2037"

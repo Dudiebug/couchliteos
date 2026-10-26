@@ -101,6 +101,53 @@ rg -q '^ append boot=live components persistence ipv6.disable=1 couchliteos\.gpu
 refute rg -q 'nomodeset' "$grub_cfg" "$live_cfg"
 find "$boot_test" -depth -delete
 
+# Snapdragon ISO (arm64, GRUB only): live-build names the entry and the kernel after the
+# flavour (7.3.0-sl7); 0300-devicetree gives them the amd64 names, copies the device trees
+# and loads one by SMBIOS SKU in every entry.
+boot_test=$(mktemp -d)
+mkdir -p "$boot_test/binary/boot/grub" "$boot_test/binary/live" "$boot_test/chroot/usr/lib/linux-image-7.3.0-sl7/qcom"
+printf 'menuentry "Live system (7.3.0-sl7)" --hotkey=l {\n\tlinux\t/live/vmlinuz-7.3.0-sl7 boot=live components persistence ipv6.disable=1 clk_ignore_unused pd_ignore_unused findiso=${iso_path}\n\tinitrd\t/live/initrd.img-7.3.0-sl7\n}\nsubmenu '\''Utilities...'\'' {}\n' > "$boot_test/binary/boot/grub/grub.cfg"
+printf 'source /boot/grub/grub.cfg\n' > "$boot_test/binary/boot/grub/loopback.cfg"
+chmod 0555 "$boot_test/binary/boot/grub/grub.cfg"
+printf 'kernel\n' > "$boot_test/binary/live/vmlinuz-7.3.0-sl7"
+printf 'initrd\n' > "$boot_test/binary/live/initrd.img-7.3.0-sl7"
+for dtb in romulus13-spi-touch romulus13 romulus15; do
+  printf '%s\n' "$dtb" > "$boot_test/chroot/usr/lib/linux-image-7.3.0-sl7/qcom/x1e80100-microsoft-$dtb.dtb"
+done
+for run in 1 2; do
+  (cd "$boot_test" && bash "$ROOT/config/live-build/hooks/live/0100-autoboot.hook.binary")
+  (cd "$boot_test" && bash "$ROOT/config/profiles/snapdragon/hooks/0300-devicetree.hook.binary" > /dev/null)
+done
+grub_cfg=$boot_test/binary/boot/grub/grub.cfg
+[[ $(stat -c %a "$grub_cfg") == 555 ]]
+[[ $(< "$boot_test/binary/live/vmlinuz") == kernel && $(< "$boot_test/binary/live/initrd.img") == initrd ]]
+test ! -e "$boot_test/binary/live/vmlinuz-7.3.0-sl7"
+[[ $(< "$boot_test/binary/live/dtb/x1e80100-microsoft-romulus15.dtb") == romulus15 ]]
+rg -q '^menuentry "Start CouchLiteOS" --hotkey=l \{$' "$grub_cfg"
+rg -q '^menuentry "Start CouchLiteOS \(No Persistence\)"' "$grub_cfg"
+refute rg -q 'vmlinuz-7\.3\.0-sl7|initrd\.img-7\.3\.0-sl7|Live system' "$grub_cfg"
+[[ $(rg -c '^# couchliteos devicetree$' "$grub_cfg") == 1 ]]
+[[ $(rg -c '^# couchliteos live-update$' "$grub_cfg") == 1 ]]
+# The SKU pick comes before the first entry, and so before the live-update entries.
+(($(rg -n '^# couchliteos devicetree$' "$grub_cfg" | cut -d: -f1) < $(rg -n '^# couchliteos live-update$' "$grub_cfg" | cut -d: -f1)))
+rg -Fxq 'smbios --type 1 --get-string 25 --set couchliteos_sku' "$grub_cfg"
+rg -Fxq "if regexp '_2037\$' \"\${couchliteos_sku}\"; then" "$grub_cfg"
+rg -Fxq 'set couchliteos_dtb=/live/dtb/x1e80100-microsoft-romulus13-spi-touch.dtb' "$grub_cfg"
+rg -Fxq 'export couchliteos_dtb' "$grub_cfg"
+# Every linux line, the live-update ones included, is followed by its devicetree line.
+linux_lines=$(rg -c '^[[:space:]]*linux[[:space:]]' "$grub_cfg")
+(( linux_lines == 7 ))
+[[ $(awk '/^[[:space:]]*linux[[:space:]]/ { getline next_line; if (next_line !~ /^[[:space:]]*devicetree[[:space:]]/) bad++ } END { print bad + 0 }' "$grub_cfg") == 0 ]]
+for dtb in 'romulus13-spi-touch' 'romulus13' 'romulus15'; do
+  [[ $(rg -c "devicetree\\s+/live/dtb/x1e80100-microsoft-$dtb\\.dtb\$" "$grub_cfg") == 1 ]]
+done
+rg -q '^menuentry "Start CouchLiteOS \(Surface Laptop 7, 15-inch\)"' "$grub_cfg"
+rg -Fq 'linux	/live/vmlinuz boot=live components persistence ipv6.disable=1 clk_ignore_unused pd_ignore_unused findiso=${iso_path}' "$grub_cfg"
+if command -v grub-script-check >/dev/null; then
+  grub-script-check "$grub_cfg"
+fi
+find "$boot_test" -depth -delete
+
 rg -q -- '--uefi-secure-boot enable' build/build.sh
 # The slim dpkg config drops /usr/share/doc, which lb binary_loadlin copies from.
 rg -q -- '--loadlin false' build/build.sh
@@ -1131,6 +1178,21 @@ printf 'x\n' > "$slim_test/root/usr/lib/firmware/iwlwifi-cc-a0-46.ucode"
 PATH="$slim_test/bin:$PATH" COUCHLITEOS_SLIM_ROOT="$slim_test/root" \
   bash config/live-build/hooks/live/0900-slim.hook.chroot > "$slim_test/log"
 test -f "$slim_test/root/usr/lib/firmware/iwlwifi-cc-a0-46.ucode"
+# An arm64 (snapdragon) image keeps the Qualcomm SoC firmware and WCN7850 Wi-Fi; the other
+# SoCs' firmware and the arm64 sanitizers still go.
+mkdir -p "$slim_test/root/usr/lib/firmware/qcom/x1e80100" "$slim_test/root/usr/lib/firmware/ath12k/WCN7850/hw2.0" \
+  "$slim_test/root/usr/lib/firmware/imx/sdma" "$slim_test/root/usr/lib/aarch64-linux-gnu"
+touch "$slim_test/root/usr/lib/firmware/qcom/gen70500_sqe.fw" "$slim_test/root/usr/lib/firmware/qcom/x1e80100/qupv3fw.elf" \
+  "$slim_test/root/usr/lib/firmware/ath12k/WCN7850/hw2.0/amss.bin" "$slim_test/root/usr/lib/firmware/imx/sdma/sdma-imx7d.bin" \
+  "$slim_test/root/usr/lib/aarch64-linux-gnu/libasan.so.8.0.0" "$slim_test/root/usr/lib/aarch64-linux-gnu/libgomp.so.1.0.0"
+PATH="$slim_test/bin:$PATH" COUCHLITEOS_SLIM_ROOT="$slim_test/root" COUCHLITEOS_SLIM_ARCH=arm64 \
+  bash config/live-build/hooks/live/0900-slim.hook.chroot > "$slim_test/log"
+test -f "$slim_test/root/usr/lib/firmware/qcom/gen70500_sqe.fw"
+test -f "$slim_test/root/usr/lib/firmware/qcom/x1e80100/qupv3fw.elf"
+test -f "$slim_test/root/usr/lib/firmware/ath12k/WCN7850/hw2.0/amss.bin"
+test -f "$slim_test/root/usr/lib/aarch64-linux-gnu/libgomp.so.1.0.0"
+test ! -e "$slim_test/root/usr/lib/firmware/imx"
+test ! -e "$slim_test/root/usr/lib/aarch64-linux-gnu/libasan.so.8.0.0"
 rm -rf -- "$slim_test"
 # The release profiles fail a build whose image still has what 0900-slim removes.
 for profile in general nvidia; do

@@ -1,0 +1,22 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+# Snapdragon (arm64) image: leave out what only the amd64 images can run, after
+# 0100-couchliteos set the image up.
+#   - Google Chrome publishes no arm64 Linux build: no apt source, no tile.
+#   - Moonlight publishes no Linux arm64 AppImage (build/applications.arm64.lock): no tile
+#     until the image carries a Moonlight for arm64.
+#   - The app updater installs the AppImages of the published apps.json, which are x86_64:
+#     its timer and request path stay off on arm64.
+[[ $(dpkg --print-architecture) == arm64 ]] || { echo 'snapdragon: not an arm64 chroot' >&2; exit 1; }
+rm -f /etc/apt/sources.list.d/google-chrome.list
+for manifest in /usr/share/couchliteos/apps.d/*-google-chrome.ini /usr/share/couchliteos/apps.d/*-moonlight.ini; do
+  [[ -e $manifest ]] || continue
+  rm -f -- "$manifest"
+  echo "snapdragon: removed ${manifest#/usr/share/couchliteos/apps.d/}"
+done
+systemctl disable couchliteos-app-update.timer couchliteos-app-update.path
+# The device trees GRUB loads (0300-devicetree.hook.binary copies them to the ISO).
+for dtb in x1e80100-microsoft-romulus13-spi-touch x1e80100-microsoft-romulus13 x1e80100-microsoft-romulus15; do
+  compgen -G "/usr/lib/linux-image-*/qcom/$dtb.dtb" >/dev/null || { echo "snapdragon: no $dtb.dtb" >&2; exit 1; }
+done

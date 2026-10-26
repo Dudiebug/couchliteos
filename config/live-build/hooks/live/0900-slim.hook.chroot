@@ -11,7 +11,13 @@ set -Eeuo pipefail
 #     image kernel loads, and firmware for ARM SoCs and router boards.
 # Every removed firmware path is printed to the build log.
 # COUCHLITEOS_SLIM_ROOT runs it on a test tree (tests/test-static.sh); empty in the chroot.
+# The image's architecture: an arm64 (Snapdragon) image keeps its Qualcomm SoC firmware.
+# COUCHLITEOS_SLIM_ARCH sets it for a test tree, which is amd64 otherwise.
 ROOT=${COUCHLITEOS_SLIM_ROOT:-}
+ARCH=${COUCHLITEOS_SLIM_ARCH:-}
+if [[ -z $ARCH ]]; then
+  if [[ -z $ROOT ]]; then ARCH=$(dpkg --print-architecture); else ARCH=amd64; fi
+fi
 removed() { printf 'slim: removed %s\n' "${1#"$ROOT"}"; }
 
 # Documentation, manual pages, translations.
@@ -33,7 +39,7 @@ fi
 
 # Toolchain: the LTO compiler and the sanitizer runtimes.
 toolchain=()
-for directory in "$ROOT/usr/lib/gcc" "$ROOT/usr/libexec/gcc" "$ROOT/usr/lib/x86_64-linux-gnu" "$ROOT/usr/bin"; do
+for directory in "$ROOT/usr/lib/gcc" "$ROOT/usr/libexec/gcc" "$ROOT"/usr/lib/*-linux-gnu "$ROOT/usr/bin"; do
   [[ -d $directory ]] && toolchain+=("$directory")
 done
 if ((${#toolchain[@]})); then
@@ -47,8 +53,12 @@ firmware=$ROOT/usr/lib/firmware
 
 # Firmware for ARM SoCs and router boards: Qualcomm IPQ router SoCs and Snapdragon
 # Wi-Fi (ath10k/ath11k/ath12k), i.MX, Amlogic, Rockchip and Qualcomm SoC peripherals.
-for path in ath10k/QCA4019 ath10k/WCN3990 ath11k/IPQ5018 ath11k/IPQ6018 ath11k/IPQ8074 \
-  ath11k/WCN6750 ath12k/IPQ5332 imx meson rockchip qcom; do
+# The Qualcomm SoC firmware stays on arm64: the Snapdragon X laptops' GPU, serial engines
+# and audio DSP load it (WCN7850 Wi-Fi is ath12k/WCN7850, never removed).
+soc_firmware=(ath10k/QCA4019 ath10k/WCN3990 ath11k/IPQ5018 ath11k/IPQ6018 ath11k/IPQ8074
+  ath11k/WCN6750 ath12k/IPQ5332 imx meson rockchip)
+[[ $ARCH == arm64 ]] || soc_firmware+=(qcom)
+for path in "${soc_firmware[@]}"; do
   [[ -e $firmware/$path ]] || continue
   find "$firmware/$path" -depth -print -delete | while IFS= read -r file; do removed "$file"; done
 done

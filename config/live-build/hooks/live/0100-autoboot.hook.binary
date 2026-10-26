@@ -3,14 +3,16 @@ set -Eeuo pipefail
 
 # Debian live-build intentionally waits forever at its default boot menus.
 # An appliance must select the live entry without a keyboard, for both BIOS
-# (isolinux) and x86_64 UEFI (GRUB).
+# (isolinux) and UEFI (GRUB, amd64 and arm64).
 while IFS= read -r -d '' cfg; do
   sed -i '/^set default=/d; /^set timeout=/d; /^serial --unit=0 /d; /^terminal_input console serial$/d; /^terminal_output console serial$/d' "$cfg"
   sed -i '1i set default=0\nset timeout=3\nserial --unit=0 --speed=115200 --word=8 --parity=no --stop=1\nterminal_input console serial\nterminal_output console serial' "$cfg"
 done < <(find . -type f -name grub.cfg -print0)
 
 while IFS= read -r -d '' cfg; do
-  sed -i 's/menuentry "Live system (amd64)"/menuentry "Start CouchLiteOS"/' "$cfg"
+  # live-build names it after the kernel flavour: "Live system (amd64)", or the snapdragon
+  # profile's "Live system (7.3.0-sl7)".
+  sed -i -E 's/menuentry "Live system \([^ )]+\)"/menuentry "Start CouchLiteOS"/' "$cfg"
   grep -Fq 'menuentry "Start CouchLiteOS (No Persistence)"' "$cfg" && continue
   output=$(mktemp "${cfg}.XXXXXX")
   awk '
