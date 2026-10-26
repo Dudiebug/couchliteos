@@ -18,6 +18,15 @@ done
 systemctl disable couchliteos-app-update.timer couchliteos-app-update.path
 # The WCN7850 board data for this laptop, made from the installed firmware at boot.
 systemctl enable couchliteos-sl7-wifi-board.service
+# The kernel package (kernel/sl7, built by the kernel's bindeb-pkg) does not depend on
+# initramfs-tools as Debian's do, so apt may configure it first and no initrd is made;
+# live-build's own update-initramfs -u (chroot_hacks, after the hooks) only refreshes one.
+for kernel in /boot/vmlinuz-*; do
+  version=${kernel#/boot/vmlinuz-}
+  [[ -e /boot/initrd.img-$version ]] && continue
+  echo "snapdragon: making the initrd of $version"
+  update-initramfs -c -k "$version"
+done
 # The device trees GRUB loads (0300-devicetree.hook.binary copies them to the ISO).
 for dtb in x1e80100-microsoft-romulus13-spi-touch x1e80100-microsoft-romulus13 x1e80100-microsoft-romulus15; do
   compgen -G "/usr/lib/linux-image-*/qcom/$dtb.dtb" >/dev/null || { echo "snapdragon: no $dtb.dtb" >&2; exit 1; }
