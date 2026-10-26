@@ -45,7 +45,8 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           echo "VERSION=$(< VERSION)" >> "$GITHUB_ENV"
       - name: Source tests
-        run: make test
+        # The container leaves stdin open; tests that read keys must see end of input.
+        run: make test < /dev/null
       - name: Build ISO
         run: make build PROFILE=snapdragon
       - name: Upload ISO
