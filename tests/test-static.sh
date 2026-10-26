@@ -106,7 +106,7 @@ find "$boot_test" -depth -delete
 # and loads one by SMBIOS SKU in every entry.
 boot_test=$(mktemp -d)
 mkdir -p "$boot_test/binary/boot/grub" "$boot_test/binary/live" "$boot_test/chroot/usr/lib/linux-image-7.3.0-sl7/qcom"
-printf 'menuentry "Live system (7.3.0-sl7)" --hotkey=l {\n\tlinux\t/live/vmlinuz-7.3.0-sl7 boot=live components persistence ipv6.disable=1 clk_ignore_unused pd_ignore_unused findiso=${iso_path}\n\tinitrd\t/live/initrd.img-7.3.0-sl7\n}\nsubmenu '\''Utilities...'\'' {}\n' > "$boot_test/binary/boot/grub/grub.cfg"
+printf 'menuentry "Live system (7.3.0-sl7)" --hotkey=l {\n\tlinux\t/live/vmlinuz-7.3.0-sl7 boot=live components persistence ipv6.disable=1 clk_ignore_unused pd_ignore_unused findiso=${iso_path}\n\tinitrd\t/live/initrd.img-7.3.0-sl7\n}\nsubmenu '\''Utilities...'\'' {\n\tmenuentry '\''UEFI Firmware Settings'\'' {\n\t\tfwsetup\n\t}\n}\n' > "$boot_test/binary/boot/grub/grub.cfg"
 printf 'source /boot/grub/grub.cfg\n' > "$boot_test/binary/boot/grub/loopback.cfg"
 chmod 0555 "$boot_test/binary/boot/grub/grub.cfg"
 printf 'kernel\n' > "$boot_test/binary/live/vmlinuz-7.3.0-sl7"

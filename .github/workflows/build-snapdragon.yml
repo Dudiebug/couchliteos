@@ -25,6 +25,10 @@ jobs:
       image: debian:trixie
       options: --privileged
     timeout-minutes: 150
+    # The container's default shell is sh; the steps are bash, as on the hosted runner.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install build dependencies
         run: |
