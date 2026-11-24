@@ -92,4 +92,4 @@ jobs:
             /tmp/couchliteos-qemu-install-config.log
             /tmp/couchliteos-qemu-persistence.log
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
