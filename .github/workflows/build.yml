@@ -76,6 +76,7 @@ jobs:
           name: couchliteos-${{ env.VERSION }}-amd64
           path: build/out/couchliteos-${{ env.VERSION }}-amd64.iso
           if-no-files-found: error
+          retention-days: 7
       - name: Upload release evidence
         uses: actions/upload-artifact@v7
         with:
